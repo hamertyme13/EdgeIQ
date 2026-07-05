@@ -15,6 +15,8 @@ from analytics import get_dashboard
 from utils import divider, title
 from rich.table import Table
 
+from odds_api import display_games
+
 console = Console()
 
 
@@ -103,7 +105,8 @@ def main():
         print("3. View Record")
         print("4. View Bet History")
         print("5. View Dashboard")
-        print("6. Exit")
+        print("6. View Today's Games")
+        print("7. Exit")
 
         choice = input("\nChoose an option: ")
 
@@ -118,6 +121,8 @@ def main():
         elif choice == "5":
             dashboard()
         elif choice == "6":
+            display_games()
+        elif choice == "7":
             print("Exiting...")
             break
             
