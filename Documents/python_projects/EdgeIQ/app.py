@@ -17,7 +17,7 @@ from rich.table import Table
 
 from services.odds import display_games
 
-from services.ev import print_ev
+from analytics.ev import print_ev
 
 from models.bet import Bet
 

@@ -4,6 +4,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.table import Table
 from config import DATA_FILE
+from models.bet import Bet
 
 console = Console()
 
@@ -28,7 +29,7 @@ def initialize_csv():
             ])
 
 
-def save_bet(sport, game, bet, odds, wager, result, profit):
+def save_bet(bet: Bet):
     initialize_csv()
 
     with open(FILE_NAME, "a", newline="") as file:
@@ -36,13 +37,13 @@ def save_bet(sport, game, bet, odds, wager, result, profit):
 
         writer.writerow([
             datetime.now().strftime("%Y-%m-%d"),
-            sport,
-            game,
-            bet,
-            odds,
-            wager,
-            result,
-            round(profit, 2)
+            bet.sport,
+            bet.game,
+            bet.bet,
+            bet.odds,
+            bet.wager,
+            bet.result,
+            round(bet.profit, 2)
         ])
 
 def get_stats() -> tuple[int, int, float]:

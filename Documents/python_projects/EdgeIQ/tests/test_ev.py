@@ -1,4 +1,4 @@
-from services.ev import expected_value
+from analytics.ev import expected_value
 
 ev = expected_value(-135, .64)
 
