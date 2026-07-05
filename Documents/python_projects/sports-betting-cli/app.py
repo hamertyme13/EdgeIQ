@@ -11,7 +11,9 @@ from betting import (
     potential_profit,
     total_return,
 )
+from analytics import get_dashboard
 from utils import divider, title
+from rich.table import Table
 
 console = Console()
 
@@ -100,7 +102,8 @@ def main():
         print("2. Add Bet")
         print("3. View Record")
         print("4. View Bet History")
-        print("5. Exit")
+        print("5. View Dashboard")
+        print("6. Exit")
 
         choice = input("\nChoose an option: ")
 
@@ -113,6 +116,8 @@ def main():
         elif choice == "4":
             view_bets()
         elif choice == "5":
+            dashboard()
+        elif choice == "6":
             print("Exiting...")
             break
             
@@ -121,3 +126,36 @@ def main():
 if __name__ == "__main__":
     main()
 
+def dashboard():
+
+    stats = get_dashboard()
+
+    if stats is None:
+        print("No bets found.")
+        return
+
+    table = Table(title="Betting Dashboard")
+
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+
+    table.add_row("Starting Bankroll", f"${stats['starting_bankroll']:.2f}")
+    table.add_row("Current Bankroll", f"${stats['bankroll']:.2f}")
+    table.add_row("Record", stats["record"])
+
+    total = stats["wins"] + stats["losses"]
+
+    if total:
+        pct = stats["wins"] / total * 100
+    else:
+        pct = 0
+
+    table.add_row("Win %", f"{pct:.1f}%")
+    table.add_row("Total Wagered", f"${stats['wagered']:.2f}")
+    table.add_row("Net Profit", f"${stats['profit']:.2f}")
+    table.add_row("ROI", f"{stats['roi']:.2f}%")
+    table.add_row("Average Bet", f"${stats['average']:.2f}")
+    table.add_row("Largest Win", f"${stats['largest_win']:.2f}")
+    table.add_row("Largest Loss", f"${stats['largest_loss']:.2f}")
+
+    console.print(table)
