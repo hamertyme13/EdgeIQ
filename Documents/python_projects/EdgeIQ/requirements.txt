@@ -1,0 +1,12 @@
+certifi==2026.6.17
+charset-normalizer==3.4.7
+idna==3.18
+markdown-it-py==4.2.0
+mdurl==0.1.2
+Pygments==2.20.0
+python-dotenv==1.2.2
+requests==2.34.2
+rich==15.0.0
+SQLAlchemy==2.0.51
+typing_extensions==4.16.0
+urllib3==2.7.0

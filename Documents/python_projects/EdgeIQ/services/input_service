@@ -1,0 +1,41 @@
+from models.bet import Bet
+from services.betting import potential_profit
+
+
+def collect_bet_information() -> Bet:
+
+    sport = input("Sport: ")
+    game = input("Game: ")
+    description = input("Bet Description: ")
+
+    odds = int(input("Odds: "))
+    wager = float(input("Wager: $"))
+
+    while True:
+
+        print("\n1. Win")
+        print("2. Loss")
+
+        choice = input("Result: ").strip()
+
+        if choice == "1":
+            result = "Win"
+            profit = potential_profit(odds, wager)
+            break
+
+        elif choice == "2":
+            result = "Loss"
+            profit = -wager
+            break
+
+        print("Invalid choice.")
+
+    return Bet(
+        sport=sport,
+        game=game,
+        description=description,
+        odds=odds,
+        wager=wager,
+        result=result,
+        profit=profit,
+    )
