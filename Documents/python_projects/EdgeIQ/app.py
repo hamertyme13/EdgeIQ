@@ -11,7 +11,7 @@ from services.betting import (
     potential_profit,
     total_return,
 )
-from services.analytics import get_dashboard
+from services.dashboard import get_dashboard
 from utils.display import divider, title
 from rich.table import Table
 
@@ -189,5 +189,7 @@ def main():
 
 
 if __name__ == "__main__":
+    initialize_database()
     main()
+
 

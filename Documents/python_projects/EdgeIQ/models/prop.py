@@ -1,18 +1,20 @@
 from dataclasses import dataclass
 
+from models.player import Player
 from models.stat_type import StatType
 
-stat: StatType
 
 @dataclass
 class Prop:
 
     player: Player
 
-    stat: str
+    stat: StatType
 
     line: float
 
     projection: float
 
-    confidence: float = 0.0
+    edge: float
+
+    confidence: float

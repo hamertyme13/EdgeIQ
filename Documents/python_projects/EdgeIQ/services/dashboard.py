@@ -54,6 +54,9 @@ def get_dashboard(starting_bankroll=STARTING_BANKROLL) -> dict:
     if wagers:
         average_bet = sum(wagers) / len(wagers)
 
+    largest_win = max(profits) if profits else 0
+    largest_loss = min(profits) if profits else 0
+
     return {
         "wins": wins,
         "losses": losses,
@@ -63,7 +66,7 @@ def get_dashboard(starting_bankroll=STARTING_BANKROLL) -> dict:
         "wagered": total_wagered,
         "roi": roi,
         "average": average_bet,
-        "largest_win": max(profits),
-        "largest_loss": min(profits),
+        "largest_win": largest_win,
+        "largest_loss": largest_loss,
         "starting_bankroll": starting_bankroll,
     }

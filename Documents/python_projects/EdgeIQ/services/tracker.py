@@ -5,6 +5,9 @@ from rich.console import Console
 from rich.table import Table
 from config import DATA_FILE
 from models.bet import Bet
+from repository.bet_repository import BetRepository
+
+repository = BetRepository()
 
 console = Console()
 
@@ -29,22 +32,8 @@ def initialize_csv():
             ])
 
 
-def save_bet(bet: Bet):
-    initialize_csv()
-
-    with open(FILE_NAME, "a", newline="") as file:
-        writer = csv.writer(file)
-
-        writer.writerow([
-            datetime.now().strftime("%Y-%m-%d"),
-            bet.sport,
-            bet.game,
-            bet.bet,
-            bet.odds,
-            bet.wager,
-            bet.result,
-            round(bet.profit, 2)
-        ])
+def save_bet(bet: Bet) -> None:
+    repository.save(bet)
 
 def get_stats() -> tuple[int, int, float]:
     initialize_csv()

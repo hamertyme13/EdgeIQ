@@ -1,4 +1,4 @@
-from services.projection import edge
+from analytics.projection import edge
 
 
 def test_edge():
