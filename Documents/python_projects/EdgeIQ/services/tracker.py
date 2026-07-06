@@ -1,9 +1,5 @@
-import csv
-import os
-from datetime import datetime
 from rich.console import Console
 from rich.table import Table
-from config import DATA_FILE
 from models.bet import Bet
 from repository.bet_repository import BetRepository
 
@@ -11,58 +7,32 @@ repository = BetRepository()
 
 console = Console()
 
-FILE_NAME = DATA_FILE
-
-
-def initialize_csv():
-    os.makedirs("data", exist_ok=True)
-
-    if not os.path.exists(FILE_NAME):
-        with open(FILE_NAME, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                "Date",
-                "Sport",
-                "Game",
-                "Bet",
-                "Odds",
-                "Wager",
-                "Result",
-                "Profit"
-            ])
-
 
 def save_bet(bet: Bet) -> None:
     repository.save(bet)
 
 def get_stats() -> tuple[int, int, float]:
-    initialize_csv()
+
+    bets = repository.get_all()
 
     wins = 0
     losses = 0
     profit = 0
 
-    with open(FILE_NAME) as file:
-        reader = csv.DictReader(file)
+    for bet in bets:
+        if bet.result == "Win":
+            wins += 1
+        elif bet.result == "Loss":
+            losses += 1
 
-        for row in reader:
-
-            if row["Result"] == "Win":
-                wins += 1
-            elif row["Result"] == "Loss":
-                losses += 1
-
-            profit += float(row["Profit"])
+        profit += bet.profit
 
     return wins, losses, profit
 
 def view_bets():
 
-    initialize_csv()
-
     table = Table(title="Bet History")
 
-    table.add_column("Date")
     table.add_column("Sport")
     table.add_column("Game")
     table.add_column("Bet")
@@ -71,21 +41,18 @@ def view_bets():
     table.add_column("Result")
     table.add_column("Profit", justify="right")
 
-    with open(FILE_NAME) as file:
+    bets = repository.get_all()
 
-        reader = csv.DictReader(file)
+    for bet in bets:
 
-        for row in reader:
-
-            table.add_row(
-                row["Date"],
-                row["Sport"],
-                row["Game"],
-                row["Bet"],
-                row["Odds"],
-                f"${float(row['Wager']):.2f}",
-                row["Result"],
-                f"${float(row['Profit']):.2f}"
-            )
+        table.add_row( 
+            bet.sport,
+            bet.game,
+            bet.description,
+            str(bet.odds),
+            f"${bet.wager:.2f}",
+            bet.result,
+            f"${bet.profit:.2f}",
+        )
 
     console.print(table)
