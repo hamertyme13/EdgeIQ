@@ -12,7 +12,7 @@ from services.betting import (
     total_return,
 )
 from services.dashboard import get_dashboard
-from utils.display import divider, title
+from utils.display import title, divider
 from rich.table import Table
 
 from services.odds import display_games
@@ -25,13 +25,16 @@ from repository.database import initialize_database
 
 console = Console()
 
+from services.probability import choose_probability
+
+from services.prop_workflow import run_prop_builder
+from services.dashboard import get_dashboard
+
 def ev_calculator():
 
     odds = int(input("American Odds: "))
 
-    projection = float(
-        input("Your projected win probability (%): ")
-    )
+    projection = choose_probability()
 
     print_ev(
         odds,
@@ -151,38 +154,38 @@ def dashboard():
 
     console.print(table)
 
-initialize_database()
-
 def main():
     while True:
-        title()
 
-        print("1. Calculate Bet")
-        print("2. Add Bet")
-        print("3. View Record")
-        print("4. View Bet History")
-        print("5. View Dashboard")
-        print("6. View Today's Games")
-        print("7. EV Calculator")
-        print("8. Exit")
+        print("1. 🎯 Player Prop Builder")
+        print("2. Calculate Bet")
+        print("3. Add Bet")
+        print("4. View Record")
+        print("5. View Bet History")
+        print("6. View Dashboard")
+        print("7. View Today's Games")
+        print("8. EV Calculator")
+        print("9. Exit")
 
         choice = input("\nChoose an option: ")
 
         if choice == "1":
-            calculate_bet()
+            run_prop_builder()
         elif choice == "2":
-            add_bet()
+            calculate_bet()
         elif choice == "3":
-            view_record()
+            add_bet()
         elif choice == "4":
-            view_bets()
+            view_record()
         elif choice == "5":
-            dashboard()
+            view_bets()
         elif choice == "6":
-            display_games()
+            dashboard()
         elif choice == "7":
-            ev_calculator()
+            display_games()
         elif choice == "8":
+            ev_calculator()
+        elif choice == "9":
             print("Exiting...")
             break
             
@@ -190,6 +193,7 @@ def main():
 
 if __name__ == "__main__":
     initialize_database()
+    title()
     main()
 
 

@@ -1,6 +1,8 @@
 from services.betting import implied_probability
 from rich.console import Console
 
+from analytics.recommendation import recommendation, grade
+
 def decimal_odds(american_odds: int) -> float:
     """
     Convert American odds to decimal odds.
@@ -47,28 +49,56 @@ def print_ev(odds, projection):
         projection / 100
     )
 
+    ev_percent = ev * 100
+
+    result = recommendation(ev_percent)
+
+    letter_grade = grade(ev_percent)
+
+    console.rule("[bold cyan]EdgeIQ Analysis[/bold cyan]")
+
+    console.print(
+        f"[cyan]Your Estimated Probability:[/cyan] "
+        f"{projection:.1f}%"
+    )
+
+    console.print(
+        f"[yellow]Sportsbook Probability:[/yellow] "
+        f"{sportsbook * 100:.1f}%"
+    )
+
+    edge = projection - (sportsbook * 100)
+
+    console.print(
+        f"[green]Edge:[/green] {edge:+.1f}%"
+    )
+
+    console.print(
+        f"[bold]Expected Value:[/bold] {ev * 100:+.2f}%"
+    )
+
+    console.print(
+
+    )
+
+    console.print(
+        f"[bold cyan]Overall Grade:[/bold cyan] [bold]{letter_grade}[/bold]"
+    )
+
+    console.print(
+        result["action"],
+        style=result["color"]
+    )
+
+    console.print(result["summary"])
+
     console.print()
 
     console.print(
-        f"Sportsbook Probability : {sportsbook:.2%}"
+        "[dim]"
+        "Remember: Positive EV does not guarantee a win. "
+        "It simply means the wager has positive long-term value. Bet responsibly."
+        "[/dim]"
     )
 
-    console.print(
-        f"Your Projection        : {projection:.1f}%"
-    )
-
-    console.print(
-        f"Expected Value         : {ev:.2%}"
-    )
-
-    if ev > 0:
-
-        console.print(
-            "\n[bold green]✓ Positive EV Bet[/bold green]"
-        )
-
-    else:
-
-        console.print(
-            "\n[bold red]✗ Negative EV Bet[/bold red]"
-        )
+    console.rule()

@@ -1,11 +1,20 @@
+from config import APP_NAME, APP_SUBTITLE, APP_VERSION
 from rich.console import Console
+from rich.panel import Panel
 
 console = Console()
 
 
-def divider():
-    console.rule()
+def title() -> None:
+    console.print(
+        Panel.fit(
+            f"[bold cyan]{APP_NAME}[/bold cyan]\n"
+            f"{APP_SUBTITLE}\n"
+            f"[dim]{APP_VERSION}[/dim]",
+            border_style="cyan",
+        )
+    )
 
 
-def title():
-    console.rule("[bold green]Sports Betting CLI[/bold green]")
+def divider() -> None:
+    console.rule(style="green")
