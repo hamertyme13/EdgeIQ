@@ -159,7 +159,7 @@ def build_player() -> Player:
         sport=sport,
     )
 
-def build_prop() -> Prop:
+def build_prop(platform: Platform) -> Prop:
 
     player = build_player()
 
@@ -175,7 +175,6 @@ def build_prop() -> Prop:
 
     return Prop(
         player=player,
-        platform=platform,
         stat=stat,
         line=line,
         projection=projection,

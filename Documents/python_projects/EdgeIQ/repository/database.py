@@ -19,4 +19,10 @@ Base = declarative_base()
 
 
 def initialize_database():
+
+    from repository.models.entry_model import EntryModel
+    from repository.models.entry_prop_model import EntryPropModel
+    
     Base.metadata.create_all(bind=engine)
+
+    

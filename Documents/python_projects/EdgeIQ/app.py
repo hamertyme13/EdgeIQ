@@ -1,5 +1,6 @@
 from rich.console import Console
-
+from services.prop_workflow import run_prop_builder
+from services.entry_workflow import run_entry_workflow
 from services.tracker import (
     get_stats,
     save_bet,
@@ -27,8 +28,8 @@ console = Console()
 
 from services.probability import choose_probability
 
-from services.prop_workflow import run_prop_builder
-from services.dashboard import get_dashboard
+
+
 
 def ev_calculator():
 
@@ -157,38 +158,40 @@ def dashboard():
 def main():
     while True:
 
-        print("1. 🎯 Player Prop Builder")
-        print("2. Calculate Bet")
-        print("3. Add Bet")
-        print("4. View Record")
-        print("5. View Bet History")
-        print("6. View Dashboard")
-        print("7. View Today's Games")
-        print("8. EV Calculator")
-        print("9. Exit")
+        print("1. 🎯 Single Prop Analysis")
+        print("2. 🧾 Multi-Prop Entry Builder")
+        print("3. Calculate Bet")
+        print("4. Add Bet")
+        print("5. View Record")
+        print("6. View Bet History")
+        print("7. View Dashboard")
+        print("8. Today's Games")
+        print("9. EV Calculator")
+        print("10. Exit")
 
         choice = input("\nChoose an option: ")
 
         if choice == "1":
             run_prop_builder()
         elif choice == "2":
-            calculate_bet()
+            run_entry_workflow()
         elif choice == "3":
-            add_bet()
+            calculate_bet()
         elif choice == "4":
-            view_record()
+            add_bet()
         elif choice == "5":
-            view_bets()
+            view_record()
         elif choice == "6":
-            dashboard()
+            view_bets()
         elif choice == "7":
-            display_games()
+            dashboard()
         elif choice == "8":
-            ev_calculator()
+            display_games()
         elif choice == "9":
+            ev_calculator()
+        elif choice == "10":
             print("Exiting...")
             break
-            
 
 
 if __name__ == "__main__":
