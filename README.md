@@ -87,3 +87,5 @@ unavailable.
 This is still an alpha. The app is useful locally, but the next production-grade
 steps are broader UI verification, provider contract tests, a formal migration
 tool if the schema keeps growing, and packaged desktop distribution.
+- Python
+- Rich
