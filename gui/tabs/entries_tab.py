@@ -34,6 +34,9 @@ from analytics.entry_recommendation import recommendation as entry_recommendatio
 from analytics.risk import calculate_entry_risk
 from analytics.correlation import detect_correlations
 from repository.repositories.entry_repository import EntryRepository
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 from gui.styles import ACCENT, GREEN, RED, YELLOW, MUTED, CYAN
 
 
@@ -358,6 +361,7 @@ class EntriesTab(QWidget):
             self._prop_feedback.setStyleSheet(f"color: {GREEN}; font-size: 12px;")
             self._save_entry_btn.setEnabled(False)
         except Exception as e:
+            logger.exception("Failed to save entry")
             self._prop_feedback.setText(f"Save failed: {e}")
             self._prop_feedback.setStyleSheet(f"color: {RED}; font-size: 12px;")
 

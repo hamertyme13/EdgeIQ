@@ -1,6 +1,6 @@
 from rich.console import Console
 
-from services.prop_builder import build_prop
+from services.prop_builder import build_prop, choose_platform
 from services.save_prop import save_prop
 
 from ui.review import review_prop
@@ -11,7 +11,9 @@ console = Console()
 
 def run_prop_builder():
 
-    prop = build_prop()
+    platform = choose_platform()
+
+    prop = build_prop(platform)
 
     if not review_prop(prop):
 

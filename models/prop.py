@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from models.player import Player
+from models.platform import Platform
 from models.stat_type import StatType
 
 
@@ -18,3 +19,5 @@ class Prop:
     edge: float
 
     confidence: float
+
+    platform: Platform = Platform.PRIZEPICKS

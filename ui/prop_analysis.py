@@ -2,7 +2,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from models.prop import Prop
-from analytics.recommendation import recommendation
+from analytics.prop_recommendation import recommendation
 
 console = Console()
 
@@ -10,6 +10,9 @@ console = Console()
 def display_prop_analysis(prop: Prop) -> None:
 
     result = recommendation(prop)
+    grade = result["grade"]
+    action = result["action"]
+    summary = result["summary"]
 
     panel = Panel.fit(
         f"""
@@ -36,7 +39,8 @@ def display_prop_analysis(prop: Prop) -> None:
 
 Recommendation
 
-{result.action}
+{grade} · {action}
+{summary}
 """,
         title="EdgeIQ Prop Analysis",
         border_style="cyan",

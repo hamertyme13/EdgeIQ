@@ -40,7 +40,8 @@ class EntryRepository:
                 )
 
                 session.add(prop_model)
-                session.commit()
+
+            session.commit()
 
         except Exception:
 
