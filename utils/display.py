@@ -16,5 +16,5 @@ def title() -> None:
     )
 
 
-def divider() -> None:
-    console.rule(style="green")
+def divider(title="EdgeIQ Prop Builder"):
+    console.rule(f"[cyan]{title}[/cyan]")

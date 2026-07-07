@@ -14,6 +14,7 @@ from analytics.prop_metrics import (
     calculate_edge,
     calculate_confidence,
 )
+from utils.display import divider
 
 TOTAL_STEPS = 6
 
@@ -39,7 +40,7 @@ def choose_platform() -> Platform:
 
 def get_player_name() -> str:
 
-    wizard_step(2, TOTAL_STEPS, "Player Name")
+    print("Player Name\n")
 
     while True:
 
@@ -52,7 +53,7 @@ def get_player_name() -> str:
 
 def get_team() -> str:
 
-    wizard_step(3, TOTAL_STEPS, "Team")
+    print("Team\n")
 
     while True:
 
@@ -72,7 +73,7 @@ SPORTS = {
 
 def choose_sport() -> str:
 
-    wizard_step(4, TOTAL_STEPS, "Choose Sport")
+    print("Choose Sport\n")
 
     print("1. NBA")
     print("2. WNBA")
@@ -97,11 +98,7 @@ STAT_OPTIONS = [
 
 def choose_stat():
 
-    wizard_step(
-        5,
-        TOTAL_STEPS,
-        "Choose Stat"
-    )
+    print("Choose Stat\n")
 
     for i, stat in enumerate(STAT_OPTIONS, start=1):
 
@@ -120,12 +117,6 @@ def choose_stat():
             print("Invalid selection.")
 
 def get_line_projection():
-
-    wizard_step(
-        6,
-        TOTAL_STEPS,
-        "Projection"
-    )
 
     while True:
 
@@ -159,19 +150,43 @@ def build_player() -> Player:
         sport=sport,
     )
 
-def build_prop(platform: Platform) -> Prop:
+def build_prop(platform: Platform, prop_number: int = 1) -> Prop:
 
+    divider(f"Building Prop #{prop_number}")
+
+    wizard_step(1,
+                5,
+                "Player"
+                )
     player = build_player()
 
-    platform = choose_platform()
+    wizard_step(2,
+                5,
+                "Stat"
+                )
 
     stat = choose_stat()
 
+    wizard_step(3,
+                5,
+                "Projection"
+                )
+
     line, projection = get_line_projection()
+
+    wizard_step(4,
+                5,
+                "Edge Analysis"
+                )
 
     edge = calculate_edge(line, projection)
 
-    confidence  = calculate_confidence(edge)
+    wizard_step(5,
+                5,
+                "Confidence"
+                )
+
+    confidence = calculate_confidence(edge)
 
     return Prop(
         player=player,
