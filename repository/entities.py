@@ -22,3 +22,9 @@ class BetEntity(Base):
     result = Column(String)
 
     profit = Column(Float)
+
+    platform = Column(String, default="")
+
+    stat_type = Column(String, default="")
+
+    win_probability = Column(Float, default=0.0)

@@ -229,8 +229,8 @@ QLabel#muted {{
 QGroupBox {{
     border: 1px solid {BORDER};
     border-radius: 6px;
-    margin-top: 12px;
-    padding-top: 8px;
+    margin-top: 20px;
+    padding-top: 12px;
     color: {MUTED};
     font-size: 11px;
     font-weight: 600;
@@ -240,9 +240,10 @@ QGroupBox {{
 
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 10px;
-    top: -6px;
-    padding: 0 6px;
+    subcontrol-position: top left;
+    left: 12px;
+    top: -8px;
+    padding: 2px 6px;
     background-color: {BG};
 }}
 

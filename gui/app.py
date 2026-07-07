@@ -22,6 +22,7 @@ from gui.tabs.dashboard_tab import DashboardTab
 from gui.tabs.bets_tab import BetsTab
 from gui.tabs.analysis_tab import AnalysisTab
 from gui.tabs.entries_tab import EntriesTab
+from gui.tabs.performance_tab import PerformanceTab
 
 
 class EdgeIQWindow(QMainWindow):
@@ -68,21 +69,23 @@ class EdgeIQWindow(QMainWindow):
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
 
-        self._dashboard_tab = DashboardTab()
-        self._bets_tab      = BetsTab()
-        self._analysis_tab  = AnalysisTab()
-        self._entries_tab   = EntriesTab()
+        self._dashboard_tab   = DashboardTab()
+        self._bets_tab        = BetsTab()
+        self._analysis_tab    = AnalysisTab()
+        self._entries_tab     = EntriesTab()
+        self._performance_tab = PerformanceTab()
 
-        self._tabs.addTab(self._dashboard_tab, "  📊  Dashboard  ")
-        self._tabs.addTab(self._bets_tab,      "  🎰  Track Bets  ")
-        self._tabs.addTab(self._analysis_tab,  "  🔍  Analysis  ")
-        self._tabs.addTab(self._entries_tab,   "  🧾  Entries  ")
+        self._tabs.addTab(self._dashboard_tab,   "  📊  Dashboard  ")
+        self._tabs.addTab(self._bets_tab,        "  🎰  Track Bets  ")
+        self._tabs.addTab(self._analysis_tab,    "  🔍  Analysis  ")
+        self._tabs.addTab(self._entries_tab,     "  🧾  Entries  ")
+        self._tabs.addTab(self._performance_tab, "  📈  Performance  ")
 
         root.addWidget(self._tabs)
 
         # ── Wire cross-tab signals ────────────────────────────────────────────
-        # Refresh dashboard stats whenever a new bet is saved
         self._bets_tab.bet_saved.connect(self._dashboard_tab.refresh_stats)
+        self._bets_tab.bet_saved.connect(self._performance_tab.refresh)
 
         # ── Status bar ────────────────────────────────────────────────────────
         status = QStatusBar()

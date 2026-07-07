@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 
 @dataclass
 class Bet:
@@ -9,3 +10,6 @@ class Bet:
     wager: float
     result: str
     profit: float
+    platform: str = ""
+    stat_type: str = ""
+    win_probability: float = 0.0
