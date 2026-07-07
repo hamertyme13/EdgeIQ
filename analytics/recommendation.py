@@ -40,18 +40,3 @@ def recommendation(ev_percent: float) -> dict:
             "color": "red",
         }
     
-def grade(expected_value: float) -> str:
-
-    if expected_value >= 15:
-        return "A+"
-
-    elif expected_value >= 10:
-        return "A"
-
-    elif expected_value >= 5:
-        return "B"
-
-    elif expected_value >= 0:
-        return "C"
-
-    return "F"

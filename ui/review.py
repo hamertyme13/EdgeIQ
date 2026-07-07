@@ -29,10 +29,10 @@ def review_prop(prop: Prop) -> bool:
 
     while True:
 
-        print()
+        console.print()
 
-        print("1. Generate Report")
-        print("2. Cancel")
+        console.print("1. Generate Report")
+        console.print("2. Cancel")
 
         choice = input("\nChoice: ").strip()
 
@@ -42,4 +42,4 @@ def review_prop(prop: Prop) -> bool:
         elif choice == "2":
             return False
 
-        print("Please choose 1 or 2.")
+        console.print("[red]Please choose 1 or 2.[/red]")

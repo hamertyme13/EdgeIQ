@@ -1,7 +1,7 @@
 from services.betting import implied_probability
 from rich.console import Console
 
-from analytics.recommendation import recommendation, grade
+from analytics.recommendation import recommendation
 
 def decimal_odds(american_odds: int) -> float:
     """
@@ -53,7 +53,7 @@ def print_ev(odds, projection):
 
     result = recommendation(ev_percent)
 
-    letter_grade = grade(ev_percent)
+    letter_grade = result["grade"]
 
     console.rule("[bold cyan]EdgeIQ Analysis[/bold cyan]")
 

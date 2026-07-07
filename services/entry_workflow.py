@@ -1,9 +1,13 @@
+from rich.console import Console
+
 from services.entry_builder import build_entry
 
 from ui.review_entry import review_entry
 from ui.entry_analysis import display_entry_analysis
 
 from repository.repositories.entry_repository import EntryRepository
+
+console = Console()
 
 
 def run_entry_workflow():
@@ -12,13 +16,13 @@ def run_entry_workflow():
 
     if not review_entry(entry):
 
-        print("\nEntry discarded.\n")
+        console.print("\nEntry discarded.\n")
 
         return
 
     display_entry_analysis(entry)
 
-    print()
+    console.print()
 
     save = input(
         "Save this entry? (y/n): "
@@ -28,8 +32,8 @@ def run_entry_workflow():
 
         EntryRepository.save(entry)
 
-        print("\nEntry saved.\n")
+        console.print("\nEntry saved.\n")
 
     else:
 
-        print("\nEntry discarded.\n")
+        console.print("\nEntry discarded.\n")

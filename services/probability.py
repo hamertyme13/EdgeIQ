@@ -22,7 +22,7 @@ CONFIDENCE_LABELS = {
 def quick_probability() -> float:
     """Estimate probability using a simple confidence scale."""
 
-    print("\nHow confident are you that this prop will hit?\n")
+    console.print("\nHow confident are you that this prop will hit?\n")
 
     console.print("[green]★★★★★ Premium Play[/green]")
     console.print("[yellow]★★★★ Strong Play[/yellow]")
@@ -42,16 +42,16 @@ def quick_probability() -> float:
             if choice in CONFIDENCE_MAP:
                 probability = CONFIDENCE_MAP[choice]
                 label = CONFIDENCE_LABELS[choice]
-                print(f"\n✓ Your estimated probability is {probability:.1f}%")
-                print(f"✓ Confidence Level: {label}\n")
-                print("EdgeIQ uses this probability to calculate Expected Value (EV) for your bet.")
+                console.print(f"\n✓ Your estimated probability is {probability:.1f}%")
+                console.print(f"✓ Confidence Level: {label}\n")
+                console.print("EdgeIQ uses this probability to calculate Expected Value (EV) for your bet.")
                 return probability
 
-            print("Choose a number between 1 and 5.")
+            console.print("Choose a number between 1 and 5.")
 
         except ValueError:
 
-            print("Please enter a valid number.")
+            console.print("Please enter a valid number.")
 
 def advanced_probability() -> float:
 
@@ -66,21 +66,21 @@ def advanced_probability() -> float:
             if 0 <= probability <= 100:
                 return probability
 
-            print("Enter a value between 0 and 100.")
+            console.print("Enter a value between 0 and 100.")
 
         except ValueError:
 
-            print("Please enter a valid percentage.")
+            console.print("Please enter a valid percentage.")
 
 def choose_probability() -> float:
 
-    print()
+    console.print()
 
-    print("Choose Probability Method\n")
+    console.print("Choose Probability Method\n")
 
-    print("1. ⭐ Quick Confidence")
-    print("2. 📊 Guided Analysis")
-    print("3. 🎯 Advanced")
+    console.print("1. ⭐ Quick Confidence")
+    console.print("2. 📊 Guided Analysis [dim](coming soon)[/dim]")
+    console.print("3. 🎯 Advanced")
 
     while True:
 
@@ -90,10 +90,10 @@ def choose_probability() -> float:
             return quick_probability()
 
         elif choice == "2":
-            print("\nGuided Analysis coming in v2.5...\n")
+            console.print("\n[dim]Guided Analysis coming in v2.5...[/dim]\n")
 
         elif choice == "3":
             return advanced_probability()
 
         else:
-            print("Please choose 1-3.")
+            console.print("Please choose 1-3.")

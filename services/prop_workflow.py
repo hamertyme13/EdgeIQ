@@ -1,8 +1,12 @@
+from rich.console import Console
+
 from services.prop_builder import build_prop
 from services.save_prop import save_prop
 
 from ui.review import review_prop
 from ui.prop_analysis import display_prop_analysis
+
+console = Console()
 
 
 def run_prop_builder():
@@ -11,13 +15,13 @@ def run_prop_builder():
 
     if not review_prop(prop):
 
-        print("\nProp discarded.\n")
+        console.print("\nProp discarded.\n")
 
         return
 
     display_prop_analysis(prop)
 
-    print()
+    console.print()
 
     save = input(
         "Save this prop? (y/n): "
@@ -29,4 +33,4 @@ def run_prop_builder():
 
     else:
 
-        print("\nProp not saved.\n")
+        console.print("\nProp not saved.\n")

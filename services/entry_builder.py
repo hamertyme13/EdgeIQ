@@ -1,5 +1,9 @@
+from rich.console import Console
+
 from models.entry import Entry
 from services.prop_builder import build_prop, choose_platform
+
+console = Console()
 
 
 def build_entry() -> Entry:
@@ -18,7 +22,7 @@ def build_entry() -> Entry:
 
     while True:
 
-        print()
+        console.print()
 
         another = input(
             "Add another prop? (y/n): "

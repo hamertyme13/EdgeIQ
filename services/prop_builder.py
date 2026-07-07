@@ -1,3 +1,5 @@
+from rich.console import Console
+
 from models.platform import Platform
 
 from ui.wizard import wizard_step
@@ -16,6 +18,8 @@ from analytics.prop_metrics import (
 )
 from utils.display import divider
 
+console = Console()
+
 TOTAL_STEPS = 6
 
 
@@ -23,8 +27,8 @@ def choose_platform() -> Platform:
 
     wizard_step(1, TOTAL_STEPS, "Choose Platform")
 
-    print("1. PrizePicks")
-    print("2. Underdog")
+    console.print("1. PrizePicks")
+    console.print("2. Underdog")
 
     while True:
 
@@ -36,11 +40,11 @@ def choose_platform() -> Platform:
         elif choice == "2":
             return Platform.UNDERDOG
 
-        print("Please choose 1 or 2.")
+        console.print("[red]Please choose 1 or 2.[/red]")
 
 def get_player_name() -> str:
 
-    print("Player Name\n")
+    console.print("Player Name\n")
 
     while True:
 
@@ -49,11 +53,11 @@ def get_player_name() -> str:
         if name:
             return name
 
-        print("Player name cannot be empty.")
+        console.print("[red]Player name cannot be empty.[/red]")
 
 def get_team() -> str:
 
-    print("Team\n")
+    console.print("Team\n")
 
     while True:
 
@@ -62,7 +66,7 @@ def get_team() -> str:
         if team:
             return team
 
-        print("Team cannot be empty.")
+        console.print("[red]Team cannot be empty.[/red]")
 
 SPORTS = {
     "1": "NBA",
@@ -73,12 +77,12 @@ SPORTS = {
 
 def choose_sport() -> str:
 
-    print("Choose Sport\n")
+    console.print("Choose Sport\n")
 
-    print("1. NBA")
-    print("2. WNBA")
-    print("3. NFL")
-    print("4. MLB")
+    console.print("1. NBA")
+    console.print("2. WNBA")
+    console.print("3. NFL")
+    console.print("4. MLB")
 
     while True:
 
@@ -87,7 +91,7 @@ def choose_sport() -> str:
         if choice in SPORTS:
             return SPORTS[choice]
 
-        print("Choose 1-4.")
+        console.print("[red]Choose 1-4.[/red]")
 
 STAT_OPTIONS = [
     StatType.POINTS,
@@ -98,11 +102,11 @@ STAT_OPTIONS = [
 
 def choose_stat():
 
-    print("Choose Stat\n")
+    console.print("Choose Stat\n")
 
     for i, stat in enumerate(STAT_OPTIONS, start=1):
 
-        print(f"{i}. {stat.value}")
+        console.print(f"{i}. {stat.value}")
 
     while True:
 
@@ -114,7 +118,7 @@ def choose_stat():
 
         except (ValueError, IndexError):
 
-            print("Invalid selection.")
+            console.print("[red]Invalid selection.[/red]")
 
 def get_line_projection():
 
@@ -134,7 +138,7 @@ def get_line_projection():
 
         except ValueError:
 
-            print("Enter valid numbers.")
+            console.print("[red]Enter valid numbers.[/red]")
 
 def build_player() -> Player:
 
@@ -196,5 +200,3 @@ def build_prop(platform: Platform, prop_number: int = 1) -> Prop:
         edge=edge,
         confidence=confidence,
     )
-
-    

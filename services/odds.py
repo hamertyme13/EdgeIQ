@@ -1,4 +1,3 @@
-
 import requests
 
 from rich.console import Console
@@ -7,6 +6,8 @@ from rich.table import Table
 from config import API_KEY, SPORT
 
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
+
+console = Console()
 
 
 def get_games():
@@ -24,7 +25,7 @@ def get_games():
         return response.json()
 
     except requests.exceptions.RequestException as e:
-        print(f"\nError retrieving odds: {e}")
+        console.print(f"\n[red]Error retrieving odds:[/red] {e}")
         return []
 
 def display_games():
@@ -32,29 +33,28 @@ def display_games():
     games = get_games()
 
     if not games:
+        console.print("\n[yellow]No games available right now. Check your API key or try again later.[/yellow]")
         return
 
-    print("\nToday's Games\n")
+    console.print("\nToday's Games\n")
 
     for i, game in enumerate(games, start=1):
-        print(f"{i}. {game['away_team']} @ {game['home_team']}")
+        console.print(f"{i}. {game['away_team']} @ {game['home_team']}")
 
-    print()
+    console.print()
 
     selection = input("Choose game: ")
 
     try:
         selection = int(selection)
     except ValueError:
-        print("Please enter a valid number.")
+        console.print("[red]Please enter a valid number.[/red]")
         return
 
     if 1 <= selection <= len(games):
         display_game_odds(games[selection - 1])
     else:
-        print("Invalid selection.")
-
-console = Console()
+        console.print("[red]Invalid selection.[/red]")
 
 
 def display_game_odds(game):

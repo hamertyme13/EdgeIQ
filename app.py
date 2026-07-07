@@ -1,50 +1,50 @@
 from rich.console import Console
-from services.prop_workflow import run_prop_builder
-from services.entry_workflow import run_entry_workflow
-from services.tracker import (
-    get_stats,
-    save_bet,
-    view_bets   
-)
-
-from services.betting import (
-    implied_probability,
-    potential_profit,
-    total_return,
-)
-from services.dashboard import get_dashboard
-from utils.display import title, divider
 from rich.table import Table
 
-from services.odds import display_games
-
 from analytics.ev import print_ev
-
 from models.bet import Bet
-
 from repository.database import initialize_database
+from services.betting import implied_probability, potential_profit, total_return
+from services.dashboard import get_dashboard
+from services.entry_workflow import run_entry_workflow
+from services.odds import display_games
+from services.probability import choose_probability
+from services.prop_workflow import run_prop_builder
+from services.tracker import get_stats, save_bet, view_bets
+from utils.display import divider, title
 
 console = Console()
-
-from services.probability import choose_probability
-
-
 
 
 def ev_calculator():
 
-    odds = int(input("American Odds: "))
+    while True:
+        try:
+            odds = int(input("American Odds: "))
+            break
+        except ValueError:
+            console.print("[red]Please enter a valid integer.[/red]")
 
     projection = choose_probability()
 
-    print_ev(
-        odds,
-        projection
-    )
+    print_ev(odds, projection)
+
 
 def calculate_bet():
-    odds = int(input("Enter American Odds (example -110 or 150): "))
-    wager = float(input("Enter Wager: $"))
+
+    while True:
+        try:
+            odds = int(input("Enter American Odds (example -110 or 150): "))
+            break
+        except ValueError:
+            console.print("[red]Please enter a valid integer.[/red]")
+
+    while True:
+        try:
+            wager = float(input("Enter Wager: $"))
+            break
+        except ValueError:
+            console.print("[red]Please enter a valid amount.[/red]")
 
     probability = implied_probability(odds)
     profit = potential_profit(odds, wager)
@@ -57,20 +57,34 @@ def calculate_bet():
     console.print(f"[yellow]Total Return:[/yellow] ${payout:.2f}")
 
     divider()
+
+
 def add_bet():
 
     sport = input("Sport: ")
     game = input("Game: ")
     bet = input("Bet Description: ")
 
-    odds = int(input("Odds: "))
-    wager = float(input("Wager: $"))
-
-    print()
+    while True:
+        try:
+            odds = int(input("Odds: "))
+            break
+        except ValueError:
+            console.print("[red]Please enter a valid integer.[/red]")
 
     while True:
-        print("1. Win")
-        print("2. Loss")
+        try:
+            wager = float(input("Wager: $"))
+            break
+        except ValueError:
+            console.print("[red]Please enter a valid amount.[/red]")
+
+    console.print()
+
+    while True:
+        console.print("1. Win")
+        console.print("2. Loss")
+        console.print("3. Push")
 
         result_choice = input("Result: ").strip()
 
@@ -84,8 +98,13 @@ def add_bet():
             profit = -wager
             break
 
+        elif result_choice == "3":
+            result = "Push"
+            profit = 0.0
+            break
+
         else:
-            print("Please enter 1 or 2.")
+            console.print("[red]Please enter 1, 2, or 3.[/red]")
 
     bet_record = Bet(
         sport=sport,
@@ -99,7 +118,7 @@ def add_bet():
 
     save_bet(bet_record)
 
-    print("\nBet Saved!")
+    console.print("\nBet Saved!")
 
 
 def view_record():
@@ -115,18 +134,19 @@ def view_record():
 
     divider()
 
-    print(f"Record      : {wins}-{losses}")
-    print(f"Win %       : {win_pct:.1f}%")
-    print(f"Net Profit  : ${profit:.2f}")
+    console.print(f"Record      : {wins}-{losses}")
+    console.print(f"Win %       : {win_pct:.1f}%")
+    console.print(f"Net Profit  : ${profit:.2f}")
 
     divider()
+
 
 def dashboard():
 
     stats = get_dashboard()
 
     if stats is None:
-        print("No bets found.")
+        console.print("No bets found.")
         return
 
     table = Table(title="Betting Dashboard")
@@ -155,19 +175,20 @@ def dashboard():
 
     console.print(table)
 
+
 def main():
     while True:
 
-        print("1. 🎯 Single Prop Analysis")
-        print("2. 🧾 Multi-Prop Entry Builder")
-        print("3. Calculate Bet")
-        print("4. Add Bet")
-        print("5. View Record")
-        print("6. View Bet History")
-        print("7. View Dashboard")
-        print("8. Today's Games")
-        print("9. EV Calculator")
-        print("10. Exit")
+        console.print("1. 🎯 Single Prop Analysis")
+        console.print("2. 🧾 Multi-Prop Entry Builder")
+        console.print("3. Calculate Bet")
+        console.print("4. Add Bet")
+        console.print("5. View Record")
+        console.print("6. View Bet History")
+        console.print("7. View Dashboard")
+        console.print("8. Today's Games")
+        console.print("9. EV Calculator")
+        console.print("10. Exit")
 
         choice = input("\nChoose an option: ")
 
@@ -190,7 +211,7 @@ def main():
         elif choice == "9":
             ev_calculator()
         elif choice == "10":
-            print("Exiting...")
+            console.print("Exiting...")
             break
 
 
@@ -198,5 +219,3 @@ if __name__ == "__main__":
     initialize_database()
     title()
     main()
-
-

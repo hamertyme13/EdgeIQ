@@ -3,31 +3,15 @@ from rich.table import Table
 from models.bet import Bet
 from repository.bet_repository import BetRepository
 
-repository = BetRepository()
-
 console = Console()
 
 
 def save_bet(bet: Bet) -> None:
-    repository.save(bet)
+    BetRepository().save(bet)
 
 def get_stats() -> tuple[int, int, float]:
-
-    bets = repository.get_all()
-
-    wins = 0
-    losses = 0
-    profit = 0
-
-    for bet in bets:
-        if bet.result == "Win":
-            wins += 1
-        elif bet.result == "Loss":
-            losses += 1
-
-        profit += bet.profit
-
-    return wins, losses, profit
+    stats = BetRepository().dashboard_stats()
+    return stats["wins"], stats["losses"], stats["profit"]
 
 def view_bets():
 
@@ -41,11 +25,11 @@ def view_bets():
     table.add_column("Result")
     table.add_column("Profit", justify="right")
 
-    bets = repository.get_all()
+    bets = BetRepository().get_all()
 
     for bet in bets:
 
-        table.add_row( 
+        table.add_row(
             bet.sport,
             bet.game,
             bet.description,

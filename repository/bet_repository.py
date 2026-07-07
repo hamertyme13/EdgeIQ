@@ -6,9 +6,7 @@ from repository.entities import BetEntity
 class BetRepository:
 
     def save(self, bet: Bet) -> None:
-        session = SessionLocal()
-
-        try:
+        with SessionLocal() as session:
             entity = BetEntity(
                 sport=bet.sport,
                 game=bet.game,
@@ -18,54 +16,29 @@ class BetRepository:
                 result=bet.result,
                 profit=bet.profit,
             )
-
             session.add(entity)
             session.commit()
 
-        finally:
-            session.close()
-
     def get_all(self) -> list[Bet]:
-
-        session = SessionLocal()
-
-        try:
-
+        with SessionLocal() as session:
             entities = session.query(BetEntity).all()
 
-            bets = []
-
-            for entity in entities:
-
-                bets.append(
-                    Bet(
-                        sport=entity.sport,
-                        game=entity.game,
-                        description=entity.description,
-                        odds=entity.odds,
-                        wager=entity.wager,
-                        result=entity.result,
-                        profit=entity.profit,
-                    )
+            return [
+                Bet(
+                    sport=entity.sport,
+                    game=entity.game,
+                    description=entity.description,
+                    odds=entity.odds,
+                    wager=entity.wager,
+                    result=entity.result,
+                    profit=entity.profit,
                 )
-
-            return bets
-
-        finally:
-
-            session.close()
+                for entity in entities
+            ]
 
     def count(self) -> int:
-
-        session = SessionLocal()
-
-        try:
-
+        with SessionLocal() as session:
             return session.query(BetEntity).count()
-
-        finally:
-
-            session.close()
 
     def total_profit(self) -> float:
 
