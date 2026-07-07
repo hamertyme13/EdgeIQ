@@ -29,6 +29,9 @@ import data.providers.underdog as _ud
 from data.providers.injury_feed import fetch_all_injuries
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from gui.styles import ACCENT, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Platform display name → normalized key used in fetcher
 _PLATFORMS = {
@@ -62,6 +65,7 @@ class _PropFetcher(QThread):
             props = self._fetch()
             self.finished.emit(props)
         except Exception as e:
+            logger.exception("Failed to fetch dashboard props")
             self.error.emit(str(e))
 
     def _fetch(self) -> list[dict]:
@@ -103,6 +107,7 @@ class _InjuryFetcher(QThread):
         try:
             self.finished.emit(fetch_all_injuries())
         except Exception:
+            logger.exception("Failed to fetch injuries")
             self.finished.emit([])
 
 
@@ -397,8 +402,14 @@ class DashboardTab(QWidget):
             self._card_worst.set_value(f"L{abs(worst)}" if worst else "—")
             self._card_drawdown.set_value(f"${stats.get('max_drawdown', 0):.2f}")
             self._card_pushes.set_value(str(stats.get("pushes", 0)))
-        except Exception:
-            pass  # No bets yet — cards stay at "—"
+        except KeyError as e:
+            logger.warning("Dashboard stats missing expected key: %s", e)
+            if hasattr(self, "_status_label"):
+                self._status_label.setText("Dashboard stats are incomplete.")
+        except Exception as e:
+            logger.exception("Failed to load dashboard stats")
+            if hasattr(self, "_status_label"):
+                self._status_label.setText(f"Dashboard stats unavailable: {e}")
 
     def _load_injuries(self):
         """Fetch injuries off the main thread and update the banner."""
@@ -452,8 +463,14 @@ class DashboardTab(QWidget):
             return
 
         sport_text = self._sport_filter.currentText()
+        stale_props = [p for p in props if p.get("stale")]
+        cache_note = ""
+        if stale_props:
+            max_age = max(p.get("cache_age_seconds", 0) for p in stale_props)
+            cache_note = f" · cached fallback {max_age // 60}m old"
+
         self._status_label.setText(
-            f"Showing top {len(props)} props · {sport_text} · sorted by trending"
+            f"Showing top {len(props)} props · {sport_text} · sorted by trending{cache_note}"
         )
         self._populate_table(props)
 

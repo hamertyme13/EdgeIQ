@@ -6,8 +6,9 @@ Fetches live projections and normalizes them into a flat list of dicts.
 
 from __future__ import annotations
 
-import requests
 from typing import Optional
+
+from data.providers.cache import get_json
 
 _BASE = "https://partner-api.prizepicks.com"
 
@@ -45,14 +46,8 @@ def fetch_projections(limit: int = 500) -> list[dict]:
     """
     url = f"{_BASE}/projections?per_page={limit}&single_stat=true"
 
-    try:
-        response = requests.get(url, headers=_HEADERS, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-    except requests.RequestException as e:
-        raise RuntimeError(f"PrizePicks fetch failed: {e}") from e
-    except ValueError as e:
-        raise RuntimeError(f"PrizePicks invalid JSON: {e}") from e
+    cached = get_json(url, headers=_HEADERS, timeout=15)
+    data = cached.data
 
     # Build player lookup from included sideloaded data
     players: dict[str, dict] = {}
@@ -93,6 +88,8 @@ def fetch_projections(limit: int = 500) -> list[dict]:
             "trending_count": attrs.get("trending_count", 0),
             "rank":          attrs.get("rank", 999),
             "image_url":     player_attrs.get("image_url", ""),
+            "stale":         cached.stale,
+            "cache_age_seconds": cached.age_seconds,
         })
 
     return results

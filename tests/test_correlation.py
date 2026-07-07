@@ -7,45 +7,37 @@ from models.platform import Platform
 from models.stat_type import StatType
 
 
-player1 = Player(
-    name="A'ja Wilson",
-    team="Aces",
-    sport="WNBA",
-)
+def test_detect_correlations_flags_teammates():
+    prop1 = Prop(
+        player=Player(name="A'ja Wilson", team="Aces", sport="WNBA"),
+        stat=StatType.PRA,
+        line=27.5,
+        projection=30,
+        edge=2.5,
+        confidence=70,
+    )
 
-player2 = Player(
-    name="Chelsea Gray",
-    team="Aces",
-    sport="WNBA",
-)
+    prop2 = Prop(
+        player=Player(name="Chelsea Gray", team="Aces", sport="WNBA"),
+        stat=StatType.ASSISTS,
+        line=6.5,
+        projection=8,
+        edge=1.5,
+        confidence=65,
+    )
 
-prop1 = Prop(
-    player=player1,
-    stat=StatType.PRA,
-    line=27.5,
-    projection=30,
-    edge=2.5,
-    confidence=70,
-)
+    entry = Entry(platform=Platform.PRIZEPICKS, props=[prop1, prop2])
 
-prop2 = Prop(
-    player=player2,
-    stat=StatType.ASSISTS,
-    line=6.5,
-    projection=8,
-    edge=1.5,
-    confidence=65,
-)
+    assert detect_correlations(entry) == ["Aces: multiple teammates selected."]
 
-entry = Entry(
-    platform=Platform.PRIZEPICKS,
-    props=[prop1, prop2],
-)
 
-warnings = detect_correlations(entry)
+def test_detect_correlations_checks_all_pairs():
+    props = [
+        Prop(Player("A", "One", "WNBA"), StatType.POINTS, 10, 11, 1, 60),
+        Prop(Player("B", "Two", "WNBA"), StatType.ASSISTS, 5, 6, 1, 60),
+        Prop(Player("C", "One", "WNBA"), StatType.REBOUNDS, 7, 8, 1, 60),
+    ]
 
-print("\nCorrelation Warnings")
-print("--------------------")
+    warnings = detect_correlations(Entry(platform=Platform.PRIZEPICKS, props=props))
 
-for warning in warnings:
-    print(f"• {warning}")
+    assert "One: multiple teammates selected." in warnings

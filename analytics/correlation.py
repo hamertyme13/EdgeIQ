@@ -19,22 +19,21 @@ def detect_correlations(entry: Entry) -> list[str]:
             first = props[i]
             second = props[j]
 
-        if first.player.name == second.player.name:
+            if first.player.name == second.player.name:
 
-            warnings.append(
-                f"{first.player.name} appears multiple times."
-            )
+                warnings.append(
+                    f"{first.player.name} appears multiple times."
+                )
 
-        if first.player.team == second.player.team:
+            if first.player.team == second.player.team:
 
-            warnings.append(
-                f"{first.player.team}: multiple teammates selected."
-            )
-        if first.stat == second.stat:
+                warnings.append(
+                    f"{first.player.team}: multiple teammates selected."
+                )
+            if first.stat == second.stat:
 
-            warnings.append(
-                f"Multiple {first.stat} props."
-            )
-        return list(dict.fromkeys(warnings))
+                warnings.append(
+                    f"Multiple {first.stat.value} props."
+                )
 
-    return warnings
+    return list(dict.fromkeys(warnings))

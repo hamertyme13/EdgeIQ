@@ -199,4 +199,5 @@ def build_prop(platform: Platform, prop_number: int = 1) -> Prop:
         projection=projection,
         edge=edge,
         confidence=confidence,
+        platform=platform,
     )

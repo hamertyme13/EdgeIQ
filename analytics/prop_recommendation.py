@@ -1,33 +1,37 @@
-def recommendation(prop):
+def recommendation(prop) -> dict:
 
     if prop.edge >= 2:
 
-        return (
-            "A",
-            "🔥 Strong Consideration",
-            "Projection is significantly above the line.",
-        )
+        return {
+            "grade": "A",
+            "action": "Strong Consideration",
+            "summary": "Projection is significantly above the line.",
+            "color": "green",
+        }
 
     elif prop.edge >= 1:
 
-        return (
-            "B",
-            "🟢 Consider",
-            "Projection exceeds the line.",
-        )
+        return {
+            "grade": "B",
+            "action": "Consider",
+            "summary": "Projection exceeds the line.",
+            "color": "green",
+        }
 
     elif prop.edge >= 0:
 
-        return (
-            "C",
-            "🟡 Lean Over",
-            "Small positive edge.",
-        )
+        return {
+            "grade": "C",
+            "action": "Lean Over",
+            "summary": "Small positive edge.",
+            "color": "yellow",
+        }
 
     else:
 
-        return (
-            "F",
-            "🔴 Pass",
-            "Projection is below the line.",
-        )
+        return {
+            "grade": "F",
+            "action": "Pass",
+            "summary": "Projection is below the line.",
+            "color": "red",
+        }

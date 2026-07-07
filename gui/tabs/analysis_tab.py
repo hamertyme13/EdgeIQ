@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 
 from analytics.ev import expected_value, sportsbook_probability
 from analytics.recommendation import recommendation
+from analytics.prop_recommendation import recommendation as prop_recommendation
 from analytics.prop_metrics import calculate_edge, calculate_confidence
 from analytics.kelly import kelly_fraction, half_kelly, suggested_wager, breakeven_probability
 from analytics.form import weighted_projection, form_signal
@@ -39,6 +40,9 @@ from services.dashboard import get_starting_bankroll
 import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
 from gui.styles import ACCENT, GREEN, RED, YELLOW, SURFACE, BORDER, TEXT, MUTED, CYAN
+from utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ── Line shopping background fetcher ─────────────────────────────────────────
@@ -72,6 +76,7 @@ class _ShopFetcher(QThread):
 
             self.finished.emit(match(pp), match(ud))
         except Exception as e:
+            logger.exception("Line shopping fetch failed")
             self.error.emit(str(e))
 
 
@@ -435,14 +440,22 @@ class AnalysisTab(QWidget):
         edge = calculate_edge(line, adj_proj)
         conf = calculate_confidence(edge)
 
-        if conf >= 80:
-            grade, action, color = "A", "🔥 Strong Consideration", GREEN
-        elif conf >= 70:
-            grade, action, color = "B", "🟢 Consider", GREEN
-        elif conf >= 60:
-            grade, action, color = "C", "🟡 Lean", YELLOW
-        else:
-            grade, action, color = "F", "🔴 Pass", RED
+        prop = Prop(
+            player=Player(name=player_name, team=team, sport=sport),
+            stat=stat,
+            line=line,
+            projection=adj_proj,
+            edge=edge,
+            confidence=conf,
+        )
+        result = prop_recommendation(prop)
+        grade = result["grade"]
+        action = result["action"]
+        color = {
+            "green": GREEN,
+            "yellow": YELLOW,
+            "red": RED,
+        }.get(result["color"], ACCENT)
 
         direction = "OVER" if edge > 0 else ("UNDER" if edge < 0 else "EVEN")
 

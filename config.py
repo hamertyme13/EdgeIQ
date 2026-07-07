@@ -3,7 +3,14 @@ import os
 
 load_dotenv()
 
-STARTING_BANKROLL = float(os.getenv("STARTING_BANKROLL", 500))
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+STARTING_BANKROLL = _float_env("STARTING_BANKROLL", 500)
 
 API_KEY = os.getenv("ODDS_API_KEY")
 

@@ -1,9 +1,8 @@
-import requests
-
 from rich.console import Console
 from rich.table import Table
 
 from config import API_KEY, SPORT
+from data.providers.cache import get_json
 
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
@@ -20,11 +19,9 @@ def get_games():
     )
 
     try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        return response.json()
+        return get_json(url, timeout=10, ttl_seconds=120).data
 
-    except requests.exceptions.RequestException as e:
+    except RuntimeError as e:
         console.print(f"\n[red]Error retrieving odds:[/red] {e}")
         return []
 

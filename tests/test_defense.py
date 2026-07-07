@@ -1,16 +1,11 @@
 from analytics.defense_vs_position import analyze_matchup
 from models.stat_type import StatType
 
-analysis = analyze_matchup(
-    "Storm",
-    StatType.ASSISTS,
-)
 
-print()
+def test_analyze_matchup_returns_defense_context():
+    analysis = analyze_matchup("Storm", StatType.ASSISTS)
 
-print("Defense Analysis")
-print("----------------")
-
-print("Rank:", analysis.rank)
-print("Modifier:", analysis.modifier)
-print("Description:", analysis.description)
+    assert analysis is not None
+    assert analysis.opponent == "Storm"
+    assert analysis.stat == StatType.ASSISTS
+    assert analysis.description
