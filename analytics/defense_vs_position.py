@@ -1,59 +1,14 @@
 from dataclasses import dataclass
 from models.stat_type import StatType
 
+from data.wnba.models import DefenseProfile
+from services.defense_service import DefenseService
 
-@dataclass
-class DefenseProfile:
-    team: str
+def get_defense_profile(team: str) -> DefenseProfile | None:
+    return DefenseService.get_profile(team)
 
-    vs_points_rank: int
-    vs_rebounds_rank: int
-    vs_assists_rank: int
-    vs_pra_rank: int
-
-DEFENSE_DATABASE = {
-        "Aces": DefenseProfile(
-            team="Aces",
-
-            vs_points_rank=2,
-            vs_rebounds_rank=4,
-            vs_assists_rank=8,
-            vs_pra_rank=3,
-        ),
-
-        "Liberty": DefenseProfile(
-            team="Liberty",
-
-            vs_points_rank=10,
-            vs_rebounds_rank=9,
-            vs_assists_rank=14,
-            vs_pra_rank=11,
-        ),
-
-        "Fever": DefenseProfile(
-            team="Fever",
-
-            vs_points_rank=11,
-            vs_rebounds_rank=12,
-            vs_assists_rank=10,
-            vs_pra_rank=13,
-        ),
-
-        "Storm": DefenseProfile(
-            team="Storm",
-
-            vs_points_rank=5,
-            vs_rebounds_rank=6,
-            vs_assists_rank=4,
-            vs_pra_rank=5,
-        ),
-    }
-
-def get_defense_profile(team: str):
-
-        return DEFENSE_DATABASE.get(team)
     
-def defense_rank(team: str, stat: StatType):
+def defense_rank(team: str, stat: StatType) -> int | None:
 
         profile = get_defense_profile(team)
 
@@ -67,3 +22,88 @@ def defense_rank(team: str, stat: StatType):
             return profile.vs_assists_rank
         else:
             return profile.vs_pra_rank
+        
+@dataclass
+class MatchupAnalysis:
+     opponent: str
+     stat: StatType
+     rank: int
+     modifier: float
+     description: str
+     confidence_adjustment: float
+
+def defense_modifier(
+        opponent: str,
+        stat: StatType,
+        rank: int
+) -> MatchupAnalysis:
+
+    if rank <= 5:
+        return MatchupAnalysis(
+            opponent=opponent,
+            stat=stat,
+            rank=rank,
+            modifier=-0.10,
+            description="Elite Defense",
+            confidence_adjustment=-0.05,
+        )
+
+    elif rank <= 10:
+        return MatchupAnalysis(
+            opponent=opponent,
+            stat=stat,
+            rank=rank,
+            modifier=-0.05,
+            description="Strong Defense",
+            confidence_adjustment=-0.02
+        )
+
+    elif rank <= 20:
+        return MatchupAnalysis(
+            opponent=opponent,
+            stat=stat,
+            rank=rank,
+            modifier=0.00,
+            description="Average Defense",
+            confidence_adjustment=0.00
+        )
+
+    elif rank <= 25:
+        return MatchupAnalysis(
+            opponent=opponent,
+            stat=stat,
+            rank=rank,
+            modifier=0.05,
+            description="Weak Defense",
+            confidence_adjustment=0.02
+        )
+
+    return MatchupAnalysis(
+        opponent=opponent,
+        stat=stat,
+        rank=rank,
+        modifier=0.10,
+        description="Very Weak Defense",
+        confidence_adjustment=0.05
+    )
+
+def analyze_matchup(team: str, stat: StatType) -> MatchupAnalysis | None:
+    """
+    Analyze how an opponent defends a given statistic.
+
+    Returns a MatchupAnalysis object containing:
+    - defensive rank
+    - projection modifier
+    - confidence adjustment
+    - human-readable description
+    """
+    rank = defense_rank(team, stat)
+
+    if rank is None:
+        return None
+
+    return defense_modifier(
+        opponent=team,
+        stat=stat,
+        rank=rank,
+    )
