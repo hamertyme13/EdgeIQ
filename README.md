@@ -1,4 +1,4 @@
-# Sports Betting CLI
+# EdgeIQ
 
 A Python command-line application for sports bettors.
 
