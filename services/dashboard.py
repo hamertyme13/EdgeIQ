@@ -1,5 +1,6 @@
 from config import STARTING_BANKROLL
 from repository.bet_repository import BetRepository
+from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.settings_repository import SettingsRepository
 
 
@@ -24,9 +25,19 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
         starting_bankroll = get_starting_bankroll()
 
     stats = BetRepository().dashboard_stats()
+    entry_stats = EntryRepository.financial_stats()
+
+    stats["wins"] += entry_stats["wins"]
+    stats["losses"] += entry_stats["losses"]
+    stats["pushes"] += entry_stats["pushes"]
+    stats["profit"] = round(stats["profit"] + entry_stats["profit"], 2)
+    stats["wagered"] = round(stats["wagered"] + entry_stats["wagered"], 2)
+    stats["roi"] = round((stats["profit"] / stats["wagered"] * 100) if stats["wagered"] else 0.0, 2)
+    stats["pending_entry_exposure"] = entry_stats["pending_exposure"]
+    stats["entries"] = entry_stats
 
     current_bankroll = (
-       starting_bankroll + stats["profit"]
+       starting_bankroll + stats["profit"] - entry_stats["pending_exposure"]
    )
 
     stats["bankroll"] = current_bankroll

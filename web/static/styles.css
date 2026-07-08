@@ -45,8 +45,15 @@ button:hover { filter: brightness(1.08); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button.secondary { background: rgba(25, 230, 255, .12); color: var(--text); border: 1px solid rgba(25, 230, 255, .3); }
 button.danger { background: var(--danger); color: white; }
+button.micro-button {
+  min-height: 24px;
+  width: 24px;
+  padding: 0;
+  margin-left: 8px;
+  border-radius: 6px;
+}
 
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 38px;
   border-radius: 8px;
@@ -55,8 +62,9 @@ input, select {
   color: var(--text);
   padding: 0 12px;
 }
+textarea { padding: 10px 12px; resize: vertical; }
 
-input:focus, select:focus { outline: 1px solid var(--secondary); }
+input:focus, select:focus, textarea:focus { outline: 1px solid var(--secondary); }
 
 .app-shell { display: grid; grid-template-columns: 250px 1fr; min-height: 100vh; }
 
@@ -99,6 +107,15 @@ h1, h2 { margin: 0; }
 h1 { font-size: 30px; }
 h2 { font-size: 17px; }
 p { color: var(--muted); margin: 5px 0 0; }
+.runtime-notice {
+  border: 1px solid rgba(248, 193, 74, .36);
+  background: rgba(248, 193, 74, .1);
+  color: var(--warn);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-weight: 700;
+}
 
 .view { display: none; }
 .view.active { display: block; }
@@ -129,6 +146,10 @@ p { color: var(--muted); margin: 5px 0 0; }
 .three-col { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .stack { display: grid; gap: 16px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.entry-economics { margin: 12px 0; }
+.form-grid.compact-controls { margin-bottom: 14px; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.check-row { min-height: 38px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.check-row input { width: auto; min-height: auto; }
 .button-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
 
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
@@ -145,6 +166,20 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
   border-radius: 10px;
   padding: 16px;
 }
+.parlay-card {
+  border: 1px solid rgba(57, 255, 136, .28);
+  background: linear-gradient(135deg, rgba(57, 255, 136, .09), rgba(25, 230, 255, .05));
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.player-detail {
+  border: 1px solid rgba(25, 230, 255, .28);
+  background: rgba(16, 21, 34, .9);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
 .muted-card { color: var(--muted); }
 .grade { font-size: 42px; color: var(--primary); font-weight: 900; line-height: 1; }
 .warning { color: var(--warn); }
@@ -159,10 +194,42 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
 .suggestion-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .pill { color: var(--night); background: var(--primary); border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 900; }
 .subtle { color: var(--muted); font-size: 12px; }
+.game-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.game-card {
+  border: 1px solid var(--line);
+  background: var(--raised);
+  border-radius: 10px;
+  padding: 12px;
+}
+.player-chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.player-chip {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+.player-chip.ranked {
+  border-color: rgba(57, 255, 136, .55);
+  color: var(--primary);
+  background: rgba(57, 255, 136, .08);
+}
+.progress-legs { display: grid; gap: 8px; margin-top: 10px; }
+.progress-leg {
+  display: grid;
+  grid-template-columns: 1.1fr .8fr 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid rgba(255,255,255,.08);
+  padding-top: 8px;
+  color: var(--muted);
+}
 
 @media (max-width: 1050px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: sticky; top: 0; z-index: 10; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
   .nav { display: flex; overflow-x: auto; }
   .two-col, .three-col, .stats-grid { grid-template-columns: 1fr; }
+  .game-grid { grid-template-columns: 1fr; }
+  .progress-leg { grid-template-columns: 1fr; }
 }

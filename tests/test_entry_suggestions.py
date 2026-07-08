@@ -28,3 +28,17 @@ def test_suggest_entries_uses_unique_players():
 
     assert len(suggestions) == 1
     assert {prop.player.name for prop in suggestions[0].entry.props} == {"A", "B"}
+
+
+def test_suggest_entries_can_build_three_leg_parlays():
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "MLB", "stat": "Hits", "line": 1.5, "trending_count": 100000},
+        {"player": "B", "team": "BBB", "league": "MLB", "stat": "Runs", "line": 0.5, "trending_count": 90000},
+        {"player": "C", "team": "CCC", "league": "MLB", "stat": "RBIs", "line": 0.5, "trending_count": 80000},
+        {"player": "D", "team": "DDD", "league": "MLB", "stat": "Hits", "line": 1.5, "trending_count": 70000},
+    ]
+
+    suggestions = suggest_entries(raw_props, "MLB", Platform.PRIZEPICKS, limit=2, leg_count=3)
+
+    assert [suggestion.rank for suggestion in suggestions] == [1, 2]
+    assert all(len(suggestion.entry.props) == 3 for suggestion in suggestions)

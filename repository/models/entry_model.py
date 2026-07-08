@@ -19,6 +19,14 @@ class EntryModel(Base):
 
     recommendation = Column(String)
 
+    wager = Column(Float, nullable=False, default=0.0)
+
+    multiplier = Column(Float, nullable=False, default=1.0)
+
+    potential_payout = Column(Float, nullable=False, default=0.0)
+
+    profit = Column(Float, nullable=False, default=0.0)
+
     status = Column(String, nullable=False, default="Draft")
 
     result = Column(String, nullable=False, default="")

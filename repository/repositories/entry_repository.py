@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from repository.database import SessionLocal
+from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
 
@@ -11,14 +11,32 @@ from analytics.entry_recommendation import recommendation as entry_recommendatio
 
 
 class EntryRepository:
+    _schema_ready = False
 
     @staticmethod
-    def save(entry: Entry, status: str = "Draft", result: str = "") -> int:
+    def _ensure_schema() -> None:
+        if EntryRepository._schema_ready:
+            return
+        initialize_database()
+        EntryRepository._schema_ready = True
 
+    @staticmethod
+    def save(
+        entry: Entry,
+        status: str = "Draft",
+        result: str = "",
+        wager: float = 0.0,
+        multiplier: float = 1.0,
+    ) -> int:
+
+        EntryRepository._ensure_schema()
         session: Session = SessionLocal()
 
         try:
             analysis = entry_recommendation(entry)
+            wager = round(float(wager or 0), 2)
+            multiplier = round(float(multiplier or 1), 2)
+            potential_payout = round(wager * multiplier, 2)
 
             entry_model = EntryModel(
                 platform=entry.platform.value,
@@ -26,6 +44,10 @@ class EntryRepository:
                 average_edge=entry.average_edge,
                 grade=analysis["grade"],
                 recommendation=analysis["action"],
+                wager=wager,
+                multiplier=multiplier,
+                potential_payout=potential_payout,
+                profit=EntryRepository._profit_for_result(result, wager, multiplier),
                 status=status,
                 result=result,
                 placed_at=datetime.utcnow() if status == "Pending" else None,
@@ -66,6 +88,7 @@ class EntryRepository:
 
     @staticmethod
     def pending() -> list[dict]:
+        EntryRepository._ensure_schema()
         with SessionLocal() as session:
             entries = (
                 session.query(EntryModel)
@@ -87,6 +110,10 @@ class EntryRepository:
                     "platform": entry.platform,
                     "average_confidence": entry.average_confidence,
                     "average_edge": entry.average_edge,
+                    "wager": entry.wager or 0.0,
+                    "multiplier": entry.multiplier or 1.0,
+                    "potential_payout": entry.potential_payout or 0.0,
+                    "profit": entry.profit or 0.0,
                     "status": entry.status,
                     "result": entry.result,
                     "placed_at": entry.placed_at,
@@ -110,7 +137,66 @@ class EntryRepository:
             return rows
 
     @staticmethod
+    def all() -> list[dict]:
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entries = (
+                session.query(EntryModel)
+                .order_by(EntryModel.created_at.desc(), EntryModel.id.desc())
+                .all()
+            )
+
+            rows: list[dict] = []
+            for entry in entries:
+                props = (
+                    session.query(EntryPropModel)
+                    .filter(EntryPropModel.entry_id == entry.id)
+                    .order_by(EntryPropModel.id.asc())
+                    .all()
+                )
+                rows.append({
+                    "id": entry.id,
+                    "platform": entry.platform,
+                    "average_confidence": entry.average_confidence,
+                    "average_edge": entry.average_edge,
+                    "grade": entry.grade,
+                    "recommendation": entry.recommendation,
+                    "wager": entry.wager or 0.0,
+                    "multiplier": entry.multiplier or 1.0,
+                    "potential_payout": entry.potential_payout or 0.0,
+                    "profit": entry.profit or 0.0,
+                    "status": entry.status,
+                    "result": entry.result,
+                    "placed_at": entry.placed_at,
+                    "settled_at": entry.settled_at,
+                    "created_at": entry.created_at,
+                    "props": [
+                        {
+                            "player": prop.player_name,
+                            "team": prop.team,
+                            "sport": prop.sport,
+                            "stat": prop.stat,
+                            "line": prop.line,
+                            "projection": prop.projection,
+                            "edge": prop.edge,
+                            "confidence": prop.confidence,
+                            "platform": prop.platform,
+                            "game": prop.game,
+                        }
+                        for prop in props
+                    ],
+                })
+
+            return rows
+
+    @staticmethod
+    def get_pending(entry_id: int) -> dict | None:
+        entries = EntryRepository.pending()
+        return next((entry for entry in entries if entry["id"] == entry_id), None)
+
+    @staticmethod
     def settle(entry_id: int, result: str) -> None:
+        EntryRepository._ensure_schema()
         if result not in {"Win", "Loss", "Push"}:
             raise ValueError("Entry result must be Win, Loss, or Push.")
 
@@ -121,5 +207,80 @@ class EntryRepository:
 
             entry.status = "Settled"
             entry.result = result
+            entry.profit = EntryRepository._profit_for_result(
+                result,
+                entry.wager or 0.0,
+                entry.multiplier or 1.0,
+            )
             entry.settled_at = datetime.utcnow()
             session.commit()
+
+    @staticmethod
+    def financial_stats() -> dict:
+        entries = EntryRepository.all()
+        active = [entry for entry in entries if entry["status"] in {"Pending", "Settled"}]
+        settled = [entry for entry in active if entry["status"] == "Settled"]
+        pending = [entry for entry in active if entry["status"] == "Pending"]
+        wins = sum(1 for entry in settled if entry["result"] == "Win")
+        losses = sum(1 for entry in settled if entry["result"] == "Loss")
+        pushes = sum(1 for entry in settled if entry["result"] == "Push")
+        total_wagered = sum(entry["wager"] for entry in active)
+        settled_profit = sum(entry["profit"] for entry in settled)
+        pending_exposure = sum(entry["wager"] for entry in pending)
+        return {
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "profit": round(settled_profit, 2),
+            "wagered": round(total_wagered, 2),
+            "pending_exposure": round(pending_exposure, 2),
+            "roi": round((settled_profit / total_wagered * 100) if total_wagered else 0.0, 2),
+            "by_result": EntryRepository._group_by_result(settled),
+            "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
+            "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
+            "by_platform": EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown"),
+        }
+
+    @staticmethod
+    def _profit_for_result(result: str, wager: float, multiplier: float) -> float:
+        if result == "Win":
+            return round((wager * multiplier) - wager, 2)
+        if result == "Loss":
+            return round(-wager, 2)
+        return 0.0
+
+    @staticmethod
+    def _group_by_result(entries: list[dict]) -> dict[str, dict]:
+        return EntryRepository._group_by_key(entries, lambda entry: entry.get("result") or "Unknown")
+
+    @staticmethod
+    def _primary_sport(entry: dict) -> str:
+        props = entry.get("props") or []
+        return props[0].get("sport") if props else "Unknown"
+
+    @staticmethod
+    def _group_by_key(entries: list[dict], key) -> dict[str, dict]:
+        groups: dict[str, dict] = {}
+        for entry in entries:
+            name = key(entry) or "Unknown"
+            group = groups.setdefault(
+                name,
+                {"entries": 0, "wins": 0, "losses": 0, "pushes": 0, "profit": 0.0, "wagered": 0.0},
+            )
+            group["entries"] += 1
+            group["profit"] += entry.get("profit", 0.0)
+            group["wagered"] += entry.get("wager", 0.0)
+            if entry.get("result") == "Win":
+                group["wins"] += 1
+            elif entry.get("result") == "Loss":
+                group["losses"] += 1
+            elif entry.get("result") == "Push":
+                group["pushes"] += 1
+
+        for group in groups.values():
+            decisions = group["wins"] + group["losses"]
+            group["profit"] = round(group["profit"], 2)
+            group["wagered"] = round(group["wagered"], 2)
+            group["roi"] = round((group["profit"] / group["wagered"] * 100) if group["wagered"] else 0.0, 2)
+            group["win_pct"] = round((group["wins"] / decisions * 100) if decisions else 0.0, 1)
+        return groups

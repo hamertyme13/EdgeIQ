@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from analytics.correlation import detect_correlations
 from analytics.entry_recommendation import recommendation
+from analytics.model_feedback import feedback_adjustment
 from analytics.prop_metrics import calculate_confidence, calculate_edge
 from analytics.projection import auto_projection
 from models.entry import Entry
@@ -25,7 +26,21 @@ class SuggestedEntry:
     warnings: list[str]
 
 
-def suggest_entries(raw_props: list[dict], sport: str, platform: Platform, limit: int = 5) -> list[SuggestedEntry]:
+def suggest_entries(
+    raw_props: list[dict],
+    sport: str,
+    platform: Platform,
+    limit: int = 5,
+    leg_count: int = 2,
+    min_confidence: float = 0.0,
+    min_edge: float = -999.0,
+    max_same_team: int | None = None,
+    exclude_correlated: bool = False,
+    apply_feedback: bool = False,
+) -> list[SuggestedEntry]:
+    if leg_count < 2:
+        raise ValueError("Suggested entries need at least two legs.")
+
     candidates = [
         _prop_from_feed(prop, platform)
         for prop in raw_props
@@ -36,9 +51,18 @@ def suggest_entries(raw_props: list[dict], sport: str, platform: Platform, limit
     candidates = _unique_players(candidates)[:16]
 
     scored: list[tuple[float, Entry, list[str]]] = []
-    for first, second in itertools.combinations(candidates, 2):
-        entry = Entry(platform=platform, props=[first, second])
+    for props in itertools.combinations(candidates, leg_count):
+        entry = Entry(platform=platform, props=list(props))
         warnings = detect_correlations(entry)
+        if exclude_correlated and warnings:
+            continue
+        if max_same_team is not None and _max_team_count(entry) > max_same_team:
+            continue
+        if entry.average_confidence < min_confidence or entry.average_edge < min_edge:
+            continue
+        if apply_feedback:
+            for prop in entry.props:
+                prop.confidence = max(0.0, min(100.0, prop.confidence + feedback_adjustment(prop.confidence)))
         score = _score_entry(entry, warnings)
         scored.append((score, entry, warnings))
 
@@ -72,6 +96,14 @@ def _score_entry(entry: Entry, warnings: list[str]) -> float:
         - warning_penalty
         - same_team_penalty
     )
+
+
+def _max_team_count(entry: Entry) -> int:
+    counts: dict[str, int] = {}
+    for prop in entry.props:
+        team = prop.player.team or prop.player.name
+        counts[team] = counts.get(team, 0) + 1
+    return max(counts.values(), default=0)
 
 
 def _prop_from_feed(raw: dict, platform: Platform) -> Prop:

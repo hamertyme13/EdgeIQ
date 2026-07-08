@@ -1,4 +1,4 @@
-from gui.tabs.dashboard_tab import _unique_player_props
+from gui.tabs.dashboard_tab import _top_props_by_sport, _unique_player_props
 
 
 def test_unique_player_props_keeps_highest_ranked_prop_per_player():
@@ -25,3 +25,20 @@ def test_unique_player_props_treats_player_names_case_insensitively():
     result = _unique_player_props(props, limit=25)
 
     assert [prop["player"] for prop in result] == ["Caitlin Clark", "A'ja Wilson"]
+
+
+def test_top_props_by_sport_returns_five_unique_players_per_sport():
+    props = [
+        {"player": f"W{i}", "league": "WNBA", "trending_count": 100 - i}
+        for i in range(7)
+    ] + [
+        {"player": f"M{i}", "league": "MLB", "trending_count": 90 - i}
+        for i in range(7)
+    ]
+    props.sort(key=lambda prop: prop["trending_count"], reverse=True)
+
+    result = _top_props_by_sport(props, limit=5)
+
+    assert len([prop for prop in result if prop["league"] == "WNBA"]) == 5
+    assert len([prop for prop in result if prop["league"] == "MLB"]) == 5
+    assert {prop["sport_rank"] for prop in result if prop["league"] == "WNBA"} == {1, 2, 3, 4, 5}

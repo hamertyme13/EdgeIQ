@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EdgeIQ Web</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -33,13 +33,34 @@
           </div>
           <button id="refresh-all" class="secondary">Refresh</button>
         </header>
+        <div id="runtime-notice" class="runtime-notice" hidden></div>
 
         <section id="dashboard" class="view active">
           <div class="stats-grid" id="dashboard-stats"></div>
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>Top 25 Props</h2>
+                <h2>Live Entry Progress</h2>
+                <p id="entry-progress-status">Checking placed entries...</p>
+              </div>
+              <button id="refresh-progress" class="secondary">Refresh</button>
+            </div>
+            <div id="entry-progress-list" class="suggestion-list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Trending Games</h2>
+                <p id="trending-games-status">Loading popular games...</p>
+              </div>
+              <button id="refresh-games" class="secondary">Refresh</button>
+            </div>
+            <div id="trending-games-list" class="game-grid"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Top 5 Props by Sport</h2>
                 <p id="props-status">Loading props...</p>
               </div>
               <div class="toolbar">
@@ -58,6 +79,8 @@
                 <button id="load-props">Load Props</button>
               </div>
             </div>
+            <div id="dashboard-parlay" class="parlay-card muted-card">Finding the best 3-leg parlay...</div>
+            <div id="player-detail" class="player-detail muted-card" hidden></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -114,6 +137,10 @@
                 </select>
                 <button type="submit">Add Prop</button>
               </form>
+              <div class="form-grid entry-economics">
+                <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
+                <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
+              </div>
               <div class="table-wrap compact">
                 <table>
                   <thead>
@@ -166,11 +193,51 @@
               <div class="panel">
                 <div class="panel-header">
                   <div>
+                    <h2>Bet Slip Organizer</h2>
+                    <p>Rank the best slips across leg counts.</p>
+                  </div>
+                  <div class="toolbar">
+                    <select id="optimizer-platform">
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Both</option>
+                    </select>
+                    <select id="optimizer-sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                    </select>
+                    <select id="optimizer-legs">
+                      <option value="2-3">2-3 Legs</option>
+                      <option value="3-3">3 Legs</option>
+                      <option value="2-5">2-5 Legs</option>
+                    </select>
+                    <button id="run-optimizer">Optimize</button>
+                  </div>
+                </div>
+                <div class="form-grid compact-controls">
+                  <input id="optimizer-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
+                  <input id="optimizer-min-edge" type="number" step="0.1" value="-999" placeholder="Min edge" />
+                  <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" />
+                  <label class="check-row"><input id="optimizer-exclude-correlated" type="checkbox" checked /> No correlated legs</label>
+                  <label class="check-row"><input id="optimizer-apply-feedback" type="checkbox" checked /> Feedback adjusted</label>
+                </div>
+                <div id="optimizer-list" class="suggestion-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-header">
+                  <div>
                     <h2>Pending Entries</h2>
                     <p>Settle entries after results are known.</p>
                   </div>
-                  <button id="refresh-pending" class="secondary">Refresh</button>
+                  <div class="toolbar">
+                    <button id="auto-check-entries">Auto Check</button>
+                    <button id="refresh-pending" class="secondary">Refresh</button>
+                  </div>
                 </div>
+                <div id="auto-check-status" class="subtle"></div>
                 <div id="pending-list" class="suggestion-list"></div>
               </div>
             </div>
@@ -189,8 +256,37 @@
               <div id="ev-result" class="analysis-card muted-card">No EV analysis yet.</div>
             </div>
             <div class="panel">
-              <h2>Single Prop Analysis</h2>
-              <p>Use the Entries builder for props. Dashboard props auto-project when projection is omitted.</p>
+              <h2>Line Movement Tracker</h2>
+              <form id="line-movement-form" class="form-grid">
+                <input id="movement-player" placeholder="Player" />
+                <input id="movement-stat" placeholder="Stat" />
+                <select id="movement-platform">
+                  <option>PrizePicks</option>
+                  <option>Underdog</option>
+                </select>
+                <button type="submit">Track Line</button>
+              </form>
+              <div id="movement-result" class="analysis-card muted-card">No line movement loaded.</div>
+            </div>
+            <div class="panel">
+              <h2>Hit Rate Engine</h2>
+              <form id="hit-rate-form" class="form-grid">
+                <input id="hit-player" placeholder="Player" />
+                <input id="hit-stat" placeholder="Stat" />
+                <input id="hit-line" type="number" step="0.1" placeholder="Line" />
+                <input id="hit-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                <button type="submit">Estimate Hit Rate</button>
+              </form>
+              <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
+            </div>
+            <div class="panel">
+              <h2>Final Stat Import</h2>
+              <form id="final-stats-form" class="stack">
+                <textarea id="final-stats-payload" rows="8" placeholder='Paste CSV or JSON: player,sport,stat,game,game_date,actual'></textarea>
+                <input id="final-stats-source" value="manual" placeholder="Source" />
+                <button type="submit">Import Stats</button>
+              </form>
+              <div id="final-stats-result" class="analysis-card muted-card">No final stats imported yet.</div>
             </div>
           </div>
         </section>
@@ -246,15 +342,40 @@
             <h2>Performance</h2>
             <div id="performance-summary" class="stats-grid"></div>
           </div>
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Backtesting</h2>
+                  <p>Compare historical recommendations to actual results.</p>
+                </div>
+                <button id="refresh-backtest" class="secondary">Refresh</button>
+              </div>
+              <div id="backtest-summary" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <h2>Confidence Calibration</h2>
+              <div id="calibration-list" class="suggestion-list"></div>
+            </div>
+          </div>
           <div class="three-col">
             <div class="panel"><h2>By Sport</h2><div id="perf-sport"></div></div>
             <div class="panel"><h2>By Stat</h2><div id="perf-stat"></div></div>
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
+          </div>
+          <div class="panel">
+            <h2>Entry Results</h2>
+            <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
         </section>
       </main>
     </div>
 
     <script src="/static/app.js"></script>
+    <script>
+      if (!window.EdgeIQLoaded) {
+        document.write('<script src="app.js"><\/script>');
+      }
+    </script>
   </body>
 </html>

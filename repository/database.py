@@ -26,6 +26,7 @@ def initialize_database():
 
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
+    from repository.models.final_player_stat_model import FinalPlayerStatModel
     from repository.models.settings_model import SettingsModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
 
@@ -51,6 +52,10 @@ def _run_lightweight_migrations():
             ("result", "TEXT DEFAULT ''"),
             ("placed_at", "DATETIME"),
             ("settled_at", "DATETIME"),
+            ("wager", "REAL DEFAULT 0.0"),
+            ("multiplier", "REAL DEFAULT 1.0"),
+            ("potential_payout", "REAL DEFAULT 0.0"),
+            ("profit", "REAL DEFAULT 0.0"),
         ],
         "entry_props": [
             ("platform", "TEXT DEFAULT ''"),
