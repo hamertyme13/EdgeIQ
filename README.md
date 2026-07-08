@@ -55,6 +55,14 @@ Desktop app:
 python desktop.py
 ```
 
+Browser app:
+
+```bash
+uvicorn web.app:app --reload
+```
+
+Then open `http://127.0.0.1:8000`.
+
 CLI app:
 
 ```bash
@@ -81,6 +89,22 @@ EdgeIQ currently normalizes player prop data from:
 Provider calls use `.edgeiq_cache/providers` for a short cache and stale fallback
 so the desktop app can continue showing recent data if a feed is temporarily
 unavailable.
+
+## Website Integration
+
+The browser app exposes the same EdgeIQ workflows through FastAPI endpoints and
+a Rogue Circuit themed web UI. Link to the deployed EdgeIQ URL from your website,
+or embed API calls from another frontend.
+
+Useful environment variables:
+
+```bash
+DATABASE_URL=sqlite:///edgeiq.db
+EDGEIQ_ALLOWED_ORIGINS=https://your-website.example
+```
+
+For hosted use, point `DATABASE_URL` at Postgres or another SQLAlchemy-supported
+database and set `EDGEIQ_ALLOWED_ORIGINS` to your website origin.
 
 ## Alpha Notes
 

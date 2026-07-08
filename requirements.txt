@@ -1,5 +1,6 @@
 certifi==2026.6.17
 charset-normalizer==3.4.7
+fastapi>=0.115.0,<1.0.0
 idna==3.18
 markdown-it-py==4.2.0
 mdurl==0.1.2
@@ -15,3 +16,4 @@ rich==15.0.0
 SQLAlchemy==2.0.51
 typing_extensions==4.16.0
 urllib3==2.7.0
+uvicorn>=0.30.0,<1.0.0
