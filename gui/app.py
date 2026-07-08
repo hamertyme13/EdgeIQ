@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 
 from config import APP_NAME, APP_SUBTITLE, APP_VERSION
 from repository.database import initialize_database
-from gui.styles import APP_STYLESHEET, ACCENT, BG, MUTED, TEXT
+from gui.styles import ACCENT, APP_STYLESHEET, BG, CYAN, MUTED, TEXT
 from gui.tabs.dashboard_tab import DashboardTab
 from gui.tabs.bets_tab import BetsTab
 from gui.tabs.analysis_tab import AnalysisTab
@@ -49,17 +49,17 @@ class EdgeIQWindow(QMainWindow):
         header.setFixedHeight(52)
         header.setStyleSheet(
             f"background-color: {BG};"
-            f"border-bottom: 1px solid #2e3247;"
+            f"border-bottom: 1px solid #203041;"
         )
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(24, 0, 24, 0)
         header_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         title_row = QLabel(
-            f'<span style="font-size:17px; font-weight:700; color:{TEXT};">'
+            f'<span style="font-size:17px; font-weight:800; color:{ACCENT};">'
             f'{APP_NAME}</span>'
             f'<span style="font-size:13px; color:{MUTED};"> &nbsp;{APP_SUBTITLE}'
-            f'&nbsp;&nbsp;·&nbsp;&nbsp;{APP_VERSION}</span>'
+            f'&nbsp;&nbsp;</span><span style="font-size:13px; color:{CYAN};">· {APP_VERSION}</span>'
         )
         title_row.setTextFormat(Qt.TextFormat.RichText)
         header_layout.addWidget(title_row)
@@ -75,19 +75,27 @@ class EdgeIQWindow(QMainWindow):
         self._entries_tab     = EntriesTab()
         self._performance_tab = PerformanceTab()
 
-        self._tabs.addTab(self._dashboard_tab,   "  📊  Dashboard  ")
-        self._tabs.addTab(self._bets_tab,        "  🎰  Track Bets  ")
-        self._tabs.addTab(self._analysis_tab,    "  🔍  Analysis  ")
-        self._tabs.addTab(self._entries_tab,     "  🧾  Entries  ")
-        self._tabs.addTab(self._performance_tab, "  📈  Performance  ")
+        self._tabs.addTab(self._dashboard_tab,   "Dashboard")
+        self._tabs.addTab(self._bets_tab,        "Track Bets")
+        self._tabs.addTab(self._analysis_tab,    "Analysis")
+        self._tabs.addTab(self._entries_tab,     "Entries")
+        self._tabs.addTab(self._performance_tab, "Performance")
 
         root.addWidget(self._tabs)
 
         # ── Wire cross-tab signals ────────────────────────────────────────────
         self._bets_tab.bet_saved.connect(self._dashboard_tab.refresh_stats)
         self._bets_tab.bet_saved.connect(self._performance_tab.refresh)
+        self._dashboard_tab.prop_selected.connect(self._add_dashboard_prop_to_entry)
 
         # ── Status bar ────────────────────────────────────────────────────────
         status = QStatusBar()
         self.setStatusBar(status)
         status.showMessage(f"{APP_NAME} {APP_VERSION}  ·  Ready")
+
+    def _add_dashboard_prop_to_entry(self, prop: dict):
+        self._entries_tab.add_dashboard_prop(prop)
+        self._tabs.setCurrentWidget(self._entries_tab)
+        self.statusBar().showMessage(
+            f"Added {prop.get('player', 'player')} to entry builder"
+        )

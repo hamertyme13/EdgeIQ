@@ -19,6 +19,14 @@ class EntryModel(Base):
 
     recommendation = Column(String)
 
+    status = Column(String, nullable=False, default="Draft")
+
+    result = Column(String, nullable=False, default="")
+
+    placed_at = Column(DateTime)
+
+    settled_at = Column(DateTime)
+
     created_at = Column(
         DateTime,
         server_default=func.now(),

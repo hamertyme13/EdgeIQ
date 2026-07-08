@@ -36,3 +36,7 @@ class EntryPropModel(Base):
     edge = Column(Float)
 
     confidence = Column(Float)
+
+    platform = Column(String)
+
+    game = Column(String)

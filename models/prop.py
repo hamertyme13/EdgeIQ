@@ -21,3 +21,11 @@ class Prop:
     confidence: float
 
     platform: Platform = Platform.PRIZEPICKS
+
+    game: str = ""
+
+    needs_projection: bool = False
+
+    auto_projected: bool = False
+
+    trending_count: int = 0

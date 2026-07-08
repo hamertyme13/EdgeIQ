@@ -28,7 +28,7 @@ import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
 from data.providers.injury_feed import fetch_all_injuries
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
-from gui.styles import ACCENT, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
+from gui.styles import ACCENT, ACCENT2, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,9 +42,28 @@ _PLATFORMS = {
 
 # Accent colors per platform badge
 _PLATFORM_COLORS = {
-    "PrizePicks": "#7c5cd8",
-    "Underdog":   "#f59e0b",
+    "PrizePicks": ACCENT2,
+    "Underdog":   CYAN,
 }
+
+
+def _unique_player_props(props: list[dict], limit: int = 25) -> list[dict]:
+    """Return the highest-ranked prop for each player, preserving sort order."""
+    unique: list[dict] = []
+    seen: set[str] = set()
+
+    for prop in props:
+        player_key = prop.get("player", "").strip().lower()
+        if not player_key or player_key in seen:
+            continue
+
+        seen.add(player_key)
+        unique.append(prop)
+
+        if len(unique) == limit:
+            break
+
+    return unique
 
 
 # ── Background worker ─────────────────────────────────────────────────────────
@@ -73,13 +92,20 @@ class _PropFetcher(QThread):
         n     = 25
 
         if self.platform == "prizepicks":
-            props = _pp.top_props(n=n, sport=sport)
+            props = _pp.fetch_projections()
             for p in props:
                 p.setdefault("platform", "PrizePicks")
-            return props
+            if sport:
+                props = [p for p in props if p["league"] == sport.upper()]
+            props.sort(key=lambda p: p["trending_count"], reverse=True)
+            return _unique_player_props(props, n)
 
         if self.platform == "underdog":
-            return _ud.top_props(n=n, sport=sport)
+            props = _ud.fetch_projections()
+            if sport:
+                props = [p for p in props if p["league"] == sport.upper()]
+            props.sort(key=lambda p: p["trending_count"], reverse=True)
+            return _unique_player_props(props, n)
 
         # Both — fetch in parallel using threads isn't needed here since we're
         # already off the main thread; fetch sequentially then merge & re-rank.
@@ -95,7 +121,7 @@ class _PropFetcher(QThread):
             combined = [p for p in combined if p["league"] == sport.upper()]
 
         combined.sort(key=lambda p: p["trending_count"], reverse=True)
-        return combined[:n]
+        return _unique_player_props(combined, n)
 
 
 # ── Injury fetcher ────────────────────────────────────────────────────────────
@@ -240,10 +266,13 @@ class _BankrollDialog(QDialog):
 
 class DashboardTab(QWidget):
 
+    prop_selected = pyqtSignal(dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fetcher: _PropFetcher | None = None
         self._injury_fetcher: _InjuryFetcher | None = None
+        self._current_props: list[dict] = []
         self._build_ui()
         self._load_stats()
         self._load_injuries()
@@ -258,7 +287,7 @@ class DashboardTab(QWidget):
         # Injury alert banner (hidden until injuries load)
         self._injury_banner = QFrame()
         self._injury_banner.setStyleSheet(
-            f"background: #2a1a1a; border: 1px solid {RED}; border-radius: 6px; padding: 4px;"
+            f"background: #23111c; border: 1px solid {RED}; border-radius: 6px; padding: 4px;"
         )
         self._injury_banner.hide()
         banner_layout = QHBoxLayout(self._injury_banner)
@@ -362,6 +391,7 @@ class DashboardTab(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._table.cellClicked.connect(self._on_prop_cell_clicked)
 
         root.addWidget(self._table)
 
@@ -479,6 +509,7 @@ class DashboardTab(QWidget):
         self._status_label.setText(f"Error: {msg}")
 
     def _populate_table(self, props: list[dict]):
+        self._current_props = props
         self._table.setRowCount(len(props))
 
         for row, prop in enumerate(props):
@@ -498,7 +529,10 @@ class DashboardTab(QWidget):
             platform_item.setForeground(QColor(badge_color))
             self._table.setItem(row, 1, platform_item)
 
-            self._table.setItem(row, 2, _item(prop["player"]))
+            player_item = _item(prop["player"])
+            player_item.setForeground(QColor(CYAN))
+            player_item.setToolTip("Add this player prop to an entry")
+            self._table.setItem(row, 2, player_item)
             self._table.setItem(row, 3, _item(prop["league"], center))
             self._table.setItem(row, 4, _item(prop["stat"]))
             self._table.setItem(row, 5, _item(
@@ -515,6 +549,12 @@ class DashboardTab(QWidget):
         self._table.resizeColumnToContents(5)
         self._table.resizeColumnToContents(6)
         self._table.resizeColumnToContents(7)
+
+    def _on_prop_cell_clicked(self, row: int, column: int):
+        if column != 2 or not (0 <= row < len(self._current_props)):
+            return
+
+        self.prop_selected.emit(dict(self._current_props[row]))
 
     def refresh_stats(self):
         """Called externally after a bet is saved."""

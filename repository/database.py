@@ -46,6 +46,16 @@ def _run_lightweight_migrations():
             ("stat_type", "TEXT DEFAULT ''"),
             ("win_probability", "REAL DEFAULT 0.0"),
         ],
+        "entries": [
+            ("status", "TEXT DEFAULT 'Draft'"),
+            ("result", "TEXT DEFAULT ''"),
+            ("placed_at", "DATETIME"),
+            ("settled_at", "DATETIME"),
+        ],
+        "entry_props": [
+            ("platform", "TEXT DEFAULT ''"),
+            ("game", "TEXT DEFAULT ''"),
+        ],
     }
 
     with engine.connect() as conn:

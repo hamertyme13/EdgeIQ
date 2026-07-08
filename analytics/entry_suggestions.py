@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import itertools
+import math
+from dataclasses import dataclass
+
+from analytics.correlation import detect_correlations
+from analytics.entry_recommendation import recommendation
+from analytics.prop_metrics import calculate_confidence, calculate_edge
+from analytics.projection import auto_projection
+from models.entry import Entry
+from models.platform import Platform
+from models.player import Player
+from models.prop import Prop
+from models.stat_type import StatType
+
+
+@dataclass
+class SuggestedEntry:
+    rank: int
+    entry: Entry
+    score: float
+    grade: str
+    action: str
+    warnings: list[str]
+
+
+def suggest_entries(raw_props: list[dict], sport: str, platform: Platform, limit: int = 5) -> list[SuggestedEntry]:
+    candidates = [
+        _prop_from_feed(prop, platform)
+        for prop in raw_props
+        if prop.get("line") is not None and prop.get("league", "").upper() == sport.upper()
+    ]
+
+    candidates.sort(key=lambda prop: prop.trending_count, reverse=True)
+    candidates = _unique_players(candidates)[:16]
+
+    scored: list[tuple[float, Entry, list[str]]] = []
+    for first, second in itertools.combinations(candidates, 2):
+        entry = Entry(platform=platform, props=[first, second])
+        warnings = detect_correlations(entry)
+        score = _score_entry(entry, warnings)
+        scored.append((score, entry, warnings))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    suggestions: list[SuggestedEntry] = []
+    for rank, (score, entry, warnings) in enumerate(scored[:limit], start=1):
+        result = recommendation(entry)
+        suggestions.append(
+            SuggestedEntry(
+                rank=rank,
+                entry=entry,
+                score=round(score, 1),
+                grade=result["grade"],
+                action=result["action"],
+                warnings=warnings,
+            )
+        )
+
+    return suggestions
+
+
+def _score_entry(entry: Entry, warnings: list[str]) -> float:
+    trend_score = sum(math.log10(max(prop.trending_count, 1)) for prop in entry.props)
+    warning_penalty = len(warnings) * 8
+    same_team_penalty = 6 if len({prop.player.team for prop in entry.props}) < len(entry.props) else 0
+    return (
+        entry.average_confidence
+        + entry.average_edge * 10
+        + trend_score
+        - warning_penalty
+        - same_team_penalty
+    )
+
+
+def _prop_from_feed(raw: dict, platform: Platform) -> Prop:
+    line = float(raw.get("line") or 0.0)
+    trending_count = int(raw.get("trending_count") or 0)
+    projection = auto_projection(line, trending_count)
+    edge = calculate_edge(line, projection)
+
+    return Prop(
+        player=Player(
+            name=raw.get("player", "Player"),
+            team=raw.get("team", ""),
+            sport=raw.get("league", ""),
+        ),
+        stat=_stat_from_text(raw.get("stat", "")),
+        line=line,
+        projection=projection,
+        edge=edge,
+        confidence=calculate_confidence(edge),
+        platform=platform,
+        game=raw.get("game", ""),
+        needs_projection=False,
+        auto_projected=True,
+        trending_count=trending_count,
+    )
+
+
+def _unique_players(props: list[Prop]) -> list[Prop]:
+    unique: list[Prop] = []
+    seen: set[str] = set()
+
+    for prop in props:
+        key = prop.player.name.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(prop)
+
+    return unique
+
+
+def _stat_from_text(value: str) -> StatType:
+    normalized = (value or "").lower()
+    for stat in StatType:
+        if stat.value.lower() == normalized or stat.value.lower() in normalized:
+            return stat
+    if "point" in normalized:
+        return StatType.POINTS
+    if "rebound" in normalized:
+        return StatType.REBOUNDS
+    if "assist" in normalized:
+        return StatType.ASSISTS
+    if "pra" in normalized:
+        return StatType.PRA
+    return StatType.POINTS
