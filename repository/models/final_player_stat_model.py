@@ -16,5 +16,6 @@ class FinalPlayerStatModel(Base):
     game = Column(String, default="")
     game_date = Column(String, default="")
     actual = Column(Float, nullable=False)
+    status = Column(String, default="played")
     source = Column(String, default="import")
     imported_at = Column(DateTime, server_default=func.now(), nullable=False)

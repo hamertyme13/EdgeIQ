@@ -148,6 +148,35 @@ async function loadProps() {
   });
 }
 
+async function askAiParlay() {
+  $("ai-parlay-status").textContent = "Finding today's best parlay...";
+  $("ai-parlay-response").classList.add("muted-card");
+  $("ai-parlay-response").textContent = "Thinking through the current board...";
+  const data = await api("/api/ai/parlay-chat", {
+    method: "POST",
+    body: JSON.stringify({
+      message: $("ai-parlay-input").value || "you need a parlay?",
+      platform: $("props-platform").value,
+      sport: $("props-sport").value,
+    }),
+  });
+  $("ai-parlay-status").textContent = data.ai_enabled
+    ? `OpenAI assisted · ${data.model}`
+    : "Rules fallback · add OPENAI_API_KEY to enable AI";
+  $("ai-parlay-response").classList.remove("muted-card");
+  $("ai-parlay-response").innerHTML = `
+    <p>${data.message}</p>
+    ${data.suggestion ? `<button class="secondary" id="load-ai-parlay">Load Parlay</button>` : ""}
+  `;
+  if (data.suggestion) {
+    $("load-ai-parlay").addEventListener("click", () => {
+      renderEntryPropsFromAnalyzed(data.suggestion.entry.props);
+      setView("entries");
+      $("entry-status").textContent = "Loaded AI parlay suggestion. Analyze/place when ready.";
+    });
+  }
+}
+
 async function loadTrendingGames(platform = $("props-platform").value, sport = $("props-sport").value) {
   const data = await api(`/api/games/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
   $("trending-games-status").textContent = data.games.length
@@ -332,6 +361,26 @@ function renderAnalysis(data) {
   const rec = data.recommendation;
   const risk = data.risk;
   const warnings = data.warnings || [];
+  const espn = data.espn_context || {};
+  const fusion = data.source_fusion || {};
+  const espnRows = (data.entry.props || [])
+    .filter((prop) => prop.espn && prop.espn.sample_size)
+    .map((prop) => `
+      <div class="suggestion compact-suggestion">
+        <strong>${prop.player} · ${prop.stat}</strong>
+        <p>${Number(prop.espn.hit_rate || 0).toFixed(1)}% hit · ${prop.espn.sample_size} ESPN games · Recent avg ${prop.espn.recent_average ?? "-"}</p>
+        <p class="subtle">${prop.projection_source === "espn_recent_form" ? "Projection adjusted with ESPN recent form" : "Projection reviewed against ESPN history"} · Confidence ${prop.espn.confidence_adjustment >= 0 ? "+" : ""}${Number(prop.espn.confidence_adjustment || 0).toFixed(1)}</p>
+      </div>
+    `).join("");
+  const signalRows = (data.entry.props || [])
+    .flatMap((prop) => (prop.source_signals || []).map((signal) => ({ prop, signal })))
+    .map(({ prop, signal }) => `
+      <div class="suggestion compact-suggestion">
+        <strong>${signal.source} · ${prop.player}</strong>
+        <p>${signal.message}</p>
+        <p class="subtle">Projection ${signal.projection_delta >= 0 ? "+" : ""}${Number(signal.projection_delta || 0).toFixed(2)} · Confidence ${signal.confidence_delta >= 0 ? "+" : ""}${Number(signal.confidence_delta || 0).toFixed(1)}</p>
+      </div>
+    `).join("");
   $("entry-analysis").classList.remove("muted-card");
   $("entry-analysis").innerHTML = `
     <div class="grade">${rec.grade}</div>
@@ -341,6 +390,16 @@ function renderAnalysis(data) {
       <div class="stat-card"><div class="stat-value">${pct(risk.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
       <div class="stat-card"><div class="stat-value">${Number(risk.average_edge).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
       <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
+    </div>
+    <div class="analysis-card ${espn.props_with_history ? "" : "muted-card"}" style="margin-top:14px">
+      <h3>ESPN Form Assist</h3>
+      <p>${espn.props_with_history || 0} props with ESPN history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% avg hit rate` : ""}</p>
+      ${espnRows || `<p class="subtle">No matching ESPN final-stat history yet. Auto-check completed entries to import more box scores.</p>`}
+    </div>
+    <div class="analysis-card ${fusion.signal_count ? "" : "muted-card"}" style="margin-top:14px">
+      <h3>Source Fusion</h3>
+      <p>${fusion.signal_count || 0} signals${fusion.sources && fusion.sources.length ? ` · ${fusion.sources.join(", ")}` : ""}</p>
+      ${signalRows || `<p class="subtle">No extra source signals found for this entry yet.</p>`}
     </div>
     ${warnings.length ? `<p class="warning">${warnings.join(" · ")}</p>` : ""}
   `;
@@ -462,7 +521,9 @@ async function runOptimizer() {
 
 async function loadPending() {
   const data = await api("/api/entries/pending");
-  $("pending-list").innerHTML = data.entries.map((entry) => `
+  $("pending-list").innerHTML = data.entries.map((entry) => {
+    const maxDnp = Math.max(0, entry.props.length - 1);
+    return `
     <div class="suggestion">
       <div class="suggestion-top">
         <span class="pill">#${entry.id}</span>
@@ -471,17 +532,28 @@ async function loadPending() {
       </div>
       <p>${entry.props.map((prop) => `${prop.player} ${prop.stat} ${prop.line}`).join(" + ")}</p>
       <p>${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout</p>
+      <div class="form-grid compact-controls">
+        <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" />
+      </div>
       <div class="button-row">
         <button data-settle="${entry.id}:Win">Win</button>
         <button class="danger" data-settle="${entry.id}:Loss">Loss</button>
         <button class="secondary" data-settle="${entry.id}:Push">Push</button>
+        <button class="secondary" data-settle="${entry.id}:DNP">DNP Refund</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion">No pending entries.</div>`;
+  `;
+  }).join("") || `<div class="suggestion">No pending entries.</div>`;
   document.querySelectorAll("[data-settle]").forEach((button) => {
     button.addEventListener("click", async () => {
       const [id, result] = button.dataset.settle.split(":");
-      await api(`/api/entries/${id}/settle`, { method: "POST", body: JSON.stringify({ result }) });
+      await api(`/api/entries/${id}/settle`, {
+        method: "POST",
+        body: JSON.stringify({
+          result,
+          dnp_legs: Number($(`dnp-legs-${id}`)?.value || 0),
+        }),
+      });
       await loadPending();
       await loadDashboard();
       await loadPerformance();
@@ -489,14 +561,45 @@ async function loadPending() {
   });
 }
 
+async function loadDnpSetting() {
+  const data = await api("/api/settings/dnp");
+  $("dnp-handling").value = data.mode;
+}
+
+async function saveDnpSetting() {
+  const data = await api("/api/settings/dnp", {
+    method: "POST",
+    body: JSON.stringify({ mode: $("dnp-handling").value }),
+  });
+  $("auto-check-status").textContent = `DNP handling saved: ${data.mode}.`;
+}
+
 async function autoCheckEntries() {
   $("auto-check-status").textContent = "Checking pending entries...";
   const data = await api("/api/entries/auto-check", { method: "POST" });
   const estimateNote = data.estimated ? " Some entries used projection estimates." : "";
-  const pendingNote = data.settled === 0 ? " Final stat data may not be connected yet." : "";
-  $("auto-check-status").textContent = `Checked ${data.checked}, settled ${data.settled}.${estimateNote}${pendingNote}`;
+  const refresh = data.final_stats_refresh || {};
+  const refreshNote = refresh.provider
+    ? ` ESPN refreshed ${refresh.imported || 0} final stat rows.`
+    : "";
+  const errorNote = refresh.errors && refresh.errors.length
+    ? ` ${refresh.errors.length} ESPN refresh issue${refresh.errors.length === 1 ? "" : "s"}.`
+    : "";
+  const pendingNote = data.settled === 0 ? " Waiting on matching final stats for any unsettled legs." : "";
+  $("auto-check-status").textContent = `Checked ${data.checked}, settled ${data.settled}.${refreshNote}${estimateNote}${errorNote}${pendingNote}`;
   await loadPending();
   await loadDashboard();
+}
+
+async function classifyDefaultWagers() {
+  $("auto-check-status").textContent = "Classifying missing entry wagers...";
+  const data = await api("/api/entries/classify-default-wagers", { method: "POST" });
+  $("auto-check-status").textContent = data.updated
+    ? `Classified ${data.updated} entries as ${money(data.default_wager)} default wagers.`
+    : "No placed entries needed default wager classification.";
+  await loadPending();
+  await loadDashboard();
+  await loadPerformance();
 }
 
 async function calculateEv(event) {
@@ -551,6 +654,31 @@ async function estimateHitRate(event) {
   `;
 }
 
+async function assistProjection(event) {
+  event.preventDefault();
+  const payload = {
+    player: $("assist-player").value.trim(),
+    sport: $("assist-sport").value,
+    stat: $("assist-stat").value.trim(),
+    line: Number($("assist-line").value),
+    projection: $("assist-projection").value === "" ? null : Number($("assist-projection").value),
+    trending_count: Number($("assist-trending").value || 0),
+  };
+  if (!payload.player || !payload.stat || Number.isNaN(payload.line)) return;
+  const data = await api("/api/analysis/projection-assist", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  $("projection-assist-result").classList.remove("muted-card");
+  $("projection-assist-result").innerHTML = `
+    <div class="grade">${data.grade}</div>
+    <h2>${data.recommendation}</h2>
+    <p>${data.player} ${data.stat} ${data.line} · Projection ${data.projection} · Edge ${Number(data.edge).toFixed(2)}</p>
+    <p>Confidence ${pct(data.confidence)} · Hit rate ${pct(data.estimated_hit_rate)} · ${data.source}</p>
+    <p>${data.reason}</p>
+  `;
+}
+
 async function importFinalStats(event) {
   event.preventDefault();
   const payload = $("final-stats-payload").value;
@@ -561,6 +689,94 @@ async function importFinalStats(event) {
   });
   $("final-stats-result").classList.remove("muted-card");
   $("final-stats-result").innerHTML = `<h2>${data.imported}</h2><p>Final stat rows imported from ${data.source}.</p>`;
+}
+
+async function importBetHistory(event) {
+  event.preventDefault();
+  const data = await api("/api/bets/import-history", {
+    method: "POST",
+    body: JSON.stringify({
+      payload: $("bet-history-payload").value,
+      source: $("bet-history-source").value || "imported",
+    }),
+  });
+  $("bet-history-result").classList.remove("muted-card");
+  $("bet-history-result").innerHTML = `<h2>${data.imported}</h2><p>Imported bets · ${data.skipped} skipped. Performance and calibration are refreshed.</p>`;
+  await loadBets();
+  await loadDashboard();
+  await loadPerformance();
+}
+
+async function analyzeUpload(event) {
+  event.preventDefault();
+  const file = $("upload-file").files[0];
+  if (!file) {
+    $("upload-result").textContent = "Choose a file first.";
+    return;
+  }
+  $("upload-result").classList.add("muted-card");
+  $("upload-result").textContent = "Analyzing file...";
+  const contentBase64 = await fileToBase64(file);
+  const data = await api("/api/uploads/analyze", {
+    method: "POST",
+    body: JSON.stringify({
+      file_name: file.name,
+      mime_type: file.type,
+      content_base64: contentBase64,
+      target: $("upload-target").value,
+      source: $("upload-source").value || "upload",
+    }),
+  });
+  renderUploadResult(data);
+  await loadDashboard();
+  await loadPerformance();
+}
+
+function renderUploadResult(data) {
+  const props = data.props || [];
+  const rows = props.map((prop) => `
+    <tr>
+      <td>${prop.player}</td>
+      <td>${prop.sport}</td>
+      <td>${prop.stat}</td>
+      <td>${prop.line}</td>
+      <td>${prop.platform || ""}</td>
+    </tr>
+  `).join("");
+  $("upload-result").classList.remove("muted-card");
+  $("upload-result").innerHTML = `
+    <h2>${data.prop_count ?? data.imported ?? 0}</h2>
+    <p>${data.message}</p>
+    ${data.ai_enabled === false ? `<p class="warning">Add OPENAI_API_KEY to .env to extract props from screenshots.</p>` : ""}
+    ${props.length ? `
+      <div class="table-wrap compact">
+        <table>
+          <thead><tr><th>Player</th><th>Sport</th><th>Stat</th><th>Line</th><th>Platform</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <button class="secondary" id="load-upload-props">Load Props Into Entry</button>
+    ` : ""}
+  `;
+  if (props.length) {
+    $("load-upload-props").addEventListener("click", () => {
+      renderEntryPropsFromAnalyzed(props);
+      setView("entries");
+      $("entry-status").textContent = `Loaded ${props.length} uploaded props. Analyze before placing.`;
+    });
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",", 2)[1] : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 async function saveBet(event) {
@@ -679,6 +895,7 @@ function bindEvents() {
   $("refresh-all").addEventListener("click", loadAll);
   $("refresh-progress").addEventListener("click", loadEntryProgress);
   $("refresh-games").addEventListener("click", () => loadTrendingGames());
+  $("ask-ai-parlay").addEventListener("click", askAiParlay);
   $("load-props").addEventListener("click", loadProps);
   $("prop-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -699,11 +916,16 @@ function bindEvents() {
   $("generate-suggestions").addEventListener("click", loadSuggestions);
   $("run-optimizer").addEventListener("click", runOptimizer);
   $("refresh-pending").addEventListener("click", loadPending);
+  $("classify-default-wagers").addEventListener("click", classifyDefaultWagers);
+  $("save-dnp-handling").addEventListener("click", saveDnpSetting);
   $("auto-check-entries").addEventListener("click", autoCheckEntries);
   $("ev-form").addEventListener("submit", calculateEv);
   $("line-movement-form").addEventListener("submit", loadLineMovement);
   $("hit-rate-form").addEventListener("submit", estimateHitRate);
+  $("projection-assist-form").addEventListener("submit", assistProjection);
   $("final-stats-form").addEventListener("submit", importFinalStats);
+  $("upload-analyzer-form").addEventListener("submit", analyzeUpload);
+  $("bet-history-form").addEventListener("submit", importBetHistory);
   $("bet-form").addEventListener("submit", saveBet);
   $("refresh-bets").addEventListener("click", loadBets);
   $("refresh-backtest").addEventListener("click", loadBacktest);
@@ -714,6 +936,7 @@ async function loadAll() {
     loadDashboard(),
     loadEntryProgress(),
     loadProps(),
+    loadDnpSetting(),
     loadPending(),
     loadBets(),
     loadPerformance(),

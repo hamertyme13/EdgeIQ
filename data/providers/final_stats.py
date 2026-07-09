@@ -11,12 +11,33 @@ from typing import Any
 from repository.repositories.final_stats_repository import FinalStatsRepository
 
 
-def find_actual_stat(prop: dict) -> float | None:
-    """Look up a final stat value for a prop from stored stats or an optional file."""
-    stored = FinalStatsRepository.find_actual(prop)
+def find_final_stat(prop: dict) -> dict | None:
+    """Look up final stat metadata, including DNP status when available."""
+    stored = FinalStatsRepository.find_result(prop)
     if stored is not None:
         return stored
 
+    actual = _find_file_actual_stat(prop)
+    if actual is None:
+        return None
+    return {
+        "actual": actual,
+        "status": "played",
+        "source": "file",
+        "game": prop.get("game", ""),
+        "game_date": "",
+    }
+
+
+def find_actual_stat(prop: dict) -> float | None:
+    """Look up a final stat value for a prop from stored stats or an optional file."""
+    result = find_final_stat(prop)
+    if result is None or result.get("status") != "played":
+        return None
+    return result.get("actual")
+
+
+def _find_file_actual_stat(prop: dict) -> float | None:
     stats = _load_stats()
     if not stats:
         return None

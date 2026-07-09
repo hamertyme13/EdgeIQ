@@ -84,11 +84,29 @@ EdgeIQ currently normalizes player prop data from:
 
 - PrizePicks
 - Underdog
+- Sleeper, Chalkboard, and Betr when configured with a feed URL or file
 - The Odds API for sportsbook game odds when `ODDS_API_KEY` is configured
+- ESPN public box scores for NBA/WNBA final-stat settlement
+- SportsDataIO final stats when `SPORTSDATAIO_API_KEY` is configured
 
 Provider calls use `.edgeiq_cache/providers` for a short cache and stale fallback
 so the desktop app can continue showing recent data if a feed is temporarily
 unavailable.
+
+Sleeper, Chalkboard, and Betr do not expose stable public prop feeds in this app.
+Connect them with CSV/JSON sources using:
+
+```bash
+EDGEIQ_SLEEPER_PROPS_URL=https://example.com/sleeper-props.json
+EDGEIQ_CHALKBOARD_PROPS_FILE=/absolute/path/chalkboard-props.csv
+EDGEIQ_BETR_PROPS_URL=https://example.com/betr-props.csv
+```
+
+Optional API-key headers are supported with `EDGEIQ_SLEEPER_API_KEY`,
+`EDGEIQ_CHALKBOARD_API_KEY`, and `EDGEIQ_BETR_API_KEY`. Feed rows should include
+at least player, sport/league, stat, and line fields; common aliases like
+`player_name`, `stat_type`, `line_score`, `matchup`, and `trending_count` are
+normalized automatically.
 
 ## Website Integration
 

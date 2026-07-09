@@ -37,6 +37,19 @@
 
         <section id="dashboard" class="view active">
           <div class="stats-grid" id="dashboard-stats"></div>
+          <div class="panel ai-parlay-panel">
+            <div class="panel-header">
+              <div>
+                <h2>AI Parlay Desk</h2>
+                <p id="ai-parlay-status">you need a parlay?</p>
+              </div>
+              <button id="ask-ai-parlay">Ask AI</button>
+            </div>
+            <div class="chat-row">
+              <input id="ai-parlay-input" value="you need a parlay?" />
+            </div>
+            <div id="ai-parlay-response" class="analysis-card muted-card">Ask for the best 3-leg parlay for today.</div>
+          </div>
           <div class="panel">
             <div class="panel-header">
               <div>
@@ -67,6 +80,9 @@
                 <select id="props-platform">
                   <option>PrizePicks</option>
                   <option>Underdog</option>
+                  <option>Sleeper</option>
+                  <option>Chalkboard</option>
+                  <option>Betr</option>
                   <option>Both</option>
                 </select>
                 <select id="props-sport">
@@ -134,6 +150,9 @@
                 <select id="entry-platform">
                   <option>PrizePicks</option>
                   <option>Underdog</option>
+                  <option>Sleeper</option>
+                  <option>Chalkboard</option>
+                  <option>Betr</option>
                 </select>
                 <button type="submit">Add Prop</button>
               </form>
@@ -184,6 +203,9 @@
                     <select id="suggest-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Chalkboard</option>
+                      <option>Betr</option>
                     </select>
                     <button id="generate-suggestions">Generate Top 5</button>
                   </div>
@@ -200,6 +222,9 @@
                     <select id="optimizer-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Chalkboard</option>
+                      <option>Betr</option>
                       <option>Both</option>
                     </select>
                     <select id="optimizer-sport">
@@ -233,9 +258,18 @@
                     <p>Settle entries after results are known.</p>
                   </div>
                   <div class="toolbar">
+                    <button id="classify-default-wagers" class="secondary">Classify Missing $10</button>
                     <button id="auto-check-entries">Auto Check</button>
                     <button id="refresh-pending" class="secondary">Refresh</button>
                   </div>
+                </div>
+                <div class="form-grid compact-controls">
+                  <select id="dnp-handling">
+                    <option value="reduce">DNP reduces legs</option>
+                    <option value="refund">Any DNP refunds entry</option>
+                    <option value="ignore">Ignore DNP adjustment</option>
+                  </select>
+                  <button id="save-dnp-handling" class="secondary">Save DNP Setting</button>
                 </div>
                 <div id="auto-check-status" class="subtle"></div>
                 <div id="pending-list" class="suggestion-list"></div>
@@ -263,6 +297,9 @@
                 <select id="movement-platform">
                   <option>PrizePicks</option>
                   <option>Underdog</option>
+                  <option>Sleeper</option>
+                  <option>Chalkboard</option>
+                  <option>Betr</option>
                 </select>
                 <button type="submit">Track Line</button>
               </form>
@@ -280,6 +317,24 @@
               <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
             </div>
             <div class="panel">
+              <h2>AI Projection Assist</h2>
+              <form id="projection-assist-form" class="form-grid">
+                <input id="assist-player" placeholder="Player" />
+                <input id="assist-stat" placeholder="Stat" />
+                <select id="assist-sport">
+                  <option>WNBA</option>
+                  <option>NBA</option>
+                  <option>NFL</option>
+                  <option>MLB</option>
+                </select>
+                <input id="assist-line" type="number" step="0.1" placeholder="Line" />
+                <input id="assist-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                <input id="assist-trending" type="number" step="1" placeholder="Trending count" />
+                <button type="submit">Assist Projection</button>
+              </form>
+              <div id="projection-assist-result" class="analysis-card muted-card">No projection assist yet.</div>
+            </div>
+            <div class="panel">
               <h2>Final Stat Import</h2>
               <form id="final-stats-form" class="stack">
                 <textarea id="final-stats-payload" rows="8" placeholder='Paste CSV or JSON: player,sport,stat,game,game_date,actual'></textarea>
@@ -287,6 +342,21 @@
                 <button type="submit">Import Stats</button>
               </form>
               <div id="final-stats-result" class="analysis-card muted-card">No final stats imported yet.</div>
+            </div>
+            <div class="panel">
+              <h2>File + Screenshot Analyzer</h2>
+              <form id="upload-analyzer-form" class="stack">
+                <input id="upload-file" type="file" accept=".csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,image/*" />
+                <select id="upload-target">
+                  <option value="entry">Entry / prop screenshot</option>
+                  <option value="props">Prop file</option>
+                  <option value="final_stats">Final stats file</option>
+                  <option value="bet_history">Bet history file</option>
+                </select>
+                <input id="upload-source" value="upload" placeholder="Source/platform" />
+                <button type="submit">Analyze File</button>
+              </form>
+              <div id="upload-result" class="analysis-card muted-card">No file analyzed yet.</div>
             </div>
           </div>
         </section>
@@ -333,6 +403,15 @@
                   <tbody id="bets-table"></tbody>
                 </table>
               </div>
+            </div>
+            <div class="panel">
+              <h2>Import Betting History</h2>
+              <form id="bet-history-form" class="stack">
+                <textarea id="bet-history-payload" rows="8" placeholder="CSV or JSON: sport,game,description,odds,wager,result,profit,platform,stat_type,win_probability"></textarea>
+                <input id="bet-history-source" value="imported" placeholder="Source/platform" />
+                <button type="submit">Import History</button>
+              </form>
+              <div id="bet-history-result" class="analysis-card muted-card">No betting history imported yet.</div>
             </div>
           </div>
         </section>

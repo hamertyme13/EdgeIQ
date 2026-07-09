@@ -3,6 +3,7 @@ from __future__ import annotations
 from repository.database import SessionLocal
 from repository.models.final_player_stat_model import FinalPlayerStatModel
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import or_
 
 
 class FinalStatsRepository:
@@ -29,6 +30,7 @@ class FinalStatsRepository:
                 if existing:
                     existing.actual = normalized["actual"]
                     existing.team = normalized["team"]
+                    existing.status = normalized["status"]
                     existing.source = normalized["source"]
                 else:
                     session.add(FinalPlayerStatModel(**normalized))
@@ -38,6 +40,13 @@ class FinalStatsRepository:
 
     @staticmethod
     def find_actual(prop: dict) -> float | None:
+        row = FinalStatsRepository.find_result(prop)
+        if row is None or row.get("status") != "played":
+            return None
+        return row["actual"]
+
+    @staticmethod
+    def find_result(prop: dict) -> dict | None:
         try:
             with SessionLocal() as session:
                 query = (
@@ -48,9 +57,23 @@ class FinalStatsRepository:
                 )
                 game = prop.get("game", "")
                 if game:
-                    query = query.filter(FinalPlayerStatModel.game == game)
+                    game_token = str(game).strip()
+                    query = query.filter(
+                        or_(
+                            FinalPlayerStatModel.game == game_token,
+                            FinalPlayerStatModel.game.ilike(f"%{game_token}%"),
+                        )
+                    )
                 row = query.order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc()).first()
-                return row.actual if row else None
+                if row is None:
+                    return None
+                return {
+                    "actual": row.actual,
+                    "status": row.status or "played",
+                    "source": row.source,
+                    "game": row.game,
+                    "game_date": row.game_date,
+                }
         except SQLAlchemyError:
             return None
 
@@ -79,6 +102,7 @@ class FinalStatsRepository:
                         "game": row.game,
                         "game_date": row.game_date,
                         "actual": row.actual,
+                        "status": row.status or "played",
                         "source": row.source,
                     }
                     for row in rows
@@ -107,5 +131,13 @@ def _normalize_row(row: dict) -> dict | None:
         "game": str(row.get("game", "")).strip(),
         "game_date": str(row.get("game_date", row.get("date", ""))).strip(),
         "actual": actual,
+        "status": _normalize_status(row.get("status", "played")),
         "source": str(row.get("source", "import")).strip() or "import",
     }
+
+
+def _normalize_status(value: object) -> str:
+    status = str(value or "played").strip().lower()
+    if status in {"dnp", "did_not_play", "did not play", "inactive"}:
+        return "dnp"
+    return "played"

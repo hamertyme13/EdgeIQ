@@ -63,19 +63,20 @@ def _from_history(
     edge: float,
     history: list[dict],
 ) -> HitRateSummary:
+    played_history = _played_rows(history)
     return HitRateSummary(
         player=player,
         stat=stat,
         line=line,
         projection=round(projection, 2),
         edge=round(edge, 2),
-        estimated_hit_rate=_hit_rate(history, line),
-        last_5=_hit_rate(history[:5], line),
-        last_10=_hit_rate(history[:10], line),
-        season=_hit_rate(history, line),
+        estimated_hit_rate=_hit_rate(played_history, line),
+        last_5=_hit_rate(played_history[:5], line),
+        last_10=_hit_rate(played_history[:10], line),
+        season=_hit_rate(played_history, line),
         source="final_stats",
-        sample_size=len(history),
-        note=f"Calculated from {len(history)} imported final stat rows.",
+        sample_size=len(played_history),
+        note=f"Calculated from {len(played_history)} played final stat rows.",
     )
 
 
@@ -84,6 +85,10 @@ def _hit_rate(rows: list[dict], line: float) -> float:
         return 0.0
     hits = sum(1 for row in rows if float(row["actual"]) > line)
     return round(hits / len(rows) * 100, 1)
+
+
+def _played_rows(rows: list[dict]) -> list[dict]:
+    return [row for row in rows if row.get("status", "played") != "dnp"]
 
 
 def _rate_from_edge(edge: float) -> float:

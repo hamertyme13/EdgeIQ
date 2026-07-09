@@ -61,6 +61,9 @@ def _run_lightweight_migrations():
             ("platform", "TEXT DEFAULT ''"),
             ("game", "TEXT DEFAULT ''"),
         ],
+        "final_player_stats": [
+            ("status", "TEXT DEFAULT 'played'"),
+        ],
     }
 
     with engine.connect() as conn:

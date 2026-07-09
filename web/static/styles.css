@@ -121,11 +121,26 @@ p { color: var(--muted); margin: 5px 0 0; }
 .view.active { display: block; }
 
 .panel {
-  background: rgba(10, 13, 22, .92);
-  border: 1px solid rgba(255,255,255,.1);
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(57, 255, 136, .045), transparent 90px),
+    rgba(10, 13, 22, .9);
+  border: 1px solid rgba(57, 255, 136, .18);
   border-radius: 12px;
   padding: 18px;
-  box-shadow: 0 0 34px rgba(25, 230, 255, .04);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, .34),
+    0 0 32px rgba(57, 255, 136, .06),
+    inset 0 1px 0 rgba(255,255,255,.06);
+}
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--primary), var(--secondary), transparent);
+  box-shadow: 0 0 18px rgba(57, 255, 136, .85);
 }
 .panel + .panel { margin-top: 16px; }
 .panel-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
@@ -134,10 +149,23 @@ p { color: var(--muted); margin: 5px 0 0; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 16px; }
 .stat-card {
-  background: var(--raised);
-  border: 1px solid var(--line);
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(57, 255, 136, .1), rgba(16, 21, 34, .92) 42px),
+    var(--raised);
+  border: 1px solid rgba(57, 255, 136, .22);
   border-radius: 10px;
   padding: 15px;
+  box-shadow: 0 14px 28px rgba(0,0,0,.28), 0 0 26px rgba(57, 255, 136, .055);
+}
+.stat-card::before, .suggestion::before, .game-card::before, .analysis-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--primary), rgba(25, 230, 255, .7));
+  box-shadow: 0 0 20px rgba(57, 255, 136, .55);
 }
 .stat-value { color: var(--primary); font-size: 25px; font-weight: 900; }
 .stat-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; margin-top: 4px; }
@@ -151,6 +179,14 @@ p { color: var(--muted); margin: 5px 0 0; }
 .check-row { min-height: 38px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .check-row input { width: auto; min-height: auto; }
 .button-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.chat-row { display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 12px; }
+.ai-parlay-panel {
+  border-color: rgba(57, 255, 136, .34);
+  box-shadow:
+    0 22px 52px rgba(0, 0, 0, .38),
+    0 0 42px rgba(57, 255, 136, .09),
+    inset 0 1px 0 rgba(255,255,255,.07);
+}
 
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .table-wrap.compact { max-height: 280px; }
@@ -161,10 +197,13 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
 .link-button { background: transparent; color: var(--secondary); padding: 0; min-height: auto; }
 
 .analysis-card {
-  border: 1px solid var(--line);
-  background: var(--raised);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(57, 255, 136, .22);
+  background: linear-gradient(180deg, rgba(57, 255, 136, .08), rgba(16, 21, 34, .94) 58px);
   border-radius: 10px;
   padding: 16px;
+  box-shadow: 0 16px 30px rgba(0,0,0,.28);
 }
 .parlay-card {
   border: 1px solid rgba(57, 255, 136, .28);
@@ -186,20 +225,26 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
 .danger-text { color: var(--danger); }
 .suggestion-list { display: grid; gap: 10px; }
 .suggestion {
-  border: 1px solid var(--line);
-  background: var(--raised);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(57, 255, 136, .16);
+  background: linear-gradient(180deg, rgba(57, 255, 136, .065), rgba(16, 21, 34, .94) 52px);
   border-radius: 10px;
   padding: 12px;
+  box-shadow: 0 12px 24px rgba(0,0,0,.22);
 }
 .suggestion-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .pill { color: var(--night); background: var(--primary); border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 900; }
 .subtle { color: var(--muted); font-size: 12px; }
 .game-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .game-card {
-  border: 1px solid var(--line);
-  background: var(--raised);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(57, 255, 136, .18);
+  background: linear-gradient(180deg, rgba(57, 255, 136, .07), rgba(16, 21, 34, .95) 52px);
   border-radius: 10px;
   padding: 12px;
+  box-shadow: 0 14px 28px rgba(0,0,0,.24), 0 0 24px rgba(25, 230, 255, .04);
 }
 .player-chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .player-chip {

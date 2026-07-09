@@ -12,6 +12,14 @@ from analytics.entry_recommendation import recommendation as entry_recommendatio
 
 class EntryRepository:
     _schema_ready = False
+    DEFAULT_WAGER = 10.0
+    DEFAULT_MULTIPLIERS = {
+        2: 3.0,
+        3: 5.0,
+        4: 10.0,
+        5: 20.0,
+        6: 37.5,
+    }
 
     @staticmethod
     def _ensure_schema() -> None:
@@ -195,25 +203,84 @@ class EntryRepository:
         return next((entry for entry in entries if entry["id"] == entry_id), None)
 
     @staticmethod
-    def settle(entry_id: int, result: str) -> None:
+    def settle(entry_id: int, result: str, dnp_legs: int = 0, dnp_mode: str = "reduce") -> None:
         EntryRepository._ensure_schema()
-        if result not in {"Win", "Loss", "Push"}:
-            raise ValueError("Entry result must be Win, Loss, or Push.")
+        if result not in {"Win", "Loss", "Push", "DNP"}:
+            raise ValueError("Entry result must be Win, Loss, Push, or DNP.")
 
         with SessionLocal() as session:
             entry = session.get(EntryModel, entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} was not found.")
-
-            entry.status = "Settled"
-            entry.result = result
-            entry.profit = EntryRepository._profit_for_result(
+            leg_count = (
+                session.query(EntryPropModel)
+                .filter(EntryPropModel.entry_id == entry.id)
+                .count()
+            )
+            result, profit = EntryRepository._settlement_profit(
                 result,
                 entry.wager or 0.0,
                 entry.multiplier or 1.0,
+                leg_count,
+                dnp_legs,
+                dnp_mode,
             )
+
+            entry.status = "Settled"
+            entry.result = result
+            entry.profit = profit
             entry.settled_at = datetime.utcnow()
             session.commit()
+
+    @staticmethod
+    def classify_missing_economics(default_wager: float = DEFAULT_WAGER) -> dict:
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entries = (
+                session.query(EntryModel)
+                .filter(EntryModel.status.in_(("Pending", "Settled")))
+                .all()
+            )
+            updated = 0
+            pending = 0
+            settled = 0
+
+            for entry in entries:
+                missing_wager = not entry.wager or entry.wager <= 0
+                missing_multiplier = not entry.multiplier or entry.multiplier <= 1
+                if not missing_wager and not missing_multiplier:
+                    continue
+
+                leg_count = (
+                    session.query(EntryPropModel)
+                    .filter(EntryPropModel.entry_id == entry.id)
+                    .count()
+                )
+                entry.wager = round(float(default_wager), 2) if missing_wager else entry.wager
+                entry.multiplier = (
+                    EntryRepository._default_multiplier_for_legs(leg_count)
+                    if missing_multiplier
+                    else entry.multiplier
+                )
+                entry.potential_payout = round((entry.wager or 0.0) * (entry.multiplier or 1.0), 2)
+                if entry.status == "Settled":
+                    entry.profit = EntryRepository._profit_for_result(
+                        entry.result,
+                        entry.wager or 0.0,
+                        entry.multiplier or 1.0,
+                    )
+                    settled += 1
+                else:
+                    pending += 1
+                updated += 1
+
+            session.commit()
+            return {
+                "updated": updated,
+                "pending": pending,
+                "settled": settled,
+                "default_wager": round(float(default_wager), 2),
+            }
 
     @staticmethod
     def financial_stats() -> dict:
@@ -248,6 +315,32 @@ class EntryRepository:
         if result == "Loss":
             return round(-wager, 2)
         return 0.0
+
+    @staticmethod
+    def _settlement_profit(
+        result: str,
+        wager: float,
+        multiplier: float,
+        leg_count: int,
+        dnp_legs: int = 0,
+        dnp_mode: str = "reduce",
+    ) -> tuple[str, float]:
+        dnp_legs = max(0, min(int(dnp_legs or 0), int(leg_count or 0)))
+        if result == "DNP":
+            return "Push", 0.0
+        if dnp_legs <= 0 or dnp_mode == "ignore":
+            return result, EntryRepository._profit_for_result(result, wager, multiplier)
+        if dnp_mode == "refund":
+            return "Push", 0.0
+        remaining_legs = max(0, int(leg_count or 0) - dnp_legs)
+        if remaining_legs <= 1:
+            return "Push", 0.0
+        adjusted_multiplier = EntryRepository._default_multiplier_for_legs(remaining_legs)
+        return result, EntryRepository._profit_for_result(result, wager, adjusted_multiplier)
+
+    @staticmethod
+    def _default_multiplier_for_legs(leg_count: int) -> float:
+        return EntryRepository.DEFAULT_MULTIPLIERS.get(leg_count, 3.0)
 
     @staticmethod
     def _group_by_result(entries: list[dict]) -> dict[str, dict]:
