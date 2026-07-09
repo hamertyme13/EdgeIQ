@@ -4,6 +4,7 @@ import base64
 import web.app as web_app
 import data.providers.final_stats as final_stats
 import data.providers.espn as espn
+import data.providers.sleeper as sleeper
 from data.providers.generic_props import normalize_props
 import analytics.hit_rate as hit_rate_module
 from web.app import (
@@ -12,6 +13,7 @@ from web.app import (
     ParlayChatPayload,
     DnpSettingPayload,
     UploadAnalyzePayload,
+    AiEntryReviewPayload,
     _check_entry_result,
     _entry_progress_payload,
     _line_movement_payload,
@@ -32,6 +34,8 @@ from web.app import (
     classify_default_entry_wagers,
     import_betting_history,
     ai_parlay_chat,
+    ai_entry_review,
+    ai_status,
     trending_games,
     top_props,
     projection_assist,
@@ -152,6 +156,92 @@ def test_entry_analysis_combines_injury_line_and_consensus_signals(monkeypatch):
     sources = {signal["source"] for signal in signals}
     assert {"ESPN injuries", "Line movement", "Platform consensus"} <= sources
     assert body["source_fusion"]["signal_count"] >= 3
+
+
+def test_entry_analysis_includes_sleeper_trend_signal(monkeypatch):
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "fetch_injuries", lambda sport: [])
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [])
+    monkeypatch.setattr(
+        web_app.sleeper,
+        "player_trend_signal",
+        lambda player, sport: {"add_count": 80, "drop_count": 10, "net_adds": 70},
+    )
+
+    body = analyze_entry(
+        EntryPayload.model_validate(
+            {
+                "platform": "PrizePicks",
+                "props": [
+                    {"player": "A", "team": "AAA", "sport": "NFL", "stat": "Receiving Yards", "line": 52.5},
+                    {"player": "B", "team": "BBB", "sport": "NFL", "stat": "Rushing Yards", "line": 62.5},
+                ],
+            }
+        )
+    )
+
+    assert "Sleeper trends" in {signal["source"] for signal in body["entry"]["props"][0]["source_signals"]}
+
+
+def test_entry_analysis_includes_news_weather_and_balldontlie_signals(monkeypatch):
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "fetch_injuries", lambda sport: [])
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [])
+    monkeypatch.setattr(web_app.sleeper, "player_trend_signal", lambda player, sport: None)
+    monkeypatch.setattr(
+        web_app.balldontlie,
+        "stat_signal",
+        lambda player, stat, sport: {"average": 25.0, "sample_size": 5},
+    )
+    monkeypatch.setattr(
+        web_app.newsapi,
+        "fetch_context",
+        lambda query, days=7, page_size=5: [{"title": "Player injury note", "description": "questionable"}],
+    )
+    monkeypatch.setattr(web_app.newsapi, "risk_terms", lambda articles: ["injury"])
+    monkeypatch.setattr(
+        web_app.openweather,
+        "fetch_weather_for_game",
+        lambda game, sport: {"wind_mph": 18, "condition": "Clear"},
+    )
+    monkeypatch.setattr(
+        web_app.openweather,
+        "weather_signal",
+        lambda weather: {"impact": -3.0, "message": "Wind 18 mph may suppress outdoor production."},
+    )
+
+    body = analyze_entry(
+        EntryPayload.model_validate(
+            {
+                "platform": "PrizePicks",
+                "props": [
+                    {"player": "A", "team": "AAA", "sport": "NFL", "stat": "Receiving Yards", "line": 52.5, "game": "BUF@NE"},
+                    {"player": "B", "team": "BBB", "sport": "NFL", "stat": "Rushing Yards", "line": 62.5},
+                ],
+            }
+        )
+    )
+
+    sources = {signal["source"] for signal in body["entry"]["props"][0]["source_signals"]}
+    assert {"Ball Don't Lie stats", "NewsAPI", "OpenWeather"} <= sources
+
+
+def test_sleeper_trend_signal_combines_adds_and_drops(monkeypatch):
+    monkeypatch.setattr(
+        sleeper,
+        "fetch_trending_players",
+        lambda sport, trend_type: [
+            {"player": "Player A", "count": 40 if trend_type == "add" else 5}
+        ],
+    )
+
+    signal = sleeper.player_trend_signal("Player A", "NFL")
+
+    assert signal["add_count"] == 40
+    assert signal["drop_count"] == 5
+    assert signal["net_adds"] == 35
 
 
 def test_web_top_props_returns_five_per_sport(monkeypatch):
@@ -281,6 +371,36 @@ def test_ai_parlay_chat_falls_back_to_best_candidate(monkeypatch):
     assert body["ai_enabled"] is False
     assert body["suggestion"]["leg_count"] == 3
     assert "best 3-leg parlay" in body["message"]
+
+
+def test_ai_status_reports_key_shape(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "not-an-openai-key")
+
+    body = ai_status()
+
+    assert body["configured"] is True
+    assert body["key_format_ok"] is False
+
+
+def test_ai_entry_review_falls_back_without_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
+
+    body = ai_entry_review(
+        AiEntryReviewPayload.model_validate(
+            {
+                "platform": "PrizePicks",
+                "props": [
+                    {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5},
+                    {"player": "B", "team": "BBB", "sport": "WNBA", "stat": "Rebounds", "line": 8.5},
+                ],
+            }
+        )
+    )
+
+    assert body["ai_enabled"] is False
+    assert body["model"] == "rules-fallback"
+    assert "Rules review" in body["review"]
 
 
 def test_place_entry_saves_wager_and_multiplier(monkeypatch):

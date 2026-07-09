@@ -162,7 +162,7 @@ async function askAiParlay() {
   });
   $("ai-parlay-status").textContent = data.ai_enabled
     ? `OpenAI assisted · ${data.model}`
-    : "Rules fallback · add OPENAI_API_KEY to enable AI";
+    : `Rules fallback${data.ai_error ? ` · ${data.ai_error}` : " · add OPENAI_API_KEY to enable AI"}`;
   $("ai-parlay-response").classList.remove("muted-card");
   $("ai-parlay-response").innerHTML = `
     <p>${data.message}</p>
@@ -327,6 +327,7 @@ function renderEntryProps() {
     button.addEventListener("click", () => {
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
       state.lastEntryPayload = null;
+      $("ai-review-entry").disabled = true;
       $("place-entry").disabled = true;
       renderEntryProps();
     });
@@ -416,8 +417,33 @@ async function analyzeEntry() {
   state.lastAnalysis = data;
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
+  $("ai-review-entry").disabled = false;
   $("place-entry").disabled = false;
   $("entry-status").textContent = "Entry analyzed. Review before placing.";
+}
+
+async function reviewEntryWithAi() {
+  if (state.entryProps.length < 2) {
+    $("entry-status").textContent = "Analyze an entry before asking AI to review it.";
+    return;
+  }
+  $("entry-status").textContent = "AI is reviewing the entry...";
+  const data = await api("/api/ai/entry-review", {
+    method: "POST",
+    body: JSON.stringify({
+      ...entryPayload(),
+      question: "Should I place this entry? Identify strongest leg, weakest leg, and risk flags.",
+    }),
+  });
+  $("entry-analysis").classList.remove("muted-card");
+  $("entry-analysis").innerHTML += `
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>AI Entry Review</h3>
+      <p class="subtle">${data.ai_enabled ? `OpenAI assisted · ${data.model}` : `Rules fallback${data.ai_error ? ` · ${data.ai_error}` : ""}`}</p>
+      <p>${data.review}</p>
+    </div>
+  `;
+  $("entry-status").textContent = data.ai_enabled ? "AI review complete." : "Rules review complete. Check OpenAI status if you expected AI.";
 }
 
 function renderEntryPropsFromAnalyzed(props) {
@@ -906,10 +932,12 @@ function bindEvents() {
     renderEntryProps();
   });
   $("analyze-entry").addEventListener("click", analyzeEntry);
+  $("ai-review-entry").addEventListener("click", reviewEntryWithAi);
   $("place-entry").addEventListener("click", placeEntry);
   $("clear-entry").addEventListener("click", () => {
     state.entryProps = [];
     state.lastEntryPayload = null;
+    $("ai-review-entry").disabled = true;
     $("place-entry").disabled = true;
     renderEntryProps();
   });

@@ -41,6 +41,11 @@ Create a `.env` file in the project root when you need local overrides:
 ```bash
 STARTING_BANKROLL=500
 ODDS_API_KEY=your_odds_api_key
+OPENAI_API_KEY=your_openai_api_key
+BALLDONTLIE_API_KEY=your_balldontlie_api_key
+NEWSAPI_KEY=your_newsapi_key
+OPENWEATHER_API_KEY=your_openweather_api_key
+SPORTSDATAIO_API_KEY=your_sportsdataio_api_key
 DATABASE_URL=sqlite:///edgeiq.db
 ```
 
@@ -84,8 +89,12 @@ EdgeIQ currently normalizes player prop data from:
 
 - PrizePicks
 - Underdog
-- Sleeper, Chalkboard, and Betr when configured with a feed URL or file
+- Sleeper, Chalkboard, Betr, and Ball Don't Lie when configured with a feed URL or file
 - The Odds API for sportsbook game odds when `ODDS_API_KEY` is configured
+- OpenAI for AI parlay explanations, entry review, and screenshot extraction
+- Ball Don't Lie for optional stats/props context when `BALLDONTLIE_API_KEY` or `BALLDONTLIE_PROPS_URL` is configured
+- NewsAPI for recent player/team context when `NEWSAPI_KEY` is configured
+- OpenWeather for outdoor NFL/MLB weather context when `OPENWEATHER_API_KEY` is configured
 - ESPN public box scores for NBA/WNBA final-stat settlement
 - SportsDataIO final stats when `SPORTSDATAIO_API_KEY` is configured
 
@@ -93,8 +102,13 @@ Provider calls use `.edgeiq_cache/providers` for a short cache and stale fallbac
 so the desktop app can continue showing recent data if a feed is temporarily
 unavailable.
 
-Sleeper, Chalkboard, and Betr do not expose stable public prop feeds in this app.
-Connect them with CSV/JSON sources using:
+Sleeper's documented public API is read-only and provides fantasy league,
+player, and trending add/drop data without an API token. EdgeIQ uses those
+Sleeper trends as an NFL source-fusion signal, but Sleeper prop lines still need
+a configured CSV/JSON source. Chalkboard and Betr also need configured prop
+sources unless you have a private/exported feed.
+
+Connect those prop feeds with CSV/JSON sources using:
 
 ```bash
 EDGEIQ_SLEEPER_PROPS_URL=https://example.com/sleeper-props.json

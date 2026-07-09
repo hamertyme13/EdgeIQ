@@ -16,6 +16,9 @@ import data.providers.sleeper as sleeper
 import data.providers.chalkboard as chalkboard
 import data.providers.betr as betr
 import data.providers.sportsdataio as sportsdataio
+import data.providers.balldontlie as balldontlie
+import data.providers.newsapi as newsapi
+import data.providers.openweather as openweather
 from data.providers.generic_props import normalize_props
 from data.providers.espn import refresh_final_stats_for_entries
 import requests
@@ -56,7 +59,7 @@ from services.dashboard import get_dashboard, get_starting_bankroll, set_startin
 
 STATIC_DIR = Path(__file__).parent / "static"
 SUPPORTED_SPORTS = ("WNBA", "NBA", "NFL", "MLB")
-PROP_PLATFORMS = ("PrizePicks", "Underdog", "Sleeper", "Chalkboard", "Betr")
+PROP_PLATFORMS = ("PrizePicks", "Underdog", "Sleeper", "Chalkboard", "Betr", "Ball Don't Lie")
 PLATFORM_FILTERS = (*PROP_PLATFORMS, "Both")
 
 
@@ -203,13 +206,14 @@ def ai_parlay_chat(payload: ParlayChatPayload) -> dict:
     )
     serialized = [_serialize_suggestion(suggestion) for suggestion in suggestions]
     fallback = _fallback_parlay_chat(serialized)
-    ai_text = _openai_parlay_response(payload.message, serialized)
+    ai_text, ai_error = _openai_parlay_response(payload.message, serialized)
     return {
         "message": ai_text or fallback,
         "suggestion": serialized[0] if serialized else None,
         "candidates": serialized,
         "ai_enabled": ai_text is not None,
-        "model": os.getenv("OPENAI_MODEL", "gpt-5.5") if ai_text else "rules-fallback",
+        "model": _openai_model() if ai_text else "rules-fallback",
+        "ai_error": ai_error,
     }
 
 
@@ -219,6 +223,37 @@ def analyze_uploaded_file(payload: UploadAnalyzePayload) -> dict:
     if _is_image_upload(payload):
         return _analyze_uploaded_image(payload, raw)
     return _analyze_uploaded_text_file(payload, raw)
+
+
+@app.get("/api/ai/status")
+def ai_status() -> dict:
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    return {
+        "configured": bool(key),
+        "key_format_ok": key.startswith("sk-"),
+        "model": _openai_model(),
+        "vision_model": _openai_vision_model(),
+        "note": (
+            "OpenAI key is present and has the expected prefix."
+            if key.startswith("sk-")
+            else "OpenAI key is missing or does not look like a standard OpenAI API key."
+        ),
+    }
+
+
+@app.post("/api/ai/entry-review")
+def ai_entry_review(payload: AiEntryReviewPayload) -> dict:
+    entry = _entry_from_payload(payload)
+    analysis = _entry_analysis(entry)
+    fallback = _fallback_entry_review(analysis)
+    ai_text, ai_error = _openai_entry_review(payload.question, analysis)
+    return {
+        "review": ai_text or fallback,
+        "analysis": analysis,
+        "ai_enabled": ai_text is not None,
+        "model": _openai_model() if ai_text else "rules-fallback",
+        "ai_error": ai_error,
+    }
 
 
 @app.get("/api/games/trending")
@@ -318,6 +353,10 @@ class EntryPayload(BaseModel):
     wager: float = Field(default=0.0, ge=0)
     multiplier: float = Field(default=1.0, ge=1)
     props: list[PropPayload]
+
+
+class AiEntryReviewPayload(EntryPayload):
+    question: str = "Should I place this entry?"
 
 
 @app.post("/api/entries/analyze")
@@ -635,6 +674,7 @@ def _fetch_platform_props(platform: str) -> list[dict]:
         "Sleeper": sleeper.fetch_projections,
         "Chalkboard": chalkboard.fetch_projections,
         "Betr": betr.fetch_projections,
+        "Ball Don't Lie": lambda: balldontlie.fetch_props(),
     }
     fetcher = providers.get(_canonical_platform(platform))
     if fetcher is None:
@@ -756,6 +796,18 @@ def _fallback_parlay_chat(suggestions: list[dict]) -> str:
         f"It grades {best['grade']} with a score of {best['score']} and the model action is {best['action']}. "
         f"{caution}"
     )
+
+
+def _fallback_entry_review(analysis: dict) -> str:
+    rec = analysis.get("recommendation", {})
+    risk = analysis.get("risk", {})
+    warnings = analysis.get("warnings", [])
+    warning_text = f" Main flags: {'; '.join(warnings[:3])}." if warnings else ""
+    return (
+        f"Rules review: {rec.get('action', 'Review')} with grade {rec.get('grade', '-')}. "
+        f"Average confidence is {risk.get('average_confidence', 0)}% and risk is {risk.get('level', 'Unknown')}. "
+        f"{rec.get('reason', '')}{warning_text}"
+    ).strip()
 
 
 def _decode_uploaded_bytes(content_base64: str) -> bytes:
@@ -939,7 +991,7 @@ def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
 
     image_data = base64.b64encode(raw).decode("utf-8")
     payload = {
-        "model": os.getenv("OPENAI_VISION_MODEL", os.getenv("OPENAI_MODEL", "gpt-5.5")),
+        "model": _openai_vision_model(),
         "input": [
             {
                 "role": "user",
@@ -964,21 +1016,11 @@ def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
         "max_output_tokens": 700,
     }
 
-    try:
-        response = requests.post(
-            "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=30,
-        )
-        response.raise_for_status()
-    except requests.RequestException:
+    response_data, _ = _openai_response(payload, timeout=30)
+    if response_data is None:
         return None
 
-    text = _response_output_text(response.json())
+    text = _response_output_text(response_data)
     if not text:
         return None
     return _parse_json_from_model_text(text)
@@ -1014,13 +1056,13 @@ def _parse_json_from_model_text(text: str) -> dict | None:
         return None
 
 
-def _openai_parlay_response(message: str, suggestions: list[dict]) -> str | None:
+def _openai_parlay_response(message: str, suggestions: list[dict]) -> tuple[str | None, str | None]:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key or not suggestions:
-        return None
+        return None, "missing_key" if not api_key else "no_candidates"
 
     payload = {
-        "model": os.getenv("OPENAI_MODEL", "gpt-5.5"),
+        "model": _openai_model(),
         "input": [
             {
                 "role": "system",
@@ -1041,6 +1083,44 @@ def _openai_parlay_response(message: str, suggestions: list[dict]) -> str | None
         "max_output_tokens": 350,
     }
 
+    data, error = _openai_response(payload, timeout=20)
+    if data is None:
+        return None, error
+
+    return _response_output_text(data), None
+
+
+def _openai_entry_review(question: str, analysis: dict) -> tuple[str | None, str | None]:
+    if not os.getenv("OPENAI_API_KEY", "").strip():
+        return None, "missing_key"
+    payload = {
+        "model": _openai_model(),
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You are EdgeIQ's AI entry reviewer. You review only the supplied app analysis. "
+                    "Do not invent new stats, injuries, lines, or results. Be concise, practical, and risk-aware. "
+                    "Never promise a win. Highlight the strongest leg, weakest leg, source-signal conflicts, and final action."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps({"question": question, "analysis": analysis}, default=str),
+            },
+        ],
+        "max_output_tokens": 500,
+    }
+    data, error = _openai_response(payload, timeout=25)
+    if data is None:
+        return None, error
+    return _response_output_text(data), None
+
+
+def _openai_response(payload: dict, timeout: int = 20) -> tuple[dict | None, str | None]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None, "missing_key"
     try:
         response = requests.post(
             "https://api.openai.com/v1/responses",
@@ -1049,13 +1129,35 @@ def _openai_parlay_response(message: str, suggestions: list[dict]) -> str | None
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=20,
+            timeout=timeout,
         )
         response.raise_for_status()
-    except requests.RequestException:
-        return None
+        return response.json(), None
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        detail = _openai_error_detail(exc.response)
+        return None, f"openai_http_{status}: {detail}"
+    except requests.RequestException as exc:
+        return None, f"openai_request_error: {exc.__class__.__name__}"
 
-    return _response_output_text(response.json())
+
+def _openai_error_detail(response) -> str:
+    if response is None:
+        return "No response body."
+    try:
+        data = response.json()
+        message = data.get("error", {}).get("message")
+        return str(message or response.text[:160])
+    except ValueError:
+        return response.text[:160]
+
+
+def _openai_model() -> str:
+    return os.getenv("OPENAI_MODEL", "gpt-5").strip() or "gpt-5"
+
+
+def _openai_vision_model() -> str:
+    return os.getenv("OPENAI_VISION_MODEL", _openai_model()).strip() or _openai_model()
 
 
 
@@ -1674,6 +1776,10 @@ def _source_context(
     signals.extend(_matchup_signals(payload))
     signals.extend(_line_movement_signals(payload))
     signals.extend(_platform_consensus_signals(payload))
+    signals.extend(_sleeper_trending_signals(payload))
+    signals.extend(_balldontlie_stat_signals(payload))
+    signals.extend(_news_context_signals(payload))
+    signals.extend(_weather_signals(payload))
 
     projection_delta = sum(float(signal.get("projection_delta", 0.0)) for signal in signals) if apply_projection_delta else 0.0
     projection_delta = max(-6.0, min(6.0, projection_delta))
@@ -1809,6 +1915,103 @@ def _platform_consensus_signals(payload: PropPayload) -> list[dict]:
         confidence_delta=confidence_delta,
         score=score,
         message=message,
+    )]
+
+
+def _sleeper_trending_signals(payload: PropPayload) -> list[dict]:
+    if payload.sport.upper() != "NFL":
+        return []
+    try:
+        trend = sleeper.player_trend_signal(payload.player, payload.sport)
+    except Exception:
+        trend = None
+    if not trend:
+        return []
+    net_adds = int(trend.get("net_adds") or 0)
+    if abs(net_adds) < 10:
+        return []
+    direction = 1 if net_adds > 0 else -1
+    magnitude = min(5.0, abs(net_adds) / 25.0)
+    return [_signal(
+        source="Sleeper trends",
+        kind="fantasy_market",
+        projection_delta=direction * min(1.5, magnitude * 0.25),
+        confidence_delta=direction * min(4.0, magnitude),
+        score=direction * min(4.0, magnitude),
+        message=(
+            f"Sleeper trend net {net_adds:+d} adds "
+            f"({trend.get('add_count', 0)} adds, {trend.get('drop_count', 0)} drops)."
+        ),
+    )]
+
+
+def _balldontlie_stat_signals(payload: PropPayload) -> list[dict]:
+    try:
+        signal = balldontlie.stat_signal(payload.player, payload.stat, payload.sport)
+    except Exception:
+        signal = None
+    if not signal or signal.get("sample_size", 0) < 2:
+        return []
+    average = float(signal.get("average") or 0.0)
+    difference = average - payload.line
+    if abs(difference) < 0.2:
+        return []
+    confidence_delta = max(-5.0, min(5.0, difference * 0.8))
+    return [_signal(
+        source="Ball Don't Lie stats",
+        kind="player_stats",
+        projection_delta=difference * 0.35,
+        confidence_delta=confidence_delta,
+        score=confidence_delta,
+        message=f"Ball Don't Lie average {average:.1f} over {signal.get('sample_size', 0)} stat rows.",
+    )]
+
+
+def _news_context_signals(payload: PropPayload) -> list[dict]:
+    query = f'"{payload.player}" {payload.sport} {payload.team}'.strip()
+    try:
+        articles = newsapi.fetch_context(query, days=7, page_size=5)
+    except Exception:
+        articles = []
+    if not articles:
+        return []
+    terms = newsapi.risk_terms(articles)
+    if not terms:
+        return [_signal(
+            source="NewsAPI",
+            kind="news_context",
+            projection_delta=0.0,
+            confidence_delta=1.0,
+            score=1.0,
+            message=f"{len(articles)} recent news articles found with no obvious risk terms.",
+        )]
+    penalty = -3.0 if any(term in terms for term in {"injury", "rest", "weather"}) else -1.0
+    return [_signal(
+        source="NewsAPI",
+        kind="news_context",
+        projection_delta=penalty * 0.25,
+        confidence_delta=penalty,
+        score=penalty,
+        message=f"Recent news mentions possible {', '.join(terms)} context.",
+    )]
+
+
+def _weather_signals(payload: PropPayload) -> list[dict]:
+    try:
+        weather = openweather.fetch_weather_for_game(payload.game, payload.sport)
+        weather_risk = openweather.weather_signal(weather)
+    except Exception:
+        weather_risk = None
+    if not weather_risk:
+        return []
+    impact = float(weather_risk.get("impact") or -2.0)
+    return [_signal(
+        source="OpenWeather",
+        kind="weather",
+        projection_delta=impact * 0.25,
+        confidence_delta=impact,
+        score=impact,
+        message=str(weather_risk.get("message", "Outdoor weather may increase variance.")),
     )]
 
 
