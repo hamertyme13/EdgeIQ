@@ -2,6 +2,8 @@ const state = {
   entryProps: [],
   lastEntryPayload: null,
   lastAnalysis: null,
+  recommendationOrigin: false,
+  commandCards: [],
 };
 
 window.EdgeIQLoaded = true;
@@ -52,6 +54,39 @@ function pct(value) {
   return `${Number(value || 0).toFixed(1)}%`;
 }
 
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const month = date.toLocaleString(undefined, { month: "long" });
+  const day = date.getDate();
+  const year = date.getFullYear();
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const suffix = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12 || 12;
+  return `${month} ${day}, ${year} ${hours}:${minutes} ${suffix}`;
+}
+
+function propPickText(prop) {
+  const direction = prop.direction || "Over";
+  return `${prop.player} ${direction} ${prop.stat} ${prop.line}`;
+}
+
+function shortPropPickText(prop) {
+  return `${prop.player} ${prop.direction || "Over"} ${prop.stat}`;
+}
+
+function syncDefaultInputs() {
+  const defaults = JSON.parse(localStorage.getItem("edgeiq.onboarding") || "{}");
+  if (defaults.platform && $("props-platform")) $("props-platform").value = defaults.platform;
+  if (defaults.platform && $("entry-platform")) $("entry-platform").value = defaults.platform;
+  if (defaults.sport && $("props-sport")) $("props-sport").value = defaults.sport;
+  if (defaults.defaultWager && $("entry-wager")) $("entry-wager").value = defaults.defaultWager;
+  if (defaults.risk === "conservative" && $("entry-multiplier")) $("entry-multiplier").value = "2";
+  if (defaults.risk === "aggressive" && $("entry-multiplier")) $("entry-multiplier").value = "5";
+}
+
 function setView(viewId) {
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.remove("active"));
@@ -61,12 +96,15 @@ function setView(viewId) {
 }
 
 function renderStats(stats) {
+  const accuracy = stats.recommendation_accuracy || {};
   const items = [
     ["Record", stats.record],
     ["Win %", stats.wins + stats.losses ? pct((stats.wins / (stats.wins + stats.losses)) * 100) : "0.0%"],
     ["Net Profit", money(stats.profit)],
     ["ROI", pct(stats.roi)],
     ["Bankroll", money(stats.bankroll)],
+    ["Deposits", money(stats.bankroll_transactions?.deposits)],
+    ["Withdrawals", money(stats.bankroll_transactions?.withdrawals)],
     ["Wagered", money(stats.wagered)],
     ["Pending Entry Exposure", money(stats.pending_entry_exposure)],
     ["Current Streak", stats.current_streak > 0 ? `W${stats.current_streak}` : stats.current_streak < 0 ? `L${Math.abs(stats.current_streak)}` : "-"],
@@ -78,11 +116,240 @@ function renderStats(stats) {
       <div class="stat-label">${label}</div>
     </div>
   `).join("");
+  $("recommendation-accuracy").innerHTML = `
+    <div class="recommendation-accuracy-header">
+      <div>
+        <h2>EdgeIQ Recommendation Accuracy</h2>
+        <p>Entries placed from EdgeIQ recommendations</p>
+      </div>
+      <div class="grade">${pct(accuracy.accuracy || 0)}</div>
+    </div>
+    <div class="accuracy-grid">
+      <div><strong>${accuracy.wins || 0}-${accuracy.losses || 0}</strong><span>Win/Loss</span></div>
+      <div><strong>${accuracy.pending || 0}</strong><span>Pending</span></div>
+      <div><strong>${accuracy.pushes || 0}</strong><span>Pushes</span></div>
+      <div><strong>${accuracy.tracked || 0}</strong><span>Tracked</span></div>
+    </div>
+  `;
 }
 
 async function loadDashboard() {
   const stats = await api("/api/dashboard");
   renderStats(stats);
+}
+
+async function loadCommandCenter() {
+  $("command-center-status").textContent = "Scanning props, slips, calibration, and bankroll...";
+  const platform = $("props-platform").value;
+  const sport = $("props-sport").value;
+  const data = await api(`/api/dashboard/command-center?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
+  state.commandCards = data.cards || [];
+  renderCommandCenter(data);
+  renderModelHealth(data.model_health);
+}
+
+function renderCommandCenter(data) {
+  $("command-center-status").textContent = `${data.cards.length} release-ready recommendations · ${data.sport}`;
+  $("command-center-list").innerHTML = data.cards.map((card, index) => `
+    <div class="command-card">
+      <div class="suggestion-top">
+        <span class="pill">${card.title}</span>
+        <strong>${card.grade} · ${card.score}</strong>
+      </div>
+      <h3>${card.action}</h3>
+      <p>${card.summary}</p>
+      <div class="command-leg-list">
+        ${card.props.slice(0, 5).map((prop) => `<span>${shortPropPickText(prop)} <b>${prop.line}</b></span>`).join("")}
+      </div>
+      ${card.warnings && card.warnings.length ? `<p class="warning">${card.warnings.join(" · ")}</p>` : ""}
+      <div class="button-row">
+        ${card.suggestion ? `<button class="secondary" data-load-command="${index}">Load Slip</button>` : `<button class="secondary" data-load-command-single="${index}">Load Single</button>`}
+        <button class="secondary" data-explain-command="${index}">Why?</button>
+      </div>
+    </div>
+  `).join("") || `<div class="suggestion">No command-center recommendations are available for this filter.</div>`;
+  $("command-center-avoid").innerHTML = data.avoid && data.avoid.length
+    ? `<strong>Watchlist:</strong> ${data.avoid.map(propPickText).join(" · ")}`
+    : `<strong>Watchlist:</strong> No obvious avoid flags on the visible board.`;
+  document.querySelectorAll("[data-load-command]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = state.commandCards[Number(button.dataset.loadCommand)];
+      renderEntryPropsFromAnalyzed(card.suggestion.entry.props);
+      state.recommendationOrigin = true;
+      setView("entries");
+      $("entry-status").textContent = `Loaded ${card.title}. Analyze/place when ready.`;
+    });
+  });
+  document.querySelectorAll("[data-load-command-single]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = state.commandCards[Number(button.dataset.loadCommandSingle)];
+      renderEntryPropsFromAnalyzed(card.props);
+      state.recommendationOrigin = true;
+      setView("entries");
+      $("entry-status").textContent = `Loaded ${card.title}. Add another prop to place an entry.`;
+    });
+  });
+  document.querySelectorAll("[data-explain-command]").forEach((button) => {
+    button.addEventListener("click", () => openExplanationDrawer(state.commandCards[Number(button.dataset.explainCommand)].explanation));
+  });
+}
+
+function renderModelHealth(health) {
+  if (!health) return;
+  $("model-health-score").textContent = Math.round(health.trust_score || 0);
+  $("model-health-detail").classList.remove("muted-card");
+  $("model-health-detail").innerHTML = `
+    <div class="suggestion-top">
+      <strong>${health.status}</strong>
+      <span class="subtle">${health.settled_entries} settled entries · ${health.calibrated_picks} calibrated picks</span>
+    </div>
+    <div class="health-bars">
+      ${Object.entries(health.components || {}).map(([name, value]) => `
+        <div>
+          <span>${name.replaceAll("_", " ")}</span>
+          <div class="health-bar"><i style="width:${Math.max(0, Math.min(100, Number(value || 0)))}%"></i></div>
+        </div>
+      `).join("")}
+    </div>
+    <p>${health.next_steps && health.next_steps.length ? health.next_steps[0] : "Model inputs look healthy."}</p>
+  `;
+}
+
+async function loadModelHealth() {
+  const data = await api("/api/analytics/model-health");
+  renderModelHealth(data);
+}
+
+async function loadTimingAlerts() {
+  $("timing-alert-status").textContent = "Checking EV, line movement, and confidence...";
+  const platform = $("props-platform").value;
+  const sport = $("props-sport").value;
+  const data = await api(`/api/market/timing-alerts?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
+  $("timing-alert-status").textContent = data.count
+    ? `${data.count} timing alerts · ${data.sport}`
+    : "No market timing alerts for this filter.";
+  $("timing-alert-list").innerHTML = data.alerts.map((alert, index) => `
+    <div class="timing-alert timing-${alert.severity}">
+      <div class="suggestion-top">
+        <span class="pill">${alert.type}</span>
+        <strong>${alert.action}</strong>
+        <span class="subtle">Score ${alert.priority_score}</span>
+      </div>
+      <p><strong>${alert.player}</strong> · ${alert.direction} ${alert.stat} ${alert.line} · ${alert.platform} ${alert.sport}</p>
+      <p>${alert.reason}</p>
+      <div class="timing-metrics">
+        <span>EV ${alert.expected_value > 0 ? "+" : ""}${pct(alert.expected_value)}</span>
+        <span>Conf ${pct(alert.confidence)}</span>
+        <span>Edge ${Number(alert.edge || 0).toFixed(2)}</span>
+        <span>Move ${formatMovement(alert.movement)}</span>
+      </div>
+      <button class="secondary" data-load-timing-alert="${index}">Load Prop</button>
+    </div>
+  `).join("") || `<div class="suggestion">No timing alerts yet. Refresh props over time to build line history.</div>`;
+  document.querySelectorAll("[data-load-timing-alert]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const alert = data.alerts[Number(button.dataset.loadTimingAlert)];
+      addFeedProp({
+        player: alert.player,
+        team: alert.player,
+        league: alert.sport,
+        stat: alert.stat,
+        line: alert.line,
+        projection: alert.projection,
+        direction: alert.direction,
+        platform: alert.platform,
+        game: alert.game,
+        trending_count: 0,
+      });
+      $("entry-status").textContent = `Loaded market timing alert: ${alert.player} ${alert.direction} ${alert.stat}.`;
+    });
+  });
+}
+
+function openExplanationDrawer(explanation) {
+  if (!explanation) return;
+  $("drawer-title").textContent = explanation.title || "Why this pick?";
+  $("drawer-content").innerHTML = `
+    <div class="grade">${explanation.grade || "-"}</div>
+    <p>${explanation.summary || ""}</p>
+    <div class="stats-grid" style="margin-top:14px">
+      <div class="stat-card"><div class="stat-value">${Number(explanation.score || 0).toFixed(1)}</div><div class="stat-label">Score</div></div>
+      <div class="stat-card"><div class="stat-value">${pct(explanation.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
+      <div class="stat-card"><div class="stat-value">${Number(explanation.average_edge || 0).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
+      <div class="stat-card"><div class="stat-value">${explanation.source_count || 0}</div><div class="stat-label">Data Sources</div></div>
+    </div>
+    <h3>Leg Breakdown</h3>
+    <div class="suggestion-list">
+      ${(explanation.legs || []).map((leg) => `
+        <div class="suggestion compact-suggestion">
+          <div class="suggestion-top">
+            <strong>${leg.player}</strong>
+            <span class="subtle">${leg.platform} · ${leg.sport}</span>
+          </div>
+          <p>${leg.pick} · Projection ${leg.projection ?? "-"} · Confidence ${pct(leg.confidence)} · Edge ${Number(leg.edge || 0).toFixed(2)}</p>
+        </div>
+      `).join("")}
+    </div>
+    ${(explanation.signals || []).length ? `
+      <h3>Source Signals</h3>
+      <div class="suggestion-list">
+        ${explanation.signals.map((signal) => `
+          <div class="suggestion compact-suggestion">
+            <strong>${signal.source} · ${signal.player}</strong>
+            <p>${signal.message}</p>
+          </div>
+        `).join("")}
+      </div>
+    ` : ""}
+    ${(explanation.warnings || []).length ? `<p class="warning">${explanation.warnings.join(" · ")}</p>` : ""}
+  `;
+  $("recommendation-drawer").hidden = false;
+}
+
+function closeExplanationDrawer() {
+  $("recommendation-drawer").hidden = true;
+}
+
+function suggestionExplanation(suggestion, title = "Suggested Entry") {
+  const props = suggestion.entry?.props || [];
+  const avgConfidence = props.length ? props.reduce((sum, prop) => sum + Number(prop.confidence || 0), 0) / props.length : 0;
+  const avgEdge = props.length ? props.reduce((sum, prop) => sum + Number(prop.edge || 0), 0) / props.length : 0;
+  return {
+    title,
+    summary: `${suggestion.leg_count || props.length}-leg ${suggestion.risk_tier || "Standard"} recommendation from EdgeIQ's optimizer.`,
+    grade: suggestion.grade,
+    score: suggestion.score,
+    average_confidence: avgConfidence,
+    average_edge: avgEdge,
+    source_count: new Set(props.flatMap((prop) => (prop.source_signals || []).map((signal) => signal.source))).size,
+    sources: [],
+    signals: props.flatMap((prop) => (prop.source_signals || []).map((signal) => ({ ...signal, player: prop.player }))).slice(0, 5),
+    warnings: suggestion.warnings || [],
+    legs: props.map((prop) => ({
+      player: prop.player,
+      pick: `${prop.direction || "Over"} ${prop.stat} ${prop.line}`,
+      projection: prop.projection,
+      confidence: prop.confidence,
+      edge: prop.edge,
+      platform: prop.platform,
+      sport: prop.sport,
+    })),
+  };
+}
+
+function syncMobileSlip() {
+  const count = state.entryProps.length;
+  $("mobile-slip-count").textContent = count;
+  $("mobile-slip-summary").textContent = count ? `${count} leg${count === 1 ? "" : "s"} loaded` : "No props loaded";
+  $("mobile-slip-legs").innerHTML = state.entryProps.map((prop, index) => `
+    <div class="mobile-slip-leg">
+      <span>${index + 1}</span>
+      <strong>${shortPropPickText(prop)}</strong>
+      <small>${prop.line} · ${prop.projection == null ? "Auto" : prop.projection}</small>
+    </div>
+  `).join("") || `<p class="subtle">Load a recommendation or add props from the board.</p>`;
+  if ($("entry-wager").value && !$("mobile-slip-wager").value) $("mobile-slip-wager").value = $("entry-wager").value;
+  if ($("entry-multiplier").value && !$("mobile-slip-multiplier").value) $("mobile-slip-multiplier").value = $("entry-multiplier").value;
 }
 
 async function loadEntryProgress() {
@@ -94,16 +361,22 @@ async function loadEntryProgress() {
     <div class="suggestion">
       <div class="suggestion-top">
         <span class="pill">#${entry.id}</span>
-        <strong>${entry.projected_result}</strong>
+        <strong class="${entry.live_result === "Loss" ? "danger-text" : ""}">${entry.live_result}</strong>
         <span class="subtle">${entry.completed_legs}/${entry.total_legs} legs final · ${entry.source}</span>
       </div>
-      <p>Confidence ${pct(entry.average_confidence)} · Edge ${Number(entry.average_edge).toFixed(2)} · ${entry.placed_at || ""}</p>
+      <p>Confidence ${pct(entry.average_confidence)} · Edge ${Number(entry.average_edge).toFixed(2)} · Projected ${entry.projected_result} · ${formatDateTime(entry.placed_at)}</p>
       <div class="progress-legs">
         ${entry.legs.map((leg) => `
           <div class="progress-leg">
             <strong>${leg.player}</strong>
-            <span>${leg.stat} ${leg.line}</span>
-            <span>${leg.progress_text}</span>
+            <span>${leg.direction || "Over"} ${leg.stat} ${leg.line}</span>
+            <span>
+              <span>${leg.progress_text}</span>
+              <span class="leg-meter" aria-label="${leg.progress_label}">
+                <span class="leg-meter-fill ${leg.status === "Win" ? "is-win" : leg.status === "Loss" ? "is-loss" : ""}" style="width:${Math.min(100, Number(leg.progress_percent || 0))}%"></span>
+              </span>
+            </span>
+            <span class="${leg.clv && leg.clv.clv < 0 ? "danger-text" : ""}">CLV ${leg.clv && leg.clv.clv != null ? Number(leg.clv.clv).toFixed(1) : "-"}</span>
             <span class="${leg.status === "Loss" ? "danger-text" : ""}">${leg.status}</span>
           </div>
         `).join("")}
@@ -116,11 +389,7 @@ async function loadProps() {
   $("props-status").textContent = "Loading props...";
   const platform = $("props-platform").value;
   const sport = $("props-sport").value;
-  const [data] = await Promise.all([
-    api(`/api/props/top?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`),
-    loadDashboardParlay(platform, sport),
-    loadTrendingGames(platform, sport),
-  ]);
+  const data = await api(`/api/props/top?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
   $("props-status").textContent = sport === "All Sports"
     ? `Showing up to ${data.per_sport_limit} unique-player props per sport`
     : `Showing top ${data.props.length} unique-player ${sport} props`;
@@ -132,6 +401,7 @@ async function loadProps() {
         <button class="link-button" data-player-detail="${index}">${prop.player}</button>
         <button class="micro-button" data-add-prop="${index}">+</button>
       </td>
+      <td>${prop.direction || "Over"}</td>
       <td>${prop.league || ""}</td>
       <td>${prop.stat || ""}</td>
       <td>${prop.line ?? "-"}</td>
@@ -146,6 +416,12 @@ async function loadProps() {
   document.querySelectorAll("[data-player-detail]").forEach((button) => {
     button.addEventListener("click", () => loadPlayerDetail(data.props[Number(button.dataset.playerDetail)]));
   });
+  Promise.allSettled([
+    loadDashboardParlay(platform, sport),
+    loadTrendingGames(platform, sport),
+    loadCommandCenter(),
+    loadTimingAlerts(),
+  ]);
 }
 
 async function askAiParlay() {
@@ -162,7 +438,7 @@ async function askAiParlay() {
   });
   $("ai-parlay-status").textContent = data.ai_enabled
     ? `OpenAI assisted · ${data.model}`
-    : `Rules fallback${data.ai_error ? ` · ${data.ai_error}` : " · add OPENAI_API_KEY to enable AI"}`;
+    : `Data fallback · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs${data.ai_error ? ` · ${data.ai_error}` : ""}`;
   $("ai-parlay-response").classList.remove("muted-card");
   $("ai-parlay-response").innerHTML = `
     <p>${data.message}</p>
@@ -171,6 +447,7 @@ async function askAiParlay() {
   if (data.suggestion) {
     $("load-ai-parlay").addEventListener("click", () => {
       renderEntryPropsFromAnalyzed(data.suggestion.entry.props);
+      state.recommendationOrigin = true;
       setView("entries");
       $("entry-status").textContent = "Loaded AI parlay suggestion. Analyze/place when ready.";
     });
@@ -227,15 +504,20 @@ function renderDashboardParlay(suggestion) {
       </div>
       <span class="subtle">Score ${suggestion.score}</span>
     </div>
-    <p>${suggestion.entry.props.map((prop) => `${prop.player} ${prop.stat} ${prop.line}`).join(" + ")}</p>
+    <p>${suggestion.entry.props.map(propPickText).join(" + ")}</p>
     ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
-    <button class="secondary" id="load-dashboard-parlay">Load Parlay</button>
+    <div class="button-row">
+      <button class="secondary" id="load-dashboard-parlay">Load Parlay</button>
+      <button class="secondary" id="explain-dashboard-parlay">Why?</button>
+    </div>
   `;
   $("load-dashboard-parlay").addEventListener("click", () => {
     renderEntryPropsFromAnalyzed(suggestion.entry.props);
+    state.recommendationOrigin = true;
     setView("entries");
     $("entry-status").textContent = "Loaded recommended 3-leg parlay. Analyze/place when ready.";
   });
+  $("explain-dashboard-parlay").addEventListener("click", () => openExplanationDrawer(suggestionExplanation(suggestion, "Best 3-Leg")));
 }
 
 async function loadPlayerDetail(prop) {
@@ -261,7 +543,7 @@ async function loadPlayerDetail(prop) {
           ${data.props.map((playerProp, index) => `
             <tr>
               <td>${playerProp.platform}</td>
-              <td>${playerProp.stat}</td>
+              <td>${playerProp.direction || "Over"} ${playerProp.stat}</td>
               <td>${playerProp.line}</td>
               <td>${formatMovement(playerProp.line_movement)}</td>
               <td>${pct(playerProp.hit_rate.estimated_hit_rate)}</td>
@@ -299,6 +581,7 @@ function addFeedProp(prop) {
     stat: prop.stat || "Points",
     line: Number(prop.line || 0),
     projection: null,
+    direction: prop.direction || "Over",
     platform: prop.platform || $("entry-platform").value,
     game: prop.game || "",
     trending_count: Number(prop.trending_count || 0),
@@ -315,6 +598,7 @@ function renderEntryProps() {
     return `
       <tr>
         <td>${prop.player}</td>
+        <td>${prop.direction || "Over"}</td>
         <td>${prop.stat}</td>
         <td>${prop.line}</td>
         <td>${projection}</td>
@@ -332,6 +616,7 @@ function renderEntryProps() {
       renderEntryProps();
     });
   });
+  syncMobileSlip();
 }
 
 function propFromForm() {
@@ -343,6 +628,7 @@ function propFromForm() {
     stat: $("prop-stat").value,
     line: Number($("prop-line").value),
     projection: projectionValue === "" ? null : Number(projectionValue),
+    direction: $("prop-direction").value,
     platform: $("entry-platform").value,
     game: "",
     trending_count: 0,
@@ -354,6 +640,7 @@ function entryPayload() {
     platform: $("entry-platform").value,
     wager: Number($("entry-wager").value || 0),
     multiplier: Number($("entry-multiplier").value || 1),
+    recommended_by_app: state.recommendationOrigin || Boolean(state.lastAnalysis && state.lastAnalysis.recommendation && state.lastAnalysis.recommendation.grade !== "F"),
     props: state.entryProps,
   };
 }
@@ -361,6 +648,7 @@ function entryPayload() {
 function renderAnalysis(data) {
   const rec = data.recommendation;
   const risk = data.risk;
+  const components = rec.components || {};
   const warnings = data.warnings || [];
   const espn = data.espn_context || {};
   const fusion = data.source_fusion || {};
@@ -368,7 +656,7 @@ function renderAnalysis(data) {
     .filter((prop) => prop.espn && prop.espn.sample_size)
     .map((prop) => `
       <div class="suggestion compact-suggestion">
-        <strong>${prop.player} · ${prop.stat}</strong>
+        <strong>${propPickText(prop)}</strong>
         <p>${Number(prop.espn.hit_rate || 0).toFixed(1)}% hit · ${prop.espn.sample_size} ESPN games · Recent avg ${prop.espn.recent_average ?? "-"}</p>
         <p class="subtle">${prop.projection_source === "espn_recent_form" ? "Projection adjusted with ESPN recent form" : "Projection reviewed against ESPN history"} · Confidence ${prop.espn.confidence_adjustment >= 0 ? "+" : ""}${Number(prop.espn.confidence_adjustment || 0).toFixed(1)}</p>
       </div>
@@ -388,10 +676,12 @@ function renderAnalysis(data) {
     <h2>${rec.action}</h2>
     <p>${rec.reason}</p>
     <div class="stats-grid" style="margin-top:14px">
+      <div class="stat-card"><div class="stat-value">${Number(rec.score ?? 0).toFixed(1)}</div><div class="stat-label">Entry Score</div></div>
       <div class="stat-card"><div class="stat-value">${pct(risk.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
       <div class="stat-card"><div class="stat-value">${Number(risk.average_edge).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
       <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
     </div>
+    <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
     <div class="analysis-card ${espn.props_with_history ? "" : "muted-card"}" style="margin-top:14px">
       <h3>ESPN Form Assist</h3>
       <p>${espn.props_with_history || 0} props with ESPN history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% avg hit rate` : ""}</p>
@@ -415,6 +705,7 @@ async function analyzeEntry() {
   const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
   state.lastEntryPayload = payload;
   state.lastAnalysis = data;
+  state.recommendationOrigin = data.recommendation && data.recommendation.grade !== "F";
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
   $("ai-review-entry").disabled = false;
@@ -454,6 +745,7 @@ function renderEntryPropsFromAnalyzed(props) {
     stat: prop.stat,
     line: prop.line,
     projection: prop.projection,
+    direction: prop.direction || "Over",
     platform: prop.platform,
     game: prop.game,
     trending_count: prop.trending_count,
@@ -475,10 +767,13 @@ async function placeEntry() {
   $("entry-status").textContent = `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.`;
   state.entryProps = [];
   state.lastEntryPayload = null;
+  state.lastAnalysis = null;
+  state.recommendationOrigin = false;
   $("place-entry").disabled = true;
   renderEntryProps();
   await loadPending();
   await loadDashboard();
+  await loadCommandCenter();
 }
 
 async function loadSuggestions() {
@@ -489,20 +784,30 @@ async function loadSuggestions() {
   $("suggestions-list").innerHTML = data.suggestions.map((suggestion, index) => `
     <div class="suggestion">
       <div class="suggestion-top">
-        <span class="pill">#${suggestion.rank}</span>
+        <span class="pill">#${suggestion.rank} · ${suggestion.leg_count} Legs</span>
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
-        <span class="subtle">Score ${suggestion.score}</span>
+        <span class="subtle">${suggestion.risk_tier || "Standard"} · Score ${suggestion.score}</span>
       </div>
-      <p>${suggestion.entry.props.map((prop) => `${prop.player} ${prop.stat} ${prop.line}`).join(" + ")}</p>
+      <p>${suggestion.entry.props.map(propPickText).join(" + ")}</p>
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
-      <button class="secondary" data-load-suggestion="${index}">Load Suggestion</button>
+      <div class="button-row">
+        <button class="secondary" data-load-suggestion="${index}">Load Suggestion</button>
+        <button class="secondary" data-explain-suggestion="${index}">Why?</button>
+      </div>
     </div>
   `).join("") || `<div class="suggestion">No suggestions available.</div>`;
   document.querySelectorAll("[data-load-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadSuggestion)];
       renderEntryPropsFromAnalyzed(suggestion.entry.props);
-      $("entry-status").textContent = `Loaded suggestion #${suggestion.rank}. Analyze/place when ready.`;
+      state.recommendationOrigin = true;
+      $("entry-status").textContent = `Loaded ${suggestion.leg_count}-leg ${suggestion.risk_tier || "standard"} suggestion #${suggestion.rank}. Analyze/place when ready.`;
+    });
+  });
+  document.querySelectorAll("[data-explain-suggestion]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const suggestion = data.suggestions[Number(button.dataset.explainSuggestion)];
+      openExplanationDrawer(suggestionExplanation(suggestion, `Suggestion #${suggestion.rank}`));
     });
   });
 }
@@ -531,16 +836,26 @@ async function runOptimizer() {
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
         <span class="subtle">Score ${suggestion.score}</span>
       </div>
-      <p>${suggestion.entry.props.map((prop) => `${prop.player} ${prop.stat} ${prop.line}`).join(" + ")}</p>
+      <p>${suggestion.entry.props.map(propPickText).join(" + ")}</p>
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
-      <button class="secondary" data-load-optimized="${index}">Load Slip</button>
+      <div class="button-row">
+        <button class="secondary" data-load-optimized="${index}">Load Slip</button>
+        <button class="secondary" data-explain-optimized="${index}">Why?</button>
+      </div>
     </div>
   `).join("") || `<div class="suggestion">No optimized slips available.</div>`;
   document.querySelectorAll("[data-load-optimized]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadOptimized)];
       renderEntryPropsFromAnalyzed(suggestion.entry.props);
+      state.recommendationOrigin = true;
       $("entry-status").textContent = `Loaded optimized ${suggestion.leg_count}-leg slip #${suggestion.rank}.`;
+    });
+  });
+  document.querySelectorAll("[data-explain-optimized]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const suggestion = data.suggestions[Number(button.dataset.explainOptimized)];
+      openExplanationDrawer(suggestionExplanation(suggestion, `Optimized Slip #${suggestion.rank}`));
     });
   });
 }
@@ -554,9 +869,9 @@ async function loadPending() {
       <div class="suggestion-top">
         <span class="pill">#${entry.id}</span>
         <strong>${entry.platform}</strong>
-        <span class="subtle">${entry.placed_at || ""}</span>
+        <span class="subtle">${formatDateTime(entry.placed_at)}</span>
       </div>
-      <p>${entry.props.map((prop) => `${prop.player} ${prop.stat} ${prop.line}`).join(" + ")}</p>
+      <p>${entry.props.map(propPickText).join(" + ")}</p>
       <p>${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout</p>
       <div class="form-grid compact-controls">
         <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" />
@@ -617,6 +932,19 @@ async function autoCheckEntries() {
   await loadDashboard();
 }
 
+async function runSync() {
+  $("sync-status").textContent = "Syncing provider stats, imports, and pending entries...";
+  const data = await api("/api/sync/run", { method: "POST" });
+  const auto = data.auto_check || {};
+  const finalFile = data.final_stats_file || {};
+  const betFile = data.bet_history_file || {};
+  $("sync-status").textContent = `Sync complete: checked ${auto.checked || 0}, settled ${auto.settled || 0}, final rows ${finalFile.imported || 0}, bet rows ${betFile.imported || 0}.`;
+  await loadPending();
+  await loadDashboard();
+  await loadEntryProgress();
+  await loadPerformance();
+}
+
 async function classifyDefaultWagers() {
   $("auto-check-status").textContent = "Classifying missing entry wagers...";
   const data = await api("/api/entries/classify-default-wagers", { method: "POST" });
@@ -626,6 +954,98 @@ async function classifyDefaultWagers() {
   await loadPending();
   await loadDashboard();
   await loadPerformance();
+}
+
+async function shopLines(event) {
+  event.preventDefault();
+  const player = $("shop-player").value.trim();
+  const stat = $("shop-stat").value.trim();
+  if (!player || !stat) return;
+  const params = new URLSearchParams({
+    player,
+    stat,
+    sport: $("shop-sport").value,
+    platform: $("shop-platform").value,
+  });
+  if ($("shop-over-odds").value) params.set("over_odds", $("shop-over-odds").value);
+  if ($("shop-under-odds").value) params.set("under_odds", $("shop-under-odds").value);
+  const data = await api(`/api/market/line-shop?${params.toString()}`);
+  $("line-shop-result").classList.remove("muted-card");
+  if (!data.available) {
+    $("line-shop-result").innerHTML = `<h2>No Match</h2><p>${data.message}</p>`;
+    return;
+  }
+  $("line-shop-result").innerHTML = `
+    <div class="suggestion-top">
+      <div>
+        <span class="pill">${data.sport}</span>
+        <strong>${data.player} · ${data.stat}</strong>
+      </div>
+      <span class="subtle">${data.lines.length} books</span>
+    </div>
+    <div class="stats-grid" style="margin-top:14px">
+      <div class="stat-card"><div class="stat-value">${data.best_over.platform}</div><div class="stat-label">Best Over ${data.best_over.line}</div></div>
+      <div class="stat-card"><div class="stat-value">${data.best_under.platform}</div><div class="stat-label">Best Under ${data.best_under.line}</div></div>
+      <div class="stat-card"><div class="stat-value">${data.consensus_line}</div><div class="stat-label">Consensus Line</div></div>
+      <div class="stat-card"><div class="stat-value">${data.line_spread}</div><div class="stat-label">Line Spread</div></div>
+    </div>
+    <p>${data.value_note}</p>
+    ${data.no_vig ? `<p>No-vig fair price: Over ${pct(data.no_vig.over_probability)} (${data.no_vig.over_fair_odds}) · Under ${pct(data.no_vig.under_probability)} (${data.no_vig.under_fair_odds}) · Hold ${pct(data.no_vig.hold)}</p>` : `<p class="subtle">Add over and under odds to calculate a no-vig fair price.</p>`}
+  `;
+}
+
+async function runEvScanner(event) {
+  event.preventDefault();
+  $("ev-scanner-result").classList.add("muted-card");
+  $("ev-scanner-result").textContent = "Scanning the board...";
+  const params = new URLSearchParams({
+    platform: $("scan-platform").value,
+    sport: $("scan-sport").value,
+    min_ev: $("scan-min-ev").value || "0",
+    odds: $("scan-odds").value || "-110",
+    limit: "25",
+  });
+  const data = await api(`/api/market/ev-scanner?${params.toString()}`);
+  $("ev-scanner-result").classList.remove("muted-card");
+  $("ev-scanner-result").innerHTML = data.props.map((prop, index) => `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <span class="pill">#${index + 1} · ${prop.expected_value > 0 ? "+" : ""}${pct(prop.expected_value)} EV</span>
+        <strong>${prop.player}</strong>
+        <span class="subtle">${prop.platform}</span>
+      </div>
+      <p>${prop.sport} · ${prop.direction || "Over"} ${prop.stat} ${prop.line} · Projection ${prop.projection} · Hit ${pct(prop.estimated_probability)}</p>
+      <p class="subtle">Best over ${prop.best_over?.platform || "-"} ${prop.best_over?.line ?? "-"} · Consensus ${prop.consensus_line ?? "-"}</p>
+      <button class="secondary" data-load-scan-prop="${index}">Add Prop</button>
+    </div>
+  `).join("") || `<div class="suggestion">No props met the EV filter.</div>`;
+  document.querySelectorAll("[data-load-scan-prop]").forEach((button) => {
+    button.addEventListener("click", () => addFeedProp({
+      ...data.props[Number(button.dataset.loadScanProp)],
+      league: data.props[Number(button.dataset.loadScanProp)].sport,
+    }));
+  });
+}
+
+async function loadClvReport() {
+  const data = await api("/api/market/clv");
+  $("clv-result").classList.remove("muted-card");
+  $("clv-result").innerHTML = `
+    <div class="stats-grid" style="margin-top:0">
+      <div class="stat-card"><div class="stat-value">${Number(data.average_clv).toFixed(2)}</div><div class="stat-label">Avg CLV</div></div>
+      <div class="stat-card"><div class="stat-value">${pct(data.positive_clv_rate)}</div><div class="stat-label">Positive CLV</div></div>
+      <div class="stat-card"><div class="stat-value">${data.tracked_legs}</div><div class="stat-label">Tracked Legs</div></div>
+    </div>
+    ${data.entries.slice(0, 8).map((entry) => `
+      <div class="suggestion compact-suggestion">
+        <div class="suggestion-top">
+          <strong>Entry #${entry.id}</strong>
+          <span class="subtle">${entry.status} ${entry.result || ""}</span>
+        </div>
+        <p>Avg CLV ${Number(entry.average_clv).toFixed(2)} · ${entry.positive_legs}/${entry.legs.length} positive legs</p>
+      </div>
+    `).join("") || `<div class="suggestion">No CLV data yet.</div>`}
+  `;
 }
 
 async function calculateEv(event) {
@@ -764,7 +1184,7 @@ function renderUploadResult(data) {
     <tr>
       <td>${prop.player}</td>
       <td>${prop.sport}</td>
-      <td>${prop.stat}</td>
+      <td>${prop.direction || "Over"} ${prop.stat}</td>
       <td>${prop.line}</td>
       <td>${prop.platform || ""}</td>
     </tr>
@@ -773,7 +1193,7 @@ function renderUploadResult(data) {
   $("upload-result").innerHTML = `
     <h2>${data.prop_count ?? data.imported ?? 0}</h2>
     <p>${data.message}</p>
-    ${data.ai_enabled === false ? `<p class="warning">Add OPENAI_API_KEY to .env to extract props from screenshots.</p>` : ""}
+    ${data.ai_enabled === false ? `<p class="warning">Add OPENAI_API_KEY to .env to analyze screenshots.</p>` : ""}
     ${props.length ? `
       <div class="table-wrap compact">
         <table>
@@ -841,10 +1261,167 @@ function renderGroup(target, group) {
   const rows = Object.entries(group || {}).map(([name, stats]) => `
     <div class="suggestion">
       <strong>${name}</strong>
-      <p>${stats.bets} bets · ${pct(stats.win_pct)} win · ${money(stats.profit)} profit · ${pct(stats.roi)} ROI</p>
+      <p>${stats.bets || 0} bets · ${stats.entries || 0} entries · ${pct(stats.win_pct)} win · ${money(stats.profit)} profit · ${pct(stats.roi)} ROI</p>
     </div>
   `).join("");
   $(target).innerHTML = rows || `<p>No data yet.</p>`;
+}
+
+const PIE_COLORS = ["#39ff88", "#19e6ff", "#7c3cff", "#f8c14a", "#ff4d6d", "#9aa6ff", "#27d69b", "#f27dd4"];
+
+function renderSportSuccessPie(group) {
+  const rows = Object.entries(group || {})
+    .map(([sport, stats]) => ({
+      sport,
+      wins: Number(stats.wins || 0),
+      losses: Number(stats.losses || 0),
+      pushes: Number(stats.pushes || 0),
+      profit: Number(stats.profit || 0),
+      roi: Number(stats.roi || 0),
+      decisions: Number(stats.wins || 0) + Number(stats.losses || 0),
+      winPct: Number(stats.win_pct || 0),
+    }))
+    .filter((row) => row.decisions > 0)
+    .sort((a, b) => b.decisions - a.decisions || b.winPct - a.winPct)
+    .slice(0, 8);
+
+  const pie = $("sport-success-pie");
+  const legend = $("sport-success-legend");
+  if (!rows.length) {
+    pie.style.background = "rgba(16, 21, 34, .92)";
+    pie.innerHTML = `<span>No Data</span>`;
+    legend.innerHTML = `<div class="suggestion">Settle bets or entries to build the sport success chart.</div>`;
+    return;
+  }
+
+  const total = rows.reduce((sum, row) => sum + row.decisions, 0);
+  let cursor = 0;
+  const stops = rows.map((row, index) => {
+    const start = cursor;
+    cursor += (row.decisions / total) * 100;
+    const color = PIE_COLORS[index % PIE_COLORS.length];
+    return `${color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`;
+  });
+  pie.style.background = `conic-gradient(${stops.join(", ")})`;
+  pie.innerHTML = `<span>${rows[0].sport}<small>${pct(rows[0].winPct)}</small></span>`;
+  legend.innerHTML = rows.map((row, index) => `
+    <div class="pie-legend-row">
+      <span class="pie-swatch" style="background:${PIE_COLORS[index % PIE_COLORS.length]}"></span>
+      <strong>${row.sport}</strong>
+      <span>${row.wins}-${row.losses}${row.pushes ? `-${row.pushes}` : ""}</span>
+      <span>${pct(row.winPct)}</span>
+      <span class="${row.profit < 0 ? "danger-text" : ""}">${money(row.profit)}</span>
+    </div>
+  `).join("");
+}
+
+function renderPerformanceInsights(insights) {
+  $("performance-insights").innerHTML = (insights || []).map((insight) => `
+    <div class="suggestion insight-${insight.tone || "neutral"}">
+      <div class="suggestion-top">
+        <strong>${insight.title}</strong>
+        <span class="subtle">${insight.tone || "neutral"}</span>
+      </div>
+      <p>${insight.summary}</p>
+    </div>
+  `).join("") || `<div class="suggestion">No insights available yet.</div>`;
+}
+
+async function loadBankrollTransactions() {
+  const data = await api("/api/bankroll/transactions");
+  const summary = data.summary || {};
+  $("bankroll-ledger-status").textContent = `Deposits ${money(summary.deposits)} · Withdrawals ${money(summary.withdrawals)} · Net ${money(summary.net)}`;
+  $("bankroll-transaction-list").innerHTML = (data.transactions || []).slice(0, 8).map((transaction) => `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${transaction.transaction_type}</strong>
+        <span class="subtle">${formatDateTime(transaction.created_at)}</span>
+      </div>
+      <p>${money(transaction.amount)}${transaction.note ? ` · ${transaction.note}` : ""}</p>
+    </div>
+  `).join("") || `<div class="suggestion">No bankroll transactions yet.</div>`;
+}
+
+async function saveBankrollTransaction(event) {
+  event.preventDefault();
+  const payload = {
+    transaction_type: $("bankroll-transaction-type").value,
+    amount: Number($("bankroll-transaction-amount").value),
+    note: $("bankroll-transaction-note").value.trim(),
+  };
+  if (!payload.amount || payload.amount <= 0) return;
+  await api("/api/bankroll/transactions", { method: "POST", body: JSON.stringify(payload) });
+  $("bankroll-transaction-form").reset();
+  await loadBankrollTransactions();
+  await loadDashboard();
+  await loadPerformance();
+}
+
+function showOnboardingIfNeeded() {
+  const stored = localStorage.getItem("edgeiq.onboardingComplete");
+  syncDefaultInputs();
+  if (!stored) {
+    $("onboarding-modal").hidden = false;
+  }
+}
+
+async function saveOnboarding(event) {
+  event.preventDefault();
+  const setup = {
+    bankroll: Number($("onboarding-bankroll").value || 0),
+    platform: $("onboarding-platform").value,
+    sport: $("onboarding-sport").value,
+    risk: $("onboarding-risk").value,
+    defaultWager: Number($("onboarding-default-wager").value || 0),
+  };
+  localStorage.setItem("edgeiq.onboarding", JSON.stringify(setup));
+  localStorage.setItem("edgeiq.onboardingComplete", "true");
+  if (setup.bankroll > 0) {
+    await api("/api/settings/bankroll", {
+      method: "POST",
+      body: JSON.stringify({ amount: setup.bankroll }),
+    });
+  }
+  $("onboarding-modal").hidden = true;
+  syncDefaultInputs();
+  await loadDashboard();
+  await loadCommandCenter();
+}
+
+function skipOnboarding() {
+  localStorage.setItem("edgeiq.onboardingComplete", "true");
+  $("onboarding-modal").hidden = true;
+}
+
+function openHistoryUploadFromOnboarding() {
+  localStorage.setItem("edgeiq.onboardingComplete", "true");
+  $("onboarding-modal").hidden = true;
+  setView("analysis");
+  $("upload-target").value = "bet_history";
+  $("upload-file").focus();
+}
+
+function toggleMobileSlip() {
+  const panel = $("mobile-slip-panel");
+  panel.hidden = !panel.hidden;
+  syncMobileSlip();
+}
+
+async function mobileAnalyzeEntry() {
+  if ($("mobile-slip-wager").value) $("entry-wager").value = $("mobile-slip-wager").value;
+  if ($("mobile-slip-multiplier").value) $("entry-multiplier").value = $("mobile-slip-multiplier").value;
+  await analyzeEntry();
+  $("mobile-slip-panel").hidden = true;
+}
+
+async function mobilePlaceEntry() {
+  if ($("mobile-slip-wager").value) $("entry-wager").value = $("mobile-slip-wager").value;
+  if ($("mobile-slip-multiplier").value) $("entry-multiplier").value = $("mobile-slip-multiplier").value;
+  if (!state.lastEntryPayload && state.entryProps.length >= 2) {
+    await analyzeEntry();
+  }
+  await placeEntry();
+  $("mobile-slip-panel").hidden = true;
 }
 
 async function loadPerformance() {
@@ -862,8 +1439,23 @@ async function loadPerformance() {
   renderGroup("perf-sport", data.by_sport);
   renderGroup("perf-stat", data.by_stat);
   renderGroup("perf-platform", data.by_platform);
+  renderSportSuccessPie(data.by_sport);
+  renderPerformanceInsights(data.summary.performance_insights);
   renderEntryPerformance(data.entries);
+  renderEntryPlatformProfitability(data.summary.entry_platform_profitability || data.entries.platform_profitability || []);
   await loadBacktest();
+}
+
+function renderEntryPlatformProfitability(platforms) {
+  $("entry-platform-profitability").innerHTML = platforms.map((platform) => `
+    <div class="suggestion">
+      <div class="suggestion-top">
+        <strong>#${platform.rank} ${platform.platform}</strong>
+        <span class="subtle">${platform.entries} settled entries</span>
+      </div>
+      <p>${money(platform.profit)} profit · ${money(platform.wagered)} wagered · ${pct(platform.roi)} ROI · ${pct(platform.win_pct)} win</p>
+    </div>
+  `).join("") || `<div class="suggestion">No settled platform entries yet.</div>`;
 }
 
 function renderEntryPerformance(entries) {
@@ -919,7 +1511,10 @@ function bindEvents() {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
   $("refresh-all").addEventListener("click", loadAll);
+  $("refresh-command-center").addEventListener("click", loadCommandCenter);
+  $("refresh-timing-alerts").addEventListener("click", loadTimingAlerts);
   $("refresh-progress").addEventListener("click", loadEntryProgress);
+  $("sync-now").addEventListener("click", runSync);
   $("refresh-games").addEventListener("click", () => loadTrendingGames());
   $("ask-ai-parlay").addEventListener("click", askAiParlay);
   $("load-props").addEventListener("click", loadProps);
@@ -937,6 +1532,8 @@ function bindEvents() {
   $("clear-entry").addEventListener("click", () => {
     state.entryProps = [];
     state.lastEntryPayload = null;
+    state.lastAnalysis = null;
+    state.recommendationOrigin = false;
     $("ai-review-entry").disabled = true;
     $("place-entry").disabled = true;
     renderEntryProps();
@@ -947,6 +1544,9 @@ function bindEvents() {
   $("classify-default-wagers").addEventListener("click", classifyDefaultWagers);
   $("save-dnp-handling").addEventListener("click", saveDnpSetting);
   $("auto-check-entries").addEventListener("click", autoCheckEntries);
+  $("line-shop-form").addEventListener("submit", shopLines);
+  $("ev-scanner-form").addEventListener("submit", runEvScanner);
+  $("load-clv").addEventListener("click", loadClvReport);
   $("ev-form").addEventListener("submit", calculateEv);
   $("line-movement-form").addEventListener("submit", loadLineMovement);
   $("hit-rate-form").addEventListener("submit", estimateHitRate);
@@ -955,18 +1555,34 @@ function bindEvents() {
   $("upload-analyzer-form").addEventListener("submit", analyzeUpload);
   $("bet-history-form").addEventListener("submit", importBetHistory);
   $("bet-form").addEventListener("submit", saveBet);
+  $("bankroll-transaction-form").addEventListener("submit", saveBankrollTransaction);
   $("refresh-bets").addEventListener("click", loadBets);
   $("refresh-backtest").addEventListener("click", loadBacktest);
+  document.querySelectorAll("[data-close-drawer]").forEach((button) => {
+    button.addEventListener("click", closeExplanationDrawer);
+  });
+  $("mobile-slip-toggle").addEventListener("click", toggleMobileSlip);
+  $("mobile-analyze-entry").addEventListener("click", mobileAnalyzeEntry);
+  $("mobile-place-entry").addEventListener("click", mobilePlaceEntry);
+  $("mobile-slip-wager").addEventListener("input", () => { $("entry-wager").value = $("mobile-slip-wager").value; });
+  $("mobile-slip-multiplier").addEventListener("input", () => { $("entry-multiplier").value = $("mobile-slip-multiplier").value; });
+  $("onboarding-form").addEventListener("submit", saveOnboarding);
+  $("onboarding-skip").addEventListener("click", skipOnboarding);
+  $("onboarding-upload-history").addEventListener("click", openHistoryUploadFromOnboarding);
 }
 
 async function loadAll() {
+  syncDefaultInputs();
   const results = await Promise.allSettled([
     loadDashboard(),
+    loadModelHealth(),
+    loadTimingAlerts(),
     loadEntryProgress(),
     loadProps(),
     loadDnpSetting(),
     loadPending(),
     loadBets(),
+    loadBankrollTransactions(),
     loadPerformance(),
   ]);
   const failure = results.find((result) => result.status === "rejected");
@@ -978,4 +1594,5 @@ async function loadAll() {
 }
 
 bindEvents();
+showOnboardingIfNeeded();
 loadAll();

@@ -37,43 +37,92 @@
 
         <section id="dashboard" class="view active">
           <div class="stats-grid" id="dashboard-stats"></div>
-          <div class="panel ai-parlay-panel">
-            <div class="panel-header">
-              <div>
-                <h2>AI Parlay Desk</h2>
-                <p id="ai-parlay-status">you need a parlay?</p>
+          <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
+          <div class="release-grid">
+            <div class="panel command-center-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Daily Command Center</p>
+                  <h2>Today's Best Moves</h2>
+                  <p id="command-center-status">Building the board...</p>
+                </div>
+                <button id="refresh-command-center" class="secondary">Refresh</button>
               </div>
-              <button id="ask-ai-parlay">Ask AI</button>
+              <div id="command-center-list" class="command-card-grid"></div>
+              <div id="command-center-avoid" class="avoid-strip"></div>
             </div>
-            <div class="chat-row">
-              <input id="ai-parlay-input" value="you need a parlay?" />
-            </div>
-            <div id="ai-parlay-response" class="analysis-card muted-card">Ask for the best 3-leg parlay for today.</div>
-          </div>
-          <div class="panel">
-            <div class="panel-header">
-              <div>
-                <h2>Live Entry Progress</h2>
-                <p id="entry-progress-status">Checking placed entries...</p>
+            <div class="panel model-health-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Model Trust</p>
+                  <h2>Calibration Health</h2>
+                </div>
+                <span id="model-health-score" class="health-orb">--</span>
               </div>
-              <button id="refresh-progress" class="secondary">Refresh</button>
+              <div id="model-health-detail" class="model-health-detail muted-card">Checking model health...</div>
             </div>
-            <div id="entry-progress-list" class="suggestion-list"></div>
           </div>
-          <div class="panel">
+          <div class="panel timing-alert-panel">
             <div class="panel-header">
               <div>
-                <h2>Trending Games</h2>
-                <p id="trending-games-status">Loading popular games...</p>
+                <p class="eyebrow">Market Timing</p>
+                <h2>Line Movement Alerts</h2>
+                <p id="timing-alert-status">Checking timing signals...</p>
               </div>
-              <button id="refresh-games" class="secondary">Refresh</button>
+              <button id="refresh-timing-alerts" class="secondary">Refresh</button>
             </div>
-            <div id="trending-games-list" class="game-grid"></div>
+            <div id="timing-alert-list" class="timing-alert-list"></div>
           </div>
-          <div class="panel">
+          <div class="dashboard-layout">
+            <div class="panel ai-parlay-panel command-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>AI Parlay Desk</h2>
+                  <p id="ai-parlay-status">you need a parlay?</p>
+                </div>
+                <button id="ask-ai-parlay">Ask EdgeIQ</button>
+              </div>
+              <div class="chat-row">
+                <input id="ai-parlay-input" value="you need a parlay?" />
+              </div>
+              <div id="ai-parlay-response" class="analysis-card muted-card">Ask for the best 3-leg parlay for today.</div>
+            </div>
+
+            <div class="dashboard-side">
+              <div class="panel compact-panel">
+                <div class="panel-header">
+                <div>
+                  <h2>Live Entry Progress</h2>
+                  <p id="entry-progress-status">Checking placed entries...</p>
+                </div>
+                  <div class="toolbar">
+                    <button id="sync-now">Sync</button>
+                    <button id="refresh-progress" class="secondary">Refresh</button>
+                  </div>
+                </div>
+                <div id="sync-status" class="subtle"></div>
+                <div id="entry-progress-list" class="suggestion-list"></div>
+              </div>
+
+              <details class="panel tool-group">
+                <summary>
+                  <span>Trending Games</span>
+                  <small id="trending-games-status">Loading popular games...</small>
+                </summary>
+                <div class="tool-group-body">
+                  <div class="group-actions">
+                    <button id="refresh-games" class="secondary">Refresh</button>
+                  </div>
+                  <div id="trending-games-list" class="game-grid"></div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <div class="panel board-panel">
             <div class="panel-header">
               <div>
-                <h2>Top 5 Props by Sport</h2>
+                <h2>Prop Board</h2>
                 <p id="props-status">Loading props...</p>
               </div>
               <div class="toolbar">
@@ -92,6 +141,17 @@
                   <option>NBA</option>
                   <option>NFL</option>
                   <option>MLB</option>
+                  <option>NHL</option>
+                  <option>NCAAF</option>
+                  <option>NCAAM</option>
+                  <option>NCAAW</option>
+                  <option>MLS</option>
+                  <option>EPL</option>
+                  <option>UCL</option>
+                  <option>TENNIS</option>
+                  <option>PGA</option>
+                  <option>MMA</option>
+                  <option>NASCAR</option>
                 </select>
                 <button id="load-props">Load Props</button>
               </div>
@@ -105,6 +165,7 @@
                     <th>#</th>
                     <th>Platform</th>
                     <th>Player</th>
+                    <th>Pick</th>
                     <th>Sport</th>
                     <th>Stat</th>
                     <th>Line</th>
@@ -121,87 +182,173 @@
 
         <section id="entries" class="view">
           <div class="two-col">
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Entry Builder</h2>
-                  <p id="entry-status">Add props from Dashboard or manually.</p>
+            <div class="stack">
+              <div class="panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Entry Builder</h2>
+                    <p id="entry-status">Add props from Dashboard or manually.</p>
+                  </div>
+                </div>
+                <form id="prop-form" class="form-grid">
+                  <input id="prop-player" placeholder="Player" />
+                  <input id="prop-team" placeholder="Team" />
+                  <select id="prop-sport">
+                    <option>WNBA</option>
+                    <option>NBA</option>
+                    <option>NFL</option>
+                    <option>MLB</option>
+                    <option>NHL</option>
+                    <option>NCAAF</option>
+                    <option>NCAAM</option>
+                    <option>NCAAW</option>
+                    <option>MLS</option>
+                    <option>EPL</option>
+                    <option>UCL</option>
+                    <option>TENNIS</option>
+                    <option>PGA</option>
+                    <option>MMA</option>
+                    <option>NASCAR</option>
+                  </select>
+                  <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
+                  <datalist id="stat-options">
+                    <option value="Points"></option>
+                    <option value="Rebounds"></option>
+                    <option value="Assists"></option>
+                    <option value="Points + Rebounds + Assists"></option>
+                    <option value="Points + Rebounds"></option>
+                    <option value="Points + Assists"></option>
+                    <option value="Rebounds + Assists"></option>
+                    <option value="3-Pointers Made"></option>
+                    <option value="Blocks"></option>
+                    <option value="Steals"></option>
+                    <option value="Turnovers"></option>
+                    <option value="Fantasy Score"></option>
+                    <option value="Passing Yards"></option>
+                    <option value="Passing TDs"></option>
+                    <option value="Passing Attempts"></option>
+                    <option value="Completions"></option>
+                    <option value="Interceptions"></option>
+                    <option value="Rushing Yards"></option>
+                    <option value="Rush Attempts"></option>
+                    <option value="Receiving Yards"></option>
+                    <option value="Receptions"></option>
+                    <option value="Targets"></option>
+                    <option value="Receiving TDs"></option>
+                    <option value="Kicking Points"></option>
+                    <option value="Hits"></option>
+                    <option value="Runs"></option>
+                    <option value="RBIs"></option>
+                    <option value="Hits + Runs + RBIs"></option>
+                    <option value="Home Runs"></option>
+                    <option value="Total Bases"></option>
+                    <option value="Singles"></option>
+                    <option value="Doubles"></option>
+                    <option value="Walks"></option>
+                    <option value="Strikeouts"></option>
+                    <option value="Pitcher Strikeouts"></option>
+                    <option value="Earned Runs"></option>
+                    <option value="Outs Recorded"></option>
+                    <option value="Hits Allowed"></option>
+                    <option value="Pitching Walks"></option>
+                    <option value="Shots on Goal"></option>
+                    <option value="Saves"></option>
+                    <option value="Goals"></option>
+                    <option value="Shots"></option>
+                    <option value="Shots on Target"></option>
+                    <option value="Tackles"></option>
+                    <option value="Passes Attempted"></option>
+                    <option value="Aces"></option>
+                    <option value="Double Faults"></option>
+                    <option value="Games Won"></option>
+                    <option value="Break Points Won"></option>
+                    <option value="Birdies"></option>
+                    <option value="Bogeys"></option>
+                    <option value="Strokes"></option>
+                    <option value="Fairways Hit"></option>
+                    <option value="Greens in Regulation"></option>
+                    <option value="Significant Strikes"></option>
+                    <option value="Takedowns"></option>
+                    <option value="Submission Attempts"></option>
+                    <option value="Fight Time"></option>
+                    <option value="Finishing Position"></option>
+                    <option value="Laps Led"></option>
+                    <option value="Fastest Laps"></option>
+                  </datalist>
+                  <input id="prop-line" type="number" step="0.1" placeholder="Line" />
+                  <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                  <select id="prop-direction">
+                    <option>Over</option>
+                    <option>Under</option>
+                  </select>
+                  <select id="entry-platform">
+                    <option>PrizePicks</option>
+                    <option>Underdog</option>
+                    <option>Sleeper</option>
+                    <option>Chalkboard</option>
+                    <option>Betr</option>
+                    <option>Ball Don't Lie</option>
+                  </select>
+                  <button type="submit">Add Prop</button>
+                </form>
+                <div class="form-grid entry-economics">
+                  <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
+                  <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
+                </div>
+                <div class="table-wrap compact">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Player</th>
+                        <th>Pick</th>
+                        <th>Stat</th>
+                        <th>Line</th>
+                        <th>Projection</th>
+                        <th>Edge</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="entry-props"></tbody>
+                  </table>
+                </div>
+                <div class="button-row">
+                  <button id="analyze-entry">Analyze Entry</button>
+                  <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
+                  <button id="place-entry" class="secondary" disabled>Place Entry</button>
+                  <button id="clear-entry" class="danger">Clear</button>
                 </div>
               </div>
-              <form id="prop-form" class="form-grid">
-                <input id="prop-player" placeholder="Player" />
-                <input id="prop-team" placeholder="Team" />
-                <select id="prop-sport">
-                  <option>WNBA</option>
-                  <option>NBA</option>
-                  <option>NFL</option>
-                  <option>MLB</option>
-                </select>
-                <select id="prop-stat">
-                  <option>Points</option>
-                  <option>Rebounds</option>
-                  <option>Assists</option>
-                  <option>Points + Rebounds + Assists</option>
-                  <option>3-Pointers Made</option>
-                  <option>Blocks</option>
-                  <option>Steals</option>
-                </select>
-                <input id="prop-line" type="number" step="0.1" placeholder="Line" />
-                <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
-                <select id="entry-platform">
-                  <option>PrizePicks</option>
-                  <option>Underdog</option>
-                  <option>Sleeper</option>
-                  <option>Chalkboard</option>
-                  <option>Betr</option>
-                  <option>Ball Don't Lie</option>
-                </select>
-                <button type="submit">Add Prop</button>
-              </form>
-              <div class="form-grid entry-economics">
-                <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
-                <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
-              </div>
-              <div class="table-wrap compact">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Player</th>
-                      <th>Stat</th>
-                      <th>Line</th>
-                      <th>Projection</th>
-                      <th>Edge</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody id="entry-props"></tbody>
-                </table>
-              </div>
-              <div class="button-row">
-                <button id="analyze-entry">Analyze Entry</button>
-                <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
-                <button id="place-entry" class="secondary" disabled>Place Entry</button>
-                <button id="clear-entry" class="danger">Clear</button>
-              </div>
-            </div>
 
-            <div class="stack">
               <div class="panel">
                 <h2>Entry Intelligence</h2>
                 <div id="entry-analysis" class="analysis-card muted-card">No analysis yet.</div>
               </div>
-              <div class="panel">
-                <div class="panel-header">
-                  <div>
-                    <h2>Suggested Entries</h2>
-                    <p>Generate ranked 2-prop ideas by sport.</p>
-                  </div>
+            </div>
+
+            <div class="stack">
+              <details class="panel tool-group" open>
+                <summary>
+                  <span>Suggested Entries</span>
+                  <small>Top 3 plus 4/5 leg higher-risk slips</small>
+                </summary>
+                <div class="tool-group-body">
                   <div class="toolbar">
                     <select id="suggest-sport">
                       <option>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
                       <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
                     </select>
                     <select id="suggest-platform">
                       <option>PrizePicks</option>
@@ -213,15 +360,16 @@
                     </select>
                     <button id="generate-suggestions">Generate Top 5</button>
                   </div>
+                  <div id="suggestions-list" class="suggestion-list"></div>
                 </div>
-                <div id="suggestions-list" class="suggestion-list"></div>
-              </div>
-              <div class="panel">
-                <div class="panel-header">
-                  <div>
-                    <h2>Bet Slip Organizer</h2>
-                    <p>Rank the best slips across leg counts.</p>
-                  </div>
+              </details>
+
+              <details class="panel tool-group">
+                <summary>
+                  <span>Bet Slip Organizer</span>
+                  <small>Optimizer filters</small>
+                </summary>
+                <div class="tool-group-body">
                   <div class="toolbar">
                     <select id="optimizer-platform">
                       <option>PrizePicks</option>
@@ -238,6 +386,17 @@
                       <option>NBA</option>
                       <option>NFL</option>
                       <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
                     </select>
                     <select id="optimizer-legs">
                       <option value="2-3">2-3 Legs</option>
@@ -246,124 +405,241 @@
                     </select>
                     <button id="run-optimizer">Optimize</button>
                   </div>
-                </div>
-                <div class="form-grid compact-controls">
-                  <input id="optimizer-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
-                  <input id="optimizer-min-edge" type="number" step="0.1" value="-999" placeholder="Min edge" />
-                  <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" />
-                  <label class="check-row"><input id="optimizer-exclude-correlated" type="checkbox" checked /> No correlated legs</label>
-                  <label class="check-row"><input id="optimizer-apply-feedback" type="checkbox" checked /> Feedback adjusted</label>
-                </div>
-                <div id="optimizer-list" class="suggestion-list"></div>
-              </div>
-              <div class="panel">
-                <div class="panel-header">
-                  <div>
-                    <h2>Pending Entries</h2>
-                    <p>Settle entries after results are known.</p>
+                  <div class="form-grid compact-controls">
+                    <input id="optimizer-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
+                    <input id="optimizer-min-edge" type="number" step="0.1" value="-999" placeholder="Min edge" />
+                    <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" />
+                    <label class="check-row"><input id="optimizer-exclude-correlated" type="checkbox" checked /> No correlated legs</label>
+                    <label class="check-row"><input id="optimizer-apply-feedback" type="checkbox" checked /> Feedback adjusted</label>
                   </div>
+                  <div id="optimizer-list" class="suggestion-list"></div>
+                </div>
+              </details>
+
+              <details class="panel tool-group" open>
+                <summary>
+                  <span>Pending Entries</span>
+                  <small>Results and DNP rules</small>
+                </summary>
+                <div class="tool-group-body">
                   <div class="toolbar">
                     <button id="classify-default-wagers" class="secondary">Classify Missing $10</button>
                     <button id="auto-check-entries">Auto Check</button>
                     <button id="refresh-pending" class="secondary">Refresh</button>
                   </div>
+                  <div class="form-grid compact-controls">
+                    <select id="dnp-handling">
+                      <option value="reduce">DNP reduces legs</option>
+                      <option value="refund">Any DNP refunds entry</option>
+                      <option value="ignore">Ignore DNP adjustment</option>
+                    </select>
+                    <button id="save-dnp-handling" class="secondary">Save DNP Setting</button>
+                  </div>
+                  <div id="auto-check-status" class="subtle"></div>
+                  <div id="pending-list" class="suggestion-list"></div>
                 </div>
-                <div class="form-grid compact-controls">
-                  <select id="dnp-handling">
-                    <option value="reduce">DNP reduces legs</option>
-                    <option value="refund">Any DNP refunds entry</option>
-                    <option value="ignore">Ignore DNP adjustment</option>
-                  </select>
-                  <button id="save-dnp-handling" class="secondary">Save DNP Setting</button>
-                </div>
-                <div id="auto-check-status" class="subtle"></div>
-                <div id="pending-list" class="suggestion-list"></div>
-              </div>
+              </details>
             </div>
           </div>
         </section>
 
         <section id="analysis" class="view">
-          <div class="two-col">
-            <div class="panel">
-              <h2>EV Calculator</h2>
-              <form id="ev-form" class="form-grid">
-                <input id="ev-odds" type="number" value="-110" />
-                <input id="ev-prob" type="number" value="55" step="0.1" />
-                <button type="submit">Calculate EV</button>
-              </form>
-              <div id="ev-result" class="analysis-card muted-card">No EV analysis yet.</div>
-            </div>
-            <div class="panel">
-              <h2>Line Movement Tracker</h2>
-              <form id="line-movement-form" class="form-grid">
-                <input id="movement-player" placeholder="Player" />
-                <input id="movement-stat" placeholder="Stat" />
-                <select id="movement-platform">
-                  <option>PrizePicks</option>
-                  <option>Underdog</option>
-                  <option>Sleeper</option>
-                  <option>Chalkboard</option>
-                  <option>Betr</option>
-                  <option>Ball Don't Lie</option>
-                </select>
-                <button type="submit">Track Line</button>
-              </form>
-              <div id="movement-result" class="analysis-card muted-card">No line movement loaded.</div>
-            </div>
-            <div class="panel">
-              <h2>Hit Rate Engine</h2>
-              <form id="hit-rate-form" class="form-grid">
-                <input id="hit-player" placeholder="Player" />
-                <input id="hit-stat" placeholder="Stat" />
-                <input id="hit-line" type="number" step="0.1" placeholder="Line" />
-                <input id="hit-projection" type="number" step="0.1" placeholder="Projection (optional)" />
-                <button type="submit">Estimate Hit Rate</button>
-              </form>
-              <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
-            </div>
-            <div class="panel">
-              <h2>AI Projection Assist</h2>
-              <form id="projection-assist-form" class="form-grid">
-                <input id="assist-player" placeholder="Player" />
-                <input id="assist-stat" placeholder="Stat" />
-                <select id="assist-sport">
-                  <option>WNBA</option>
-                  <option>NBA</option>
-                  <option>NFL</option>
-                  <option>MLB</option>
-                </select>
-                <input id="assist-line" type="number" step="0.1" placeholder="Line" />
-                <input id="assist-projection" type="number" step="0.1" placeholder="Projection (optional)" />
-                <input id="assist-trending" type="number" step="1" placeholder="Trending count" />
-                <button type="submit">Assist Projection</button>
-              </form>
-              <div id="projection-assist-result" class="analysis-card muted-card">No projection assist yet.</div>
-            </div>
-            <div class="panel">
-              <h2>Final Stat Import</h2>
-              <form id="final-stats-form" class="stack">
-                <textarea id="final-stats-payload" rows="8" placeholder='Paste CSV or JSON: player,sport,stat,game,game_date,actual'></textarea>
-                <input id="final-stats-source" value="manual" placeholder="Source" />
-                <button type="submit">Import Stats</button>
-              </form>
-              <div id="final-stats-result" class="analysis-card muted-card">No final stats imported yet.</div>
-            </div>
-            <div class="panel">
-              <h2>File + Screenshot Analyzer</h2>
-              <form id="upload-analyzer-form" class="stack">
-                <input id="upload-file" type="file" accept=".csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,image/*" />
-                <select id="upload-target">
-                  <option value="entry">Entry / prop screenshot</option>
-                  <option value="props">Prop file</option>
-                  <option value="final_stats">Final stats file</option>
-                  <option value="bet_history">Bet history file</option>
-                </select>
-                <input id="upload-source" value="upload" placeholder="Source/platform" />
-                <button type="submit">Analyze File</button>
-              </form>
-              <div id="upload-result" class="analysis-card muted-card">No file analyzed yet.</div>
-            </div>
+          <div class="tool-groups">
+            <details class="panel tool-group" open>
+              <summary>
+                <span>Projection Tools</span>
+                <small>AI assist and hit rates</small>
+              </summary>
+              <div class="tool-group-body two-col">
+                <div class="mini-tool">
+                  <h2>AI Projection Assist</h2>
+                  <form id="projection-assist-form" class="form-grid">
+                    <input id="assist-player" placeholder="Player" />
+                    <input id="assist-stat" placeholder="Stat" />
+                    <select id="assist-sport">
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <input id="assist-line" type="number" step="0.1" placeholder="Line" />
+                    <input id="assist-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                    <input id="assist-trending" type="number" step="1" placeholder="Trending count" />
+                    <button type="submit">Assist Projection</button>
+                  </form>
+                  <div id="projection-assist-result" class="analysis-card muted-card">No projection assist yet.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Hit Rate Engine</h2>
+                  <form id="hit-rate-form" class="form-grid">
+                    <input id="hit-player" placeholder="Player" />
+                    <input id="hit-stat" placeholder="Stat" />
+                    <input id="hit-line" type="number" step="0.1" placeholder="Line" />
+                    <input id="hit-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                    <button type="submit">Estimate Hit Rate</button>
+                  </form>
+                  <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
+                </div>
+              </div>
+            </details>
+
+            <details class="panel tool-group">
+              <summary>
+                <span>Market Tools</span>
+                <small>EV, line shopping, CLV</small>
+              </summary>
+              <div class="tool-group-body two-col">
+                <div class="mini-tool">
+                  <h2>Line Shop + Fair Price</h2>
+                  <form id="line-shop-form" class="form-grid">
+                    <input id="shop-player" placeholder="Player" />
+                    <input id="shop-stat" placeholder="Stat" />
+                    <select id="shop-sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <select id="shop-platform">
+                      <option>Both</option>
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Chalkboard</option>
+                      <option>Betr</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                    <input id="shop-over-odds" type="number" placeholder="Over odds" />
+                    <input id="shop-under-odds" type="number" placeholder="Under odds" />
+                    <button type="submit">Shop Lines</button>
+                  </form>
+                  <div id="line-shop-result" class="analysis-card muted-card">No line shop loaded.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>+EV Scanner</h2>
+                  <form id="ev-scanner-form" class="form-grid">
+                    <select id="scan-platform">
+                      <option>Both</option>
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Chalkboard</option>
+                      <option>Betr</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                    <select id="scan-sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <input id="scan-min-ev" type="number" value="0" step="0.1" placeholder="Min EV %" />
+                    <input id="scan-odds" type="number" value="-110" placeholder="Odds" />
+                    <button type="submit">Scan</button>
+                  </form>
+                  <div id="ev-scanner-result" class="analysis-card muted-card">No EV scan yet.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>EV Calculator</h2>
+                  <form id="ev-form" class="form-grid">
+                    <input id="ev-odds" type="number" value="-110" />
+                    <input id="ev-prob" type="number" value="55" step="0.1" />
+                    <button type="submit">Calculate EV</button>
+                  </form>
+                  <div id="ev-result" class="analysis-card muted-card">No EV analysis yet.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Line Movement Tracker</h2>
+                  <form id="line-movement-form" class="form-grid">
+                    <input id="movement-player" placeholder="Player" />
+                    <input id="movement-stat" placeholder="Stat" />
+                    <select id="movement-platform">
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Chalkboard</option>
+                      <option>Betr</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                    <button type="submit">Track Line</button>
+                  </form>
+                  <div id="movement-result" class="analysis-card muted-card">No line movement loaded.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>CLV Report</h2>
+                  <button id="load-clv" class="secondary">Load CLV</button>
+                  <div id="clv-result" class="analysis-card muted-card">No CLV report loaded.</div>
+                </div>
+              </div>
+            </details>
+
+            <details class="panel tool-group">
+              <summary>
+                <span>Data Imports</span>
+                <small>Stats, screenshots, history</small>
+              </summary>
+              <div class="tool-group-body two-col">
+                <div class="mini-tool">
+                  <h2>Final Stat Import</h2>
+                  <form id="final-stats-form" class="stack">
+                    <textarea id="final-stats-payload" rows="8" placeholder='Paste CSV or JSON: player,sport,stat,game,game_date,actual'></textarea>
+                    <input id="final-stats-source" value="manual" placeholder="Source" />
+                    <button type="submit">Import Stats</button>
+                  </form>
+                  <div id="final-stats-result" class="analysis-card muted-card">No final stats imported yet.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>File + Screenshot Analyzer</h2>
+                  <form id="upload-analyzer-form" class="stack">
+                    <input id="upload-file" type="file" accept=".csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,image/*" />
+                    <select id="upload-target">
+                      <option value="entry">Entry / prop screenshot</option>
+                      <option value="props">Prop file</option>
+                      <option value="final_stats">Final stats file</option>
+                      <option value="bet_history">Bet history file / screenshot</option>
+                    </select>
+                    <input id="upload-source" value="upload" placeholder="Source/platform" />
+                    <button type="submit">Analyze File</button>
+                  </form>
+                  <div id="upload-result" class="analysis-card muted-card">No file analyzed yet.</div>
+                </div>
+              </div>
+            </details>
           </div>
         </section>
 
@@ -390,6 +666,24 @@
             <div class="panel">
               <div class="panel-header">
                 <div>
+                  <h2>Bankroll Ledger</h2>
+                  <p id="bankroll-ledger-status">Track deposits and withdrawals.</p>
+                </div>
+              </div>
+              <form id="bankroll-transaction-form" class="form-grid">
+                <select id="bankroll-transaction-type">
+                  <option>Deposit</option>
+                  <option>Withdrawal</option>
+                </select>
+                <input id="bankroll-transaction-amount" type="number" min="0" step="0.01" placeholder="Amount" />
+                <input id="bankroll-transaction-note" placeholder="Note" />
+                <button type="submit">Save Transaction</button>
+              </form>
+              <div id="bankroll-transaction-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
                   <h2>Bet History</h2>
                   <p id="bets-status"></p>
                 </div>
@@ -410,15 +704,20 @@
                 </table>
               </div>
             </div>
-            <div class="panel">
-              <h2>Import Betting History</h2>
-              <form id="bet-history-form" class="stack">
-                <textarea id="bet-history-payload" rows="8" placeholder="CSV or JSON: sport,game,description,odds,wager,result,profit,platform,stat_type,win_probability"></textarea>
-                <input id="bet-history-source" value="imported" placeholder="Source/platform" />
-                <button type="submit">Import History</button>
-              </form>
-              <div id="bet-history-result" class="analysis-card muted-card">No betting history imported yet.</div>
-            </div>
+            <details class="panel tool-group">
+              <summary>
+                <span>Import Betting History</span>
+                <small>CSV or JSON</small>
+              </summary>
+              <div class="tool-group-body">
+                <form id="bet-history-form" class="stack">
+                  <textarea id="bet-history-payload" rows="8" placeholder="CSV or JSON: sport,game,description,odds,wager,result,profit,platform,stat_type,win_probability"></textarea>
+                  <input id="bet-history-source" value="imported" placeholder="Source/platform" />
+                  <button type="submit">Import History</button>
+                </form>
+                <div id="bet-history-result" class="analysis-card muted-card">No betting history imported yet.</div>
+              </div>
+            </details>
           </div>
         </section>
 
@@ -426,6 +725,24 @@
           <div class="panel">
             <h2>Performance</h2>
             <div id="performance-summary" class="stats-grid"></div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Sport Success Mix</h2>
+                  <p>Win rate by sport across tracked bets and entries.</p>
+                </div>
+              </div>
+              <div class="pie-layout">
+                <div id="sport-success-pie" class="sport-pie" role="img" aria-label="Sport success pie chart"></div>
+                <div id="sport-success-legend" class="pie-legend"></div>
+              </div>
+            </div>
+            <div class="panel">
+              <h2>Performance Insights</h2>
+              <div id="performance-insights" class="suggestion-list"></div>
+            </div>
           </div>
           <div class="two-col">
             <div class="panel">
@@ -449,12 +766,90 @@
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
           </div>
           <div class="panel">
+            <h2>Entry Platform Profitability</h2>
+            <div id="entry-platform-profitability" class="suggestion-list"></div>
+          </div>
+          <div class="panel">
             <h2>Entry Results</h2>
             <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
         </section>
       </main>
     </div>
+
+    <aside id="recommendation-drawer" class="recommendation-drawer" hidden>
+      <div class="drawer-backdrop" data-close-drawer></div>
+      <div class="drawer-panel">
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">Recommendation Logic</p>
+            <h2 id="drawer-title">Why this pick?</h2>
+          </div>
+          <button class="secondary" data-close-drawer>Close</button>
+        </div>
+        <div id="drawer-content" class="drawer-content"></div>
+      </div>
+    </aside>
+
+    <section id="mobile-slip" class="mobile-slip">
+      <button id="mobile-slip-toggle" class="mobile-slip-toggle">
+        <span>Bet Slip</span>
+        <strong id="mobile-slip-count">0</strong>
+      </button>
+      <div id="mobile-slip-panel" class="mobile-slip-panel" hidden>
+        <div class="suggestion-top">
+          <strong>Current Entry</strong>
+          <span class="subtle" id="mobile-slip-summary">No props loaded</span>
+        </div>
+        <div id="mobile-slip-legs" class="mobile-slip-legs"></div>
+        <div class="form-grid compact-controls">
+          <input id="mobile-slip-wager" type="number" min="0" step="0.01" placeholder="Wager" />
+          <input id="mobile-slip-multiplier" type="number" min="1" step="0.1" placeholder="Multiplier" />
+        </div>
+        <div class="button-row">
+          <button id="mobile-analyze-entry">Analyze</button>
+          <button id="mobile-place-entry" class="secondary">Place</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="onboarding-modal" class="onboarding-modal" hidden>
+      <div class="drawer-backdrop"></div>
+      <div class="onboarding-panel">
+        <p class="eyebrow">First Run Setup</p>
+        <h2>Set EdgeIQ up for your betting style</h2>
+        <p>These defaults keep the dashboard focused and make recommended entries easier to size.</p>
+        <form id="onboarding-form" class="form-grid">
+          <input id="onboarding-bankroll" type="number" min="1" step="0.01" placeholder="Starting bankroll" />
+          <select id="onboarding-platform">
+            <option>PrizePicks</option>
+            <option>Underdog</option>
+            <option>Sleeper</option>
+            <option>Chalkboard</option>
+            <option>Betr</option>
+          </select>
+          <select id="onboarding-sport">
+            <option>WNBA</option>
+            <option>NBA</option>
+            <option>NFL</option>
+            <option>MLB</option>
+            <option>NHL</option>
+            <option>All Sports</option>
+          </select>
+          <select id="onboarding-risk">
+            <option value="balanced">Balanced</option>
+            <option value="conservative">Conservative</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+          <input id="onboarding-default-wager" type="number" min="0" step="0.01" placeholder="Default wager" />
+          <button type="submit">Save Setup</button>
+        </form>
+        <div class="button-row">
+          <button id="onboarding-upload-history" class="secondary">Upload Betting History</button>
+          <button id="onboarding-skip" class="secondary">Skip</button>
+        </div>
+      </div>
+    </section>
 
     <script src="/static/app.js"></script>
     <script>

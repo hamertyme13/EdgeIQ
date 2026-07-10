@@ -5,7 +5,7 @@ import csv
 import json
 import base64
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime
 from io import StringIO
 from pathlib import Path
 from typing import Literal
@@ -46,6 +46,7 @@ from models.prop import Prop
 from models.stat_type import StatType
 from pydantic import BaseModel, Field
 from repository.bet_repository import BetRepository
+from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
 from repository.database import initialize_database
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
@@ -58,9 +59,57 @@ from services.dashboard import get_dashboard, get_starting_bankroll, set_startin
 
 
 STATIC_DIR = Path(__file__).parent / "static"
-SUPPORTED_SPORTS = ("WNBA", "NBA", "NFL", "MLB")
+SUPPORTED_SPORTS = (
+    "WNBA",
+    "NBA",
+    "NFL",
+    "MLB",
+    "NHL",
+    "NCAAF",
+    "NCAAM",
+    "NCAAW",
+    "MLS",
+    "EPL",
+    "UCL",
+    "TENNIS",
+    "PGA",
+    "MMA",
+    "NASCAR",
+)
 PROP_PLATFORMS = ("PrizePicks", "Underdog", "Sleeper", "Chalkboard", "Betr", "Ball Don't Lie")
 PLATFORM_FILTERS = (*PROP_PLATFORMS, "Both")
+SPORT_ALIASES = {
+    "ALL SPORTS": None,
+    "WNBA": "WNBA",
+    "NBA": "NBA",
+    "NFL": "NFL",
+    "MLB": "MLB",
+    "NHL": "NHL",
+    "HOCKEY": "NHL",
+    "COLLEGE FOOTBALL": "NCAAF",
+    "NCAAF": "NCAAF",
+    "CFB": "NCAAF",
+    "COLLEGE BASKETBALL": "NCAAM",
+    "NCAAM": "NCAAM",
+    "CBB": "NCAAM",
+    "NCAAW": "NCAAW",
+    "WOMENS COLLEGE BASKETBALL": "NCAAW",
+    "WOMEN'S COLLEGE BASKETBALL": "NCAAW",
+    "MLS": "MLS",
+    "EPL": "EPL",
+    "PREMIER LEAGUE": "EPL",
+    "UCL": "UCL",
+    "CHAMPIONS LEAGUE": "UCL",
+    "SOCCER": "MLS",
+    "TENNIS": "TENNIS",
+    "ATP": "TENNIS",
+    "WTA": "TENNIS",
+    "PGA": "PGA",
+    "GOLF": "PGA",
+    "MMA": "MMA",
+    "UFC": "MMA",
+    "NASCAR": "NASCAR",
+}
 
 
 @asynccontextmanager
@@ -97,6 +146,12 @@ def health() -> dict:
 
 class BankrollPayload(BaseModel):
     amount: float = Field(gt=0)
+
+
+class BankrollTransactionPayload(BaseModel):
+    transaction_type: Literal["Deposit", "Withdrawal"]
+    amount: float = Field(gt=0)
+    note: str = ""
 
 
 class DnpSettingPayload(BaseModel):
@@ -147,6 +202,29 @@ def update_bankroll(payload: BankrollPayload) -> dict:
     return get_dashboard(payload.amount)
 
 
+@app.get("/api/bankroll/transactions")
+def bankroll_transactions() -> dict:
+    return {
+        "summary": BankrollTransactionRepository.summary(),
+        "transactions": BankrollTransactionRepository.all(),
+        "dashboard": get_dashboard(),
+    }
+
+
+@app.post("/api/bankroll/transactions")
+def save_bankroll_transaction(payload: BankrollTransactionPayload) -> dict:
+    transaction = BankrollTransactionRepository.save(
+        payload.transaction_type,
+        payload.amount,
+        payload.note,
+    )
+    return {
+        "transaction": transaction,
+        "summary": BankrollTransactionRepository.summary(),
+        "dashboard": get_dashboard(),
+    }
+
+
 @app.get("/api/settings/dnp")
 def dnp_setting() -> dict:
     return {"mode": _dnp_mode()}
@@ -189,14 +267,23 @@ def dashboard_parlay(
     }
 
 
+@app.get("/api/dashboard/command-center")
+def dashboard_command_center(
+    platform: str = "PrizePicks",
+    sport: str = "All Sports",
+) -> dict:
+    sport_filter = None if sport == "All Sports" else sport.upper()
+    return _command_center_payload(platform, sport_filter)
+
+
 @app.post("/api/ai/parlay-chat")
 def ai_parlay_chat(payload: ParlayChatPayload) -> dict:
-    sport_filter = None if payload.sport == "All Sports" else payload.sport.upper()
+    request = _parse_parlay_request(payload.message, payload.sport)
     suggestions = _optimized_entries(
         payload.platform,
-        sport_filter,
-        min_legs=3,
-        max_legs=3,
+        request["sport"],
+        min_legs=request["leg_count"],
+        max_legs=request["leg_count"],
         limit=5,
         min_confidence=0,
         min_edge=-999,
@@ -204,8 +291,21 @@ def ai_parlay_chat(payload: ParlayChatPayload) -> dict:
         exclude_correlated=True,
         apply_feedback=True,
     )
+    if not suggestions:
+        suggestions = _optimized_entries(
+            payload.platform,
+            request["sport"],
+            min_legs=request["leg_count"],
+            max_legs=request["leg_count"],
+            limit=5,
+            min_confidence=0,
+            min_edge=-999,
+            max_same_team=5,
+            exclude_correlated=False,
+            apply_feedback=True,
+        )
     serialized = [_serialize_suggestion(suggestion) for suggestion in suggestions]
-    fallback = _fallback_parlay_chat(serialized)
+    fallback = _fallback_parlay_chat(serialized, request)
     ai_text, ai_error = _openai_parlay_response(payload.message, serialized)
     return {
         "message": ai_text or fallback,
@@ -214,6 +314,7 @@ def ai_parlay_chat(payload: ParlayChatPayload) -> dict:
         "ai_enabled": ai_text is not None,
         "model": _openai_model() if ai_text else "rules-fallback",
         "ai_error": ai_error,
+        "request": request,
     }
 
 
@@ -336,6 +437,92 @@ def projection_assist(payload: ProjectionAssistPayload) -> dict:
     }
 
 
+@app.get("/api/market/line-shop")
+def line_shop(
+    player: str,
+    stat: str,
+    sport: str = "All Sports",
+    platform: str = "Both",
+    over_odds: int | None = None,
+    under_odds: int | None = None,
+) -> dict:
+    sport_filter = None if sport == "All Sports" else sport.upper()
+    return _line_shop_payload(player, stat, sport_filter, platform, over_odds, under_odds)
+
+
+@app.get("/api/market/ev-scanner")
+def ev_scanner(
+    platform: str = "Both",
+    sport: str = "All Sports",
+    min_ev: float = 0.0,
+    limit: int = 25,
+    odds: int = -110,
+) -> dict:
+    sport_filter = None if sport == "All Sports" else sport.upper()
+    rows = _ev_scanner_rows(platform, sport_filter, min_ev, limit, odds)
+    return {
+        "props": rows,
+        "platform": platform,
+        "sport": sport,
+        "min_ev": min_ev,
+        "odds": odds,
+        "count": len(rows),
+    }
+
+
+@app.get("/api/market/timing-alerts")
+def market_timing_alerts(
+    platform: str = "PrizePicks",
+    sport: str = "All Sports",
+    limit: int = 8,
+    odds: int = -110,
+) -> dict:
+    sport_filter = None if sport == "All Sports" else sport.upper()
+    rows = _market_timing_alert_rows(platform, sport_filter, limit, odds)
+    return {
+        "alerts": rows,
+        "platform": platform,
+        "sport": sport,
+        "count": len(rows),
+    }
+
+
+@app.get("/api/market/clv")
+def clv_report() -> dict:
+    entries = [_entry_clv_payload(entry) for entry in EntryRepository.all()]
+    tracked = [entry for entry in entries if entry["legs"]]
+    clv_values = [leg["clv"] for entry in tracked for leg in entry["legs"] if leg["clv"] is not None]
+    positive = sum(1 for value in clv_values if value > 0)
+    return {
+        "entries": tracked,
+        "average_clv": round(sum(clv_values) / len(clv_values), 2) if clv_values else 0.0,
+        "positive_clv_rate": round((positive / len(clv_values) * 100), 1) if clv_values else 0.0,
+        "tracked_legs": len(clv_values),
+    }
+
+
+@app.post("/api/sync/run")
+def run_sync(allow_estimates: bool = False) -> dict:
+    default_wagers = EntryRepository.classify_missing_economics()
+    final_stats_file = _import_file_if_configured(
+        "EDGEIQ_FINAL_STATS_FILE",
+        lambda payload, source: {"imported": import_final_stats(payload, source), "skipped": 0},
+    )
+    bet_history_file = _import_file_if_configured("EDGEIQ_BET_HISTORY_FILE", _import_betting_history_payload)
+    auto_check = auto_check_entries(allow_estimates=allow_estimates)
+    return {
+        "default_wagers": default_wagers,
+        "final_stats_file": final_stats_file,
+        "bet_history_file": bet_history_file,
+        "auto_check": auto_check,
+        "dashboard": get_dashboard(),
+        "sportsbook_sync": {
+            "connected": False,
+            "message": "Direct sportsbook account sync is not configured. EdgeIQ synced provider stats and configured import files.",
+        },
+    }
+
+
 class PropPayload(BaseModel):
     player: str
     team: str = ""
@@ -343,6 +530,7 @@ class PropPayload(BaseModel):
     stat: str
     line: float
     projection: float | None = None
+    direction: Literal["Over", "Under"] | None = None
     platform: str = "PrizePicks"
     game: str = ""
     trending_count: int = 0
@@ -352,6 +540,7 @@ class EntryPayload(BaseModel):
     platform: str = "PrizePicks"
     wager: float = Field(default=0.0, ge=0)
     multiplier: float = Field(default=1.0, ge=1)
+    recommended_by_app: bool = False
     props: list[PropPayload]
 
 
@@ -375,6 +564,7 @@ def place_entry(payload: EntryPayload) -> dict:
         status="Pending",
         wager=payload.wager,
         multiplier=payload.multiplier,
+        recommended_by_app=payload.recommended_by_app,
     )
     return {
         "id": entry_id,
@@ -420,8 +610,16 @@ def entry_suggestions(
         raise HTTPException(status_code=400, detail="Leg count must be between 2 and 5.")
     platform_model = _platform_from_text(platform)
     raw_props = _fetch_props(platform_model.value, sport.upper())
-    suggestions = suggest_entries(raw_props, sport, platform_model, leg_count=leg_count)
-    return {"suggestions": [_serialize_suggestion(suggestion) for suggestion in suggestions]}
+    if leg_count == 2:
+        suggestions = _mixed_risk_suggestions(raw_props, sport, platform_model)
+        mode = "balanced_with_higher_risk"
+    else:
+        suggestions = suggest_entries(raw_props, sport, platform_model, leg_count=leg_count)
+        mode = f"{leg_count}_leg"
+    return {
+        "suggestions": [_serialize_suggestion(suggestion) for suggestion in suggestions],
+        "mode": mode,
+    }
 
 
 @app.get("/api/entries/optimizer")
@@ -594,9 +792,37 @@ def save_bet(payload: BetPayload) -> dict:
 
 @app.post("/api/bets/import-history")
 def import_betting_history(payload: BettingHistoryPayload) -> dict:
+    result = _import_betting_history_payload(payload.payload, payload.source)
+    return {**result, "dashboard": get_dashboard()}
+
+
+@app.get("/api/performance")
+def performance() -> dict:
+    stats = get_dashboard()
+    return {
+        "bankroll_curve": stats.get("bankroll_curve", []),
+        "by_sport": stats.get("by_sport", {}),
+        "by_stat": stats.get("by_stat", {}),
+        "by_platform": stats.get("by_platform", {}),
+        "entries": stats.get("entries", {}),
+        "summary": stats,
+    }
+
+
+@app.get("/api/analytics/backtest")
+def backtest() -> dict:
+    return backtest_summary(BetRepository().get_all(), EntryRepository.all())
+
+
+@app.get("/api/analytics/model-health")
+def model_health() -> dict:
+    return _model_health_payload()
+
+
+def _import_betting_history_payload(payload: str, source: str) -> dict:
     imported = 0
     skipped = 0
-    for row in _parse_betting_history(payload.payload):
+    for row in _parse_betting_history(payload):
         try:
             result = row.get("result", "").strip().title()
             if result not in {"Win", "Loss", "Push"}:
@@ -626,7 +852,7 @@ def import_betting_history(payload: BettingHistoryPayload) -> dict:
                     wager=wager,
                     result=result,
                     profit=round(profit, 2),
-                    platform=row.get("platform", payload.source),
+                    platform=row.get("platform", source),
                     stat_type=row.get("stat_type") or row.get("stat", ""),
                     win_probability=float(row.get("win_probability") or row.get("probability") or 0),
                 )
@@ -634,25 +860,7 @@ def import_betting_history(payload: BettingHistoryPayload) -> dict:
             imported += 1
         except (TypeError, ValueError):
             skipped += 1
-    return {"imported": imported, "skipped": skipped, "dashboard": get_dashboard()}
-
-
-@app.get("/api/performance")
-def performance() -> dict:
-    stats = get_dashboard()
-    return {
-        "bankroll_curve": stats.get("bankroll_curve", []),
-        "by_sport": stats.get("by_sport", {}),
-        "by_stat": stats.get("by_stat", {}),
-        "by_platform": stats.get("by_platform", {}),
-        "entries": stats.get("entries", {}),
-        "summary": stats,
-    }
-
-
-@app.get("/api/analytics/backtest")
-def backtest() -> dict:
-    return backtest_summary(BetRepository().get_all(), EntryRepository.all())
+    return {"imported": imported, "skipped": skipped}
 
 
 def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
@@ -780,19 +988,84 @@ def _parse_betting_history(payload: str) -> list[dict]:
     return rows
 
 
-def _fallback_parlay_chat(suggestions: list[dict]) -> str:
+def _import_file_if_configured(env_name: str, importer) -> dict:
+    file_path = os.getenv(env_name, "").strip()
+    if not file_path:
+        return {"configured": False, "imported": 0, "skipped": 0, "message": f"{env_name} is not set."}
+    path = Path(file_path).expanduser()
+    if not path.exists():
+        return {"configured": True, "imported": 0, "skipped": 0, "message": f"{path} was not found."}
+    try:
+        payload = path.read_text(encoding="utf-8")
+        result = importer(payload, path.stem)
+        return {"configured": True, "message": f"Imported {path.name}.", **result}
+    except Exception as exc:
+        return {
+            "configured": True,
+            "imported": 0,
+            "skipped": 0,
+            "message": f"Could not import {path.name}: {exc.__class__.__name__}",
+        }
+
+
+def _parse_parlay_request(message: str, selected_sport: str = "All Sports") -> dict:
+    text = f" {message or ''} ".upper().replace("-", " ")
+    leg_count = 3
+    for count in range(2, 7):
+        tokens = (
+            f" {count} LEG ",
+            f" {count} LEGS ",
+            f" {count} PICK ",
+            f" {count} PICKS ",
+            f" {count} MAN ",
+        )
+        if any(token in text for token in tokens):
+            leg_count = count
+            break
+    leg_count = max(2, min(5, leg_count))
+
+    sport = _sport_filter_from_text(message)
+    if sport is None and selected_sport != "All Sports":
+        sport = _sport_filter_from_text(selected_sport)
+
+    return {
+        "leg_count": leg_count,
+        "sport": sport,
+        "sport_label": sport or "All Sports",
+    }
+
+
+def _sport_filter_from_text(value: str) -> str | None:
+    normalized = (value or "").upper()
+    normalized = normalized.replace("-", " ").replace("_", " ")
+    for phrase, sport in sorted(SPORT_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        if phrase in normalized:
+            return sport
+    direct = normalized.strip()
+    if direct in SUPPORTED_SPORTS:
+        return direct
+    return None
+
+
+def _fallback_parlay_chat(suggestions: list[dict], request: dict | None = None) -> str:
+    request = request or {"leg_count": 3, "sport_label": "current filters"}
+    leg_count = int(request.get("leg_count") or 3)
+    sport_label = request.get("sport_label") or "current filters"
     if not suggestions:
-        return "I could not find a 3-leg parlay for the current filters. Try another sport or platform."
+        return f"I could not find a {leg_count}-leg parlay for {sport_label}. Try another sport or platform."
     best = suggestions[0]
     legs = best["entry"]["props"]
-    leg_text = " + ".join(f"{prop['player']} {prop['stat']} {prop['line']}" for prop in legs)
+    leg_text = " + ".join(
+        f"{prop['player']} {prop.get('direction', 'Over')} {prop['stat']} {prop['line']}"
+        for prop in legs
+    )
     caution = (
         "I would not place it unless you are comfortable with the risk."
         if best["grade"] in {"D", "F"} or "Pass" in best["action"]
         else "It is the strongest candidate on the board, but still review the legs before placing anything."
     )
     return (
-        f"My best 3-leg parlay candidate right now is {leg_text}. "
+        f"My best {leg_count}-leg parlay for {sport_label} right now is {leg_text}. "
         f"It grades {best['grade']} with a score of {best['score']} and the model action is {best['action']}. "
         f"{caution}"
     )
@@ -855,6 +1128,28 @@ def _analyze_uploaded_text_file(payload: UploadAnalyzePayload, raw: bytes) -> di
 
 
 def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
+    if payload.target == "bet_history":
+        extracted = _openai_extract_bets_from_image(raw, payload.mime_type or "image/png")
+        if extracted is None:
+            return {
+                "kind": "bet_history",
+                "file_name": payload.file_name,
+                "imported": 0,
+                "skipped": 0,
+                "ai_enabled": False,
+                "message": "Bet-history screenshot parsing needs OPENAI_API_KEY. CSV, TSV, TXT, and JSON history files can still be imported locally.",
+            }
+        rows = extracted.get("bets", [])
+        imported = _import_betting_rows(rows, extracted.get("platform") or payload.source or "screenshot")
+        return {
+            "kind": "bet_history",
+            "file_name": payload.file_name,
+            **imported,
+            "ai_enabled": True,
+            "raw_ai": extracted,
+            "message": f"Imported {imported['imported']} bets from screenshot. Skipped {imported['skipped']}.",
+        }
+
     extracted = _openai_extract_props_from_image(raw, payload.mime_type or "image/png")
     if extracted is None:
         return {
@@ -928,6 +1223,7 @@ def _uploaded_prop_payload(prop: dict) -> dict:
         "stat": prop.get("stat", "Points"),
         "line": float(prop.get("line") or 0.0),
         "projection": prop.get("projection"),
+        "direction": prop.get("direction") or prop.get("pick") or prop.get("side"),
         "platform": prop.get("platform", "Upload"),
         "game": prop.get("game", ""),
         "trending_count": int(prop.get("trending_count") or 0),
@@ -985,6 +1281,43 @@ def _import_betting_rows(rows: list[dict], source: str) -> dict:
 
 
 def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
+    return _openai_extract_json_from_image(
+        raw,
+        mime_type,
+        (
+            "Extract player prop picks from this screenshot. Return only JSON with this shape: "
+            "{\"platform\":\"PrizePicks|Underdog|Sleeper|Chalkboard|Betr|Unknown\","
+            "\"props\":[{\"player\":\"\",\"team\":\"\",\"sport\":\"WNBA|NBA|NFL|MLB\","
+            "\"stat\":\"\",\"line\":0,\"projection\":null,\"game\":\"\"}],"
+            "\"notes\":[]}. Use null when a projection is not shown. Do not invent missing props."
+        ),
+        max_output_tokens=700,
+    )
+
+
+def _openai_extract_bets_from_image(raw: bytes, mime_type: str) -> dict | None:
+    return _openai_extract_json_from_image(
+        raw,
+        mime_type,
+        (
+            "Extract previous bet history from this phone screenshot. Return only JSON with this shape: "
+            "{\"platform\":\"PrizePicks|Underdog|Sleeper|Chalkboard|Betr|Unknown\","
+            "\"bets\":[{\"sport\":\"\",\"game\":\"\",\"description\":\"\",\"odds\":-110,"
+            "\"wager\":0,\"result\":\"Win|Loss|Push\",\"profit\":null,\"stat_type\":\"\","
+            "\"win_probability\":null}],\"notes\":[]}. "
+            "Use the amount risked as wager. If profit is not shown, use null. "
+            "If odds are not shown, use -110. Do not invent bets that are not visible."
+        ),
+        max_output_tokens=900,
+    )
+
+
+def _openai_extract_json_from_image(
+    raw: bytes,
+    mime_type: str,
+    instruction: str,
+    max_output_tokens: int = 700,
+) -> dict | None:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
         return None
@@ -998,13 +1331,7 @@ def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
                 "content": [
                     {
                         "type": "input_text",
-                        "text": (
-                            "Extract player prop picks from this screenshot. Return only JSON with this shape: "
-                            "{\"platform\":\"PrizePicks|Underdog|Sleeper|Chalkboard|Betr|Unknown\","
-                            "\"props\":[{\"player\":\"\",\"team\":\"\",\"sport\":\"WNBA|NBA|NFL|MLB\","
-                            "\"stat\":\"\",\"line\":0,\"projection\":null,\"game\":\"\"}],"
-                            "\"notes\":[]}. Use null when a projection is not shown. Do not invent missing props."
-                        ),
+                        "text": instruction,
                     },
                     {
                         "type": "input_image",
@@ -1013,7 +1340,7 @@ def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
                 ],
             }
         ],
-        "max_output_tokens": 700,
+        "max_output_tokens": max_output_tokens,
     }
 
     response_data, _ = _openai_response(payload, timeout=30)
@@ -1069,7 +1396,7 @@ def _openai_parlay_response(message: str, suggestions: list[dict]) -> tuple[str 
                 "content": (
                     "You are EdgeIQ's betting assistant. Pick only from the provided parlay candidates. "
                     "Do not invent players, lines, odds, or guaranteed outcomes. Keep the response concise, "
-                    "include the best 3 legs, explain why it ranks first, and remind the user to bet responsibly."
+                    "include each leg's Over or Under direction, explain why it ranks first, and remind the user to bet responsibly."
                 ),
             },
             {
@@ -1210,6 +1537,7 @@ def _top_props_by_sport(props: list[dict], limit: int, sport_filter: str | None 
         if any(existing.get("player", "").strip().lower() == player_key for existing in sport_props):
             continue
         ranked_prop = dict(prop)
+        ranked_prop["direction"] = _feed_prop_direction(ranked_prop)
         ranked_prop["sport_rank"] = len(sport_props) + 1
         sport_props.append(ranked_prop)
 
@@ -1221,10 +1549,19 @@ def _with_sport_rank(props: list[dict], sport: str) -> list[dict]:
     ranked = []
     for index, prop in enumerate(props, start=1):
         ranked_prop = dict(prop)
+        ranked_prop["direction"] = _feed_prop_direction(ranked_prop)
         ranked_prop["sport_rank"] = index
         ranked_prop["league"] = ranked_prop.get("league") or sport
         ranked.append(ranked_prop)
     return ranked
+
+
+def _feed_prop_direction(prop: dict) -> str:
+    line = float(prop.get("line") or 0.0)
+    projection = prop.get("projection")
+    if projection is None:
+        projection = auto_projection(line, int(prop.get("trending_count") or 0))
+    return _prop_direction(line, float(projection), prop.get("direction"))
 
 
 def _trending_games_payload(props: list[dict], ranked_props: list[dict], limit: int) -> list[dict]:
@@ -1295,6 +1632,260 @@ def _recommended_parlay(platform: str, sport_filter: str | None):
     return best
 
 
+def _command_center_payload(platform: str, sport_filter: str | None) -> dict:
+    dashboard_stats = get_dashboard()
+    props = _fetch_props(platform, sport_filter)
+    props.sort(key=lambda prop: prop.get("trending_count", 0), reverse=True)
+    ranked_props = [_analyzed_feed_prop(prop) for prop in _top_props_by_sport(props, 5, sport_filter)]
+    ranked_props.sort(key=lambda prop: (prop["confidence"], prop["edge"], prop["trending_count"]), reverse=True)
+
+    safe_slips = _optimized_entries(
+        platform,
+        sport_filter,
+        min_legs=2,
+        max_legs=2,
+        limit=1,
+        min_confidence=52,
+        min_edge=0,
+        max_same_team=1,
+        exclude_correlated=True,
+        apply_feedback=True,
+    )
+    balanced_slips = _optimized_entries(
+        platform,
+        sport_filter,
+        min_legs=3,
+        max_legs=3,
+        limit=1,
+        min_confidence=0,
+        min_edge=-999,
+        max_same_team=1,
+        exclude_correlated=True,
+        apply_feedback=True,
+    )
+    high_risk_slips = _optimized_entries(
+        platform,
+        sport_filter,
+        min_legs=4,
+        max_legs=5,
+        limit=2,
+        min_confidence=0,
+        min_edge=-999,
+        max_same_team=1,
+        exclude_correlated=True,
+        apply_feedback=True,
+    )
+
+    cards = []
+    if ranked_props:
+        cards.append(_command_single_card(ranked_props[0]))
+    if safe_slips:
+        cards.append(_command_suggestion_card("Safer Slip", "Lower volatility entry to start with.", safe_slips[0]))
+    if balanced_slips:
+        cards.append(_command_suggestion_card("Best 3-Leg", "Primary daily parlay candidate.", balanced_slips[0]))
+    for suggestion in high_risk_slips[:2]:
+        cards.append(_command_suggestion_card(f"Upside {suggestion.entry.prop_count}-Leg", "Higher variance, sized smaller.", suggestion))
+
+    avoid = [
+        prop for prop in ranked_props
+        if prop["confidence"] < 50 or prop["edge"] < 0
+    ][:3]
+    model = _model_health_payload()
+    return {
+        "platform": platform,
+        "sport": sport_filter or "All Sports",
+        "as_of": datetime.now().isoformat(),
+        "cards": cards[:5],
+        "avoid": avoid,
+        "model_health": model,
+        "bankroll": {
+            "current": dashboard_stats.get("bankroll", 0.0),
+            "pending_exposure": dashboard_stats.get("pending_entry_exposure", 0.0),
+            "recommendation_accuracy": dashboard_stats.get("recommendation_accuracy", {}),
+        },
+    }
+
+
+def _command_single_card(prop: dict) -> dict:
+    return {
+        "type": "single",
+        "title": "Best Single",
+        "summary": "Highest-confidence prop on the current board.",
+        "score": round((prop["confidence"] * 0.78) + (prop["edge"] * 7) + min(8, prop["trending_count"] / 20000), 1),
+        "grade": _grade_from_confidence(prop["confidence"]),
+        "action": f"{prop['direction']} {prop['stat']}",
+        "props": [prop],
+        "warnings": [],
+        "explanation": _recommendation_explanation(
+            title="Best Single",
+            score=round(prop["confidence"], 1),
+            grade=_grade_from_confidence(prop["confidence"]),
+            props=[prop],
+            warnings=[],
+            summary="Chosen from the top board by confidence, projected edge, and market interest.",
+        ),
+    }
+
+
+def _command_suggestion_card(title: str, summary: str, suggestion) -> dict:
+    serialized = _serialize_suggestion(suggestion)
+    return {
+        "type": "entry",
+        "title": title,
+        "summary": summary,
+        "score": serialized["score"],
+        "grade": serialized["grade"],
+        "action": serialized["action"],
+        "leg_count": serialized["leg_count"],
+        "risk_tier": serialized["risk_tier"],
+        "suggestion": serialized,
+        "props": serialized["entry"]["props"],
+        "warnings": serialized["warnings"],
+        "explanation": _recommendation_explanation(
+            title=title,
+            score=serialized["score"],
+            grade=serialized["grade"],
+            props=serialized["entry"]["props"],
+            warnings=serialized["warnings"],
+            summary=summary,
+        ),
+    }
+
+
+def _recommendation_explanation(
+    title: str,
+    score: float,
+    grade: str,
+    props: list[dict],
+    warnings: list[str],
+    summary: str,
+) -> dict:
+    avg_confidence = sum(float(prop.get("confidence") or 0) for prop in props) / len(props) if props else 0.0
+    avg_edge = sum(float(prop.get("edge") or 0) for prop in props) / len(props) if props else 0.0
+    sources = sorted({
+        signal.get("source", "")
+        for prop in props
+        for signal in prop.get("source_signals", [])
+        if signal.get("source")
+    })
+    signals = [
+        {
+            "source": signal.get("source", ""),
+            "message": signal.get("message", ""),
+            "player": prop.get("player", ""),
+        }
+        for prop in props
+        for signal in prop.get("source_signals", [])[:2]
+    ][:5]
+    return {
+        "title": title,
+        "summary": summary,
+        "grade": grade,
+        "score": score,
+        "average_confidence": round(avg_confidence, 1),
+        "average_edge": round(avg_edge, 2),
+        "source_count": len(sources),
+        "sources": sources,
+        "signals": signals,
+        "warnings": warnings,
+        "legs": [
+            {
+                "player": prop.get("player", ""),
+                "pick": f"{prop.get('direction', 'Over')} {prop.get('stat', '')} {prop.get('line', '')}",
+                "projection": prop.get("projection"),
+                "confidence": prop.get("confidence"),
+                "edge": prop.get("edge"),
+                "platform": prop.get("platform", ""),
+                "sport": prop.get("sport", ""),
+            }
+            for prop in props
+        ],
+    }
+
+
+def _grade_from_confidence(confidence: float) -> str:
+    if confidence >= 70:
+        return "A"
+    if confidence >= 62:
+        return "B"
+    if confidence >= 54:
+        return "C"
+    if confidence >= 48:
+        return "D"
+    return "F"
+
+
+def _model_health_payload() -> dict:
+    backtest_data = backtest_summary(BetRepository().get_all(), EntryRepository.all())
+    entry_confidence = backtest_data.get("entries", {}).get("confidence", {})
+    calibration = backtest_data.get("calibration", [])
+    calibrated_rows = sum(bucket.get("bets", 0) for bucket in calibration)
+    avg_error = (
+        sum(abs(bucket.get("error", 0.0)) * bucket.get("bets", 0) for bucket in calibration) / calibrated_rows
+        if calibrated_rows
+        else 0.0
+    )
+    settled_entries = backtest_data.get("entries", {}).get("count", 0)
+    ai = ai_status()
+    dashboard_stats = get_dashboard()
+    source_score = min(100.0, 35.0 + (calibrated_rows * 2.5) + (settled_entries * 3.0))
+    calibration_score = max(0.0, 100.0 - (avg_error * 2.0)) if calibrated_rows else 45.0
+    confidence_edge = abs(float(entry_confidence.get("edge") or 0.0))
+    confidence_score = max(0.0, 100.0 - (confidence_edge * 2.0)) if settled_entries else 50.0
+    ai_score = 100.0 if ai["configured"] and ai["key_format_ok"] else 55.0
+    recommendation_accuracy = dashboard_stats.get("recommendation_accuracy", {})
+    rec_accuracy = float(recommendation_accuracy.get("accuracy") or 0.0)
+    accuracy_score = rec_accuracy if recommendation_accuracy.get("tracked") else 50.0
+    trust_score = round(
+        (calibration_score * 0.34)
+        + (confidence_score * 0.22)
+        + (source_score * 0.18)
+        + (ai_score * 0.12)
+        + (accuracy_score * 0.14),
+        1,
+    )
+    if trust_score >= 78:
+        status = "Strong"
+    elif trust_score >= 62:
+        status = "Usable"
+    elif trust_score >= 48:
+        status = "Learning"
+    else:
+        status = "Needs Data"
+
+    return {
+        "trust_score": trust_score,
+        "status": status,
+        "settled_entries": settled_entries,
+        "calibrated_picks": calibrated_rows,
+        "average_calibration_error": round(avg_error, 1),
+        "actual_vs_confidence_edge": entry_confidence.get("edge", 0.0),
+        "openai": ai,
+        "recommendation_accuracy": recommendation_accuracy,
+        "components": {
+            "calibration": round(calibration_score, 1),
+            "confidence_alignment": round(confidence_score, 1),
+            "data_depth": round(source_score, 1),
+            "ai_readiness": round(ai_score, 1),
+            "recommendation_accuracy": round(accuracy_score, 1),
+        },
+        "next_steps": _model_health_next_steps(calibrated_rows, settled_entries, ai, avg_error),
+    }
+
+
+def _model_health_next_steps(calibrated_rows: int, settled_entries: int, ai: dict, avg_error: float) -> list[str]:
+    steps = []
+    if calibrated_rows < 25:
+        steps.append("Upload or import more betting history to strengthen confidence calibration.")
+    if settled_entries < 10:
+        steps.append("Settle more EdgeIQ-recommended entries so the model can learn from its own calls.")
+    if not (ai.get("configured") and ai.get("key_format_ok")):
+        steps.append("Connect a valid OpenAI API key for richer reasoning and screenshot extraction.")
+    if avg_error > 15:
+        steps.append("Review high-confidence misses in Performance before increasing bet size.")
+    return steps or ["Model inputs look healthy. Keep logging results to preserve calibration."]
+
+
 def _optimized_entries(
     platform: str,
     sport_filter: str | None,
@@ -1333,6 +1924,34 @@ def _optimized_entries(
     return ranked[:limit]
 
 
+def _mixed_risk_suggestions(raw_props: list[dict], sport: str, platform_model: Platform) -> list:
+    suggestions = suggest_entries(raw_props, sport, platform_model, limit=3, leg_count=2)
+    for high_risk_leg_count in (4, 5):
+        high_risk = suggest_entries(
+            raw_props,
+            sport,
+            platform_model,
+            limit=1,
+            leg_count=high_risk_leg_count,
+            max_same_team=1,
+            exclude_correlated=True,
+            apply_feedback=True,
+        )
+        if not high_risk:
+            high_risk = suggest_entries(
+                raw_props,
+                sport,
+                platform_model,
+                limit=1,
+                leg_count=high_risk_leg_count,
+            )
+        suggestions.extend(high_risk[:1])
+
+    for rank, suggestion in enumerate(suggestions[:5], start=1):
+        suggestion.rank = rank
+    return suggestions[:5]
+
+
 def _props_by_platform(platform: str) -> list[tuple[Platform, list[dict]]]:
     platforms: list[tuple[Platform, list[dict]]] = []
     for platform_name in _selected_platforms(platform):
@@ -1367,6 +1986,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     trending_count = int(raw.get("trending_count") or 0)
     projection = auto_projection(line, trending_count)
     edge = calculate_edge(line, projection)
+    direction = _prop_direction(line, projection, raw.get("direction"))
     platform = raw.get("platform", "PrizePicks")
     movement = _line_movement_payload(
         raw.get("player", ""),
@@ -1390,6 +2010,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         "stat": raw.get("stat", ""),
         "line": line,
         "projection": projection,
+        "direction": direction,
         "edge": round(edge, 2),
         "confidence": round(calculate_confidence(edge), 2),
         "platform": platform,
@@ -1407,6 +2028,348 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     }
 
 
+def _line_shop_payload(
+    player: str,
+    stat: str,
+    sport_filter: str | None,
+    platform: str,
+    over_odds: int | None = None,
+    under_odds: int | None = None,
+) -> dict:
+    props = _matching_market_props(player, stat, sport_filter, platform)
+    if not props:
+        return {
+            "player": player,
+            "stat": stat,
+            "sport": sport_filter or "All Sports",
+            "available": False,
+            "message": "No active matching prop lines found.",
+            "lines": [],
+            "best_over": None,
+            "best_under": None,
+            "consensus_line": None,
+            "no_vig": _no_vig_payload(over_odds, under_odds),
+        }
+
+    analyzed = [_analyzed_feed_prop(prop) for prop in props]
+    analyzed.sort(key=lambda prop: (prop["line"], -prop["trending_count"], prop["platform"]))
+    best_over = analyzed[0]
+    best_under = max(analyzed, key=lambda prop: (prop["line"], prop["trending_count"]))
+    consensus = round(sum(prop["line"] for prop in analyzed) / len(analyzed), 2)
+    projection = round(sum(prop["projection"] for prop in analyzed) / len(analyzed), 2)
+    line_spread = round(best_under["line"] - best_over["line"], 2)
+    return {
+        "player": player,
+        "stat": stat,
+        "sport": sport_filter or "All Sports",
+        "available": True,
+        "message": "Lower line is better for overs; higher line is better for unders.",
+        "lines": analyzed,
+        "best_over": {
+            "platform": best_over["platform"],
+            "line": best_over["line"],
+            "edge": round(projection - best_over["line"], 2),
+        },
+        "best_under": {
+            "platform": best_under["platform"],
+            "line": best_under["line"],
+            "edge": round(best_under["line"] - projection, 2),
+        },
+        "consensus_line": consensus,
+        "projection": projection,
+        "line_spread": line_spread,
+        "value_note": (
+            f"Best over is {line_spread:g} points better than the highest posted line."
+            if line_spread > 0
+            else "All matching books are showing the same line."
+        ),
+        "no_vig": _no_vig_payload(over_odds, under_odds),
+    }
+
+
+def _matching_market_props(player: str, stat: str, sport_filter: str | None, platform: str) -> list[dict]:
+    player_key = player.strip().lower()
+    stat_key = stat.strip().lower()
+    props = _fetch_props(platform, sport_filter)
+    return [
+        prop for prop in props
+        if prop.get("player", "").strip().lower() == player_key
+        and prop.get("stat", "").strip().lower() == stat_key
+        and prop.get("line") is not None
+    ]
+
+
+def _ev_scanner_rows(
+    platform: str,
+    sport_filter: str | None,
+    min_ev: float,
+    limit: int,
+    odds: int,
+) -> list[dict]:
+    props = _fetch_props(platform, sport_filter)
+    groups: dict[tuple[str, str, str, str], list[dict]] = {}
+    for prop in props:
+        key = _market_group_key(prop)
+        if key[0] and key[1]:
+            groups.setdefault(key, []).append(prop)
+
+    rows = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for group in groups.values():
+        best_lines = _best_line_summary_for_group(group)
+        for raw in group:
+            analyzed = _analyzed_feed_prop(raw)
+            key = (
+                analyzed["player"].strip().lower(),
+                analyzed["stat"].strip().lower(),
+                analyzed["sport"].strip().upper(),
+                analyzed["platform"].strip().lower(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            probability = max(0.0, min(100.0, float(analyzed["hit_rate"]["estimated_hit_rate"])))
+            ev_percent = round(expected_value(odds, probability / 100) * 100, 2)
+            if ev_percent < min_ev:
+                continue
+            rows.append({
+                **analyzed,
+                "estimated_probability": round(probability, 1),
+                "assumed_odds": odds,
+                "expected_value": ev_percent,
+                "sportsbook_probability": round(sportsbook_probability(odds) * 100, 2),
+                "best_over": best_lines["best_over"],
+                "best_under": best_lines["best_under"],
+                "consensus_line": best_lines["consensus_line"],
+            })
+
+    rows.sort(key=lambda row: (row["expected_value"], row["confidence"], row["edge"]), reverse=True)
+    return rows[: max(1, min(limit, 100))]
+
+
+def _market_timing_alert_rows(
+    platform: str,
+    sport_filter: str | None,
+    limit: int,
+    odds: int,
+) -> list[dict]:
+    rows = _ev_scanner_rows(platform, sport_filter, min_ev=-25.0, limit=60, odds=odds)
+    alerts = [_timing_alert_from_row(row) for row in rows]
+    alerts = [alert for alert in alerts if alert is not None]
+    alerts.sort(key=lambda alert: (alert["priority_score"], alert["expected_value"], alert["confidence"]), reverse=True)
+    return alerts[: max(1, min(limit, 25))]
+
+
+def _timing_alert_from_row(row: dict) -> dict | None:
+    movement = row.get("line_movement") or {}
+    change = float(movement.get("change") or 0.0)
+    direction = row.get("direction") or "Over"
+    confidence = float(row.get("confidence") or 0.0)
+    ev = float(row.get("expected_value") or 0.0)
+    edge = float(row.get("edge") or 0.0)
+    abs_change = abs(change)
+    outlier_move = _is_outlier_line_move(float(row.get("line") or 0.0), abs_change)
+    market_supports_pick = _market_move_supports_pick(direction, change)
+    line_is_better_now = _line_move_improves_price(direction, change)
+
+    if outlier_move:
+        alert_type = "Large Move"
+        action = "Verify before betting"
+        severity = "warning"
+        reason = (
+            f"The line moved {abs_change:.1f}, which is large enough to verify for news, stat-label changes, "
+            "or provider corrections before placing."
+        )
+    elif abs_change >= 1.0 and market_supports_pick and ev >= 0:
+        alert_type = "Steam Move"
+        action = "Take now if you still like the edge"
+        severity = "urgent"
+        reason = f"Market moved {movement.get('direction', 'flat')} by {abs_change:.1f}, supporting the {direction.lower()} side."
+    elif ev >= 8 and confidence >= 58 and abs_change < 0.5:
+        alert_type = "Take Now"
+        action = "Good timing"
+        severity = "positive"
+        reason = "Positive EV with no major line move yet."
+    elif line_is_better_now and confidence >= 52:
+        alert_type = "Better Number"
+        action = "Re-check news, then consider"
+        severity = "watch"
+        reason = f"The current line is better for {direction.lower()} than the previous snapshot."
+    elif abs_change >= 1.0 and not line_is_better_now:
+        alert_type = "Line Moved Against Price"
+        action = "Do not chase blindly"
+        severity = "warning"
+        reason = f"The line is now worse for a {direction.lower()} pick than the earlier number."
+    elif ev < 0 and confidence < 52:
+        alert_type = "Avoid"
+        action = "Pass for now"
+        severity = "danger"
+        reason = "Negative EV and low confidence."
+    else:
+        return None
+
+    movement_score = min(abs_change, 4.0)
+    priority = (
+        max(ev, -10.0)
+        + (confidence - 50.0) * 0.75
+        + movement_score * 6.0
+        + (4.0 if market_supports_pick else 0.0)
+        + (3.0 if line_is_better_now else 0.0)
+    )
+    return {
+        "type": alert_type,
+        "action": action,
+        "severity": severity,
+        "priority_score": round(priority, 1),
+        "player": row.get("player", ""),
+        "sport": row.get("sport", ""),
+        "platform": row.get("platform", ""),
+        "game": row.get("game", ""),
+        "direction": direction,
+        "stat": row.get("stat", ""),
+        "line": row.get("line"),
+        "projection": row.get("projection"),
+        "confidence": round(confidence, 1),
+        "edge": round(edge, 2),
+        "expected_value": round(ev, 2),
+        "movement": movement,
+        "market_supports_pick": market_supports_pick,
+        "line_is_better_now": line_is_better_now,
+        "outlier_move": outlier_move,
+        "reason": reason,
+    }
+
+
+def _market_move_supports_pick(direction: str, change: float) -> bool:
+    if abs(change) < 0.01:
+        return False
+    if direction == "Under":
+        return change < 0
+    return change > 0
+
+
+def _line_move_improves_price(direction: str, change: float) -> bool:
+    if abs(change) < 0.01:
+        return False
+    if direction == "Under":
+        return change > 0
+    return change < 0
+
+
+def _is_outlier_line_move(current_line: float, abs_change: float) -> bool:
+    if abs_change < 4.0:
+        return False
+    if current_line <= 0:
+        return abs_change >= 6.0
+    return abs_change >= max(5.0, current_line * 0.25)
+
+
+def _market_group_key(prop: dict) -> tuple[str, str, str, str]:
+    return (
+        prop.get("player", "").strip().lower(),
+        prop.get("stat", "").strip().lower(),
+        prop.get("league", "").strip().upper(),
+        prop.get("game", "").strip().upper(),
+    )
+
+
+def _best_line_summary_for_group(group: list[dict]) -> dict:
+    lines = [prop for prop in group if prop.get("line") is not None]
+    if not lines:
+        return {"best_over": None, "best_under": None, "consensus_line": None}
+    best_over = min(lines, key=lambda prop: (float(prop["line"]), -int(prop.get("trending_count") or 0)))
+    best_under = max(lines, key=lambda prop: (float(prop["line"]), int(prop.get("trending_count") or 0)))
+    consensus = round(sum(float(prop["line"]) for prop in lines) / len(lines), 2)
+    return {
+        "best_over": {
+            "platform": best_over.get("platform", ""),
+            "line": float(best_over["line"]),
+        },
+        "best_under": {
+            "platform": best_under.get("platform", ""),
+            "line": float(best_under["line"]),
+        },
+        "consensus_line": consensus,
+    }
+
+
+def _no_vig_payload(over_odds: int | None, under_odds: int | None) -> dict | None:
+    if over_odds is None or under_odds is None:
+        return None
+    over_prob = sportsbook_probability(over_odds)
+    under_prob = sportsbook_probability(under_odds)
+    total = over_prob + under_prob
+    if total <= 0:
+        return None
+    fair_over = over_prob / total
+    fair_under = under_prob / total
+    return {
+        "over_probability": round(fair_over * 100, 2),
+        "under_probability": round(fair_under * 100, 2),
+        "over_fair_odds": _probability_to_american(fair_over),
+        "under_fair_odds": _probability_to_american(fair_under),
+        "hold": round((total - 1) * 100, 2),
+    }
+
+
+def _probability_to_american(probability: float) -> int:
+    probability = max(0.0001, min(0.9999, probability))
+    if probability >= 0.5:
+        return round(-100 * probability / (1 - probability))
+    return round(100 * (1 - probability) / probability)
+
+
+def _prop_direction(line: float, projection: float | None, explicit: object = None) -> str:
+    normalized = _normalize_direction(str(explicit or ""))
+    if normalized in {"Over", "Under"} and explicit:
+        return normalized
+    if projection is None:
+        return "Over"
+    return "Under" if float(projection) < float(line) else "Over"
+
+
+def _normalize_direction(value: str) -> str:
+    text = (value or "").strip().lower()
+    if text in {"under", "u", "less", "lower"}:
+        return "Under"
+    return "Over"
+
+
+def _entry_clv_payload(entry: dict) -> dict:
+    legs = [_clv_for_prop(prop) for prop in entry.get("props", [])]
+    values = [leg["clv"] for leg in legs if leg["clv"] is not None]
+    return {
+        "id": entry["id"],
+        "status": entry.get("status", ""),
+        "result": entry.get("result", ""),
+        "platform": entry.get("platform", ""),
+        "placed_at": entry["placed_at"].isoformat() if entry.get("placed_at") else "",
+        "average_clv": round(sum(values) / len(values), 2) if values else 0.0,
+        "positive_legs": sum(1 for value in values if value > 0),
+        "legs": legs,
+    }
+
+
+def _clv_for_prop(prop: dict) -> dict:
+    placed_line = float(prop.get("line") or 0)
+    current_line = _active_line_for_player_stat(prop.get("player", ""), prop.get("stat", ""), prop.get("platform", "PrizePicks"))
+    if current_line is None:
+        history = LineHistoryRepository.get_history(prop.get("player", ""), prop.get("stat", ""), prop.get("platform", "PrizePicks"))
+        current_line = float(history[-1]["line"]) if history else None
+    clv = round(current_line - placed_line, 2) if current_line is not None else None
+    return {
+        "player": prop.get("player", ""),
+        "sport": prop.get("sport", ""),
+        "stat": prop.get("stat", ""),
+        "platform": prop.get("platform", ""),
+        "placed_line": placed_line,
+        "current_line": current_line,
+        "clv": clv,
+        "beat_market": clv is not None and clv > 0,
+        "note": "Positive CLV means the over line moved higher after placement.",
+    }
+
+
 def _check_entry_result(entry: dict, allow_estimates: bool) -> dict:
     legs = []
     unknown = False
@@ -1414,7 +2377,7 @@ def _check_entry_result(entry: dict, allow_estimates: bool) -> dict:
     dnp_legs = 0
 
     for prop in entry["props"]:
-        final_stat = _final_stat_for_prop(prop)
+        final_stat = _usable_final_stat_for_entry(prop, entry)
         actual = final_stat.get("actual") if final_stat else None
         status = final_stat.get("status") if final_stat else ""
         leg_source = "actual_provider"
@@ -1427,21 +2390,12 @@ def _check_entry_result(entry: dict, allow_estimates: bool) -> dict:
             if actual is None:
                 unknown = True
                 leg_result = "Unknown"
-            elif actual > prop["line"]:
-                leg_result = "Win"
-            elif actual < prop["line"]:
-                leg_result = "Loss"
-            else:
-                leg_result = "Push"
+            leg_result = _leg_result(actual, prop["line"], prop.get("direction", "Over"))
         elif actual is None:
             unknown = True
             leg_result = "Unknown"
-        elif actual > prop["line"]:
-            leg_result = "Win"
-        elif actual < prop["line"]:
-            leg_result = "Loss"
-        else:
-            leg_result = "Push"
+        elif actual is not None:
+            leg_result = _leg_result(actual, prop["line"], prop.get("direction", "Over"))
         if leg_source == "projection_estimate":
             source = "projection_estimate"
         legs.append({**prop, "actual": actual, "result": leg_result, "source": leg_source})
@@ -1483,7 +2437,7 @@ def _entry_progress_payload(entry: dict) -> dict:
     projected_wins = projected_losses = projected_pushes = 0
 
     for prop in entry["props"]:
-        final_stat = _final_stat_for_prop(prop)
+        final_stat = _usable_final_stat_for_entry(prop, entry)
         actual = final_stat.get("actual") if final_stat else None
         status_value = final_stat.get("status") if final_stat else ""
         if status_value == "dnp":
@@ -1501,7 +2455,7 @@ def _entry_progress_payload(entry: dict) -> dict:
             elif projected == "Push":
                 projected_pushes += 1
         else:
-            status = _leg_result(actual, prop["line"])
+            status = _leg_result(actual, prop["line"], prop.get("direction", "Over"))
             projected = status
             completed += 1
             source = "actual_provider"
@@ -1510,13 +2464,17 @@ def _entry_progress_payload(entry: dict) -> dict:
             **prop,
             "actual": actual,
             "status": status,
-            "final_status": status_value or "played",
+            "final_status": status_value or ("played" if actual is not None else "pending"),
             "projected_status": projected,
             "progress_text": _leg_progress_text({**prop, "status": status}, actual),
+            "progress_percent": _leg_progress_percent(prop, actual),
+            "progress_label": _leg_progress_label(prop, actual),
+            "clv": _clv_for_prop(prop),
         })
 
+    live_result = _entry_result_from_leg_statuses([leg["status"] for leg in legs])
     if completed == len(legs) and legs:
-        projected_result = _entry_result_from_leg_statuses([leg["status"] for leg in legs])
+        projected_result = live_result
     else:
         projected_result = _entry_result_from_leg_statuses(
             [leg["projected_status"] for leg in legs]
@@ -1535,6 +2493,7 @@ def _entry_progress_payload(entry: dict) -> dict:
         "completed_legs": completed,
         "total_legs": len(legs),
         "source": source,
+        "live_result": live_result,
         "projected_result": projected_result,
         "projected_wins": projected_wins,
         "projected_losses": projected_losses,
@@ -1543,23 +2502,66 @@ def _entry_progress_payload(entry: dict) -> dict:
     }
 
 
-def _leg_result(actual: float, line: float) -> str:
+def _leg_result(actual: float, line: float, direction: str = "Over") -> str:
+    if actual == line:
+        return "Push"
+    if _normalize_direction(direction) == "Under":
+        return "Win" if actual < line else "Loss"
     if actual > line:
         return "Win"
-    if actual < line:
-        return "Loss"
-    return "Push"
+    return "Loss"
 
 
 def _final_stat_for_prop(prop: dict) -> dict | None:
     return find_final_stat(prop)
 
 
+def _usable_final_stat_for_entry(prop: dict, entry: dict) -> dict | None:
+    final_stat = _final_stat_for_prop(prop)
+    if final_stat is None:
+        return None
+
+    stat_date = _parse_stat_date(final_stat.get("game_date"))
+    placed_date = _entry_placed_date(entry)
+    if stat_date is not None and placed_date is not None and stat_date < placed_date:
+        return None
+
+    return final_stat
+
+
+def _entry_placed_date(entry: dict) -> date | None:
+    placed_at = entry.get("placed_at")
+    if isinstance(placed_at, datetime):
+        return placed_at.date()
+    if isinstance(placed_at, date):
+        return placed_at
+    if isinstance(placed_at, str) and placed_at.strip():
+        try:
+            return datetime.fromisoformat(placed_at).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_stat_date(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def _projected_leg_status(prop: dict) -> str:
     projection = prop.get("projection")
     if projection is None:
         return "Pending"
-    return _leg_result(projection, prop["line"])
+    return _leg_result(projection, prop["line"], prop.get("direction", "Over"))
 
 
 def _entry_result_from_leg_statuses(statuses: list[str]) -> str:
@@ -1582,6 +2584,24 @@ def _leg_progress_text(prop: dict, actual: float | None) -> str:
     if value is None:
         return "Waiting for stat data"
     return f"{label} {value:g} vs line {prop['line']:g}"
+
+
+def _leg_progress_percent(prop: dict, actual: float | None) -> float:
+    line = float(prop.get("line") or 0)
+    if line <= 0:
+        return 0.0
+    value = actual if actual is not None else prop.get("projection")
+    if value is None:
+        return 0.0
+    return round(max(0.0, min(125.0, (float(value) / line) * 100.0)), 1)
+
+
+def _leg_progress_label(prop: dict, actual: float | None) -> str:
+    value = actual if actual is not None else prop.get("projection")
+    if value is None:
+        return "Waiting"
+    prefix = "Actual" if actual is not None else "Projected"
+    return f"{prefix} {float(value):g} / {float(prop.get('line') or 0):g}"
 
 
 def _actual_stat_for_prop(prop: dict) -> float | None:
@@ -1675,6 +2695,7 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str) -> Prop:
         projection=projection,
         edge=edge,
         confidence=confidence,
+        direction=_prop_direction(payload.line, projection, payload.direction),
         platform=_platform_from_text(payload.platform or entry_platform),
         game=payload.game,
         needs_projection=False,
@@ -1780,6 +2801,7 @@ def _source_context(
     signals.extend(_balldontlie_stat_signals(payload))
     signals.extend(_news_context_signals(payload))
     signals.extend(_weather_signals(payload))
+    signals.extend(_calibration_feedback_signals(payload))
 
     projection_delta = sum(float(signal.get("projection_delta", 0.0)) for signal in signals) if apply_projection_delta else 0.0
     projection_delta = max(-6.0, min(6.0, projection_delta))
@@ -2015,6 +3037,73 @@ def _weather_signals(payload: PropPayload) -> list[dict]:
     )]
 
 
+def _calibration_feedback_signals(payload: PropPayload) -> list[dict]:
+    rows = _historical_calibration_rows(payload)
+    if len(rows) < 3:
+        return []
+    wins = sum(1 for row in rows if row["result"] == "Win")
+    actual = wins / len(rows) * 100
+    predicted = sum(float(row.get("predicted") or 50.0) for row in rows) / len(rows)
+    edge = actual - predicted
+    if abs(edge) < 4:
+        return []
+    confidence_delta = max(-7.0, min(8.0, edge * 0.18))
+    return [_signal(
+        source="Calibration feedback",
+        kind="model_feedback",
+        projection_delta=0.0,
+        confidence_delta=confidence_delta,
+        score=confidence_delta,
+        message=(
+            f"Historical {payload.sport}/{payload.stat} calibration is {actual:.1f}% actual "
+            f"vs {predicted:.1f}% expected over {len(rows)} decisions."
+        ),
+    )]
+
+
+def _historical_calibration_rows(payload: PropPayload) -> list[dict]:
+    rows: list[dict] = []
+    for bet in BetRepository().get_all():
+        if bet.result not in {"Win", "Loss"}:
+            continue
+        sport_match = not bet.sport or bet.sport.strip().upper() == payload.sport.strip().upper()
+        stat_match = not bet.stat_type or bet.stat_type.strip().lower() == payload.stat.strip().lower()
+        platform_match = not bet.platform or bet.platform.strip().lower() == (payload.platform or "").strip().lower()
+        if sport_match and (stat_match or platform_match):
+            rows.append({
+                "result": bet.result,
+                "predicted": float(bet.win_probability or 50.0),
+            })
+
+    for entry in EntryRepository.all():
+        if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss"}:
+            continue
+        props = entry.get("props") or []
+        sport_match = any(str(prop.get("sport", "")).upper() == payload.sport.strip().upper() for prop in props)
+        stat_match = any(str(prop.get("stat", "")).lower() == payload.stat.strip().lower() for prop in props)
+        platform_match = str(entry.get("platform", "")).lower() == (payload.platform or "").strip().lower()
+        if sport_match and (stat_match or platform_match):
+            rows.append({
+                "result": entry["result"],
+                "predicted": float(entry.get("average_confidence") or 50.0),
+            })
+
+    if len(rows) >= 3:
+        return rows
+
+    global_rows = [
+        {"result": bet.result, "predicted": float(bet.win_probability or 50.0)}
+        for bet in BetRepository().get_all()
+        if bet.result in {"Win", "Loss"}
+    ]
+    global_rows.extend(
+        {"result": entry["result"], "predicted": float(entry.get("average_confidence") or 50.0)}
+        for entry in EntryRepository.all()
+        if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss"}
+    )
+    return global_rows if len(global_rows) >= 8 else rows
+
+
 def _signal(
     source: str,
     kind: str,
@@ -2101,6 +3190,7 @@ def _serialize_prop(prop: Prop) -> dict:
         "stat": prop.stat.value,
         "line": prop.line,
         "projection": prop.projection,
+        "direction": prop.direction,
         "edge": round(prop.edge, 2),
         "confidence": round(prop.confidence, 2),
         "platform": prop.platform.value,
@@ -2121,12 +3211,14 @@ def _serialize_prop(prop: Prop) -> dict:
 
 
 def _serialize_suggestion(suggestion) -> dict:
+    leg_count = suggestion.entry.prop_count
     return {
         "rank": suggestion.rank,
         "score": suggestion.score,
         "grade": suggestion.grade,
         "action": suggestion.action,
-        "leg_count": suggestion.entry.prop_count,
+        "leg_count": leg_count,
+        "risk_tier": "Higher Risk" if leg_count >= 4 else "Standard",
         "warnings": suggestion.warnings,
         "entry": _serialize_entry(suggestion.entry),
     }
@@ -2163,15 +3255,43 @@ def _platform_from_text(value: str) -> Platform:
 
 def _stat_from_text(value: str) -> StatType:
     normalized = (value or "").lower()
+    compact = normalized.replace("-", " ").replace("_", " ")
+    if "h+r+rbi" in compact or "hits+runs+rbis" in compact or "hit run rbi" in compact:
+        return StatType.HITS_RUNS_RBIS
+    if "pitcher" in compact and ("strikeout" in compact or compact.strip() == "ks"):
+        return StatType.PITCHER_STRIKEOUTS
+    if "strikeout" in compact or compact.strip() in {"ks", "k"}:
+        return StatType.STRIKEOUTS
+    if "passing" in compact and "yard" in compact:
+        return StatType.PASSING_YARDS
+    if "rushing" in compact and "yard" in compact:
+        return StatType.RUSHING_YARDS
+    if "receiving" in compact and "yard" in compact:
+        return StatType.RECEIVING_YARDS
+    if "reception" in compact:
+        return StatType.RECEPTIONS
+    if "shot" in compact and "goal" in compact:
+        return StatType.SHOTS_ON_GOAL
+    if "shot" in compact and "target" in compact:
+        return StatType.SHOTS_ON_TARGET
+    if "home run" in compact or compact.strip() == "hr":
+        return StatType.HOME_RUNS
+    if "total base" in compact:
+        return StatType.TOTAL_BASES
+    if "rbi" in compact:
+        return StatType.RBIS
     for stat in StatType:
-        if stat.value.lower() == normalized or stat.value.lower() in normalized:
+        stat_text = stat.value.lower()
+        if stat_text == compact or stat_text in compact:
             return stat
-    if "point" in normalized:
+    if "hit" in compact:
+        return StatType.HITS
+    if "point" in compact:
         return StatType.POINTS
-    if "rebound" in normalized:
+    if "rebound" in compact:
         return StatType.REBOUNDS
-    if "assist" in normalized:
+    if "assist" in compact:
         return StatType.ASSISTS
-    if "pra" in normalized:
+    if "pra" in compact:
         return StatType.PRA
     return StatType.POINTS

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, String, DateTime, func
+from sqlalchemy import Boolean, Column, Integer, Float, String, DateTime, func
 
 from repository.database import Base
 
@@ -34,6 +34,8 @@ class EntryModel(Base):
     placed_at = Column(DateTime)
 
     settled_at = Column(DateTime)
+
+    recommended_by_app = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(
         DateTime,

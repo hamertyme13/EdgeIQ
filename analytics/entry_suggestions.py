@@ -111,6 +111,7 @@ def _prop_from_feed(raw: dict, platform: Platform) -> Prop:
     trending_count = int(raw.get("trending_count") or 0)
     projection = auto_projection(line, trending_count)
     edge = calculate_edge(line, projection)
+    direction = "Under" if projection < line else "Over"
 
     return Prop(
         player=Player(
@@ -123,6 +124,7 @@ def _prop_from_feed(raw: dict, platform: Platform) -> Prop:
         projection=projection,
         edge=edge,
         confidence=calculate_confidence(edge),
+        direction=direction,
         platform=platform,
         game=raw.get("game", ""),
         needs_projection=False,
@@ -147,15 +149,43 @@ def _unique_players(props: list[Prop]) -> list[Prop]:
 
 def _stat_from_text(value: str) -> StatType:
     normalized = (value or "").lower()
+    compact = normalized.replace("-", " ").replace("_", " ")
+    if "h+r+rbi" in compact or "hits+runs+rbis" in compact or "hit run rbi" in compact:
+        return StatType.HITS_RUNS_RBIS
+    if "pitcher" in compact and ("strikeout" in compact or compact.strip() == "ks"):
+        return StatType.PITCHER_STRIKEOUTS
+    if "strikeout" in compact or compact.strip() in {"ks", "k"}:
+        return StatType.STRIKEOUTS
+    if "passing" in compact and "yard" in compact:
+        return StatType.PASSING_YARDS
+    if "rushing" in compact and "yard" in compact:
+        return StatType.RUSHING_YARDS
+    if "receiving" in compact and "yard" in compact:
+        return StatType.RECEIVING_YARDS
+    if "reception" in compact:
+        return StatType.RECEPTIONS
+    if "shot" in compact and "goal" in compact:
+        return StatType.SHOTS_ON_GOAL
+    if "shot" in compact and "target" in compact:
+        return StatType.SHOTS_ON_TARGET
+    if "home run" in compact or compact.strip() == "hr":
+        return StatType.HOME_RUNS
+    if "total base" in compact:
+        return StatType.TOTAL_BASES
+    if "rbi" in compact:
+        return StatType.RBIS
     for stat in StatType:
-        if stat.value.lower() == normalized or stat.value.lower() in normalized:
+        stat_text = stat.value.lower()
+        if stat_text == compact or stat_text in compact:
             return stat
-    if "point" in normalized:
+    if "hit" in compact:
+        return StatType.HITS
+    if "point" in compact:
         return StatType.POINTS
-    if "rebound" in normalized:
+    if "rebound" in compact:
         return StatType.REBOUNDS
-    if "assist" in normalized:
+    if "assist" in compact:
         return StatType.ASSISTS
-    if "pra" in normalized:
+    if "pra" in compact:
         return StatType.PRA
     return StatType.POINTS

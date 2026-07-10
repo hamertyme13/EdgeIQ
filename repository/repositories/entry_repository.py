@@ -35,6 +35,7 @@ class EntryRepository:
         result: str = "",
         wager: float = 0.0,
         multiplier: float = 1.0,
+        recommended_by_app: bool = False,
     ) -> int:
 
         EntryRepository._ensure_schema()
@@ -58,6 +59,7 @@ class EntryRepository:
                 profit=EntryRepository._profit_for_result(result, wager, multiplier),
                 status=status,
                 result=result,
+                recommended_by_app=bool(recommended_by_app),
                 placed_at=datetime.utcnow() if status == "Pending" else None,
             )
 
@@ -76,6 +78,7 @@ class EntryRepository:
                     projection=prop.projection,
                     edge=prop.edge,
                     confidence=prop.confidence,
+                    direction=prop.direction,
                     platform=prop.platform.value,
                     game=getattr(prop, "game", ""),
                 )
@@ -124,6 +127,7 @@ class EntryRepository:
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
                     "result": entry.result,
+                    "recommended_by_app": bool(getattr(entry, "recommended_by_app", False)),
                     "placed_at": entry.placed_at,
                     "props": [
                         {
@@ -135,6 +139,7 @@ class EntryRepository:
                             "projection": prop.projection,
                             "edge": prop.edge,
                             "confidence": prop.confidence,
+                            "direction": prop.direction or "Over",
                             "platform": prop.platform,
                             "game": prop.game,
                         }
@@ -175,6 +180,7 @@ class EntryRepository:
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
                     "result": entry.result,
+                    "recommended_by_app": bool(getattr(entry, "recommended_by_app", False)),
                     "placed_at": entry.placed_at,
                     "settled_at": entry.settled_at,
                     "created_at": entry.created_at,
@@ -188,6 +194,7 @@ class EntryRepository:
                             "projection": prop.projection,
                             "edge": prop.edge,
                             "confidence": prop.confidence,
+                            "direction": prop.direction or "Over",
                             "platform": prop.platform,
                             "game": prop.game,
                         }
@@ -302,10 +309,35 @@ class EntryRepository:
             "wagered": round(total_wagered, 2),
             "pending_exposure": round(pending_exposure, 2),
             "roi": round((settled_profit / total_wagered * 100) if total_wagered else 0.0, 2),
+            "recommendation_accuracy": EntryRepository._recommendation_accuracy(active),
             "by_result": EntryRepository._group_by_result(settled),
             "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
             "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
             "by_platform": EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown"),
+            "platform_profitability": EntryRepository._ranked_groups(
+                EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown")
+            ),
+        }
+
+    @staticmethod
+    def _recommendation_accuracy(entries: list[dict]) -> dict:
+        recommended = [entry for entry in entries if entry.get("recommended_by_app")]
+        settled = [entry for entry in recommended if entry.get("status") == "Settled"]
+        decisions = [entry for entry in settled if entry.get("result") in {"Win", "Loss"}]
+        wins = sum(1 for entry in decisions if entry.get("result") == "Win")
+        losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
+        pushes = sum(1 for entry in settled if entry.get("result") == "Push")
+        pending = sum(1 for entry in recommended if entry.get("status") == "Pending")
+        total = wins + losses
+        return {
+            "accuracy": round((wins / total * 100) if total else 0.0, 1),
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "pending": pending,
+            "tracked": len(recommended),
+            "settled": len(settled),
+            "decisions": total,
         }
 
     @staticmethod
@@ -377,3 +409,11 @@ class EntryRepository:
             group["roi"] = round((group["profit"] / group["wagered"] * 100) if group["wagered"] else 0.0, 2)
             group["win_pct"] = round((group["wins"] / decisions * 100) if decisions else 0.0, 1)
         return groups
+
+    @staticmethod
+    def _ranked_groups(groups: dict[str, dict]) -> list[dict]:
+        rows = [{"platform": name, **stats} for name, stats in groups.items()]
+        rows.sort(key=lambda row: (row["profit"], row["roi"], row["wins"]), reverse=True)
+        for index, row in enumerate(rows, start=1):
+            row["rank"] = index
+        return rows

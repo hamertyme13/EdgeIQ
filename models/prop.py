@@ -20,6 +20,8 @@ class Prop:
 
     confidence: float
 
+    direction: str = "Over"
+
     platform: Platform = Platform.PRIZEPICKS
 
     game: str = ""

@@ -2,6 +2,7 @@ from datetime import datetime
 import base64
 
 import web.app as web_app
+import services.dashboard as dashboard_service
 import data.providers.final_stats as final_stats
 import data.providers.espn as espn
 import data.providers.sleeper as sleeper
@@ -11,20 +12,26 @@ from web.app import (
     EntryPayload,
     EvPayload,
     ParlayChatPayload,
+    PropPayload,
     DnpSettingPayload,
     UploadAnalyzePayload,
     AiEntryReviewPayload,
+    BankrollTransactionPayload,
     _check_entry_result,
+    _calibration_feedback_signals,
     _entry_progress_payload,
+    _leg_result,
     _line_movement_payload,
     _parse_betting_history,
     _trending_games_payload,
     analyze_entry,
     analyze_ev,
     backtest,
+    dashboard_command_center,
     dashboard_parlay,
     dnp_setting,
     entry_progress,
+    ev_scanner,
     health,
     import_final_stats_endpoint,
     optimize_entries,
@@ -36,19 +43,56 @@ from web.app import (
     ai_parlay_chat,
     ai_entry_review,
     ai_status,
+    entry_suggestions,
     trending_games,
+    line_shop,
+    market_timing_alerts,
+    clv_report,
+    run_sync,
     top_props,
     projection_assist,
+    save_bankroll_transaction,
     update_dnp_setting,
     analyze_uploaded_file,
+    model_health,
+    _stat_from_text,
 )
 from models.bet import Bet
 from web.app import BettingHistoryPayload, FinalStatsPayload, ProjectionAssistPayload
 from repository.repositories.entry_repository import EntryRepository
+from models.stat_type import StatType
 
 
 def test_web_health_endpoint():
     assert health() == {"ok": True}
+
+
+def test_dashboard_command_center_returns_release_cards(monkeypatch):
+    monkeypatch.setattr(
+        web_app,
+        "_fetch_props",
+        lambda platform, sport: [
+            {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "game": "AAA", "trending_count": 100000, "platform": "PrizePicks"},
+            {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Assists", "line": 6.5, "game": "BBB", "trending_count": 90000, "platform": "PrizePicks"},
+            {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "game": "CCC", "trending_count": 80000, "platform": "PrizePicks"},
+            {"player": "D", "team": "DDD", "league": "WNBA", "stat": "Points", "line": 14.5, "game": "DDD", "trending_count": 70000, "platform": "PrizePicks"},
+            {"player": "E", "team": "EEE", "league": "WNBA", "stat": "Points", "line": 12.5, "game": "EEE", "trending_count": 60000, "platform": "PrizePicks"},
+        ],
+    )
+
+    body = dashboard_command_center("PrizePicks", "WNBA")
+
+    assert body["cards"]
+    assert body["cards"][0]["explanation"]["legs"]
+    assert body["model_health"]["trust_score"] >= 0
+
+
+def test_model_health_returns_actionable_components():
+    body = model_health()
+
+    assert "trust_score" in body
+    assert "calibration" in body["components"]
+    assert body["next_steps"]
 
 
 def test_web_ev_endpoint():
@@ -244,6 +288,13 @@ def test_sleeper_trend_signal_combines_adds_and_drops(monkeypatch):
     assert signal["net_adds"] == 35
 
 
+def test_expanded_stat_mapping_preserves_major_sport_props():
+    assert _stat_from_text("Pitcher Strikeouts") == StatType.PITCHER_STRIKEOUTS
+    assert _stat_from_text("Receiving Yards") == StatType.RECEIVING_YARDS
+    assert _stat_from_text("Shots on Goal") == StatType.SHOTS_ON_GOAL
+    assert _stat_from_text("Significant Strikes") == StatType.SIGNIFICANT_STRIKES
+
+
 def test_web_top_props_returns_five_per_sport(monkeypatch):
     raw_props = [
         {"player": f"W{i}", "league": "WNBA", "stat": "Points", "line": 10.5, "trending_count": 100 - i}
@@ -297,6 +348,7 @@ def test_generic_prop_normalizer_accepts_csv_payload():
             "position": "",
             "stat": "Points",
             "line": 20.5,
+            "direction": "",
             "game": "BBB",
             "status": "pre_game",
             "trending_count": 999993,
@@ -343,6 +395,65 @@ def test_uploaded_screenshot_without_openai_key_returns_guidance(monkeypatch):
     assert body["props"] == []
 
 
+def test_uploaded_phone_screenshot_can_import_bet_history(monkeypatch):
+    saved = []
+    monkeypatch.setattr(
+        web_app,
+        "_openai_extract_bets_from_image",
+        lambda raw, mime_type: {
+            "platform": "PrizePicks",
+            "bets": [
+                {
+                    "sport": "WNBA",
+                    "game": "DAL-TOR",
+                    "description": "A Points",
+                    "odds": -110,
+                    "wager": 10,
+                    "result": "Win",
+                    "profit": None,
+                    "stat_type": "Points",
+                    "win_probability": 58,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(web_app.BetRepository, "save", lambda self, bet: saved.append(bet))
+
+    body = analyze_uploaded_file(
+        UploadAnalyzePayload(
+            file_name="phone-history.png",
+            mime_type="image/png",
+            target="bet_history",
+            source="PrizePicks",
+            content_base64=base64.b64encode(b"fake-image").decode("utf-8"),
+        )
+    )
+
+    assert body["kind"] == "bet_history"
+    assert body["ai_enabled"] is True
+    assert body["imported"] == 1
+    assert saved[0].platform == "PrizePicks"
+    assert saved[0].profit == 9.09
+
+
+def test_calibration_feedback_can_boost_confidence_from_history(monkeypatch):
+    bets = [
+        Bet("WNBA", "DAL-TOR", "A Points", -110, 10, "Win", 9.09, "PrizePicks", "Points", 50),
+        Bet("WNBA", "DAL-TOR", "B Points", -110, 10, "Win", 9.09, "PrizePicks", "Points", 50),
+        Bet("WNBA", "DAL-TOR", "C Points", -110, 10, "Win", 9.09, "PrizePicks", "Points", 50),
+    ]
+    monkeypatch.setattr(web_app.BetRepository, "get_all", lambda self: bets)
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [])
+
+    signals = _calibration_feedback_signals(
+        PropPayload(player="A", team="DAL", sport="WNBA", stat="Points", line=20.5, platform="PrizePicks")
+    )
+
+    assert signals
+    assert signals[0]["source"] == "Calibration feedback"
+    assert signals[0]["confidence_delta"] > 0
+
+
 def test_web_dashboard_parlay_serializes_three_legs(monkeypatch):
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},
@@ -371,6 +482,55 @@ def test_ai_parlay_chat_falls_back_to_best_candidate(monkeypatch):
     assert body["ai_enabled"] is False
     assert body["suggestion"]["leg_count"] == 3
     assert "best 3-leg parlay" in body["message"]
+
+
+def test_ai_parlay_chat_uses_message_sport_and_leg_count_without_openai(monkeypatch):
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Assists", "line": 7.5, "trending_count": 90000},
+        {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 80000},
+        {"player": "D", "team": "DDD", "league": "WNBA", "stat": "3-Pointers Made", "line": 2.5, "trending_count": 70000},
+        {"player": "NFL A", "team": "EEE", "league": "NFL", "stat": "Receiving Yards", "line": 45.5, "trending_count": 999999},
+        {"player": "NFL B", "team": "FFF", "league": "NFL", "stat": "Rushing Yards", "line": 52.5, "trending_count": 999998},
+        {"player": "NFL C", "team": "GGG", "league": "NFL", "stat": "Passing Yards", "line": 230.5, "trending_count": 999997},
+        {"player": "NFL D", "team": "HHH", "league": "NFL", "stat": "Receptions", "line": 4.5, "trending_count": 999996},
+    ]
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: raw_props)
+
+    body = ai_parlay_chat(
+        ParlayChatPayload(
+            message="give me a 4 leg parlay for WNBA",
+            platform="PrizePicks",
+            sport="All Sports",
+        )
+    )
+
+    assert body["ai_enabled"] is False
+    assert body["request"]["sport"] == "WNBA"
+    assert body["request"]["leg_count"] == 4
+    assert body["suggestion"]["leg_count"] == 4
+    assert {prop["sport"] for prop in body["suggestion"]["entry"]["props"]} == {"WNBA"}
+    assert "best 4-leg parlay for WNBA" in body["message"]
+
+
+def test_ai_parlay_chat_falls_back_when_openai_request_errors(monkeypatch):
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "NHL", "stat": "Shots on Goal", "line": 2.5, "trending_count": 100000},
+        {"player": "B", "team": "BBB", "league": "NHL", "stat": "Saves", "line": 28.5, "trending_count": 90000},
+        {"player": "C", "team": "CCC", "league": "NHL", "stat": "Goals", "line": 0.5, "trending_count": 80000},
+    ]
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: raw_props)
+    monkeypatch.setattr(web_app, "_openai_parlay_response", lambda message, suggestions: (None, "timeout"))
+
+    body = ai_parlay_chat(ParlayChatPayload(message="give me a 3 leg parlay for hockey", platform="PrizePicks", sport="All Sports"))
+
+    assert body["ai_enabled"] is False
+    assert body["ai_error"] == "timeout"
+    assert body["request"]["sport"] == "NHL"
+    assert body["suggestion"]["leg_count"] == 3
+    assert "best 3-leg parlay for NHL" in body["message"]
 
 
 def test_ai_status_reports_key_shape(monkeypatch):
@@ -408,9 +568,9 @@ def test_place_entry_saves_wager_and_multiplier(monkeypatch):
     monkeypatch.setattr(
         web_app.EntryRepository,
         "save",
-        lambda entry, status="Draft", result="", wager=0.0, multiplier=1.0: saved.setdefault(
+        lambda entry, status="Draft", result="", wager=0.0, multiplier=1.0, recommended_by_app=False: saved.setdefault(
             "payload",
-            {"status": status, "wager": wager, "multiplier": multiplier},
+            {"status": status, "wager": wager, "multiplier": multiplier, "recommended_by_app": recommended_by_app},
         ) or 11,
     )
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 90.0})
@@ -421,6 +581,7 @@ def test_place_entry_saves_wager_and_multiplier(monkeypatch):
                 "platform": "PrizePicks",
                 "wager": 10,
                 "multiplier": 3,
+                "recommended_by_app": True,
                 "props": [
                     {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5},
                     {"player": "B", "team": "BBB", "sport": "WNBA", "stat": "Assists", "line": 7.5},
@@ -430,7 +591,50 @@ def test_place_entry_saves_wager_and_multiplier(monkeypatch):
     )
 
     assert body["status"] == "Pending"
-    assert saved["payload"] == {"status": "Pending", "wager": 10.0, "multiplier": 3.0}
+    assert saved["payload"] == {"status": "Pending", "wager": 10.0, "multiplier": 3.0, "recommended_by_app": True}
+
+
+def test_entry_analysis_serializes_under_direction(monkeypatch):
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
+    body = analyze_entry(
+        EntryPayload.model_validate(
+            {
+                "platform": "PrizePicks",
+                "props": [
+                    {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5, "projection": 18.0},
+                    {"player": "B", "team": "BBB", "sport": "WNBA", "stat": "Assists", "line": 7.5, "projection": 8.0},
+                ],
+            }
+        )
+    )
+
+    assert body["entry"]["props"][0]["direction"] == "Under"
+    assert body["entry"]["props"][1]["direction"] == "Over"
+
+
+def test_under_leg_result_wins_below_line():
+    assert _leg_result(17.0, 20.5, "Under") == "Win"
+    assert _leg_result(24.0, 20.5, "Under") == "Loss"
+    assert _leg_result(20.5, 20.5, "Under") == "Push"
+
+
+def test_recommendation_accuracy_counts_only_recommended_decisions():
+    entries = [
+        {"status": "Settled", "result": "Win", "recommended_by_app": True},
+        {"status": "Settled", "result": "Loss", "recommended_by_app": True},
+        {"status": "Settled", "result": "Push", "recommended_by_app": True},
+        {"status": "Pending", "result": "", "recommended_by_app": True},
+        {"status": "Settled", "result": "Win", "recommended_by_app": False},
+    ]
+
+    stats = EntryRepository._recommendation_accuracy(entries)
+
+    assert stats["accuracy"] == 50.0
+    assert stats["wins"] == 1
+    assert stats["losses"] == 1
+    assert stats["pushes"] == 1
+    assert stats["pending"] == 1
+    assert stats["tracked"] == 4
 
 
 def test_entry_profit_uses_multiplier_as_net_profit():
@@ -471,6 +675,68 @@ def test_default_multiplier_is_inferred_from_leg_count():
     assert EntryRepository._default_multiplier_for_legs(2) == 3.0
     assert EntryRepository._default_multiplier_for_legs(3) == 5.0
     assert EntryRepository._default_multiplier_for_legs(99) == 3.0
+
+
+def test_entry_platform_profitability_is_ranked_by_profit():
+    groups = {
+        "PrizePicks": {"entries": 2, "wins": 1, "losses": 1, "pushes": 0, "profit": 5.0, "wagered": 20.0, "roi": 25.0, "win_pct": 50.0},
+        "Underdog": {"entries": 1, "wins": 1, "losses": 0, "pushes": 0, "profit": 40.0, "wagered": 10.0, "roi": 400.0, "win_pct": 100.0},
+    }
+
+    ranked = EntryRepository._ranked_groups(groups)
+
+    assert ranked[0]["platform"] == "Underdog"
+    assert ranked[0]["rank"] == 1
+
+
+def test_entry_suggestions_include_four_and_five_leg_high_risk(monkeypatch):
+    raw_props = [
+        {
+            "player": f"P{i}",
+            "team": f"T{i}",
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 10.5 + i,
+            "trending_count": 100000 - i,
+            "platform": "PrizePicks",
+        }
+        for i in range(8)
+    ]
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+
+    body = entry_suggestions(sport="WNBA", platform="PrizePicks")
+
+    assert body["mode"] == "balanced_with_higher_risk"
+    assert len(body["suggestions"]) == 5
+    assert [suggestion["rank"] for suggestion in body["suggestions"]] == [1, 2, 3, 4, 5]
+    assert [suggestion["leg_count"] for suggestion in body["suggestions"][-2:]] == [4, 5]
+    assert all(suggestion["risk_tier"] == "Higher Risk" for suggestion in body["suggestions"][-2:])
+
+
+def test_bankroll_transaction_endpoint_returns_dashboard(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(
+        web_app.BankrollTransactionRepository,
+        "save",
+        lambda transaction_type, amount, note="": saved.setdefault(
+            "transaction",
+            {"transaction_type": transaction_type, "amount": amount, "note": note},
+        ),
+    )
+    monkeypatch.setattr(
+        web_app.BankrollTransactionRepository,
+        "summary",
+        lambda: {"deposits": 100.0, "withdrawals": 25.0, "net": 75.0, "count": 2, "transactions": []},
+    )
+    monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 175.0})
+
+    body = save_bankroll_transaction(
+        BankrollTransactionPayload(transaction_type="Withdrawal", amount=25.0, note="Cash out")
+    )
+
+    assert saved["transaction"] == {"transaction_type": "Withdrawal", "amount": 25.0, "note": "Cash out"}
+    assert body["summary"]["net"] == 75.0
+    assert body["dashboard"]["bankroll"] == 175.0
 
 
 def test_classify_default_wagers_endpoint_returns_dashboard(monkeypatch):
@@ -549,6 +815,106 @@ def test_web_player_detail_summarizes_active_player_props(monkeypatch):
     assert body["best_prop"]["player"] == "A"
     assert "line_movement" in body["props"][0]
     assert "hit_rate" in body["props"][0]
+
+
+def test_line_shop_finds_best_lines_and_no_vig_price(monkeypatch):
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 1000, "platform": "PrizePicks"},
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 21.5, "trending_count": 900, "platform": "Underdog"},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Points", "line": 10.5, "trending_count": 800, "platform": "PrizePicks"},
+    ]
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+
+    body = line_shop("A", "Points", sport="WNBA", platform="Both", over_odds=-115, under_odds=-105)
+
+    assert body["available"] is True
+    assert body["best_over"]["platform"] == "PrizePicks"
+    assert body["best_over"]["line"] == 20.5
+    assert body["best_under"]["platform"] == "Underdog"
+    assert body["consensus_line"] == 21.0
+    assert body["no_vig"]["hold"] > 0
+
+
+def test_ev_scanner_ranks_positive_ev_props(monkeypatch):
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000, "platform": "PrizePicks"},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 1, "platform": "PrizePicks"},
+    ]
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+
+    body = ev_scanner(platform="PrizePicks", sport="WNBA", min_ev=0, limit=5, odds=-110)
+
+    assert body["count"] >= 1
+    assert body["props"][0]["expected_value"] > 0
+    assert body["props"][0]["estimated_probability"] > body["props"][0]["sportsbook_probability"]
+
+
+def test_market_timing_alerts_detect_steam_move(monkeypatch):
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 22.5, "trending_count": 100000, "platform": "PrizePicks"},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 90000, "platform": "PrizePicks"},
+    ]
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(
+        web_app.LineHistoryRepository,
+        "get_history",
+        lambda player, stat, platform: [{"line": 20.5, "recorded_at": datetime(2026, 7, 10, 10, 0)}] if player == "A" else [],
+    )
+
+    body = market_timing_alerts(platform="PrizePicks", sport="WNBA", limit=5)
+
+    assert body["count"] >= 1
+    assert body["alerts"][0]["type"] == "Steam Move"
+    assert body["alerts"][0]["market_supports_pick"] is True
+
+
+def test_clv_report_compares_placed_line_to_current_line(monkeypatch):
+    monkeypatch.setattr(
+        web_app.EntryRepository,
+        "all",
+        lambda: [
+            {
+                "id": 1,
+                "status": "Pending",
+                "result": "",
+                "platform": "PrizePicks",
+                "placed_at": datetime(2026, 7, 8, 12, 0),
+                "props": [
+                    {"player": "A", "sport": "WNBA", "stat": "Points", "line": 20.5, "platform": "PrizePicks"}
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(web_app, "_active_line_for_player_stat", lambda *args, **kwargs: 22.5)
+
+    body = clv_report()
+
+    assert body["tracked_legs"] == 1
+    assert body["average_clv"] == 2.0
+    assert body["entries"][0]["legs"][0]["beat_market"] is True
+
+
+def test_sync_run_classifies_imports_and_auto_checks(monkeypatch, tmp_path):
+    stats_file = tmp_path / "stats.csv"
+    bets_file = tmp_path / "bets.csv"
+    stats_file.write_text("player,sport,stat,game,game_date,actual\nA,WNBA,Points,SEA,2026-07-08,24\n")
+    bets_file.write_text("sport,game,description,odds,wager,result\nWNBA,SEA,A points,-110,10,Win\n")
+    monkeypatch.setenv("EDGEIQ_FINAL_STATS_FILE", str(stats_file))
+    monkeypatch.setenv("EDGEIQ_BET_HISTORY_FILE", str(bets_file))
+    monkeypatch.setattr(web_app.EntryRepository, "classify_missing_economics", lambda: {"updated": 1})
+    monkeypatch.setattr(web_app, "import_final_stats", lambda payload, source: 1)
+    monkeypatch.setattr(web_app, "_import_betting_history_payload", lambda payload, source: {"imported": 1, "skipped": 0})
+    monkeypatch.setattr(web_app, "auto_check_entries", lambda allow_estimates=False: {"checked": 2, "settled": 1})
+    monkeypatch.setattr(web_app, "get_dashboard", lambda: {"record": "1-0"})
+
+    body = run_sync()
+
+    assert body["default_wagers"]["updated"] == 1
+    assert body["final_stats_file"]["imported"] == 1
+    assert body["bet_history_file"]["imported"] == 1
+    assert body["auto_check"]["settled"] == 1
 
 
 def test_line_movement_payload_reports_direction():
@@ -763,7 +1129,61 @@ def test_entry_progress_payload_reports_leg_status_from_final_stats(monkeypatch)
     assert body["completed_legs"] == 1
     assert body["projected_result"] == "Win"
     assert body["source"] == "actual_provider"
+    assert body["live_result"] == "Win"
     assert body["legs"][0]["status"] == "Win"
+
+
+def test_entry_progress_ignores_stale_final_stats_before_placed_date(monkeypatch):
+    monkeypatch.setattr(
+        web_app,
+        "_final_stat_for_prop",
+        lambda prop: {"actual": 12.0, "status": "played", "source": "test", "game_date": "2026-07-08"},
+    )
+    entry = {
+        "id": 91,
+        "platform": "PrizePicks",
+        "placed_at": datetime(2026, 7, 9, 12, 0),
+        "average_confidence": 62.0,
+        "average_edge": -1.5,
+        "props": [
+            {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5, "projection": 18.0, "game": "SEA"},
+        ],
+    }
+
+    body = _entry_progress_payload(entry)
+
+    assert body["completed_legs"] == 0
+    assert body["live_result"] == "In Progress"
+    assert body["projected_result"] == "Loss"
+    assert body["source"] == "unavailable"
+    assert body["legs"][0]["status"] == "Pending"
+    assert body["legs"][0]["final_status"] == "pending"
+    assert body["legs"][0]["progress_percent"] == 87.8
+    assert body["legs"][0]["progress_label"] == "Projected 18 / 20.5"
+
+
+def test_auto_check_does_not_settle_from_stale_final_stats(monkeypatch):
+    settled = {}
+    monkeypatch.setattr(
+        web_app,
+        "_final_stat_for_prop",
+        lambda prop: {"actual": 12.0, "status": "played", "source": "test", "game_date": "2026-07-08"},
+    )
+    monkeypatch.setattr(web_app.EntryRepository, "settle", lambda entry_id, result, **kwargs: settled.update({entry_id: result}))
+    entry = {
+        "id": 92,
+        "placed_at": datetime(2026, 7, 9, 12, 0),
+        "props": [
+            {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5, "projection": 24.0, "game": "SEA"},
+        ],
+    }
+
+    body = _check_entry_result(entry, allow_estimates=False)
+
+    assert body["settled"] is False
+    assert body["result"] == "Unknown"
+    assert body["source"] == "unavailable"
+    assert settled == {}
 
 
 def test_auto_check_result_reduces_dnp_legs(monkeypatch):
@@ -849,6 +1269,66 @@ def test_entry_progress_endpoint_uses_pending_entries(monkeypatch):
     body = entry_progress()
 
     assert body == {"entries": [], "active": 0, "with_live_stats": 0}
+
+
+def test_dashboard_merges_entry_sport_performance_and_insights(monkeypatch):
+    monkeypatch.setattr(dashboard_service, "get_starting_bankroll", lambda: 100.0)
+    monkeypatch.setattr(
+        dashboard_service.BetRepository,
+        "dashboard_stats",
+        lambda self: {
+            "wins": 1,
+            "losses": 0,
+            "pushes": 0,
+            "record": "1-0",
+            "profit": 9.0,
+            "wagered": 10.0,
+            "roi": 90.0,
+            "average": 9.0,
+            "largest_win": 9.0,
+            "largest_loss": 0.0,
+            "current_streak": 1,
+            "best_streak": 1,
+            "worst_streak": 0,
+            "max_drawdown": 0.0,
+            "by_sport": {"WNBA": {"bets": 1, "wins": 1, "losses": 0, "pushes": 0, "profit": 9.0, "wagered": 10.0, "roi": 90.0, "win_pct": 100.0}},
+            "by_stat": {},
+            "by_platform": {},
+            "bankroll_curve": [9.0],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_service.EntryRepository,
+        "financial_stats",
+        lambda: {
+            "wins": 0,
+            "losses": 1,
+            "pushes": 0,
+            "profit": -10.0,
+            "wagered": 10.0,
+            "pending_exposure": 0.0,
+            "roi": -100.0,
+            "recommendation_accuracy": {},
+            "by_sport": {"WNBA": {"entries": 1, "wins": 0, "losses": 1, "pushes": 0, "profit": -10.0, "wagered": 10.0, "roi": -100.0, "win_pct": 0.0}},
+            "by_stat": {},
+            "by_platform": {"PrizePicks": {"entries": 1, "wins": 0, "losses": 1, "pushes": 0, "profit": -10.0, "wagered": 10.0, "roi": -100.0, "win_pct": 0.0}},
+            "platform_profitability": [],
+        },
+    )
+    monkeypatch.setattr(
+        dashboard_service.BankrollTransactionRepository,
+        "summary",
+        lambda: {"deposits": 0.0, "withdrawals": 0.0, "net": 0.0, "count": 0, "transactions": []},
+    )
+
+    body = dashboard_service.get_dashboard()
+
+    assert body["by_sport"]["WNBA"]["bets"] == 1
+    assert body["by_sport"]["WNBA"]["entries"] == 1
+    assert body["by_sport"]["WNBA"]["wins"] == 1
+    assert body["by_sport"]["WNBA"]["losses"] == 1
+    assert body["by_sport"]["WNBA"]["profit"] == -1.0
+    assert body["performance_insights"]
 
 
 def test_backtest_endpoint_summarizes_bets_and_entries(monkeypatch):
