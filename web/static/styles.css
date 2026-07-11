@@ -222,6 +222,46 @@ p { color: var(--muted); margin: 5px 0 0; }
   align-items: stretch;
   margin-bottom: 16px;
 }
+.reliability-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.reliability-grid .suggestion-list {
+  max-height: 270px;
+  overflow: auto;
+}
+.advantage-center-panel {
+  margin-bottom: 16px;
+}
+.advantage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.advantage-tools {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.advantage-tools .mini-tool {
+  border: 1px solid rgba(25, 230, 255, .14);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(5, 6, 13, .22);
+}
+.advantage-tools .compact-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.health-connected,
+.health-available,
+.notification-positive { border-color: rgba(57, 255, 136, .28); }
+.health-missing_key,
+.health-not_configured,
+.notification-warning { border-color: rgba(248, 193, 74, .32); }
+.notification-danger { border-color: rgba(255, 77, 109, .36); }
 .command-panel { min-height: 100%; }
 .command-card-grid {
   display: grid;
@@ -315,6 +355,45 @@ p { color: var(--muted); margin: 5px 0 0; }
   padding: 7px 8px;
   color: var(--muted);
   background: rgba(5, 6, 13, .35);
+  font-size: 12px;
+}
+.timing-filters {
+  margin-bottom: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.checklist-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.checklist-item {
+  border: 1px solid rgba(25, 230, 255, .14);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(16, 21, 34, .72);
+}
+.checklist-item strong,
+.checklist-item span {
+  display: block;
+}
+.checklist-item span {
+  color: var(--primary);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: 10px;
+  font-weight: 900;
+}
+.checklist-item.status-warning span,
+.checklist-item.status-thin span,
+.checklist-item.status-needs-review span,
+.checklist-item.status-needs-wager span {
+  color: var(--warn);
+}
+.checklist-item.status-paper span {
+  color: var(--accent);
+}
+.checklist-item p {
   font-size: 12px;
 }
 .health-orb {
@@ -420,7 +499,15 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
 }
 .suggestion-top { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .pill { color: var(--night); background: var(--primary); border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 900; }
+.paper-pill { background: var(--accent); }
 .subtle { color: var(--muted); font-size: 12px; }
+.helper-copy {
+  border: 1px solid rgba(25, 230, 255, .14);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(25, 230, 255, .055);
+  color: var(--text);
+}
 .pie-layout {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -723,9 +810,14 @@ tr:hover td { background: rgba(25, 230, 255, .06); }
   .nav { display: flex; overflow-x: auto; }
   .dashboard-layout,
   .release-grid,
+  .reliability-grid,
+  .advantage-grid,
+  .advantage-tools,
   .two-col, .three-col, .stats-grid { grid-template-columns: 1fr; }
   .command-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .timing-alert-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timing-filters,
+  .checklist-grid { grid-template-columns: 1fr; }
   .tool-group-body.two-col { grid-template-columns: 1fr; }
   .pie-layout { grid-template-columns: 1fr; justify-items: center; }
   .pie-legend { width: 100%; }

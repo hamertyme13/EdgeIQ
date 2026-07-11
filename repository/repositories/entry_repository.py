@@ -36,6 +36,8 @@ class EntryRepository:
         wager: float = 0.0,
         multiplier: float = 1.0,
         recommended_by_app: bool = False,
+        audit_snapshot: str = "",
+        entry_mode: str = "real",
     ) -> int:
 
         EntryRepository._ensure_schema()
@@ -46,6 +48,7 @@ class EntryRepository:
             wager = round(float(wager or 0), 2)
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
+            entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
 
             entry_model = EntryModel(
                 platform=entry.platform.value,
@@ -59,7 +62,9 @@ class EntryRepository:
                 profit=EntryRepository._profit_for_result(result, wager, multiplier),
                 status=status,
                 result=result,
+                entry_mode=entry_mode,
                 recommended_by_app=bool(recommended_by_app),
+                audit_snapshot=audit_snapshot or "",
                 placed_at=datetime.utcnow() if status == "Pending" else None,
             )
 
@@ -127,7 +132,9 @@ class EntryRepository:
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
                     "result": entry.result,
+                    "entry_mode": getattr(entry, "entry_mode", "real") or "real",
                     "recommended_by_app": bool(getattr(entry, "recommended_by_app", False)),
+                    "audit_snapshot": getattr(entry, "audit_snapshot", "") or "",
                     "placed_at": entry.placed_at,
                     "props": [
                         {
@@ -180,7 +187,9 @@ class EntryRepository:
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
                     "result": entry.result,
+                    "entry_mode": getattr(entry, "entry_mode", "real") or "real",
                     "recommended_by_app": bool(getattr(entry, "recommended_by_app", False)),
+                    "audit_snapshot": getattr(entry, "audit_snapshot", "") or "",
                     "placed_at": entry.placed_at,
                     "settled_at": entry.settled_at,
                     "created_at": entry.created_at,
@@ -232,6 +241,8 @@ class EntryRepository:
                 dnp_legs,
                 dnp_mode,
             )
+            if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
+                profit = 0.0
 
             entry.status = "Settled"
             entry.result = result
@@ -253,6 +264,8 @@ class EntryRepository:
             settled = 0
 
             for entry in entries:
+                if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
+                    continue
                 missing_wager = not entry.wager or entry.wager <= 0
                 missing_multiplier = not entry.multiplier or entry.multiplier <= 1
                 if not missing_wager and not missing_multiplier:
@@ -293,12 +306,16 @@ class EntryRepository:
     def financial_stats() -> dict:
         entries = EntryRepository.all()
         active = [entry for entry in entries if entry["status"] in {"Pending", "Settled"}]
-        settled = [entry for entry in active if entry["status"] == "Settled"]
-        pending = [entry for entry in active if entry["status"] == "Pending"]
+        real_active = [entry for entry in active if not EntryRepository._is_paper(entry)]
+        paper_active = [entry for entry in active if EntryRepository._is_paper(entry)]
+        settled = [entry for entry in real_active if entry["status"] == "Settled"]
+        pending = [entry for entry in real_active if entry["status"] == "Pending"]
+        paper_settled = [entry for entry in paper_active if entry["status"] == "Settled"]
+        paper_pending = [entry for entry in paper_active if entry["status"] == "Pending"]
         wins = sum(1 for entry in settled if entry["result"] == "Win")
         losses = sum(1 for entry in settled if entry["result"] == "Loss")
         pushes = sum(1 for entry in settled if entry["result"] == "Push")
-        total_wagered = sum(entry["wager"] for entry in active)
+        total_wagered = sum(entry["wager"] for entry in real_active)
         settled_profit = sum(entry["profit"] for entry in settled)
         pending_exposure = sum(entry["wager"] for entry in pending)
         return {
@@ -310,6 +327,7 @@ class EntryRepository:
             "pending_exposure": round(pending_exposure, 2),
             "roi": round((settled_profit / total_wagered * 100) if total_wagered else 0.0, 2),
             "recommendation_accuracy": EntryRepository._recommendation_accuracy(active),
+            "paper": EntryRepository._paper_stats(paper_active, paper_settled, paper_pending),
             "by_result": EntryRepository._group_by_result(settled),
             "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
             "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
@@ -341,12 +359,45 @@ class EntryRepository:
         }
 
     @staticmethod
+    def _paper_stats(active: list[dict], settled: list[dict], pending: list[dict]) -> dict:
+        decisions = [entry for entry in settled if entry.get("result") in {"Win", "Loss"}]
+        wins = sum(1 for entry in decisions if entry.get("result") == "Win")
+        losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
+        pushes = sum(1 for entry in settled if entry.get("result") == "Push")
+        avg_confidence = (
+            sum(float(entry.get("average_confidence") or 0.0) for entry in decisions) / len(decisions)
+            if decisions
+            else 0.0
+        )
+        actual = (wins / len(decisions) * 100) if decisions else 0.0
+        return {
+            "active": len(active),
+            "pending": len(pending),
+            "settled": len(settled),
+            "decisions": len(decisions),
+            "wins": wins,
+            "losses": losses,
+            "pushes": pushes,
+            "accuracy": round(actual, 1),
+            "average_confidence": round(avg_confidence, 1),
+            "calibration_edge": round(actual - avg_confidence, 1) if decisions else 0.0,
+        }
+
+    @staticmethod
     def _profit_for_result(result: str, wager: float, multiplier: float) -> float:
         if result == "Win":
             return round((wager * multiplier) - wager, 2)
         if result == "Loss":
             return round(-wager, 2)
         return 0.0
+
+    @staticmethod
+    def _normalize_entry_mode(entry_mode: str) -> str:
+        return "paper" if str(entry_mode or "").strip().lower() == "paper" else "real"
+
+    @staticmethod
+    def _is_paper(entry: dict) -> bool:
+        return EntryRepository._normalize_entry_mode(entry.get("entry_mode", "real")) == "paper"
 
     @staticmethod
     def _settlement_profit(

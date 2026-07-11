@@ -97,6 +97,7 @@ function setView(viewId) {
 
 function renderStats(stats) {
   const accuracy = stats.recommendation_accuracy || {};
+  const paper = stats.paper || {};
   const items = [
     ["Record", stats.record],
     ["Win %", stats.wins + stats.losses ? pct((stats.wins / (stats.wins + stats.losses)) * 100) : "0.0%"],
@@ -107,6 +108,7 @@ function renderStats(stats) {
     ["Withdrawals", money(stats.bankroll_transactions?.withdrawals)],
     ["Wagered", money(stats.wagered)],
     ["Pending Entry Exposure", money(stats.pending_entry_exposure)],
+    ["Paper Calibration", `${paper.decisions || 0} decisions`],
     ["Current Streak", stats.current_streak > 0 ? `W${stats.current_streak}` : stats.current_streak < 0 ? `L${Math.abs(stats.current_streak)}` : "-"],
     ["Max Drawdown", money(stats.max_drawdown)],
   ];
@@ -129,6 +131,7 @@ function renderStats(stats) {
       <div><strong>${accuracy.pending || 0}</strong><span>Pending</span></div>
       <div><strong>${accuracy.pushes || 0}</strong><span>Pushes</span></div>
       <div><strong>${accuracy.tracked || 0}</strong><span>Tracked</span></div>
+      <div><strong>${pct(paper.accuracy || 0)}</strong><span>Paper Accuracy</span></div>
     </div>
   `;
 }
@@ -158,6 +161,11 @@ function renderCommandCenter(data) {
       </div>
       <h3>${card.action}</h3>
       <p>${card.summary}</p>
+      <div class="timing-metrics">
+        <span>Trust ${Number(card.trust?.score || 0).toFixed(0)} · ${card.trust?.label || "No Data"}</span>
+        <span>${card.timing?.label || "Monitor"} ${Number(card.timing?.score || 0).toFixed(0)}</span>
+        <span>Stake ${money(card.stake?.amount || 0)}</span>
+      </div>
       <div class="command-leg-list">
         ${card.props.slice(0, 5).map((prop) => `<span>${shortPropPickText(prop)} <b>${prop.line}</b></span>`).join("")}
       </div>
@@ -220,11 +228,188 @@ async function loadModelHealth() {
   renderModelHealth(data);
 }
 
+async function loadDataHealth() {
+  const data = await api("/api/data-health");
+  $("data-health-list").innerHTML = `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${data.summary.connected}/${data.summary.total} sources available</strong>
+        <span class="subtle">${data.summary.warnings} warnings</span>
+      </div>
+      <p>${data.summary.last_daily_refresh ? `Last refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled refresh run recorded yet."}</p>
+    </div>
+    ${data.providers.slice(0, 8).map((provider) => `
+      <div class="suggestion compact-suggestion health-${provider.status}">
+        <div class="suggestion-top">
+          <strong>${provider.name}</strong>
+          <span class="subtle">${provider.status}</span>
+        </div>
+        <p>${provider.purpose} · ${provider.message}</p>
+      </div>
+    `).join("")}
+  `;
+}
+
+async function loadNotifications() {
+  const data = await api("/api/notifications");
+  $("notification-list").innerHTML = (data.notifications || []).map((note) => `
+    <div class="suggestion compact-suggestion notification-${note.severity || "neutral"}">
+      <div class="suggestion-top">
+        <strong>${note.title}</strong>
+        <span class="subtle">${note.type}</span>
+      </div>
+      <p>${note.message}</p>
+    </div>
+  `).join("") || `<div class="suggestion">No smart notifications right now.</div>`;
+}
+
+async function loadRefreshSchedule() {
+  const data = await api("/api/automation/refresh-schedule");
+  $("refresh-schedule-list").innerHTML = data.jobs.map((job) => `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${job.name}</strong>
+        <span class="pill">${job.time}</span>
+      </div>
+      <p>${job.action}</p>
+    </div>
+  `).join("");
+}
+
+async function runDailyRefresh() {
+  $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
+  await api("/api/automation/run-daily-refresh", { method: "POST" });
+  await Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadEntryProgress()]);
+}
+
+async function loadAdvantageCenter() {
+  $("advantage-center-status").textContent = "Checking competitive edge signals...";
+  const platform = $("props-platform").value;
+  const sport = $("props-sport").value;
+  const data = await api(`/api/dashboard/advantage-center?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
+  const top = data.top_recommendation;
+  $("advantage-center-status").textContent = top
+    ? `${data.competitive_features.length} competitive features active · ${data.sport}`
+    : "Advantage Center is active, but no top recommendation is available for this board.";
+  $("advantage-center-list").innerHTML = `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>Recommendation Trust</strong>
+        <span class="pill">${data.trust_score?.label || "No Data"}</span>
+      </div>
+      <h2>${Number(data.trust_score?.score || 0).toFixed(1)}</h2>
+      <p>${(data.trust_score?.flags || ["No flags."]).join(" · ")}</p>
+    </div>
+    <div class="suggestion compact-suggestion">
+      <strong>Best Line Finder</strong>
+      <p>${data.best_line_finder?.message || "No line-shop data yet."}</p>
+      <p class="subtle">${data.best_line_finder?.positive_edges || 0}/${data.best_line_finder?.checked || 0} legs with better numbers.</p>
+    </div>
+    <div class="suggestion compact-suggestion">
+      <strong>Closing Line Value</strong>
+      <p>${Number(data.closing_line_value?.positive_clv_rate || 0).toFixed(1)}% positive CLV · Avg ${Number(data.closing_line_value?.average_clv || 0).toFixed(2)}</p>
+      <p class="subtle">${data.closing_line_value?.tracked_legs || 0} tracked legs</p>
+    </div>
+    <div class="suggestion compact-suggestion">
+      <strong>Personal Profile</strong>
+      <p>${(data.personal_profile?.strengths || []).slice(0, 2).join(" ")}</p>
+      <p class="subtle">${(data.personal_profile?.weaknesses || []).slice(0, 1).join(" ")}</p>
+    </div>
+    <div class="suggestion compact-suggestion">
+      <strong>Market Timing</strong>
+      <p>${(data.timing_alerts || []).slice(0, 2).map((alert) => `${alert.type}: ${alert.player}`).join(" · ") || "No urgent timing alerts."}</p>
+    </div>
+    <div class="suggestion compact-suggestion">
+      <strong>Bankroll Mode</strong>
+      <p>${data.bankroll_strategy?.mode || "balanced"} · Unit ${money(data.bankroll_strategy?.unit_size || 0)} · Max ${Number(data.bankroll_strategy?.max_wager_pct || 0).toFixed(1)}%</p>
+    </div>
+  `;
+  $("watchlist-list").innerHTML = (data.watchlist_alerts || []).map((alert) => `
+    <div class="suggestion compact-suggestion">
+      <strong>${alert.player} · ${alert.direction} ${alert.stat}</strong>
+      <p>${alert.platform} ${alert.line} · ${alert.reason}</p>
+    </div>
+  `).join("") || `<div class="suggestion compact-suggestion">No watchlist alerts yet.</div>`;
+  loadBankrollStrategyFields(data.bankroll_strategy || {});
+}
+
+function loadBankrollStrategyFields(strategy) {
+  if (!strategy || !$("strategy-mode")) return;
+  $("strategy-mode").value = strategy.mode || "balanced";
+  $("strategy-unit").value = strategy.unit_size ?? 10;
+  $("strategy-max-pct").value = strategy.max_wager_pct ?? 5;
+  $("strategy-paper-first").checked = Boolean(strategy.paper_first);
+  $("bankroll-strategy-status").textContent = `${strategy.mode || "balanced"} sizing is active.`;
+}
+
+async function saveBankrollStrategy(event) {
+  event.preventDefault();
+  const payload = {
+    mode: $("strategy-mode").value,
+    unit_size: Number($("strategy-unit").value || 10),
+    max_wager_pct: Number($("strategy-max-pct").value || 5),
+    paper_first: $("strategy-paper-first").checked,
+  };
+  const data = await api("/api/settings/bankroll-strategy", { method: "POST", body: JSON.stringify(payload) });
+  loadBankrollStrategyFields(data.strategy);
+  await loadAdvantageCenter();
+}
+
+async function saveWatchlistItem(event) {
+  event.preventDefault();
+  const payload = {
+    player: $("watch-player").value.trim(),
+    stat: $("watch-stat").value.trim(),
+    sport: $("watch-sport").value,
+    platform: $("watch-platform").value,
+    direction: $("watch-direction").value,
+    alert_when: $("watch-alert-when").value,
+    target_line: $("watch-target-line").value === "" ? null : Number($("watch-target-line").value),
+  };
+  if (!payload.player) return;
+  await api("/api/watchlist", { method: "POST", body: JSON.stringify(payload) });
+  $("watchlist-form").reset();
+  await loadAdvantageCenter();
+}
+
+async function analyzeBoost(event) {
+  event.preventDefault();
+  const payload = {
+    player: $("boost-player").value.trim(),
+    stat: $("boost-stat").value.trim(),
+    sport: $("boost-sport").value,
+    platform: $("boost-platform").value,
+    direction: $("boost-direction").value,
+    original_line: Number($("boost-original-line").value),
+    boosted_line: Number($("boost-boosted-line").value),
+  };
+  if (!payload.player || !payload.stat) return;
+  const data = await api("/api/market/boost-analysis", { method: "POST", body: JSON.stringify(payload) });
+  $("boost-result").classList.remove("muted-card");
+  $("boost-result").innerHTML = `
+    <div class="suggestion-top">
+      <strong>${data.recommendation}</strong>
+      <span class="pill">${data.ev_delta > 0 ? "+" : ""}${pct(data.ev_delta)}</span>
+    </div>
+    <p>${data.player} ${data.direction} ${data.stat} · Projection ${data.projection}</p>
+    <p>Original EV ${pct(data.original.ev)} · Boosted EV ${pct(data.boosted.ev)}</p>
+    <p class="subtle">${data.reason}</p>
+  `;
+}
+
 async function loadTimingAlerts() {
   $("timing-alert-status").textContent = "Checking EV, line movement, and confidence...";
   const platform = $("props-platform").value;
   const sport = $("props-sport").value;
-  const data = await api(`/api/market/timing-alerts?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
+  const params = new URLSearchParams({
+    platform,
+    sport,
+    min_confidence: $("timing-min-confidence")?.value || "0",
+    min_ev: $("timing-min-ev")?.value || "-25",
+    alert_type: $("timing-alert-type")?.value || "All",
+    hide_outliers: $("timing-hide-outliers")?.checked ? "true" : "false",
+  });
+  const data = await api(`/api/market/timing-alerts?${params.toString()}`);
   $("timing-alert-status").textContent = data.count
     ? `${data.count} timing alerts · ${data.sport}`
     : "No market timing alerts for this filter.";
@@ -277,6 +462,16 @@ function openExplanationDrawer(explanation) {
       <div class="stat-card"><div class="stat-value">${pct(explanation.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
       <div class="stat-card"><div class="stat-value">${Number(explanation.average_edge || 0).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
       <div class="stat-card"><div class="stat-value">${explanation.source_count || 0}</div><div class="stat-label">Data Sources</div></div>
+    </div>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Why EdgeIQ Likes It</h3>
+      <p>${explanation.why || "The card blends confidence, edge, source agreement, and timing."}</p>
+      <p><strong>Trust:</strong> ${Number(explanation.trust?.score || 0).toFixed(1)} · ${explanation.trust?.label || "No Data"} · <strong>Timing:</strong> ${explanation.timing?.label || "Monitor"}</p>
+    </div>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>What Could Break It</h3>
+      ${(explanation.breakers || []).map((item) => `<p>${item}</p>`).join("")}
+      <p class="warning">${explanation.no_bet_rule || ""}</p>
     </div>
     <h3>Leg Breakdown</h3>
     <div class="suggestion-list">
@@ -636,10 +831,12 @@ function propFromForm() {
 }
 
 function entryPayload() {
+  const entryMode = $("entry-mode")?.value || "real";
   return {
     platform: $("entry-platform").value,
-    wager: Number($("entry-wager").value || 0),
+    wager: entryMode === "paper" ? 0 : Number($("entry-wager").value || 0),
     multiplier: Number($("entry-multiplier").value || 1),
+    entry_mode: entryMode,
     recommended_by_app: state.recommendationOrigin || Boolean(state.lastAnalysis && state.lastAnalysis.recommendation && state.lastAnalysis.recommendation.grade !== "F"),
     props: state.entryProps,
   };
@@ -652,6 +849,8 @@ function renderAnalysis(data) {
   const warnings = data.warnings || [];
   const espn = data.espn_context || {};
   const fusion = data.source_fusion || {};
+  const guardrails = data.risk_guardrails || [];
+  const checklist = data.confirmation_checklist || [];
   const espnRows = (data.entry.props || [])
     .filter((prop) => prop.espn && prop.espn.sample_size)
     .map((prop) => `
@@ -670,6 +869,15 @@ function renderAnalysis(data) {
         <p class="subtle">Projection ${signal.projection_delta >= 0 ? "+" : ""}${Number(signal.projection_delta || 0).toFixed(2)} · Confidence ${signal.confidence_delta >= 0 ? "+" : ""}${Number(signal.confidence_delta || 0).toFixed(1)}</p>
       </div>
     `).join("");
+  const qualityRows = (data.entry.props || []).map((prop) => `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${prop.player}</strong>
+        <span class="subtle">${prop.data_quality?.label || "unscored"} · ${Number(prop.data_quality?.score || 0).toFixed(0)}/100</span>
+      </div>
+      <p>${(prop.data_quality?.flags || []).join(" · ") || "No major data-quality warnings."}</p>
+    </div>
+  `).join("");
   $("entry-analysis").classList.remove("muted-card");
   $("entry-analysis").innerHTML = `
     <div class="grade">${rec.grade}</div>
@@ -682,6 +890,26 @@ function renderAnalysis(data) {
       <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
     </div>
     <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Placement Guardrails</h3>
+      ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${guard.message}</p>`).join("")}
+    </div>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Final Checklist</h3>
+      <div class="checklist-grid">
+        ${checklist.map((item) => `
+          <div class="checklist-item status-${String(item.status || "").replaceAll(" ", "-")}">
+            <strong>${item.label}</strong>
+            <span>${item.status}</span>
+            <p>${item.detail}</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Data Quality</h3>
+      ${qualityRows}
+    </div>
     <div class="analysis-card ${espn.props_with_history ? "" : "muted-card"}" style="margin-top:14px">
       <h3>ESPN Form Assist</h3>
       <p>${espn.props_with_history || 0} props with ESPN history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% avg hit rate` : ""}</p>
@@ -755,16 +983,25 @@ function renderEntryPropsFromAnalyzed(props) {
 
 async function placeEntry() {
   if (!state.lastEntryPayload) return;
-  state.lastEntryPayload.wager = Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
+  state.lastEntryPayload.entry_mode = $("entry-mode")?.value || state.lastEntryPayload.entry_mode || "real";
+  state.lastEntryPayload.wager = state.lastEntryPayload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
   state.lastEntryPayload.multiplier = Number($("entry-multiplier").value || state.lastEntryPayload.multiplier || 1);
-  if (state.lastEntryPayload.wager <= 0) {
+  if (state.lastEntryPayload.entry_mode !== "paper" && state.lastEntryPayload.wager <= 0) {
     $("entry-status").textContent = "Enter the amount wagered before placing.";
     return;
   }
-  const confirmed = window.confirm("Will you place this entry?");
+  const confirmed = window.confirm(state.lastEntryPayload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : "Will you place this entry?");
   if (!confirmed) return;
-  const data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
-  $("entry-status").textContent = `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.`;
+  let data;
+  try {
+    data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
+  } catch (error) {
+    $("entry-status").textContent = error.message;
+    return;
+  }
+  $("entry-status").textContent = state.lastEntryPayload.entry_mode === "paper"
+    ? `Paper entry #${data.id} saved for calibration.`
+    : `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.`;
   state.entryProps = [];
   state.lastEntryPayload = null;
   state.lastAnalysis = null;
@@ -864,15 +1101,17 @@ async function loadPending() {
   const data = await api("/api/entries/pending");
   $("pending-list").innerHTML = data.entries.map((entry) => {
     const maxDnp = Math.max(0, entry.props.length - 1);
+    const isPaper = entry.entry_mode === "paper";
     return `
     <div class="suggestion">
       <div class="suggestion-top">
         <span class="pill">#${entry.id}</span>
         <strong>${entry.platform}</strong>
+        ${isPaper ? `<span class="pill paper-pill">Paper</span>` : ""}
         <span class="subtle">${formatDateTime(entry.placed_at)}</span>
       </div>
       <p>${entry.props.map(propPickText).join(" + ")}</p>
-      <p>${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout</p>
+      <p>${isPaper ? "Paper calibration entry · no bankroll impact" : `${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout`}</p>
       <div class="form-grid compact-controls">
         <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" />
       </div>
@@ -1157,11 +1396,12 @@ async function analyzeUpload(event) {
   event.preventDefault();
   const file = $("upload-file").files[0];
   if (!file) {
-    $("upload-result").textContent = "Choose a file first.";
+    $("upload-result").textContent = "Choose a screenshot or file first.";
     return;
   }
   $("upload-result").classList.add("muted-card");
-  $("upload-result").textContent = "Analyzing file...";
+  const targetLabel = $("upload-target").value === "bet_history" ? "bet history screenshot or file" : "screenshot or file";
+  $("upload-result").textContent = `Analyzing ${targetLabel}...`;
   const contentBase64 = await fileToBase64(file);
   const data = await api("/api/uploads/analyze", {
     method: "POST",
@@ -1401,6 +1641,15 @@ function openHistoryUploadFromOnboarding() {
   $("upload-file").focus();
 }
 
+function openScreenshotImport() {
+  setView("analysis");
+  $("upload-target").value = "bet_history";
+  $("upload-source").value = "screenshot";
+  $("upload-result").classList.add("muted-card");
+  $("upload-result").textContent = "Choose a phone screenshot of a previous bet, then click Analyze Screenshot / File.";
+  $("upload-file").focus();
+}
+
 function toggleMobileSlip() {
   const panel = $("mobile-slip-panel");
   panel.hidden = !panel.hidden;
@@ -1506,13 +1755,74 @@ async function loadBacktest() {
   `).join("") || `<div class="suggestion">No calibrated picks yet. Save win probabilities or settle entries to build this.</div>`;
 }
 
+async function loadPreferences() {
+  const data = await api("/api/settings/preferences");
+  const prefs = data.preferences || data;
+  $("pref-risk-style").value = prefs.risk_style || "balanced";
+  $("pref-legs").value = prefs.preferred_legs || "2-3";
+  $("pref-max-wager-pct").value = prefs.max_wager_pct || 5;
+  $("pref-high-risk").checked = prefs.allow_high_risk !== false;
+  $("pref-avoid-same-game").checked = prefs.avoid_same_game !== false;
+}
+
+async function savePreferences(event) {
+  event.preventDefault();
+  const payload = {
+    risk_style: $("pref-risk-style").value,
+    preferred_legs: $("pref-legs").value,
+    allow_high_risk: $("pref-high-risk").checked,
+    avoid_same_game: $("pref-avoid-same-game").checked,
+    max_wager_pct: Number($("pref-max-wager-pct").value || 5),
+    default_platform: $("entry-platform").value,
+    default_sport: $("props-sport").value,
+  };
+  await api("/api/settings/preferences", { method: "POST", body: JSON.stringify(payload) });
+  $("preferences-status").textContent = "Preferences saved. Recommendations and guardrails now use this profile.";
+  await loadCommandCenter();
+}
+
+async function loadAccuracyLab() {
+  const data = await api("/api/analytics/accuracy-lab");
+  $("accuracy-lab").innerHTML = `
+    <div class="suggestion">
+      <div class="suggestion-top">
+        <strong>Audit Coverage</strong>
+        <span class="subtle">${data.summary.audit_snapshots} snapshots</span>
+      </div>
+      <p>${data.summary.settled_entries} settled entries · ${data.summary.recommended_settled} recommended settled entries.</p>
+    </div>
+    ${data.confidence_buckets.map((bucket) => `
+      <div class="suggestion compact-suggestion">
+        <strong>Confidence ${bucket.label}</strong>
+        <p>${bucket.entries} entries · ${bucket.wins}-${bucket.losses} · ${pct(bucket.win_pct)} win · avg confidence ${pct(bucket.avg_confidence)}</p>
+      </div>
+    `).join("")}
+    ${(data.audit_trail || []).slice(0, 8).map((row) => `
+      <div class="suggestion compact-suggestion">
+        <div class="suggestion-top">
+          <strong>Entry #${row.entry_id} · ${row.grade || "Ungraded"}</strong>
+          <span class="subtle">${formatDateTime(row.placed_at)}</span>
+        </div>
+        <p>${row.result || "Pending"} · locked ${row.line_snapshot_count} legs · ${row.recommendation.action || "No action saved"}</p>
+      </div>
+    `).join("")}
+  `;
+}
+
 function bindEvents() {
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
   $("refresh-all").addEventListener("click", loadAll);
   $("refresh-command-center").addEventListener("click", loadCommandCenter);
+  $("refresh-advantage-center").addEventListener("click", loadAdvantageCenter);
+  $("refresh-data-health").addEventListener("click", loadDataHealth);
+  $("refresh-notifications").addEventListener("click", loadNotifications);
+  $("run-daily-refresh").addEventListener("click", runDailyRefresh);
   $("refresh-timing-alerts").addEventListener("click", loadTimingAlerts);
+  ["timing-min-confidence", "timing-min-ev", "timing-alert-type", "timing-hide-outliers"].forEach((id) => {
+    $(id).addEventListener("change", loadTimingAlerts);
+  });
   $("refresh-progress").addEventListener("click", loadEntryProgress);
   $("sync-now").addEventListener("click", runSync);
   $("refresh-games").addEventListener("click", () => loadTrendingGames());
@@ -1554,10 +1864,16 @@ function bindEvents() {
   $("final-stats-form").addEventListener("submit", importFinalStats);
   $("upload-analyzer-form").addEventListener("submit", analyzeUpload);
   $("bet-history-form").addEventListener("submit", importBetHistory);
+  $("open-screenshot-import").addEventListener("click", openScreenshotImport);
   $("bet-form").addEventListener("submit", saveBet);
   $("bankroll-transaction-form").addEventListener("submit", saveBankrollTransaction);
   $("refresh-bets").addEventListener("click", loadBets);
   $("refresh-backtest").addEventListener("click", loadBacktest);
+  $("refresh-accuracy-lab").addEventListener("click", loadAccuracyLab);
+  $("preferences-form").addEventListener("submit", savePreferences);
+  $("watchlist-form").addEventListener("submit", saveWatchlistItem);
+  $("boost-form").addEventListener("submit", analyzeBoost);
+  $("bankroll-strategy-form").addEventListener("submit", saveBankrollStrategy);
   document.querySelectorAll("[data-close-drawer]").forEach((button) => {
     button.addEventListener("click", closeExplanationDrawer);
   });
@@ -1576,6 +1892,11 @@ async function loadAll() {
   const results = await Promise.allSettled([
     loadDashboard(),
     loadModelHealth(),
+    loadAdvantageCenter(),
+    loadDataHealth(),
+    loadNotifications(),
+    loadRefreshSchedule(),
+    loadPreferences(),
     loadTimingAlerts(),
     loadEntryProgress(),
     loadProps(),
@@ -1584,6 +1905,7 @@ async function loadAll() {
     loadBets(),
     loadBankrollTransactions(),
     loadPerformance(),
+    loadAccuracyLab(),
   ]);
   const failure = results.find((result) => result.status === "rejected");
   if (failure) {

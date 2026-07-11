@@ -58,6 +58,8 @@ def _run_lightweight_migrations():
             ("potential_payout", "REAL DEFAULT 0.0"),
             ("profit", "REAL DEFAULT 0.0"),
             ("recommended_by_app", "BOOLEAN DEFAULT 0"),
+            ("audit_snapshot", "TEXT DEFAULT ''"),
+            ("entry_mode", "TEXT DEFAULT 'real'"),
         ],
         "entry_props": [
             ("platform", "TEXT DEFAULT ''"),

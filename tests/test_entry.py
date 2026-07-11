@@ -4,6 +4,7 @@ from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
 from analytics.entry_recommendation import recommendation
+from analytics.correlation import detect_correlations
 from analytics.prop_metrics import calculate_confidence
 
 
@@ -53,3 +54,36 @@ def test_entry_recommendation_blends_confidence_edge_and_sources():
     assert result["grade"] == "B"
     assert result["score"] >= 66
     assert result["components"]["average_source_score"] == 3.0
+
+
+def test_correlation_engine_flags_same_game_and_football_stack():
+    entry = Entry(platform=Platform.PRIZEPICKS)
+    entry.add_prop(
+        Prop(
+            player=Player(name="QB", team="AAA", sport="NFL"),
+            stat=StatType.PASSING_YARDS,
+            line=250.5,
+            projection=270,
+            edge=19.5,
+            confidence=70,
+            platform=Platform.PRIZEPICKS,
+            game="AAA-BBB",
+        )
+    )
+    entry.add_prop(
+        Prop(
+            player=Player(name="WR", team="AAA", sport="NFL"),
+            stat=StatType.RECEIVING_YARDS,
+            line=70.5,
+            projection=80,
+            edge=9.5,
+            confidence=66,
+            platform=Platform.PRIZEPICKS,
+            game="AAA-BBB",
+        )
+    )
+
+    warnings = detect_correlations(entry)
+
+    assert any("same-game" in warning for warning in warnings)
+    assert any("QB passing yards" in warning for warning in warnings)

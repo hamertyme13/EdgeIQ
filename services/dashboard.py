@@ -37,6 +37,7 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     stats["roi"] = round((stats["profit"] / stats["wagered"] * 100) if stats["wagered"] else 0.0, 2)
     stats["pending_entry_exposure"] = entry_stats["pending_exposure"]
     stats["entries"] = entry_stats
+    stats["paper"] = entry_stats.get("paper", {})
     stats["recommendation_accuracy"] = entry_stats.get("recommendation_accuracy", {})
     stats["by_sport"] = _merge_performance_groups(
         stats.get("by_sport", {}),

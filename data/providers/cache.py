@@ -64,6 +64,23 @@ def get_json(
     raise RuntimeError(f"Provider fetch failed and no cache is available: {last_error}")
 
 
+def cache_status(url: str, *, ttl_seconds: int = 300) -> dict[str, Any]:
+    cached = _read_cache(_cache_path(url))
+    if cached is None:
+        return {
+            "cached": False,
+            "age_seconds": None,
+            "fresh": False,
+            "ttl_seconds": ttl_seconds,
+        }
+    return {
+        "cached": True,
+        "age_seconds": cached.age_seconds,
+        "fresh": cached.age_seconds <= ttl_seconds,
+        "ttl_seconds": ttl_seconds,
+    }
+
+
 def _cache_path(url: str) -> Path:
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
     return _CACHE_DIR / f"{digest}.json"

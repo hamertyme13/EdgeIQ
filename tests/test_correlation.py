@@ -28,7 +28,10 @@ def test_detect_correlations_flags_teammates():
 
     entry = Entry(platform=Platform.PRIZEPICKS, props=[prop1, prop2])
 
-    assert detect_correlations(entry) == ["Aces: multiple teammates selected."]
+    warnings = detect_correlations(entry)
+
+    assert "Aces: multiple teammates selected." in warnings
+    assert any("points and assists" in warning for warning in warnings)
 
 
 def test_detect_correlations_checks_all_pairs():

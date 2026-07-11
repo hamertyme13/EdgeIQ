@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from data.providers.cache import get_json
+import os
+
+from data.providers.cache import cache_status, get_json
 from data.providers.generic_props import fetch_configured_props
 
 
 _BASE = "https://api.sleeper.app/v1"
+_PLAYER_CACHE_TTL_SECONDS = 86400
 _SPORT_MAP = {
     "NFL": "nfl",
 }
@@ -25,6 +28,30 @@ _HEADERS = {
 
 def fetch_projections() -> list[dict]:
     return fetch_configured_props("Sleeper", "SLEEPER")
+
+
+def public_api_status(sport: str = "NFL") -> dict:
+    """Describe Sleeper's public no-auth capability and local cache state."""
+    sport_id = _SPORT_MAP.get(sport.upper(), "nfl")
+    player_cache = cache_status(_players_url(sport_id), ttl_seconds=_PLAYER_CACHE_TTL_SECONDS)
+    props_configured = bool(
+        os.getenv("EDGEIQ_SLEEPER_PROPS_URL", "").strip()
+        or os.getenv("EDGEIQ_SLEEPER_PROPS_FILE", "").strip()
+    )
+    return {
+        "base_url": _BASE,
+        "auth_required": False,
+        "read_only": True,
+        "rate_limit": "Keep requests under 1,000 calls per minute.",
+        "player_cache": player_cache,
+        "props_configured": props_configured,
+        "supports": ["NFL player metadata", "NFL trending adds", "NFL trending drops"],
+        "message": (
+            "Sleeper public API is available without keys for read-only NFL "
+            "player/trending context. Prop lines still require a configured "
+            "Sleeper prop feed."
+        ),
+    }
 
 
 def fetch_trending_players(
@@ -65,10 +92,10 @@ def fetch_players(sport: str = "NFL") -> dict[str, dict]:
         return {}
     try:
         data = get_json(
-            f"{_BASE}/players/{sport_id}",
+            _players_url(sport_id),
             headers=_HEADERS,
             timeout=20,
-            ttl_seconds=86400,
+            ttl_seconds=_PLAYER_CACHE_TTL_SECONDS,
         ).data
     except RuntimeError:
         return {}
@@ -123,3 +150,7 @@ def _player_metadata(row: dict) -> dict:
         "position": row.get("position") or "",
         "league": "NFL",
     }
+
+
+def _players_url(sport_id: str) -> str:
+    return f"{_BASE}/players/{sport_id}"
