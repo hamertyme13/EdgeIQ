@@ -39,7 +39,7 @@ from models.stat_type import StatType
 from services.dashboard import get_starting_bankroll
 import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
-from gui.styles import ACCENT, GREEN, RED, YELLOW, SURFACE, BORDER, TEXT, MUTED, CYAN
+from gui.styles import ACCENT, ACCENT2, GREEN, RED, YELLOW, SURFACE, BORDER, TEXT, MUTED, CYAN
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -294,7 +294,7 @@ class AnalysisTab(QWidget):
             f"Found {len(pp_props)} PrizePicks · {len(ud_props)} Underdog"
         )
 
-        _COLORS = {"PrizePicks": "#7c5cd8", "Underdog": YELLOW}
+        _COLORS = {"PrizePicks": ACCENT2, "Underdog": CYAN}
 
         self._shop_table.setRowCount(len(all_rows))
         for row, (platform, prop) in enumerate(all_rows):

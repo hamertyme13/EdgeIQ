@@ -26,6 +26,14 @@ def calculate_entry_risk(props):
         EntryRisk
     """
 
+    if not props:
+        return EntryRiskResult(
+            risk=EntryRisk.HIGH,
+            average_confidence=0.0,
+            average_edge=0.0,
+            prop_count=0,
+        )
+
     average_confidence = (
         sum(prop.confidence for prop in props)
         / len(props)

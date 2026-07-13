@@ -2,27 +2,34 @@
 Shared PyQt6 stylesheet and color constants for EdgeIQ desktop.
 """
 
-# ── Palette ──────────────────────────────────────────────────────────────────
-BG         = "#0f1117"
-SURFACE    = "#1a1d27"
-SURFACE2   = "#21253a"
-BORDER     = "#2e3247"
-TEXT       = "#e8eaf0"
-MUTED      = "#7a7f9a"
-ACCENT     = "#4f8ef7"
-ACCENT2    = "#7c5cd8"
-GREEN      = "#22c55e"
-YELLOW     = "#f59e0b"
-RED        = "#ef4444"
-CYAN       = "#06b6d4"
+# ── Rogue Circuit palette ────────────────────────────────────────────────────
+BG         = "#05060d"
+SURFACE    = "#0a0d16"
+SURFACE2   = "#101522"
+BORDER     = "#203041"
+TEXT       = "#ededed"
+MUTED      = "#8b98aa"
+ACCENT     = "#39ff88"
+ACCENT2    = "#7c3cff"
+GREEN      = "#39ff88"
+YELLOW     = "#f8c14a"
+RED        = "#ff4d6d"
+CYAN       = "#19e6ff"
+SOFT_GREEN = "#102f25"
+SOFT_CYAN  = "#0c2a35"
+SOFT_VIOLET = "#1a1238"
 
 APP_STYLESHEET = f"""
 /* ── Base ─────────────────────────────────────────── */
 QWidget {{
     background-color: {BG};
     color: {TEXT};
-    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-family: Arial;
     font-size: 13px;
+}}
+
+QLabel {{
+    background: transparent;
 }}
 
 /* ── Main window & frames ─────────────────────────── */
@@ -32,32 +39,34 @@ QMainWindow, QDialog {{
 
 QFrame#card {{
     background-color: {SURFACE};
-    border: 1px solid {BORDER};
+    border: 1px solid #26384b;
     border-radius: 8px;
 }}
 
 /* ── Tab bar ──────────────────────────────────────── */
 QTabWidget::pane {{
-    border: 1px solid {BORDER};
-    border-radius: 6px;
-    background-color: {SURFACE};
+    border: none;
+    background-color: {BG};
+}}
+
+QTabBar {{
+    background-color: {BG};
 }}
 
 QTabBar::tab {{
-    background-color: {BG};
+    background-color: transparent;
     color: {MUTED};
-    padding: 9px 22px;
-    border: 1px solid transparent;
-    border-bottom: none;
-    margin-right: 2px;
+    padding: 10px 18px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-right: 4px;
     font-size: 13px;
 }}
 
 QTabBar::tab:selected {{
-    background-color: {SURFACE};
+    background-color: transparent;
     color: {TEXT};
-    border: 1px solid {BORDER};
-    border-bottom: 1px solid {SURFACE};
+    border-bottom: 2px solid {ACCENT};
 }}
 
 QTabBar::tab:hover:!selected {{
@@ -67,30 +76,31 @@ QTabBar::tab:hover:!selected {{
 /* ── Buttons ──────────────────────────────────────── */
 QPushButton {{
     background-color: {ACCENT};
-    color: #ffffff;
+    color: {BG};
     border: none;
-    border-radius: 6px;
-    padding: 8px 18px;
+    border-radius: 5px;
+    padding: 7px 14px;
     font-size: 13px;
     font-weight: 600;
 }}
 
 QPushButton:hover {{
-    background-color: #3a7de8;
+    background-color: #70ffab;
 }}
 
 QPushButton:pressed {{
-    background-color: #2d6cd4;
+    background-color: #20d96e;
 }}
 
 QPushButton#secondary {{
-    background-color: {SURFACE2};
+    background-color: {SOFT_CYAN};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid #23596a;
 }}
 
 QPushButton#secondary:hover {{
-    background-color: {BORDER};
+    background-color: #123847;
+    border-color: {CYAN};
 }}
 
 QPushButton#danger {{
@@ -105,15 +115,15 @@ QPushButton#danger:hover {{
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background-color: {SURFACE2};
     color: {TEXT};
-    border: 1px solid {BORDER};
+    border: 1px solid #24374a;
     border-radius: 5px;
-    padding: 6px 10px;
+    padding: 5px 9px;
     font-size: 13px;
     min-height: 20px;
 }}
 
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
-    border: 1px solid {ACCENT};
+    border: 1px solid {CYAN};
 }}
 
 QComboBox::drop-down {{
@@ -125,30 +135,30 @@ QComboBox QAbstractItemView {{
     background-color: {SURFACE2};
     color: {TEXT};
     border: 1px solid {BORDER};
-    selection-background-color: {ACCENT};
+    selection-background-color: {SOFT_CYAN};
 }}
 
 /* ── Tables ───────────────────────────────────────── */
 QTableWidget {{
     background-color: {SURFACE};
-    alternate-background-color: {SURFACE2};
-    border: 1px solid {BORDER};
+    alternate-background-color: #0d1320;
+    border: 1px solid #24374a;
     border-radius: 6px;
     gridline-color: {BORDER};
     color: {TEXT};
 }}
 
 QTableWidget::item {{
-    padding: 6px 10px;
+    padding: 5px 8px;
 }}
 
 QTableWidget::item:selected {{
-    background-color: {ACCENT};
-    color: #ffffff;
+    background-color: {SOFT_CYAN};
+    color: {TEXT};
 }}
 
 QHeaderView::section {{
-    background-color: {SURFACE2};
+    background-color: #101827;
     color: {MUTED};
     padding: 7px 10px;
     border: none;
@@ -167,13 +177,13 @@ QScrollBar:vertical {{
 }}
 
 QScrollBar::handle:vertical {{
-    background-color: {BORDER};
+    background-color: #26384b;
     border-radius: 4px;
     min-height: 24px;
 }}
 
 QScrollBar::handle:vertical:hover {{
-    background-color: {MUTED};
+    background-color: {CYAN};
 }}
 
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
@@ -187,13 +197,13 @@ QScrollBar:horizontal {{
 }}
 
 QScrollBar::handle:horizontal {{
-    background-color: {BORDER};
+    background-color: #26384b;
     border-radius: 4px;
     min-width: 24px;
 }}
 
 QScrollBar::handle:horizontal:hover {{
-    background-color: {MUTED};
+    background-color: {CYAN};
 }}
 
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
@@ -227,10 +237,10 @@ QLabel#muted {{
 
 /* ── Group box ────────────────────────────────────── */
 QGroupBox {{
-    border: 1px solid {BORDER};
+    border: 1px solid #24374a;
     border-radius: 6px;
-    margin-top: 20px;
-    padding-top: 12px;
+    margin-top: 14px;
+    padding-top: 8px;
     color: {MUTED};
     font-size: 11px;
     font-weight: 600;
@@ -242,9 +252,10 @@ QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
     left: 12px;
-    top: -8px;
-    padding: 2px 6px;
+    top: -7px;
+    padding: 1px 6px;
     background-color: {BG};
+    color: {CYAN};
 }}
 
 /* ── Separator ────────────────────────────────────── */

@@ -26,8 +26,10 @@ def initialize_database():
 
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
+    from repository.models.final_player_stat_model import FinalPlayerStatModel
     from repository.models.settings_model import SettingsModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
+    from repository.models.bankroll_transaction_model import BankrollTransactionModel
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
@@ -45,6 +47,27 @@ def _run_lightweight_migrations():
             ("platform", "TEXT DEFAULT ''"),
             ("stat_type", "TEXT DEFAULT ''"),
             ("win_probability", "REAL DEFAULT 0.0"),
+        ],
+        "entries": [
+            ("status", "TEXT DEFAULT 'Draft'"),
+            ("result", "TEXT DEFAULT ''"),
+            ("placed_at", "DATETIME"),
+            ("settled_at", "DATETIME"),
+            ("wager", "REAL DEFAULT 0.0"),
+            ("multiplier", "REAL DEFAULT 1.0"),
+            ("potential_payout", "REAL DEFAULT 0.0"),
+            ("profit", "REAL DEFAULT 0.0"),
+            ("recommended_by_app", "BOOLEAN DEFAULT 0"),
+            ("audit_snapshot", "TEXT DEFAULT ''"),
+            ("entry_mode", "TEXT DEFAULT 'real'"),
+        ],
+        "entry_props": [
+            ("platform", "TEXT DEFAULT ''"),
+            ("game", "TEXT DEFAULT ''"),
+            ("direction", "TEXT DEFAULT 'Over'"),
+        ],
+        "final_player_stats": [
+            ("status", "TEXT DEFAULT 'played'"),
         ],
     }
 

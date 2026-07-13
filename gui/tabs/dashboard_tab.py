@@ -1,5 +1,5 @@
 """
-Dashboard tab — betting stats overview + Top 25 props (PrizePicks / Underdog / Both).
+Dashboard tab — betting stats overview + top props by sport (PrizePicks / Underdog / Both).
 """
 
 from __future__ import annotations
@@ -26,9 +26,11 @@ from PyQt6.QtWidgets import (
 
 import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
+from analytics.entry_suggestions import suggest_entries
 from data.providers.injury_feed import fetch_all_injuries
+from models.platform import Platform
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
-from gui.styles import ACCENT, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
+from gui.styles import ACCENT, ACCENT2, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,9 +44,78 @@ _PLATFORMS = {
 
 # Accent colors per platform badge
 _PLATFORM_COLORS = {
-    "PrizePicks": "#7c5cd8",
-    "Underdog":   "#f59e0b",
+    "PrizePicks": ACCENT2,
+    "Underdog":   CYAN,
 }
+
+
+def _unique_player_props(props: list[dict], limit: int = 25) -> list[dict]:
+    """Return the highest-ranked prop for each player, preserving sort order."""
+    unique: list[dict] = []
+    seen: set[str] = set()
+
+    for prop in props:
+        player_key = prop.get("player", "").strip().lower()
+        if not player_key or player_key in seen:
+            continue
+
+        seen.add(player_key)
+        unique.append(prop)
+
+        if len(unique) == limit:
+            break
+
+    return unique
+
+
+def _top_props_by_sport(props: list[dict], limit: int = 5, sport: str | None = None) -> list[dict]:
+    """Return up to limit unique-player props per sport."""
+    if sport:
+        return _rank_props(_unique_player_props(props, limit), sport)
+
+    grouped: dict[str, list[dict]] = {}
+    for prop in props:
+        league = prop.get("league", "Other").upper()
+        sport_props = grouped.setdefault(league, [])
+        if len(sport_props) >= limit:
+            continue
+        player_key = prop.get("player", "").strip().lower()
+        if not player_key:
+            continue
+        if any(existing.get("player", "").strip().lower() == player_key for existing in sport_props):
+            continue
+        ranked_prop = dict(prop)
+        ranked_prop["sport_rank"] = len(sport_props) + 1
+        sport_props.append(ranked_prop)
+
+    return [prop for league in sorted(grouped) for prop in grouped[league]]
+
+
+def _rank_props(props: list[dict], sport: str) -> list[dict]:
+    ranked = []
+    for index, prop in enumerate(props, start=1):
+        ranked_prop = dict(prop)
+        ranked_prop["sport_rank"] = index
+        ranked_prop["league"] = ranked_prop.get("league") or sport
+        ranked.append(ranked_prop)
+    return ranked
+
+
+def _best_parlay_from_props(props: list[dict]):
+    best = None
+    grouped: dict[tuple[str, Platform], list[dict]] = {}
+    for prop in props:
+        platform = Platform.UNDERDOG if prop.get("platform") == Platform.UNDERDOG.value else Platform.PRIZEPICKS
+        sport = prop.get("league", "").upper()
+        if sport:
+            grouped.setdefault((sport, platform), []).append(prop)
+
+    for (sport, platform), sport_props in grouped.items():
+        suggestions = suggest_entries(sport_props, sport, platform, limit=1, leg_count=3)
+        if suggestions and (best is None or suggestions[0].score > best.score):
+            best = suggestions[0]
+
+    return best
 
 
 # ── Background worker ─────────────────────────────────────────────────────────
@@ -70,16 +141,23 @@ class _PropFetcher(QThread):
 
     def _fetch(self) -> list[dict]:
         sport = self.sport or None
-        n     = 25
+        n     = 5
 
         if self.platform == "prizepicks":
-            props = _pp.top_props(n=n, sport=sport)
+            props = _pp.fetch_projections()
             for p in props:
                 p.setdefault("platform", "PrizePicks")
-            return props
+            if sport:
+                props = [p for p in props if p["league"] == sport.upper()]
+            props.sort(key=lambda p: p["trending_count"], reverse=True)
+            return _top_props_by_sport(props, n, sport)
 
         if self.platform == "underdog":
-            return _ud.top_props(n=n, sport=sport)
+            props = _ud.fetch_projections()
+            if sport:
+                props = [p for p in props if p["league"] == sport.upper()]
+            props.sort(key=lambda p: p["trending_count"], reverse=True)
+            return _top_props_by_sport(props, n, sport)
 
         # Both — fetch in parallel using threads isn't needed here since we're
         # already off the main thread; fetch sequentially then merge & re-rank.
@@ -95,7 +173,7 @@ class _PropFetcher(QThread):
             combined = [p for p in combined if p["league"] == sport.upper()]
 
         combined.sort(key=lambda p: p["trending_count"], reverse=True)
-        return combined[:n]
+        return _top_props_by_sport(combined, n, sport)
 
 
 # ── Injury fetcher ────────────────────────────────────────────────────────────
@@ -240,10 +318,13 @@ class _BankrollDialog(QDialog):
 
 class DashboardTab(QWidget):
 
+    prop_selected = pyqtSignal(dict)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._fetcher: _PropFetcher | None = None
         self._injury_fetcher: _InjuryFetcher | None = None
+        self._current_props: list[dict] = []
         self._build_ui()
         self._load_stats()
         self._load_injuries()
@@ -258,7 +339,7 @@ class DashboardTab(QWidget):
         # Injury alert banner (hidden until injuries load)
         self._injury_banner = QFrame()
         self._injury_banner.setStyleSheet(
-            f"background: #2a1a1a; border: 1px solid {RED}; border-radius: 6px; padding: 4px;"
+            f"background: #23111c; border: 1px solid {RED}; border-radius: 6px; padding: 4px;"
         )
         self._injury_banner.hide()
         banner_layout = QHBoxLayout(self._injury_banner)
@@ -317,11 +398,34 @@ class DashboardTab(QWidget):
         sep.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep)
 
-        # Section: Top 25 Props header row
+        # Section: Recommended parlay
+        self._parlay_card = QFrame()
+        self._parlay_card.setObjectName("card")
+        parlay_layout = QVBoxLayout(self._parlay_card)
+        parlay_layout.setContentsMargins(16, 14, 16, 14)
+        parlay_layout.setSpacing(6)
+
+        parlay_title = QLabel("Recommended 3-Leg Parlay")
+        parlay_title.setObjectName("section-title")
+        parlay_layout.addWidget(parlay_title)
+
+        self._parlay_summary = QLabel("Loading recommendation...")
+        self._parlay_summary.setWordWrap(True)
+        self._parlay_summary.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 600;")
+        parlay_layout.addWidget(self._parlay_summary)
+
+        self._parlay_detail = QLabel("")
+        self._parlay_detail.setObjectName("muted")
+        self._parlay_detail.setWordWrap(True)
+        parlay_layout.addWidget(self._parlay_detail)
+
+        root.addWidget(self._parlay_card)
+
+        # Section: Top props header row
         props_header = QHBoxLayout()
         props_header.setSpacing(8)
 
-        self._props_title = QLabel("Top 25 Props")
+        self._props_title = QLabel("Top 5 Props by Sport")
         self._props_title.setObjectName("section-title")
         props_header.addWidget(self._props_title)
 
@@ -362,6 +466,7 @@ class DashboardTab(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._table.cellClicked.connect(self._on_prop_cell_clicked)
 
         root.addWidget(self._table)
 
@@ -447,8 +552,10 @@ class DashboardTab(QWidget):
         sport_text     = self._sport_filter.currentText()
         sport          = None if sport_text == "All Sports" else sport_text
 
-        self._props_title.setText(f"Top 25 Props  ·  {platform_label}")
+        self._props_title.setText(f"Top 5 Props by Sport  ·  {platform_label}")
         self._status_label.setText(f"Fetching props from {platform_label}…")
+        self._parlay_summary.setText("Loading recommendation...")
+        self._parlay_detail.setText("")
 
         self._fetcher = _PropFetcher(platform_key, sport, parent=self)
         self._fetcher.finished.connect(self._on_props_loaded)
@@ -470,8 +577,9 @@ class DashboardTab(QWidget):
             cache_note = f" · cached fallback {max_age // 60}m old"
 
         self._status_label.setText(
-            f"Showing top {len(props)} props · {sport_text} · sorted by trending{cache_note}"
+            f"Showing up to 5 unique-player props per sport · {sport_text} · sorted by trending{cache_note}"
         )
+        self._update_parlay(props)
         self._populate_table(props)
 
     def _on_props_error(self, msg: str):
@@ -479,6 +587,7 @@ class DashboardTab(QWidget):
         self._status_label.setText(f"Error: {msg}")
 
     def _populate_table(self, props: list[dict]):
+        self._current_props = props
         self._table.setRowCount(len(props))
 
         for row, prop in enumerate(props):
@@ -489,7 +598,7 @@ class DashboardTab(QWidget):
 
             center = Qt.AlignmentFlag.AlignCenter
 
-            self._table.setItem(row, 0, _item(str(row + 1), center))
+            self._table.setItem(row, 0, _item(str(prop.get("sport_rank", row + 1)), center))
 
             # Platform badge (colored)
             platform     = prop.get("platform", "PrizePicks")
@@ -498,7 +607,10 @@ class DashboardTab(QWidget):
             platform_item.setForeground(QColor(badge_color))
             self._table.setItem(row, 1, platform_item)
 
-            self._table.setItem(row, 2, _item(prop["player"]))
+            player_item = _item(prop["player"])
+            player_item.setForeground(QColor(CYAN))
+            player_item.setToolTip("Add this player prop to an entry")
+            self._table.setItem(row, 2, player_item)
             self._table.setItem(row, 3, _item(prop["league"], center))
             self._table.setItem(row, 4, _item(prop["stat"]))
             self._table.setItem(row, 5, _item(
@@ -515,6 +627,31 @@ class DashboardTab(QWidget):
         self._table.resizeColumnToContents(5)
         self._table.resizeColumnToContents(6)
         self._table.resizeColumnToContents(7)
+
+    def _on_prop_cell_clicked(self, row: int, column: int):
+        if column != 2 or not (0 <= row < len(self._current_props)):
+            return
+
+        self.prop_selected.emit(dict(self._current_props[row]))
+
+    def _update_parlay(self, props: list[dict]):
+        suggestion = _best_parlay_from_props(props)
+        if not suggestion:
+            self._parlay_summary.setText("No 3-leg parlay is available for the current filters.")
+            self._parlay_summary.setStyleSheet(f"color: {MUTED}; font-size: 14px; font-weight: 600;")
+            self._parlay_detail.setText("")
+            return
+
+        legs = "  +  ".join(
+            f"{prop.player.name} {prop.stat.value} {prop.line:g}"
+            for prop in suggestion.entry.props
+        )
+        warnings = f" · Warnings: {'; '.join(suggestion.warnings)}" if suggestion.warnings else ""
+        self._parlay_summary.setText(
+            f"{suggestion.grade} · {suggestion.action} · Score {suggestion.score:.1f}"
+        )
+        self._parlay_summary.setStyleSheet(f"color: {GREEN}; font-size: 14px; font-weight: 700;")
+        self._parlay_detail.setText(f"{legs}{warnings}")
 
     def refresh_stats(self):
         """Called externally after a bet is saved."""

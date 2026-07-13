@@ -4,12 +4,14 @@ version = "2.0.0a0"
 description = "Desktop and CLI tools for player prop analysis and bet tracking."
 requires-python = ">=3.11"
 dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
     "PyQt6==6.11.0",
     "PyQt6-Charts==6.11.0",
     "python-dotenv==1.2.2",
     "requests==2.34.2",
     "rich==15.0.0",
     "SQLAlchemy==2.0.51",
+    "uvicorn>=0.30.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
