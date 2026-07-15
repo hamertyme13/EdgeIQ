@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from utils.stat_normalization import stat_key
 
 
 def find_final_stat(prop: dict) -> dict | None:
@@ -44,7 +45,7 @@ def _find_file_actual_stat(prop: dict) -> float | None:
 
     player = _norm(prop.get("player", ""))
     sport = _norm(prop.get("sport", ""))
-    stat = _norm(prop.get("stat", ""))
+    stat = stat_key(prop.get("stat", ""))
     game = _norm(prop.get("game", ""))
 
     for row in stats:
@@ -52,7 +53,7 @@ def _find_file_actual_stat(prop: dict) -> float | None:
             continue
         if sport and _norm(row.get("sport", "")) not in {"", sport}:
             continue
-        if stat and _norm(row.get("stat", "")) != stat:
+        if stat and stat_key(row.get("stat", "")) != stat:
             continue
         if game and _norm(row.get("game", "")) not in {"", game}:
             continue

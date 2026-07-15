@@ -17,6 +17,19 @@ def test_suggest_entries_returns_ranked_sport_specific_entries():
     assert suggestions[0].score >= suggestions[-1].score
 
 
+def test_suggest_entries_can_recommend_under_legs_without_explicit_projection():
+    raw_props = [
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Assists", "line": 7.5, "trending_count": 90000},
+        {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 80000},
+    ]
+
+    suggestions = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=3)
+
+    directions = {prop.direction for suggestion in suggestions for prop in suggestion.entry.props}
+    assert "Under" in directions
+
+
 def test_suggest_entries_uses_unique_players():
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},

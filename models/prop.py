@@ -26,6 +26,10 @@ class Prop:
 
     game: str = ""
 
+    game_time: str = ""
+
+    season_type: str = ""
+
     needs_projection: bool = False
 
     auto_projected: bool = False

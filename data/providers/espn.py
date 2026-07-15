@@ -55,6 +55,89 @@ def refresh_final_stats_for_entries(entries: list[dict], lookback_days: int = 2)
     }
 
 
+def refresh_live_stats_for_entries(entries: list[dict], lookback_days: int = 1) -> dict:
+    """Fetch ESPN in-progress box score rows for pending entries."""
+    sports = sorted({
+        str(prop.get("sport", "")).upper()
+        for entry in entries
+        for prop in entry.get("props", [])
+        if str(prop.get("sport", "")).upper() in _SPORT_PATHS
+    })
+    dates = sorted({_entry_date(entry) for entry in entries})
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for sport in sports:
+        for game_date in _date_window(dates, lookback_days):
+            try:
+                rows.extend(fetch_live_stats(sport, game_date))
+            except RuntimeError as exc:
+                errors.append(f"{sport} {game_date.isoformat()}: {exc}")
+
+    imported = FinalStatsRepository.upsert_many(rows) if rows else 0
+    return {
+        "provider": "espn_live",
+        "sports": sports,
+        "dates": [day.isoformat() for day in _date_window(dates, lookback_days)],
+        "fetched_rows": len(rows),
+        "imported": imported,
+        "errors": errors,
+    }
+
+
+def refresh_game_times_for_entries(entries: list[dict], lookback_days: int = 2) -> dict:
+    """Fetch ESPN scoreboard start times for the sports/dates represented by entries."""
+    sports = sorted({
+        str(prop.get("sport", "")).upper()
+        for entry in entries
+        for prop in entry.get("props", [])
+        if str(prop.get("sport", "")).upper() in _SPORT_PATHS
+    })
+    dates = sorted({_entry_date(entry) for entry in entries})
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    for sport in sports:
+        for game_date in _date_window(dates, lookback_days):
+            try:
+                rows.extend(fetch_game_times(sport, game_date))
+            except RuntimeError as exc:
+                errors.append(f"{sport} {game_date.isoformat()}: {exc}")
+
+    return {
+        "provider": "espn",
+        "sports": sports,
+        "dates": [day.isoformat() for day in _date_window(dates, lookback_days)],
+        "fetched_rows": len(rows),
+        "rows": rows,
+        "errors": errors,
+    }
+
+
+def fetch_game_times(sport: str, game_date: date) -> list[dict]:
+    sport_key = sport.upper()
+    path = _SPORT_PATHS.get(sport_key)
+    if path is None:
+        return []
+
+    scoreboard = _scoreboard(path, game_date)
+    rows: list[dict] = []
+    for event in scoreboard.get("events", []):
+        competition = _first(event.get("competitions", []))
+        game_time = event.get("date") or competition.get("date")
+        matchup = _event_matchup(event)
+        if not matchup or not game_time:
+            continue
+        rows.append({
+            "sport": sport_key,
+            "game": matchup,
+            "game_time": game_time,
+            "game_date": game_date.isoformat(),
+            "source": "espn",
+        })
+    return rows
+
+
 def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
     sport_key = sport.upper()
     path = _SPORT_PATHS.get(sport_key)
@@ -76,24 +159,48 @@ def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
     return rows
 
 
-def _scoreboard(path: str, game_date: date) -> dict:
+def fetch_live_stats(sport: str, game_date: date) -> list[dict]:
+    sport_key = sport.upper()
+    path = _SPORT_PATHS.get(sport_key)
+    if path is None:
+        return []
+
+    scoreboard = _scoreboard(path, game_date, ttl_seconds=45)
+    rows: list[dict] = []
+    for event in scoreboard.get("events", []):
+        competition = _first(event.get("competitions", []))
+        status = (competition.get("status", {}) if competition else {}).get("type", {})
+        if status.get("completed"):
+            continue
+        state = str(status.get("state") or "").lower()
+        if state not in {"in", "in_progress", "live"}:
+            continue
+        event_id = event.get("id")
+        if not event_id:
+            continue
+        summary = _summary(path, event_id, ttl_seconds=30)
+        rows.extend(_parse_summary(summary, sport_key, game_date, row_status="live"))
+    return rows
+
+
+def _scoreboard(path: str, game_date: date, ttl_seconds: int = 900) -> dict:
     dates = game_date.strftime("%Y%m%d")
     url = f"{_BASE}/{path}/scoreboard?dates={dates}"
-    return get_json(url, headers=_HEADERS, timeout=12, ttl_seconds=900).data
+    return get_json(url, headers=_HEADERS, timeout=12, ttl_seconds=ttl_seconds).data
 
 
-def _summary(path: str, event_id: str) -> dict:
+def _summary(path: str, event_id: str, ttl_seconds: int = 86400) -> dict:
     url = f"{_BASE}/{path}/summary?event={event_id}"
-    return get_json(url, headers=_HEADERS, timeout=12, ttl_seconds=86400).data
+    return get_json(url, headers=_HEADERS, timeout=12, ttl_seconds=ttl_seconds).data
 
 
-def _parse_summary(summary: dict, sport: str, game_date: date) -> list[dict]:
+def _parse_summary(summary: dict, sport: str, game_date: date, row_status: str = "played") -> list[dict]:
     if sport in {"WNBA", "NBA"}:
-        return _parse_basketball_summary(summary, sport, game_date)
+        return _parse_basketball_summary(summary, sport, game_date, row_status=row_status)
     return []
 
 
-def _parse_basketball_summary(summary: dict, sport: str, game_date: date) -> list[dict]:
+def _parse_basketball_summary(summary: dict, sport: str, game_date: date, row_status: str = "played") -> list[dict]:
     rows: list[dict] = []
     matchup = _matchup(summary)
     for team_group in summary.get("boxscore", {}).get("players", []):
@@ -110,7 +217,7 @@ def _parse_basketball_summary(summary: dict, sport: str, game_date: date) -> lis
                     rows.extend(_dnp_rows(player, team_abbr, sport, matchup, game_date))
                     continue
                 stats = _stats_by_label(labels, athlete_row.get("stats", []))
-                rows.extend(_basketball_stat_rows(player, team_abbr, sport, matchup, game_date, stats))
+                rows.extend(_basketball_stat_rows(player, team_abbr, sport, matchup, game_date, stats, row_status))
     return rows
 
 
@@ -121,6 +228,7 @@ def _basketball_stat_rows(
     game: str,
     game_date: date,
     stats: dict[str, float],
+    status: str = "played",
 ) -> list[dict]:
     points = stats.get("PTS", 0.0)
     rebounds = stats.get("REB", 0.0)
@@ -149,7 +257,7 @@ def _basketball_stat_rows(
         "Steals+Blocks": steals + blocks,
     }
     return [
-        _row(player, team, sport, stat, game, game_date, actual, "played")
+        _row(player, team, sport, stat, game, game_date, actual, status)
         for stat, actual in values.items()
     ]
 
@@ -225,6 +333,19 @@ def _matchup(summary: dict) -> str:
         .get("competitions", [{}])[0]
         .get("competitors", [])
     )
+    away = home = ""
+    for competitor in competitors:
+        abbr = competitor.get("team", {}).get("abbreviation", "")
+        if competitor.get("homeAway") == "away":
+            away = abbr
+        elif competitor.get("homeAway") == "home":
+            home = abbr
+    return f"{away}@{home}".strip("@") if away or home else ""
+
+
+def _event_matchup(event: dict) -> str:
+    competition = _first(event.get("competitions", []))
+    competitors = competition.get("competitors", []) if competition else []
     away = home = ""
     for competitor in competitors:
         abbr = competitor.get("team", {}).get("abbreviation", "")

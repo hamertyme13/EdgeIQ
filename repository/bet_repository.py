@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from models.bet import Bet
-from repository.database import SessionLocal
+from repository.database import SessionLocal, initialize_database
 from repository.entities import BetEntity
+from sqlalchemy import or_
 
 
 class BetRepository:
+    _schema_ready = False
+
+    @staticmethod
+    def _ensure_schema() -> None:
+        if BetRepository._schema_ready:
+            return
+        initialize_database()
+        BetRepository._schema_ready = True
 
     def save(self, bet: Bet) -> None:
+        self._ensure_schema()
         with SessionLocal() as session:
             entity = BetEntity(
                 sport           = bet.sport,
@@ -20,13 +30,48 @@ class BetRepository:
                 platform        = bet.platform,
                 stat_type       = bet.stat_type,
                 win_probability = bet.win_probability,
+                source          = bet.source,
+                source_entry_id = bet.source_entry_id,
+                entry_mode      = bet.entry_mode,
             )
             session.add(entity)
             session.commit()
 
-    def get_all(self) -> list[Bet]:
+    def save_entry_result(self, entry: dict) -> None:
+        self._ensure_schema()
+        source_entry_id = int(entry["id"])
+        bet = self._entry_to_bet(entry)
         with SessionLocal() as session:
-            entities = session.query(BetEntity).all()
+            entity = (
+                session.query(BetEntity)
+                .filter(BetEntity.source == "edgeiq_entry")
+                .filter(BetEntity.source_entry_id == source_entry_id)
+                .first()
+            )
+            if entity is None:
+                entity = BetEntity(source="edgeiq_entry", source_entry_id=source_entry_id)
+                session.add(entity)
+
+            entity.sport = bet.sport
+            entity.game = bet.game
+            entity.description = bet.description
+            entity.odds = bet.odds
+            entity.wager = bet.wager
+            entity.result = bet.result
+            entity.profit = bet.profit
+            entity.platform = bet.platform
+            entity.stat_type = bet.stat_type
+            entity.win_probability = bet.win_probability
+            entity.entry_mode = bet.entry_mode
+            session.commit()
+
+    def get_all(self, include_synced_entries: bool = False) -> list[Bet]:
+        self._ensure_schema()
+        with SessionLocal() as session:
+            query = session.query(BetEntity)
+            if not include_synced_entries:
+                query = query.filter(or_(BetEntity.source.is_(None), BetEntity.source != "edgeiq_entry"))
+            entities = query.all()
             return [self._to_model(e) for e in entities]
 
     def count(self) -> int:
@@ -122,6 +167,10 @@ class BetRepository:
             platform        = e.platform or "",
             stat_type       = e.stat_type or "",
             win_probability = e.win_probability or 0.0,
+            source          = e.source or "manual",
+            source_entry_id = e.source_entry_id,
+            entry_mode      = e.entry_mode or "real",
+            created_at      = getattr(e, "created_at", None),
         )
 
     @staticmethod
@@ -135,6 +184,29 @@ class BetRepository:
             "by_sport": {}, "by_stat": {}, "by_platform": {},
             "bankroll_curve": [],
         }
+
+    @staticmethod
+    def _entry_to_bet(entry: dict) -> Bet:
+        props = entry.get("props") or []
+        sport = _dominant_value([prop.get("sport", "") for prop in props]) or "Entry"
+        game = _dominant_value([prop.get("game", "") for prop in props]) or ""
+        stat_type = _dominant_value([prop.get("stat", "") for prop in props]) or "Entry"
+        description = _entry_description(entry, props)
+        return Bet(
+            sport=sport,
+            game=game,
+            description=description,
+            odds=-110,
+            wager=round(float(entry.get("wager") or 0.0), 2),
+            result=entry.get("result", "") or "Push",
+            profit=round(float(entry.get("profit") or 0.0), 2),
+            platform=entry.get("platform", "") or "",
+            stat_type=stat_type,
+            win_probability=round(float(entry.get("average_confidence") or 0.0), 2),
+            source="edgeiq_entry",
+            source_entry_id=entry.get("id"),
+            entry_mode=entry.get("entry_mode", "real") or "real",
+        )
 
     @staticmethod
     def _compute_streaks(bets: list[Bet]) -> tuple[int, int, int]:
@@ -201,3 +273,41 @@ class BetRepository:
             g["win_pct"] = round((g["wins"] / g["bets"] * 100) if g["bets"] else 0, 1)
 
         return groups
+
+
+def _dominant_value(values: list[object]) -> str:
+    counts: dict[str, int] = {}
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        counts[text] = counts.get(text, 0) + 1
+    if not counts:
+        return ""
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+
+
+def _entry_description(entry: dict, props: list[dict]) -> str:
+    if not props:
+        return f"EdgeIQ entry #{entry.get('id', '')}".strip()
+    leg_text = " + ".join(
+        " ".join(
+            part
+            for part in (
+                str(prop.get("player", "")).strip(),
+                str(prop.get("direction", "Over") or "Over").strip(),
+                str(prop.get("stat", "")).strip(),
+                _format_line(prop.get("line")),
+            )
+            if part
+        )
+        for prop in props
+    )
+    return f"EdgeIQ entry #{entry.get('id')}: {leg_text}"
+
+
+def _format_line(value: object) -> str:
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value or "").strip()

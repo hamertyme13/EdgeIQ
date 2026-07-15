@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Float, Integer, String
+from sqlalchemy import Column, DateTime, Float, Integer, String, func
 
 from repository.database import Base
 
@@ -28,3 +28,11 @@ class BetEntity(Base):
     stat_type = Column(String, default="")
 
     win_probability = Column(Float, default=0.0)
+
+    source = Column(String, default="manual")
+
+    source_entry_id = Column(Integer)
+
+    entry_mode = Column(String, default="real")
+
+    created_at = Column(DateTime, server_default=func.now())

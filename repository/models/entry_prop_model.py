@@ -42,3 +42,13 @@ class EntryPropModel(Base):
     platform = Column(String)
 
     game = Column(String)
+
+    game_time = Column(String, default="")
+
+    actual = Column(Float)
+
+    final_result = Column(String, default="")
+
+    final_source = Column(String, default="")
+
+    final_status = Column(String, default="")

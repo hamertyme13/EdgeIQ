@@ -59,6 +59,21 @@ def _normalize_league(raw: str) -> Optional[str]:
     return _LEAGUE_MAP.get(raw.upper())
 
 
+def _season_type(raw_sport: str, game: dict, app_stat: dict) -> str:
+    text = " ".join([
+        raw_sport or "",
+        str(game.get("title", "") or ""),
+        str(game.get("short_title", "") or ""),
+        str(game.get("abbreviated_title", "") or ""),
+        str(app_stat.get("display_stat", "") or ""),
+    ]).lower()
+    if str(app_stat.get("display_stat", "") or "").lower().startswith("season "):
+        return "season_long"
+    if "summer league" in text or raw_sport.upper() in {"NBASL", "NBA_SUMMER_LEAGUE"}:
+        return "summer_league"
+    return "regular"
+
+
 def fetch_projections() -> list[dict]:
     """
     Fetch active Underdog over/under lines for NBA/WNBA/NFL/MLB.
@@ -104,6 +119,14 @@ def fetch_projections() -> list[dict]:
         match_id  = str(app.get("match_id", ""))
         game      = games.get(match_id, {})
         matchup   = game.get("abbreviated_title") or game.get("short_title") or ""
+        game_time = (
+            game.get("scheduled_at")
+            or game.get("starts_at")
+            or game.get("start_time")
+            or game.get("game_time")
+            or game.get("commence_time")
+            or ""
+        )
 
         # Rank — lower = more featured; invert for trending_count parity
         raw_rank  = line.get("rank", 999_999_999)
@@ -128,6 +151,8 @@ def fetch_projections() -> list[dict]:
             "stat":          app_stat.get("display_stat", ""),
             "line":          normalized_line,
             "game":          matchup,
+            "game_time":      game_time,
+            "season_type":    _season_type(raw_sport, game, app_stat),
             "status":        "pre_game",
             "trending_count": _rank_to_trending(raw_rank),
             "rank":          raw_rank,

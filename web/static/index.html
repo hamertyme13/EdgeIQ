@@ -4,24 +4,23 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EdgeIQ Web</title>
-    <link rel="stylesheet" href="/static/styles.css" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260715-trust-polish" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand">
-          <div class="brand-mark">E</div>
+          <img class="brand-mark" src="/static/edgeiq-icon.png" alt="EdgeIQ" onerror="this.onerror=null;this.src='edgeiq-icon.png';" />
           <div>
             <div class="brand-name">EdgeIQ</div>
             <div class="brand-subtitle">Player Prop Intelligence</div>
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active" data-view="dashboard">Dashboard</button>
+          <button class="nav-item active" data-view="dashboard">Today</button>
           <button class="nav-item" data-view="entries">Entries</button>
-          <button class="nav-item" data-view="analysis">Analysis</button>
-          <button class="nav-item" data-view="bets">Track Bets</button>
-          <button class="nav-item" data-view="performance">Performance</button>
+          <button class="nav-item" data-view="performance">Results</button>
+          <button class="nav-item" data-view="analysis">Tools</button>
         </nav>
       </aside>
 
@@ -29,7 +28,7 @@
         <header class="topbar">
           <div>
             <p class="eyebrow">Rogue Circuit Edition</p>
-            <h1 id="view-title">Dashboard</h1>
+            <h1 id="view-title">Today</h1>
           </div>
           <button id="refresh-all" class="secondary">Refresh</button>
         </header>
@@ -37,7 +36,54 @@
 
         <section id="dashboard" class="view active">
           <div class="stats-grid" id="dashboard-stats"></div>
+          <div class="panel daily-briefing-panel">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">AI Daily Briefing</p>
+                <h2 id="daily-greeting">Good Morning Joshua.</h2>
+                <p id="daily-briefing-status">Waking up the board...</p>
+              </div>
+              <button id="refresh-daily-briefing" class="secondary">Refresh</button>
+            </div>
+            <div id="daily-briefing-summary" class="daily-briefing-summary muted-card">Building the morning betting plan...</div>
+            <div id="daily-scan-status" class="daily-scan-status muted-card">No Daily Briefing scan has run yet today.</div>
+            <div class="daily-briefing-grid">
+              <div class="briefing-column briefing-bet">
+                <div class="briefing-column-header">
+                  <span>Bet</span>
+                  <small>Load and confirm</small>
+                </div>
+                <div id="daily-bet-list" class="briefing-card-list"></div>
+              </div>
+              <div class="briefing-column briefing-paper">
+                <div class="briefing-column-header">
+                  <span>Paper</span>
+                  <small>Calibration</small>
+                </div>
+                <div id="daily-paper-list" class="briefing-card-list"></div>
+              </div>
+              <div class="briefing-column briefing-watch">
+                <div class="briefing-column-header">
+                  <span>Watch</span>
+                  <small>Need one more check</small>
+                </div>
+                <div id="daily-watch-list" class="briefing-card-list"></div>
+              </div>
+              <div class="briefing-column briefing-avoid">
+                <div class="briefing-column-header">
+                  <span>Avoid</span>
+                  <small>Pass for now</small>
+                </div>
+                <div id="daily-avoid-list" class="briefing-card-list"></div>
+              </div>
+            </div>
+          </div>
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
+          <details class="dashboard-support-drawer">
+            <summary>
+              <span>System Status</span>
+              <small>Provider health, alerts, and daily automation</small>
+            </summary>
           <div class="reliability-grid">
             <div class="panel">
               <div class="panel-header">
@@ -70,6 +116,12 @@
               <div id="refresh-schedule-list" class="suggestion-list"></div>
             </div>
           </div>
+          </details>
+          <details class="dashboard-support-drawer">
+            <summary>
+              <span>Advanced Signals</span>
+              <small>Command cards, advantage tools, timing alerts, and market board</small>
+            </summary>
           <div class="release-grid">
             <div class="panel command-center-panel">
               <div class="panel-header">
@@ -107,7 +159,7 @@
             <div class="advantage-tools">
               <form id="watchlist-form" class="mini-tool stack">
                 <h3>Prop Watchlist</h3>
-                <div class="form-grid compact-controls">
+                <div class="form-grid compact-controls tool-form watchlist-controls">
                   <input id="watch-player" placeholder="Player" />
                   <input id="watch-stat" placeholder="Stat" />
                   <select id="watch-sport">
@@ -122,8 +174,6 @@
                     <option>PrizePicks</option>
                     <option>Underdog</option>
                     <option>Sleeper</option>
-                    <option>Chalkboard</option>
-                    <option>Betr</option>
                     <option>Both</option>
                   </select>
                   <select id="watch-direction">
@@ -143,7 +193,7 @@
               </form>
               <form id="boost-form" class="mini-tool stack">
                 <h3>Promo Boost Analyzer</h3>
-                <div class="form-grid compact-controls">
+                <div class="form-grid compact-controls tool-form boost-controls">
                   <input id="boost-player" placeholder="Player" />
                   <input id="boost-stat" placeholder="Stat" />
                   <select id="boost-sport">
@@ -157,8 +207,6 @@
                     <option>PrizePicks</option>
                     <option>Underdog</option>
                     <option>Sleeper</option>
-                    <option>Chalkboard</option>
-                    <option>Betr</option>
                   </select>
                   <select id="boost-direction">
                     <option>Over</option>
@@ -172,7 +220,7 @@
               </form>
               <form id="bankroll-strategy-form" class="mini-tool stack">
                 <h3>Bankroll Strategy</h3>
-                <div class="form-grid compact-controls">
+                <div class="form-grid compact-controls tool-form strategy-controls">
                   <select id="strategy-mode">
                     <option value="balanced">Balanced</option>
                     <option value="flat">Flat</option>
@@ -219,15 +267,20 @@
             <div class="panel ai-parlay-panel command-panel">
               <div class="panel-header">
                 <div>
-                  <h2>AI Parlay Desk</h2>
-                  <p id="ai-parlay-status">you need a parlay?</p>
+                  <h2>Ask EdgeIQ</h2>
+                  <p id="ai-parlay-status">Ask for a custom entry from the live board.</p>
                 </div>
                 <button id="ask-ai-parlay">Ask EdgeIQ</button>
               </div>
               <div class="chat-row">
-                <input id="ai-parlay-input" value="you need a parlay?" />
+                <input id="ai-parlay-input" value="Build me the best entry from today's briefing" />
               </div>
-              <div id="ai-parlay-response" class="analysis-card muted-card">Ask for the best 3-leg parlay for today.</div>
+              <div class="quick-prompts">
+                <button class="micro-button" data-ai-prompt="Give me a safer 2-leg parlay for WNBA">Safer 2-leg</button>
+                <button class="micro-button" data-ai-prompt="Give me the best confirmed 3-leg parlay">Confirmed 3-leg</button>
+                <button class="micro-button" data-ai-prompt="Give me an aggressive 4-leg parlay">Aggressive 4-leg</button>
+              </div>
+              <div id="ai-parlay-response" class="analysis-card muted-card">Ask EdgeIQ for a custom 2-leg, 3-leg, or 5-leg entry.</div>
             </div>
 
             <div class="dashboard-side">
@@ -272,8 +325,6 @@
                   <option>PrizePicks</option>
                   <option>Underdog</option>
                   <option>Sleeper</option>
-                  <option>Chalkboard</option>
-                  <option>Betr</option>
                   <option>Ball Don't Lie</option>
                   <option>Both</option>
                 </select>
@@ -304,7 +355,7 @@
               <table>
                 <thead>
                   <tr>
-                    <th>#</th>
+                    <th>Sport Rank</th>
                     <th>Platform</th>
                     <th>Player</th>
                     <th>Pick</th>
@@ -320,6 +371,7 @@
               </table>
             </div>
           </div>
+          </details>
         </section>
 
         <section id="entries" class="view">
@@ -331,7 +383,8 @@
                   <small>Personalize suggestions and guardrails</small>
                 </summary>
                 <div class="tool-group-body">
-                  <form id="preferences-form" class="form-grid compact-controls">
+                  <form id="preferences-form" class="form-grid compact-controls preferences-controls">
+                    <input id="pref-display-name" placeholder="Display name" />
                     <select id="pref-risk-style">
                       <option value="conservative">Conservative</option>
                       <option value="balanced">Balanced</option>
@@ -355,7 +408,7 @@
                 <div class="panel-header">
                   <div>
                     <h2>Entry Builder</h2>
-                    <p id="entry-status">Add props from Dashboard or manually.</p>
+                    <p id="entry-status">Add props from Today or manually.</p>
                   </div>
                 </div>
                 <form id="prop-form" class="form-grid">
@@ -453,8 +506,6 @@
                     <option>PrizePicks</option>
                     <option>Underdog</option>
                     <option>Sleeper</option>
-                    <option>Chalkboard</option>
-                    <option>Betr</option>
                     <option>Ball Don't Lie</option>
                   </select>
                   <button type="submit">Add Prop</button>
@@ -500,6 +551,43 @@
             <div class="stack">
               <details class="panel tool-group" open>
                 <summary>
+                  <span>Confirmed Prop Lab</span>
+                  <small>Verified API data + historical context</small>
+                </summary>
+                <div class="tool-group-body">
+                  <div class="toolbar">
+                    <select id="confirmed-sport">
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <select id="confirmed-platform">
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                    </select>
+                    <button id="load-confirmed-props" class="secondary">Load Confirmed Props</button>
+                    <button id="generate-confirmed-entries">Generate Confirmed Top 5</button>
+                  </div>
+                  <div id="confirmed-props-status" class="subtle">Only props with current line, game time, market sanity, and analysis context appear here.</div>
+                  <div id="confirmed-props-list" class="suggestion-list"></div>
+                  <div id="confirmed-entries-list" class="suggestion-list"></div>
+                </div>
+              </details>
+
+              <details class="panel tool-group" open>
+                <summary>
                   <span>Suggested Entries</span>
                   <small>Top 3 plus 4/5 leg higher-risk slips</small>
                 </summary>
@@ -526,8 +614,6 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
-                      <option>Chalkboard</option>
-                      <option>Betr</option>
                       <option>Ball Don't Lie</option>
                     </select>
                     <button id="generate-suggestions">Generate Top 5</button>
@@ -547,8 +633,6 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
-                      <option>Chalkboard</option>
-                      <option>Betr</option>
                       <option>Ball Don't Lie</option>
                       <option>Both</option>
                     </select>
@@ -597,9 +681,10 @@
                   <div class="toolbar">
                     <button id="classify-default-wagers" class="secondary">Classify Missing $10</button>
                     <button id="auto-check-entries">Auto Check</button>
+                    <button id="expedite-entries" class="secondary">Expedite Stale Entries</button>
                     <button id="refresh-pending" class="secondary">Refresh</button>
                   </div>
-                  <div class="form-grid compact-controls">
+                  <div class="form-grid compact-controls dnp-controls">
                     <select id="dnp-handling">
                       <option value="reduce">DNP reduces legs</option>
                       <option value="refund">Any DNP refunds entry</option>
@@ -700,8 +785,6 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
-                      <option>Chalkboard</option>
-                      <option>Betr</option>
                       <option>Ball Don't Lie</option>
                     </select>
                     <input id="shop-over-odds" type="number" placeholder="Over odds" />
@@ -718,8 +801,6 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
-                      <option>Chalkboard</option>
-                      <option>Betr</option>
                       <option>Ball Don't Lie</option>
                     </select>
                     <select id="scan-sport">
@@ -764,8 +845,6 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
-                      <option>Chalkboard</option>
-                      <option>Betr</option>
                       <option>Ball Don't Lie</option>
                     </select>
                     <button type="submit">Track Line</button>
@@ -870,6 +949,7 @@
                       <th>Sport</th>
                       <th>Game</th>
                       <th>Bet</th>
+                      <th>Source</th>
                       <th>Result</th>
                       <th>Profit</th>
                     </tr>
@@ -877,6 +957,15 @@
                   <tbody id="bets-table"></tbody>
                 </table>
               </div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Completed Entry History</h2>
+                  <p id="entry-history-status">Leg-level final stats from placed entries.</p>
+                </div>
+              </div>
+              <div id="entry-history-list" class="suggestion-list"></div>
             </div>
             <details class="panel tool-group">
               <summary>
@@ -886,7 +975,7 @@
               <div class="tool-group-body">
                 <div class="analysis-card">
                   <h2>Upload past-bet screenshots</h2>
-                  <p>For phone screenshots from PrizePicks, Underdog, Sleeper, Chalkboard, Betr, or other apps, use Analysis → Data Imports + Screenshot Uploads → Past bet history screenshot.</p>
+                  <p>For phone screenshots from PrizePicks, Underdog, Sleeper, or other apps, use Analysis → Data Imports + Screenshot Uploads → Past bet history screenshot.</p>
                   <button id="open-screenshot-import" class="secondary">Open Screenshot Upload</button>
                 </div>
                 <form id="bet-history-form" class="stack">
@@ -902,15 +991,31 @@
 
         <section id="performance" class="view">
           <div class="panel">
-            <h2>Performance</h2>
+            <div class="panel-header">
+              <div>
+                <h2>Results</h2>
+                <p>Profit, calibration, accuracy, and bet ledger access.</p>
+              </div>
+              <button class="secondary" data-view-shortcut="bets">Open Bet Ledger</button>
+            </div>
             <div id="performance-summary" class="stats-grid"></div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <h2>Monthly Profit</h2>
+              <div id="monthly-profit-current" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <h2>Monthly Profit Log</h2>
+              <div id="monthly-profit-log" class="suggestion-list"></div>
+            </div>
           </div>
           <div class="two-col">
             <div class="panel">
               <div class="panel-header">
                 <div>
                   <h2>Sport Success Mix</h2>
-                  <p>Win rate by sport across tracked bets and entries.</p>
+                  <p>Win rate by sport across all tracked results.</p>
                 </div>
               </div>
               <div class="pie-layout">
@@ -927,16 +1032,60 @@
             <div class="panel">
               <div class="panel-header">
                 <div>
-                  <h2>Backtesting</h2>
-                  <p>Compare historical recommendations to actual results.</p>
+                  <h2>Model Scorecard</h2>
+                  <p>Backtest recommendations against tracked results.</p>
                 </div>
-                <button id="refresh-backtest" class="secondary">Refresh</button>
+                <div class="panel-action">
+                  <select id="auto-paper-platform">
+                    <option>PrizePicks</option>
+                    <option>Underdog</option>
+                  </select>
+                  <select id="auto-paper-sport">
+                    <option>All Sports</option>
+                    <option>WNBA</option>
+                    <option>NBA</option>
+                    <option>NFL</option>
+                    <option>MLB</option>
+                    <option>NHL</option>
+                    <option>NCAAF</option>
+                    <option>NCAAM</option>
+                    <option>NCAAW</option>
+                    <option>MLS</option>
+                    <option>EPL</option>
+                    <option>UCL</option>
+                    <option>TENNIS</option>
+                    <option>PGA</option>
+                    <option>MMA</option>
+                    <option>NASCAR</option>
+                  </select>
+                  <select id="auto-paper-leg-count">
+                    <option value="2">2 legs</option>
+                    <option value="3">3 legs</option>
+                    <option value="4">4 legs</option>
+                    <option value="5">5 legs</option>
+                  </select>
+                  <input id="auto-paper-max-entries" type="number" min="1" max="10" value="3" />
+                  <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
+                  <button id="refresh-calibration-data" class="secondary">Refresh Provider Data</button>
+                  <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
+                </div>
               </div>
+              <div id="auto-paper-calibration-status" class="subtle">Choose a sport and create paper-only entries from weak calibration segments.</div>
               <div id="backtest-summary" class="suggestion-list"></div>
             </div>
             <div class="panel">
-              <h2>Confidence Calibration</h2>
+              <h2>Calibration Rules</h2>
               <div id="calibration-list" class="suggestion-list"></div>
+            </div>
+          </div>
+          <div class="two-col">
+            <div class="panel">
+              <h2>What Works</h2>
+              <div id="backtest-works" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <h2>What Fails</h2>
+              <div id="backtest-fails" class="suggestion-list"></div>
             </div>
           </div>
           <div class="three-col">
@@ -945,11 +1094,11 @@
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
           </div>
           <div class="panel">
-            <h2>Entry Platform Profitability</h2>
+            <h2>Platform Profitability</h2>
             <div id="entry-platform-profitability" class="suggestion-list"></div>
           </div>
           <div class="panel">
-            <h2>Entry Results</h2>
+            <h2>Result Breakdown</h2>
             <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
           <div class="panel">
@@ -1014,8 +1163,6 @@
             <option>PrizePicks</option>
             <option>Underdog</option>
             <option>Sleeper</option>
-            <option>Chalkboard</option>
-            <option>Betr</option>
           </select>
           <select id="onboarding-sport">
             <option>WNBA</option>
@@ -1040,7 +1187,7 @@
       </div>
     </section>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260715-trust-polish"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

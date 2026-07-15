@@ -30,6 +30,7 @@ def initialize_database():
     from repository.models.settings_model import SettingsModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
     from repository.models.bankroll_transaction_model import BankrollTransactionModel
+    from repository.entities import BetEntity
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()
@@ -47,6 +48,10 @@ def _run_lightweight_migrations():
             ("platform", "TEXT DEFAULT ''"),
             ("stat_type", "TEXT DEFAULT ''"),
             ("win_probability", "REAL DEFAULT 0.0"),
+            ("source", "TEXT DEFAULT 'manual'"),
+            ("source_entry_id", "INTEGER"),
+            ("entry_mode", "TEXT DEFAULT 'real'"),
+            ("created_at", "DATETIME"),
         ],
         "entries": [
             ("status", "TEXT DEFAULT 'Draft'"),
@@ -64,7 +69,12 @@ def _run_lightweight_migrations():
         "entry_props": [
             ("platform", "TEXT DEFAULT ''"),
             ("game", "TEXT DEFAULT ''"),
+            ("game_time", "TEXT DEFAULT ''"),
             ("direction", "TEXT DEFAULT 'Over'"),
+            ("actual", "REAL"),
+            ("final_result", "TEXT DEFAULT ''"),
+            ("final_source", "TEXT DEFAULT ''"),
+            ("final_status", "TEXT DEFAULT ''"),
         ],
         "final_player_stats": [
             ("status", "TEXT DEFAULT 'played'"),
@@ -84,4 +94,6 @@ def _run_lightweight_migrations():
                     conn.execute(
                         text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {typedef}")
                     )
+            if table_name == "bets" and "created_at" not in existing:
+                conn.execute(text("UPDATE bets SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
         conn.commit()

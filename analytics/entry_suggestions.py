@@ -14,6 +14,7 @@ from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
+from utils.stat_normalization import stat_type_from_text
 
 
 @dataclass
@@ -42,12 +43,13 @@ def suggest_entries(
         raise ValueError("Suggested entries need at least two legs.")
 
     candidates = [
-        _prop_from_feed(prop, platform)
+        candidate
         for prop in raw_props
         if prop.get("line") is not None and prop.get("league", "").upper() == sport.upper()
+        for candidate in _props_from_feed(prop, platform)
     ]
 
-    candidates.sort(key=lambda prop: prop.trending_count, reverse=True)
+    candidates.sort(key=_candidate_sort_key, reverse=True)
     candidates = _unique_players(candidates)[:16]
 
     scored: list[tuple[float, Entry, list[str]]] = []
@@ -106,12 +108,40 @@ def _max_team_count(entry: Entry) -> int:
     return max(counts.values(), default=0)
 
 
-def _prop_from_feed(raw: dict, platform: Platform) -> Prop:
+def _candidate_sort_key(prop: Prop) -> tuple[float, float, int, int]:
+    side_bonus = 1 if prop.direction == _preferred_tie_side(prop) else 0
+    return (prop.confidence, prop.edge, prop.trending_count, side_bonus)
+
+
+def _preferred_tie_side(prop: Prop) -> str:
+    key = f"{prop.player.name}|{prop.stat.value}".lower()
+    return "Under" if sum(ord(char) for char in key) % 2 else "Over"
+
+
+def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
     line = float(raw.get("line") or 0.0)
     trending_count = int(raw.get("trending_count") or 0)
-    projection = auto_projection(line, trending_count)
-    edge = calculate_edge(line, projection)
-    direction = "Under" if projection < line else "Over"
+    explicit_direction = _explicit_direction(raw.get("direction"))
+    projection_value = raw.get("projection")
+
+    if projection_value not in (None, ""):
+        projection = float(projection_value)
+        direction = explicit_direction or ("Under" if projection < line else "Over")
+        return [_prop_from_side(raw, platform, line, trending_count, direction, projection)]
+
+    if explicit_direction:
+        projection = _side_projection(line, trending_count, explicit_direction)
+        return [_prop_from_side(raw, platform, line, trending_count, explicit_direction, projection)]
+
+    return [
+        _prop_from_side(raw, platform, line, trending_count, "Over", _side_projection(line, trending_count, "Over")),
+        _prop_from_side(raw, platform, line, trending_count, "Under", _side_projection(line, trending_count, "Under")),
+    ]
+
+
+def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: int, direction: str, projection: float) -> Prop:
+    edge = _directional_edge(line, projection, direction)
+    hit_rate = raw.get("hit_rate") or {}
 
     return Prop(
         player=Player(
@@ -127,10 +157,41 @@ def _prop_from_feed(raw: dict, platform: Platform) -> Prop:
         direction=direction,
         platform=platform,
         game=raw.get("game", ""),
+        game_time=raw.get("game_time", ""),
+        season_type=raw.get("season_type", ""),
         needs_projection=False,
-        auto_projected=True,
+        auto_projected=raw.get("projection") in (None, ""),
         trending_count=trending_count,
+        projection_source=raw.get("projection_source", "confirmed_provider" if raw.get("confirmation") else "line_model"),
+        espn_hit_rate=hit_rate.get("estimated_hit_rate"),
+        espn_sample_size=int(hit_rate.get("sample_size") or raw.get("espn_sample_size") or 0),
+        espn_note=hit_rate.get("note", ""),
+        source_signals=raw.get("source_signals") or raw.get("confirmation_signals") or [],
+        source_score=float(raw.get("source_score") or 0.0),
     )
+
+
+def _side_projection(line: float, trending_count: int, direction: str) -> float:
+    over_projection = auto_projection(line, trending_count)
+    adjustment = max(0.2, abs(over_projection - line))
+    if direction == "Under":
+        return round(max(0.0, line - adjustment), 1)
+    return over_projection
+
+
+def _directional_edge(line: float, projection: float, direction: str) -> float:
+    if direction == "Under":
+        return line - projection
+    return calculate_edge(line, projection)
+
+
+def _explicit_direction(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    if text in {"under", "u", "less", "lower"}:
+        return "Under"
+    if text in {"over", "o", "more", "higher"}:
+        return "Over"
+    return None
 
 
 def _unique_players(props: list[Prop]) -> list[Prop]:
@@ -148,44 +209,4 @@ def _unique_players(props: list[Prop]) -> list[Prop]:
 
 
 def _stat_from_text(value: str) -> StatType:
-    normalized = (value or "").lower()
-    compact = normalized.replace("-", " ").replace("_", " ")
-    if "h+r+rbi" in compact or "hits+runs+rbis" in compact or "hit run rbi" in compact:
-        return StatType.HITS_RUNS_RBIS
-    if "pitcher" in compact and ("strikeout" in compact or compact.strip() == "ks"):
-        return StatType.PITCHER_STRIKEOUTS
-    if "strikeout" in compact or compact.strip() in {"ks", "k"}:
-        return StatType.STRIKEOUTS
-    if "passing" in compact and "yard" in compact:
-        return StatType.PASSING_YARDS
-    if "rushing" in compact and "yard" in compact:
-        return StatType.RUSHING_YARDS
-    if "receiving" in compact and "yard" in compact:
-        return StatType.RECEIVING_YARDS
-    if "reception" in compact:
-        return StatType.RECEPTIONS
-    if "shot" in compact and "goal" in compact:
-        return StatType.SHOTS_ON_GOAL
-    if "shot" in compact and "target" in compact:
-        return StatType.SHOTS_ON_TARGET
-    if "home run" in compact or compact.strip() == "hr":
-        return StatType.HOME_RUNS
-    if "total base" in compact:
-        return StatType.TOTAL_BASES
-    if "rbi" in compact:
-        return StatType.RBIS
-    for stat in StatType:
-        stat_text = stat.value.lower()
-        if stat_text == compact or stat_text in compact:
-            return stat
-    if "hit" in compact:
-        return StatType.HITS
-    if "point" in compact:
-        return StatType.POINTS
-    if "rebound" in compact:
-        return StatType.REBOUNDS
-    if "assist" in compact:
-        return StatType.ASSISTS
-    if "pra" in compact:
-        return StatType.PRA
-    return StatType.POINTS
+    return stat_type_from_text(value)

@@ -55,6 +55,18 @@ def _normalize_league(raw_league: str) -> Optional[str]:
     return _LEAGUE_MAP.get(raw_league.upper())
 
 
+def _season_type(raw_league: str, attrs: dict) -> str:
+    text = " ".join([
+        raw_league or "",
+        str(attrs.get("league", "") or ""),
+        str(attrs.get("description", "") or ""),
+        str(attrs.get("game_type", "") or ""),
+    ]).lower()
+    if raw_league.upper() == "NBASL" or "summer league" in text:
+        return "summer_league"
+    return "regular"
+
+
 def fetch_projections(limit: int = 500) -> list[dict]:
     """
     Fetch today's PrizePicks Single-Stat projections for NBA/WNBA/NFL/MLB.
@@ -103,6 +115,8 @@ def fetch_projections(limit: int = 500) -> list[dict]:
             "stat":          attrs.get("stat_display_name", attrs.get("stat_type", "")),
             "line":          attrs.get("line_score"),
             "game":          attrs.get("description", ""),
+            "game_time":      attrs.get("start_time") or attrs.get("scheduled_at") or attrs.get("game_time") or attrs.get("commence_time") or "",
+            "season_type":    _season_type(raw_league, attrs),
             "status":        attrs.get("status", ""),
             "trending_count": attrs.get("trending_count", 0),
             "rank":          attrs.get("rank", 999),

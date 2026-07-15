@@ -6,3 +6,4 @@ data/*.csv
 .env
 edgeiq.db
 .edgeiq_cache/
+assets/*.iconset/

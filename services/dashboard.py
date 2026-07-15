@@ -52,6 +52,7 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
         entry_stats.get("by_platform", {}),
     )
     stats["entry_platform_profitability"] = entry_stats.get("platform_profitability", [])
+    stats["monthly_profit"] = monthly_profit_log()
     stats["bankroll_transactions"] = bankroll_transactions
     stats["performance_insights"] = _performance_insights(stats)
 
@@ -71,13 +72,124 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     return stats
 
 
+def monthly_profit_log() -> dict:
+    months: dict[str, dict] = {}
+    for bet in BetRepository().get_all():
+        if bet.result not in {"Win", "Loss", "Push"}:
+            continue
+        row = _month_row(months, _month_key(getattr(bet, "created_at", None)))
+        row["profit"] += float(bet.profit or 0.0)
+        row["wagered"] += float(bet.wager or 0.0)
+        row["bets"] += 1
+        _count_result(row, bet.result)
+
+    for entry in EntryRepository.all():
+        if entry.get("entry_mode") == "paper":
+            continue
+        if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push"}:
+            continue
+        row = _month_row(months, _month_key(entry.get("settled_at") or entry.get("placed_at") or entry.get("created_at")))
+        row["profit"] += float(entry.get("profit") or 0.0)
+        row["wagered"] += float(entry.get("wager") or 0.0)
+        row["entries"] += 1
+        _count_result(row, entry.get("result", ""))
+
+    rows = []
+    running = 0.0
+    for key in sorted(months):
+        row = months[key]
+        decisions = row["wins"] + row["losses"]
+        running += row["profit"]
+        row["profit"] = round(row["profit"], 2)
+        row["wagered"] = round(row["wagered"], 2)
+        row["roi"] = round((row["profit"] / row["wagered"] * 100) if row["wagered"] else 0.0, 2)
+        row["win_pct"] = round((row["wins"] / decisions * 100) if decisions else 0.0, 1)
+        row["tracked"] = row["bets"] + row["entries"]
+        row["cumulative_profit"] = round(running, 2)
+        rows.append(row)
+
+    current_key = _current_month_key()
+    current = months.get(current_key) or _month_row({}, current_key)
+    if current not in rows:
+        current = {**current}
+        decisions = current["wins"] + current["losses"]
+        current["profit"] = round(current["profit"], 2)
+        current["wagered"] = round(current["wagered"], 2)
+        current["roi"] = round((current["profit"] / current["wagered"] * 100) if current["wagered"] else 0.0, 2)
+        current["win_pct"] = round((current["wins"] / decisions * 100) if decisions else 0.0, 1)
+        current["tracked"] = current["bets"] + current["entries"]
+        current["cumulative_profit"] = round(sum(row["profit"] for row in rows), 2)
+
+    return {
+        "current_month": current,
+        "months": list(reversed(rows)),
+    }
+
+
+def _month_row(months: dict[str, dict], key: str) -> dict:
+    return months.setdefault(key, {
+        "month": key,
+        "label": _month_label(key),
+        "profit": 0.0,
+        "wagered": 0.0,
+        "roi": 0.0,
+        "win_pct": 0.0,
+        "wins": 0,
+        "losses": 0,
+        "pushes": 0,
+        "bets": 0,
+        "entries": 0,
+        "tracked": 0,
+        "cumulative_profit": 0.0,
+    })
+
+
+def _count_result(row: dict, result: str) -> None:
+    if result == "Win":
+        row["wins"] += 1
+    elif result == "Loss":
+        row["losses"] += 1
+    elif result == "Push":
+        row["pushes"] += 1
+
+
+def _month_key(value) -> str:
+    from datetime import datetime, timezone
+
+    if value is None:
+        return _current_month_key()
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m")
+    if hasattr(value, "strftime"):
+        return value.strftime("%Y-%m")
+    text = str(value or "").strip()
+    if len(text) >= 7:
+        return text[:7]
+    return _current_month_key()
+
+
+def _current_month_key() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _month_label(key: str) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.strptime(key, "%Y-%m").strftime("%B %Y")
+    except ValueError:
+        return key
+
+
 def _merge_performance_groups(bet_groups: dict, entry_groups: dict) -> dict:
     merged: dict[str, dict] = {}
     for source, count_key in ((bet_groups, "bets"), (entry_groups, "entries")):
         for platform, stats in (source or {}).items():
             group = merged.setdefault(
                 platform,
-                {"bets": 0, "entries": 0, "wins": 0, "losses": 0, "pushes": 0, "profit": 0.0, "wagered": 0.0},
+                {"bets": 0, "entries": 0, "tracked": 0, "wins": 0, "losses": 0, "pushes": 0, "profit": 0.0, "wagered": 0.0},
             )
             group[count_key] += stats.get(count_key, stats.get("bets", stats.get("entries", 0)))
             group["wins"] += stats.get("wins", 0)
@@ -88,6 +200,7 @@ def _merge_performance_groups(bet_groups: dict, entry_groups: dict) -> dict:
 
     for group in merged.values():
         decisions = group["wins"] + group["losses"]
+        group["tracked"] = group.get("bets", 0) + group.get("entries", 0)
         group["profit"] = round(group["profit"], 2)
         group["wagered"] = round(group["wagered"], 2)
         group["roi"] = round((group["profit"] / group["wagered"] * 100) if group["wagered"] else 0.0, 2)

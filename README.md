@@ -54,7 +54,18 @@ SQLite database, provider cache, and logs are intentionally ignored by git.
 
 ## Run
 
-Desktop app:
+Permanent macOS Desktop launcher:
+
+```bash
+scripts/install_desktop_app.sh
+```
+
+This rebuilds `~/Desktop/EdgeIQ.app` with the branded icon and a launcher that
+finds a Python runtime with `uvicorn`, skips stale local servers, and opens the
+browser app on the first available EdgeIQ port. Keep the Terminal window open
+while using the app.
+
+Python desktop app:
 
 ```bash
 python desktop.py
@@ -83,13 +94,21 @@ pytest
 The tests are focused on calculation, recommendation, correlation, display, and
 repository smoke coverage. Live provider calls are avoided in tests.
 
+## EdgeIQ Local Model
+
+Ask EdgeIQ does not require OpenAI to return recommendations. The app ranks
+parlays with `edgeiq-local-v1.0`, a local scoring layer that combines projected
+edge, confidence, data quality, source signals, market trend, correlation
+penalties, and settled-entry feedback. OpenAI remains optional for richer
+language explanations and screenshot extraction.
+
 ## Data Providers
 
 EdgeIQ currently normalizes player prop data from:
 
 - PrizePicks
 - Underdog
-- Sleeper, Chalkboard, Betr, and Ball Don't Lie when configured with a feed URL or file
+- Sleeper when configured with a prop feed URL or file
 - The Odds API for sportsbook game odds when `ODDS_API_KEY` is configured
 - OpenAI for AI parlay explanations, entry review, and screenshot extraction
 - Ball Don't Lie for optional stats/props context when `BALLDONTLIE_API_KEY` or `BALLDONTLIE_PROPS_URL` is configured
@@ -104,23 +123,20 @@ unavailable.
 
 Sleeper's documented public API is read-only and provides fantasy league,
 player, and trending add/drop data without an API token. EdgeIQ uses those
-Sleeper trends as an NFL source-fusion signal, but Sleeper prop lines still need
-a configured CSV/JSON source. Chalkboard and Betr also need configured prop
-sources unless you have a private/exported feed.
+Sleeper trends as an NFL source-fusion signal and caches the large player list
+for one day, matching Sleeper's usage guidance. Sleeper prop lines still need a
+configured CSV/JSON source.
 
 Connect those prop feeds with CSV/JSON sources using:
 
 ```bash
 EDGEIQ_SLEEPER_PROPS_URL=https://example.com/sleeper-props.json
-EDGEIQ_CHALKBOARD_PROPS_FILE=/absolute/path/chalkboard-props.csv
-EDGEIQ_BETR_PROPS_URL=https://example.com/betr-props.csv
 ```
 
-Optional API-key headers are supported with `EDGEIQ_SLEEPER_API_KEY`,
-`EDGEIQ_CHALKBOARD_API_KEY`, and `EDGEIQ_BETR_API_KEY`. Feed rows should include
-at least player, sport/league, stat, and line fields; common aliases like
-`player_name`, `stat_type`, `line_score`, `matchup`, and `trending_count` are
-normalized automatically.
+Sleeper's public API does not require a key. Feed rows should include at least
+player, sport/league, stat, and line fields; common aliases like `player_name`,
+`stat_type`, `line_score`, `matchup`, and `trending_count` are normalized
+automatically.
 
 ## Website Integration
 
@@ -143,3 +159,5 @@ database and set `EDGEIQ_ALLOWED_ORIGINS` to your website origin.
 This is still an alpha. The app is useful locally, but the next production-grade
 steps are broader UI verification, provider contract tests, a formal migration
 tool if the schema keeps growing, and packaged desktop distribution.
+- Python
+- Rich

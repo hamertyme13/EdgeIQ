@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 
 from repository.database import SessionLocal, initialize_database
 from repository.models.bankroll_transaction_model import BankrollTransactionModel
+from utils.time import iso_utc
 
 
 class BankrollTransactionRepository:
@@ -64,5 +65,5 @@ class BankrollTransactionRepository:
             "transaction_type": model.transaction_type,
             "amount": model.amount,
             "note": model.note or "",
-            "created_at": model.created_at.isoformat() if model.created_at else "",
+            "created_at": iso_utc(model.created_at),
         }
