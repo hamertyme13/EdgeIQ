@@ -273,17 +273,37 @@ def _tracked_records(bets: list[Bet], entries: list[dict]) -> list[dict]:
         if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push"}:
             continue
         props = entry.get("props") or []
+        per_leg_wager = float(entry.get("wager") or 0.0) / len(props) if props else 0.0
+        per_leg_profit = float(entry.get("profit") or 0.0) / len(props) if props else 0.0
         records.append({
             "kind": "entry",
             "sport": _primary_value(props, "sport"),
             "stat": _primary_value(props, "stat"),
             "platform": entry.get("platform") or _primary_value(props, "platform"),
+            "direction": "Entry",
             "grade": entry.get("grade") or "Ungraded",
             "confidence_band": _confidence_band(float(entry.get("average_confidence") or 0.0)),
             "result": entry.get("result"),
             "profit": float(entry.get("profit") or 0.0),
             "wager": float(entry.get("wager") or 0.0),
         })
+        for prop in props:
+            result = prop.get("final_result") or prop.get("result") or ""
+            confidence = prop.get("confidence")
+            if result not in {"Win", "Loss", "Push"}:
+                continue
+            records.append({
+                "kind": "prop",
+                "sport": prop.get("sport") or "Unknown",
+                "stat": prop.get("stat") or "Unknown",
+                "platform": prop.get("platform") or entry.get("platform") or "Unknown",
+                "direction": prop.get("direction") or "Unknown",
+                "grade": entry.get("grade") or "Ungraded",
+                "confidence_band": _confidence_band(float(confidence or 0.0)),
+                "result": result,
+                "profit": per_leg_profit,
+                "wager": per_leg_wager,
+            })
     return records
 
 
@@ -309,6 +329,7 @@ def _segment_rankings(records: list[dict]) -> dict:
         ("Sport", "sport"),
         ("Stat", "stat"),
         ("Platform", "platform"),
+        ("Direction", "direction"),
         ("Grade", "grade"),
         ("Confidence", "confidence_band"),
     ):

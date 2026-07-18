@@ -22,6 +22,12 @@ def test_negative_edge_lowers_confidence():
     assert calculate_confidence(2.0) == 70
 
 
+def test_confidence_is_stat_and_sport_aware_without_changing_default():
+    assert calculate_confidence(2.0) == 70
+    assert calculate_confidence(2.0, stat="Points + Rebounds + Assists", sport="NBA") < 70
+    assert calculate_confidence(2.0, stat="Assists", sport="WNBA") > calculate_confidence(2.0, stat="PRA", sport="NBA")
+
+
 def test_entry_recommendation_blends_confidence_edge_and_sources():
     entry = Entry(platform=Platform.PRIZEPICKS)
     entry.add_prop(

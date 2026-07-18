@@ -6,12 +6,14 @@ const state = {
   commandCards: [],
   dailyBriefing: null,
   dailyScanPoll: null,
+  dailyScanAutoStartedFor: "",
+  lastOpportunityNotification: "",
 };
 
 window.EdgeIQLoaded = true;
 
 const $ = (id) => document.getElementById(id);
-const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:8007" : "";
 const deferWork = window.requestIdleCallback
   ? (task, timeout = 1500) => window.requestIdleCallback(task, { timeout })
   : (task, timeout = 1500) => window.setTimeout(task, Math.min(timeout, 800));
@@ -92,9 +94,17 @@ function hideRuntimeNotice() {
   notice.hidden = true;
 }
 
+async function copyText(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  return false;
+}
+
 function handleLoadError(error) {
   const fileHint = window.location.protocol === "file:"
-    ? " The page is open from a file, so start the EdgeIQ server and use http://127.0.0.1:8000 for live data."
+    ? " The page is open from a file, so start the EdgeIQ server and use http://127.0.0.1:8007 for live data."
     : "";
   showRuntimeNotice(`EdgeIQ could not reach the app server.${fileHint}`);
   $("props-status").textContent = "Waiting for app server...";
@@ -185,6 +195,139 @@ function gradeClass(grade) {
   return ["a", "b", "c", "d", "f"].includes(normalized) ? `grade-${normalized}` : "grade-unknown";
 }
 
+function dataStrengthBadges(props = []) {
+  const rows = props || [];
+  if (!rows.length) return "";
+  const labels = [];
+  rows.forEach((prop) => {
+    (prop.data_strength || []).forEach((item) => labels.push({ label: item.label, tone: item.status === "good" ? "positive" : item.status === "warning" ? "warning" : "verified" }));
+  });
+  if (rows.some((prop) => prop.provider_backed || prop.projection_type === "provider-backed" || (!prop.auto_projected && prop.projection_source && prop.projection_source !== "line_model"))) {
+    labels.push({ label: "Provider-backed", tone: "positive" });
+  }
+  if (rows.some((prop) => prop.auto_projected || prop.projection_type === "auto-projected")) {
+    labels.push({ label: "Auto-projected", tone: "warning" });
+  }
+  if (rows.some((prop) => Number(prop.espn?.sample_size || prop.espn_sample_size || prop.hit_rate?.sample_size || 0) > 0 || prop.final_source || prop.actual !== undefined)) {
+    labels.push({ label: "Final stats verified", tone: "verified" });
+  }
+  if (rows.some((prop) => {
+    const quality = prop.data_quality || {};
+    return Number(quality.score || 100) < 60 || /thin|low/i.test(String(quality.label || "")) || Number(prop.espn?.sample_size || prop.espn_sample_size || prop.hit_rate?.sample_size || 0) === 0;
+  })) {
+    labels.push({ label: "Thin history", tone: "thin" });
+  }
+  const unique = [...new Map(labels.map((row) => [row.label, row])).values()];
+  return `<div class="data-strength-row">${unique.map((row) => `<span class="data-strength-badge data-${row.tone}">${escapeHtml(row.label)}</span>`).join("")}</div>`;
+}
+
+function modelTrustBadge(suggestion = {}, props = []) {
+  if (suggestion.trust?.score !== undefined) {
+    return `<span class="model-trust-badge" title="Backend release trust">Model Trust ${Number(suggestion.trust.score || 0).toFixed(0)} · ${escapeHtml(suggestion.trust.label || "No Data")}</span>`;
+  }
+  const qualityScores = (props || [])
+    .map((prop) => Number(prop.data_quality?.score || 0))
+    .filter((score) => score > 0);
+  const avgQuality = qualityScores.length ? qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length : 50;
+  const confidence = Number(suggestion.entry?.average_confidence || 0);
+  const score = Math.max(0, Math.min(100, Number(suggestion.score || 0) * 0.45 + confidence * 0.35 + avgQuality * 0.2));
+  const label = score >= 72 ? "High Trust" : score >= 58 ? "Medium Trust" : "Low Trust";
+  return `<span class="model-trust-badge" title="Blend of score, confidence, and data quality">Model Trust ${score.toFixed(0)} · ${label}</span>`;
+}
+
+function releaseStatusBlock(release) {
+  if (!release || (!release.blocks?.length && !release.warnings?.length)) return "";
+  const blocks = release.blocks || [];
+  const warnings = release.warnings || [];
+  const tone = blocks.length ? "warning" : "subtle";
+  return `<p class="${tone}">Release check: ${[...blocks, ...warnings].slice(0, 3).map(escapeHtml).join(" · ")}</p>`;
+}
+
+function platformValueBlock(platformValue) {
+  if (!platformValue) return "";
+  const delta = Number(platformValue.value_delta || 0);
+  const recommended = platformValue.recommended_platform || platformValue.selected_platform || "Best app";
+  const complete = platformValue.complete_on_recommended_platform ? "Full 3-leg match" : "Partial match";
+  const tone = delta > 0 ? "data-positive" : platformValue.complete_on_recommended_platform ? "data-verified" : "data-warning";
+  return `
+    <div class="recommendation-meta-row">
+      <span class="data-strength-badge ${tone}">Best App: ${escapeHtml(recommended)}</span>
+      <span class="data-strength-badge ${tone}">${complete}</span>
+      <span class="data-strength-badge ${tone}">Value ${delta >= 0 ? "+" : ""}${delta.toFixed(2)}</span>
+    </div>
+    <p class="${delta > 0 ? "subtle" : "warning"}">${escapeHtml(platformValue.recommendation || "Compare lines manually before placing.")}</p>
+  `;
+}
+
+function optimizerSummaryBlock(data) {
+  const best = data.best_value_pick;
+  const obstacles = data.obstacles || [];
+  const paidReady = Number(data.paid_ready_count || 0);
+  const total = (data.suggestions || []).length;
+  return `
+    <div class="suggestion compact-suggestion ${paidReady ? "grade-b" : "grade-f"}">
+      <div class="suggestion-top">
+        <span class="pill">Best 3-Leg Path</span>
+        <strong>${paidReady ? `${paidReady}/${total} paid-ready` : "No paid-ready slip yet"}</strong>
+        ${best ? `<span class="subtle">Value score ${Number(best.value_adjusted_score || best.score || 0).toFixed(1)}</span>` : ""}
+      </div>
+      ${best?.platform_value ? platformValueBlock(best.platform_value) : ""}
+      ${obstacles.length ? `<p class="warning">${obstacles.map(escapeHtml).join(" · ")}</p>` : `<p class="subtle">At least one optimized slip cleared the paid-entry release checks.</p>`}
+    </div>
+  `;
+}
+
+function confidenceMovementText(prop) {
+  const adjustment = Number(prop?.espn?.confidence_adjustment || prop?.confidence_adjustment || 0);
+  if (!adjustment) return "";
+  const direction = adjustment > 0 ? "up" : "down";
+  const why = prop.projection_source === "multi_source_fusion"
+    ? "source fusion adjusted the projection"
+    : Number(prop?.espn?.sample_size || 0) > 0
+      ? "final-stat history changed the read"
+      : "segment calibration changed the read";
+  return `Why this moved: confidence moved ${direction} ${Math.abs(adjustment).toFixed(1)} pts because ${why}.`;
+}
+
+function suggestionMetaRow(suggestion) {
+  const props = suggestion?.entry?.props || [];
+  return `
+    <div class="recommendation-meta-row">
+      ${modelTrustBadge(suggestion, props)}
+      ${dataStrengthBadges(props)}
+    </div>
+  `;
+}
+
+function confidenceMoveNotes(props = []) {
+  return (props || [])
+    .map(confidenceMovementText)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((note) => `<p class="confidence-move-note">${escapeHtml(note)}</p>`)
+    .join("");
+}
+
+function skeletonCards(count = 3, compact = false) {
+  return Array.from({ length: count }, () => `
+    <div class="skeleton-card ${compact ? "compact-skeleton" : ""}">
+      <span></span>
+      <strong></strong>
+      <p></p>
+    </div>
+  `).join("");
+}
+
+function showInitialSkeletons() {
+  if ($("daily-briefing-summary")) $("daily-briefing-summary").innerHTML = skeletonCards(1);
+  ["daily-bet-list", "daily-paper-list", "daily-watch-list", "daily-avoid-list"].forEach((id) => {
+    if ($(id)) $(id).innerHTML = skeletonCards(1, true);
+  });
+  ["performance-summary", "backtest-summary", "calibration-list", "backtest-works", "backtest-fails"].forEach((id) => {
+    if ($(id)) $(id).innerHTML = skeletonCards(id === "performance-summary" ? 4 : 2, true);
+  });
+}
+
 function syncDefaultInputs() {
   const defaults = JSON.parse(localStorage.getItem("edgeiq.onboarding") || "{}");
   if (defaults.platform && $("props-platform")) $("props-platform").value = defaults.platform;
@@ -272,6 +415,7 @@ async function loadDailyBriefing(options = {}) {
   const data = await api(`/api/daily-briefing?${params.toString()}`);
   state.dailyBriefing = data;
   renderDailyBriefing(data);
+  maybeAutoStartDailyScan(data);
 }
 
 async function startDailyBriefingScan() {
@@ -281,6 +425,20 @@ async function startDailyBriefingScan() {
   const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
   renderDailyScanStatus({ current: scan, runs: [] });
   pollDailyScanStatus(true);
+}
+
+function maybeAutoStartDailyScan(briefing) {
+  const cache = briefing?.cache || {};
+  const needsScan = Boolean(cache.cached_only || cache.requires_refresh || cache.stale);
+  const scanKey = `${$("props-platform")?.value || "PrizePicks"}:${$("props-sport")?.value || "All Sports"}`;
+  if (!needsScan || state.dailyScanAutoStartedFor === scanKey) return;
+  const status = document.querySelector("[data-daily-scan-status]")?.dataset.dailyScanStatus;
+  if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) return;
+  state.dailyScanAutoStartedFor = scanKey;
+  startDailyBriefingScan().catch((error) => {
+    state.dailyScanAutoStartedFor = "";
+    console.warn("Daily briefing auto scan failed", error);
+  });
 }
 
 async function loadDailyScanStatus() {
@@ -460,6 +618,7 @@ function renderDailyBriefing(data) {
   renderBriefingSection("daily-avoid-list", data.sections?.avoid || [], data.empty_states?.avoid || "No avoid flags on the visible board.");
   bindDailyBriefingActions();
   bindDailyBriefingSummaryActions();
+  bindBriefingTabs();
 }
 
 function renderDailyGame(game, index) {
@@ -521,13 +680,19 @@ function renderBriefingSection(elementId, cards, emptyMessage) {
           <span class="pill">${escapeHtml(card.title || "Card")}</span>
           <strong>${escapeHtml(card.grade || card.type || "")}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
         </div>
+        <div class="recommendation-meta-row">
+          ${trust.label ? `<span class="model-trust-badge">Model Trust ${Number(trust.score || 0).toFixed(0)} · ${escapeHtml(trust.label)}</span>` : ""}
+          ${dataStrengthBadges(props)}
+        </div>
         <h3>${escapeHtml(card.action || card.summary || "Review")}</h3>
         <p>${escapeHtml(card.reason || card.summary || "")}</p>
+        ${releaseStatusBlock(card.release_status)}
         ${props.length ? `
           <div class="command-leg-list">
             ${props.slice(0, 4).map((prop) => `<span>${shortPropPickText(prop)} <b>${escapeHtml(prop.line ?? "")}</b></span>`).join("")}
           </div>
         ` : ""}
+        ${confidenceMoveNotes(props)}
         <div class="briefing-card-meta">
           ${trust.label ? `<span>Trust ${Number(trust.score || 0).toFixed(0)} · ${escapeHtml(trust.label)}</span>` : ""}
           ${timing.label ? `<span>${escapeHtml(timing.label)}</span>` : ""}
@@ -580,6 +745,13 @@ function bindDailyBriefingSummaryActions() {
         sport: opportunity.sport,
         stat: opportunity.stat,
         line: opportunity.line,
+        baseline_line: opportunity.baseline_line ?? null,
+        standard_line: opportunity.standard_line ?? null,
+        line_offer_type: opportunity.line_offer_type || "standard",
+        adjusted_line: Boolean(opportunity.adjusted_line),
+        is_discounted_line: Boolean(opportunity.is_discounted_line),
+        is_premium_line: Boolean(opportunity.is_premium_line),
+        line_discount: Number(opportunity.line_discount || 0),
         projection: null,
         direction: opportunity.direction || "Over",
         platform: opportunity.platform || state.dailyBriefing.platform,
@@ -587,6 +759,10 @@ function bindDailyBriefingSummaryActions() {
         game_time: "",
         season_type: "",
         trending_count: 0,
+        auto_projected: opportunity.auto_projected,
+        provider_backed: opportunity.provider_backed,
+        projection_source: opportunity.projection_source,
+        data_strength: opportunity.data_strength,
       }]);
       state.recommendationOrigin = true;
       setView("entries");
@@ -610,6 +786,16 @@ function bindDailyBriefingSummaryActions() {
       setView("entries");
       $("entry-status").textContent = `Generated entry from ${game.matchup_label || game.game}. Analyze before placing.`;
     });
+  });
+}
+
+function bindBriefingTabs() {
+  document.querySelectorAll("[data-briefing-tab]").forEach((button) => {
+    button.onclick = () => {
+      const target = button.dataset.briefingTab;
+      document.querySelectorAll("[data-briefing-tab]").forEach((tab) => tab.classList.toggle("active", tab === button));
+      document.querySelectorAll("[data-briefing-panel]").forEach((panel) => panel.classList.toggle("active", panel.dataset.briefingPanel === target));
+    };
   });
 }
 
@@ -653,12 +839,17 @@ async function loadCommandCenter() {
 }
 
 function renderCommandCenter(data) {
-  $("command-center-status").textContent = `${data.cards.length} release-ready recommendations · ${data.sport}`;
+  const readyCount = (data.cards || []).filter((card) => card.release_status?.ok).length;
+  $("command-center-status").textContent = `${readyCount} release-ready · ${data.cards.length} reviewed · ${data.sport}`;
   $("command-center-list").innerHTML = data.cards.map((card, index) => `
     <div class="command-card ${gradeClass(card.grade)}">
       <div class="suggestion-top">
         <span class="pill">${card.title}</span>
         <strong>${card.grade} · ${card.score}</strong>
+      </div>
+      <div class="recommendation-meta-row">
+        <span class="model-trust-badge">Model Trust ${Number(card.trust?.score || 0).toFixed(0)} · ${escapeHtml(card.trust?.label || "No Data")}</span>
+        ${dataStrengthBadges(card.props || [])}
       </div>
       <h3>${card.action}</h3>
       <p>${card.summary}</p>
@@ -670,6 +861,8 @@ function renderCommandCenter(data) {
       <div class="command-leg-list">
         ${card.props.slice(0, 5).map((prop) => `<span>${shortPropPickText(prop)} <b>${prop.line}</b></span>`).join("")}
       </div>
+      ${confidenceMoveNotes(card.props || [])}
+      ${releaseStatusBlock(card.release_status)}
       ${card.warnings && card.warnings.length ? `<p class="warning">${card.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
         ${card.suggestion ? `<button class="secondary" data-load-command="${index}">Load Slip</button>` : `<button class="secondary" data-load-command-single="${index}">Load Single</button>`}
@@ -710,7 +903,7 @@ function renderModelHealth(health) {
   $("model-health-detail").innerHTML = `
     <div class="suggestion-top">
       <strong>${health.status}</strong>
-      <span class="subtle">${health.settled_entries} settled entries · ${health.calibrated_picks} calibrated picks</span>
+      <span class="subtle">${health.settled_entries} settled entries · ${health.calibrated_picks} calibrated picks · ${health.paid_entry_mode === "enabled" ? "Paid enabled" : "Paper first"}</span>
     </div>
     <div class="health-bars">
       ${Object.entries(health.components || {}).map(([name, value]) => `
@@ -841,7 +1034,100 @@ async function loadAdvantageCenter() {
       <p>${alert.platform} ${alert.line} · ${alert.reason}</p>
     </div>
   `).join("") || `<div class="suggestion compact-suggestion">No watchlist alerts yet.</div>`;
+  renderSportsbookSync(data.sportsbook_integrations);
+  renderOpportunityFeed(data.opportunity_feed || []);
   loadBankrollStrategyFields(data.bankroll_strategy || {});
+}
+
+async function loadSportsbookSync() {
+  const data = await api("/api/integrations/sportsbooks");
+  renderSportsbookSync(data);
+}
+
+function renderSportsbookSync(data) {
+  if (!$("sportsbook-sync-list") || !data) return;
+  $("sportsbook-sync-list").innerHTML = `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${escapeHtml(data.headline || "Sportsbook sync")}</strong>
+        <span class="status-pill ${data.import_ready ? "status-connected" : "status-degraded"}">${data.import_ready ? "Import ready" : "Manual"}</span>
+      </div>
+      <p>${escapeHtml(data.next_step || "")}</p>
+      <p class="subtle">${escapeHtml(data.privacy_note || "")}</p>
+    </div>
+    ${(data.connectors || []).map((connector) => `
+      <div class="suggestion compact-suggestion">
+        <div class="suggestion-top">
+          <strong>${escapeHtml(connector.name)}</strong>
+          <span class="status-pill status-${connector.status === "configured" ? "connected" : "degraded"}">${friendlyStatus(connector.status)}</span>
+        </div>
+        <p>${(connector.capabilities || []).map(escapeHtml).join(" · ") || "No capabilities configured."}</p>
+        ${(connector.missing || []).length ? `<p class="subtle">Missing: ${(connector.missing || []).map(escapeHtml).join(" · ")}</p>` : ""}
+      </div>
+    `).join("")}
+  `;
+}
+
+async function loadOpportunityFeed() {
+  if (!$("opportunity-feed-list")) return;
+  $("opportunity-feed-list").innerHTML = `<div class="suggestion compact-suggestion">Scanning live value...</div>`;
+  const params = new URLSearchParams({
+    platform: $("opportunity-platform")?.value || "Both",
+    sport: $("opportunity-sport")?.value || "All Sports",
+    min_ev: $("opportunity-min-ev")?.value || "0",
+    limit: "12",
+  });
+  const data = await api(`/api/market/opportunity-feed?${params.toString()}`);
+  renderOpportunityFeed(data.opportunities || []);
+  maybeSendOpportunityNotification(data.opportunities || []);
+}
+
+function renderOpportunityFeed(opportunities) {
+  if (!$("opportunity-feed-list")) return;
+  $("opportunity-feed-list").innerHTML = (opportunities || []).map((item, index) => `
+    <div class="suggestion compact-suggestion ${Number(item.expected_value || 0) >= 0 ? "insight-positive" : "insight-warning"}">
+      <div class="suggestion-top">
+        <span class="pill">#${index + 1} · ${escapeHtml(item.type || "Opportunity")}</span>
+        <strong>${escapeHtml(item.player)} · ${directionBadge(item.direction || "Over")} ${escapeHtml(item.stat)} ${item.line ?? ""}</strong>
+        <span class="subtle">${escapeHtml(item.platform || "")}</span>
+      </div>
+      <p>${escapeHtml(item.action || "Review")} · EV ${Number(item.expected_value || 0) >= 0 ? "+" : ""}${pct(item.expected_value || 0)} · Confidence ${pct(item.confidence || 0)}</p>
+      <p class="subtle">${escapeHtml(item.reason || "")}</p>
+      ${dataStrengthBadges([item])}
+      <div class="button-row">
+        <button class="secondary" data-add-opportunity="${index}">Add Prop</button>
+      </div>
+    </div>
+  `).join("") || `<div class="suggestion compact-suggestion">No live value opportunities cleared the current filters.</div>`;
+  document.querySelectorAll("[data-add-opportunity]").forEach((button) => {
+    button.addEventListener("click", () => addFeedProp({
+      ...opportunities[Number(button.dataset.addOpportunity)],
+      league: opportunities[Number(button.dataset.addOpportunity)].sport,
+    }));
+  });
+}
+
+async function enableBrowserAlerts() {
+  if (!("Notification" in window)) {
+    $("advantage-center-status").textContent = "Browser notifications are not supported here.";
+    return;
+  }
+  const result = await Notification.requestPermission();
+  $("advantage-center-status").textContent = result === "granted"
+    ? "Browser alerts enabled for live value opportunities."
+    : "Browser alerts were not enabled.";
+}
+
+function maybeSendOpportunityNotification(opportunities) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  const top = (opportunities || [])[0];
+  if (!top || Number(top.priority_score || 0) < 65) return;
+  const key = `${top.player}|${top.stat}|${top.platform}|${top.line}`;
+  if (state.lastOpportunityNotification === key) return;
+  state.lastOpportunityNotification = key;
+  new Notification("EdgeIQ live value alert", {
+    body: `${top.player} ${top.direction || "Over"} ${top.line} ${top.stat} on ${top.platform}`,
+  });
 }
 
 function loadBankrollStrategyFields(strategy) {
@@ -1263,6 +1549,8 @@ function renderAiParlayResponse(data) {
         <div>
           <strong>${escapeHtml(suggestion.grade || "-")} · ${escapeHtml(suggestion.action || "Recommendation")}</strong>
           <p>${escapeHtml(suggestion.leg_count || props.length)} legs · ${escapeHtml(suggestion.risk_tier || "Standard")} · score ${Number(data.local_model?.selected_score || suggestion.score || 0).toFixed(1)}</p>
+          ${suggestionMetaRow(suggestion)}
+          ${confidenceMoveNotes(props)}
         </div>
         <button class="secondary" data-load-ai-suggestion="0">Load</button>
       </div>
@@ -1291,7 +1579,8 @@ function renderAiParlayResponse(data) {
         <strong>Alternatives</strong>
         ${alternatives.map((candidate, index) => `
           <button class="secondary ai-alt-button" data-load-ai-suggestion="${index + 1}">
-            ${escapeHtml(candidate.grade || "-")} · ${escapeHtml(candidate.leg_count)} legs · ${escapeHtml((candidate.entry?.props || []).map((prop) => prop.player).join(", "))}
+            <span>${escapeHtml(candidate.grade || "-")} · ${escapeHtml(candidate.leg_count)} legs · ${escapeHtml((candidate.entry?.props || []).map((prop) => prop.player).join(", "))}</span>
+            ${modelTrustBadge(candidate, candidate.entry?.props || [])}
           </button>
         `).join("")}
       </div>
@@ -1363,7 +1652,9 @@ function renderDashboardParlay(suggestion) {
       </div>
       <span class="subtle">Score ${suggestion.score}</span>
     </div>
+    ${suggestionMetaRow(suggestion)}
     <p>${propPickList(suggestion.entry.props)}</p>
+    ${confidenceMoveNotes(suggestion.entry.props)}
     ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
     <div class="button-row">
       <button class="secondary" id="load-dashboard-parlay">Load Parlay</button>
@@ -1395,6 +1686,7 @@ async function loadPlayerDetail(prop) {
       <button class="secondary" id="close-player-detail">Close</button>
     </div>
     <p>${data.teams.join(", ") || "Team unavailable"} · ${data.prop_count} active props · Avg confidence ${pct(data.average_confidence)} · Avg edge ${Number(data.average_edge).toFixed(2)}</p>
+    ${playerResearchBars(data.props)}
     <div class="table-wrap compact">
       <table>
         <thead><tr><th>Platform</th><th>Stat</th><th>Line</th><th>Move</th><th>Hit Rate</th><th>Projection</th><th>Confidence</th><th></th></tr></thead>
@@ -1426,6 +1718,30 @@ async function loadPlayerDetail(prop) {
   });
 }
 
+function playerResearchBars(props = []) {
+  const rows = [...props]
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0))
+    .slice(0, 6);
+  if (!rows.length) return "";
+  return `
+    <div class="analysis-card player-research-bars">
+      <h3>Prop Research Snapshot</h3>
+      ${rows.map((prop) => {
+        const confidence = Math.max(0, Math.min(100, Number(prop.confidence || 0)));
+        const edge = Math.max(0, Math.min(100, Math.abs(Number(prop.edge || 0)) * 12));
+        return `
+          <div class="research-bar-row">
+            <span>${escapeHtml(prop.stat)} ${prop.line ?? ""}</span>
+            <div class="research-bar"><i style="width:${confidence}%"></i></div>
+            <small>${pct(confidence)} conf · edge ${Number(prop.edge || 0).toFixed(2)}</small>
+            <div class="research-bar edge-bar"><i style="width:${edge}%"></i></div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
 function formatMovement(movement) {
   if (!movement || movement.previous == null) return "flat";
   const prefix = movement.change > 0 ? "+" : "";
@@ -1436,16 +1752,28 @@ function addFeedProp(prop) {
   state.entryProps.push({
     player: prop.player,
     team: prop.team || "",
-    sport: prop.league || "WNBA",
+    sport: prop.sport || prop.league || "WNBA",
     stat: prop.stat || "Points",
     line: Number(prop.line || 0),
-    projection: null,
+    baseline_line: prop.baseline_line ?? null,
+    standard_line: prop.standard_line ?? null,
+    line_offer_type: prop.line_offer_type || "standard",
+    adjusted_line: Boolean(prop.adjusted_line),
+    is_discounted_line: Boolean(prop.is_discounted_line),
+    is_premium_line: Boolean(prop.is_premium_line),
+    line_discount: Number(prop.line_discount || 0),
+    projection: prop.projection ?? null,
     direction: prop.direction || "Over",
     platform: prop.platform || $("entry-platform").value,
     game: prop.game || "",
     game_time: prop.game_time || "",
     season_type: prop.season_type || prop.seasonType || "",
     trending_count: Number(prop.trending_count || 0),
+    auto_projected: prop.auto_projected,
+    provider_backed: prop.provider_backed,
+    projection_source: prop.projection_source,
+    data_quality: prop.data_quality,
+    data_strength: prop.data_strength,
   });
   renderEntryProps();
   setView("entries");
@@ -1473,6 +1801,7 @@ function renderEntryProps() {
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
       state.lastEntryPayload = null;
       $("ai-review-entry").disabled = true;
+      $("prepare-handoff").disabled = true;
       $("place-entry").disabled = true;
       renderEntryProps();
     });
@@ -1517,6 +1846,7 @@ function renderAnalysis(data) {
   const warnings = data.warnings || [];
   const espn = data.espn_context || {};
   const fusion = data.source_fusion || {};
+  const platformValue = data.platform_value || {};
   const guardrails = data.risk_guardrails || [];
   const checklist = data.confirmation_checklist || [];
   const espnRows = (data.entry.props || [])
@@ -1526,6 +1856,7 @@ function renderAnalysis(data) {
         <strong>${propPickText(prop)}</strong>
         <p>${Number(prop.espn.hit_rate || 0).toFixed(1)}% hit · ${prop.espn.sample_size} ESPN games · Recent avg ${prop.espn.recent_average ?? "-"}</p>
         <p class="subtle">${prop.projection_source === "espn_recent_form" ? "Projection adjusted with ESPN recent form" : "Projection reviewed against ESPN history"} · Confidence ${prop.espn.confidence_adjustment >= 0 ? "+" : ""}${Number(prop.espn.confidence_adjustment || 0).toFixed(1)}</p>
+        ${confidenceMovementText(prop) ? `<p class="confidence-move-note">${escapeHtml(confidenceMovementText(prop))}</p>` : ""}
       </div>
     `).join("");
   const signalRows = (data.entry.props || [])
@@ -1535,6 +1866,7 @@ function renderAnalysis(data) {
         <strong>${signal.source} · ${prop.player}</strong>
         <p>${signal.message}</p>
         <p class="subtle">Projection ${signal.projection_delta >= 0 ? "+" : ""}${Number(signal.projection_delta || 0).toFixed(2)} · Confidence ${signal.confidence_delta >= 0 ? "+" : ""}${Number(signal.confidence_delta || 0).toFixed(1)}</p>
+        ${Number(signal.confidence_delta || 0) ? `<p class="confidence-move-note">Why this moved: ${escapeHtml(signal.source)} changed confidence ${signal.confidence_delta > 0 ? "up" : "down"} ${Math.abs(Number(signal.confidence_delta || 0)).toFixed(1)} pts.</p>` : ""}
       </div>
     `).join("");
   const qualityRows = (data.entry.props || []).map((prop) => `
@@ -1543,7 +1875,17 @@ function renderAnalysis(data) {
         <strong>${prop.player}</strong>
         <span class="subtle">${prop.data_quality?.label || "unscored"} · ${Number(prop.data_quality?.score || 0).toFixed(0)}/100</span>
       </div>
+      ${dataStrengthBadges([prop])}
       <p>${(prop.data_quality?.flags || []).join(" · ") || "No major data-quality warnings."}</p>
+    </div>
+  `).join("");
+  const platformValueRows = (platformValue.legs || []).map((leg) => `
+    <div class="suggestion compact-suggestion">
+      <div class="suggestion-top">
+        <strong>${escapeHtml(leg.player)} · ${escapeHtml(leg.stat)}</strong>
+        <span class="subtle">${escapeHtml(leg.best_platform || "-")} ${leg.best_line ?? "-"}</span>
+      </div>
+      <p>${escapeHtml(leg.direction || "Over")} · selected ${escapeHtml(platformValue.selected_platform || "-")} ${leg.selected_line ?? "-"} · value ${Number(leg.best_value || 0) >= 0 ? "+" : ""}${Number(leg.best_value || 0).toFixed(2)}</p>
     </div>
   `).join("");
   $("entry-analysis").classList.remove("muted-card");
@@ -1558,6 +1900,12 @@ function renderAnalysis(data) {
       <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
     </div>
     <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Best App Value</h3>
+      <p>${escapeHtml(platformValue.recommendation || "No cross-platform value check was available.")}</p>
+      ${platformValue.recommended_platform ? `<p class="subtle">Recommended platform: ${escapeHtml(platformValue.recommended_platform)} · value delta ${Number(platformValue.value_delta || 0) >= 0 ? "+" : ""}${Number(platformValue.value_delta || 0).toFixed(2)}</p>` : ""}
+      ${platformValueRows || `<p class="subtle">No matching PrizePicks/Underdog legs were found for comparison.</p>`}
+    </div>
     <div class="analysis-card" style="margin-top:14px">
       <h3>Placement Guardrails</h3>
       ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${guard.message}</p>`).join("")}
@@ -1599,12 +1947,13 @@ async function analyzeEntry() {
   }
   const payload = entryPayload();
   const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
-  state.lastEntryPayload = payload;
   state.lastAnalysis = data;
   state.recommendationOrigin = data.recommendation && data.recommendation.grade !== "F";
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
+  state.lastEntryPayload = entryPayload();
   $("ai-review-entry").disabled = false;
+  $("prepare-handoff").disabled = false;
   $("place-entry").disabled = false;
   $("entry-status").textContent = "Entry analyzed. Review before placing.";
 }
@@ -1633,6 +1982,66 @@ async function reviewEntryWithAi() {
   $("entry-status").textContent = data.ai_enabled ? "AI review complete." : "EdgeIQ Local review complete.";
 }
 
+async function prepareEntryHandoff() {
+  const payload = state.lastEntryPayload || entryPayload();
+  if (!payload.props || payload.props.length < 2) {
+    $("entry-status").textContent = "Add and analyze at least two props before preparing handoff.";
+    return;
+  }
+  payload.platform = $("entry-platform").value || payload.platform || "PrizePicks";
+  payload.entry_mode = $("entry-mode")?.value || payload.entry_mode || "real";
+  payload.wager = payload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || payload.wager || 0);
+  payload.multiplier = Number($("entry-multiplier").value || payload.multiplier || 1);
+  payload.props = state.entryProps;
+  $("entry-handoff").classList.remove("muted-card");
+  $("entry-handoff").textContent = "Preparing platform handoff...";
+  const data = await api("/api/entries/handoff", { method: "POST", body: JSON.stringify(payload) });
+  renderEntryHandoff(data);
+  $("entry-status").textContent = data.ready_for_handoff
+    ? `Handoff ready for ${data.recommended_platform}.`
+    : `Handoff prepared, but ${data.blocks?.[0] || "release checks still need review."}`;
+}
+
+function renderEntryHandoff(data) {
+  $("entry-handoff").classList.remove("muted-card");
+  $("entry-handoff").innerHTML = `
+    <div class="suggestion-top">
+      <div>
+        <span class="pill">${escapeHtml(data.recommended_platform || data.platform || "Platform")}</span>
+        <strong>${data.ready_for_handoff ? "Handoff Ready" : "Review Before Handoff"}</strong>
+      </div>
+      <span class="subtle">${data.legs?.length || 0} legs</span>
+    </div>
+    <p>${escapeHtml(data.platform_value?.recommendation || "Verify the best platform manually.")}</p>
+    ${(data.blocks || []).map((block) => `<p class="danger-text">${escapeHtml(block)}</p>`).join("")}
+    ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
+    <div class="suggestion-list">
+      ${(data.legs || []).map((leg, index) => `
+        <div class="suggestion compact-suggestion">
+          <div class="suggestion-top">
+            <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
+            <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
+          </div>
+          <p>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat)} ${leg.line ?? ""}${leg.game ? ` · ${escapeHtml(leg.game)}` : ""}</p>
+          <p class="subtle">${escapeHtml(leg.value_note || "")}</p>
+        </div>
+      `).join("")}
+    </div>
+    <div class="handoff-copy">${escapeHtml(data.copy_text || "")}</div>
+    <div class="button-row">
+      <button class="secondary" id="copy-handoff">Copy Slip</button>
+      ${data.open_url ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
+    </div>
+  `;
+  $("copy-handoff").addEventListener("click", async () => {
+    const copied = await copyText(data.copy_text || "");
+    $("entry-status").textContent = copied ? "Slip copied for manual entry." : "Copy is unavailable in this browser; use the handoff text.";
+  });
+  if ($("open-handoff")) {
+    $("open-handoff").addEventListener("click", () => window.open(data.open_url, "_blank", "noopener"));
+  }
+}
+
 function renderEntryPropsFromAnalyzed(props) {
   state.entryProps = props.map((prop) => ({
     player: prop.player,
@@ -1640,6 +2049,13 @@ function renderEntryPropsFromAnalyzed(props) {
     sport: prop.sport,
     stat: prop.stat,
     line: prop.line,
+    baseline_line: prop.baseline_line ?? null,
+    standard_line: prop.standard_line ?? null,
+    line_offer_type: prop.line_offer_type || "standard",
+    adjusted_line: Boolean(prop.adjusted_line),
+    is_discounted_line: Boolean(prop.is_discounted_line),
+    is_premium_line: Boolean(prop.is_premium_line),
+    line_discount: Number(prop.line_discount || 0),
     projection: prop.projection,
     direction: prop.direction || "Over",
     platform: prop.platform,
@@ -1647,6 +2063,11 @@ function renderEntryPropsFromAnalyzed(props) {
     game_time: prop.game_time || "",
     season_type: prop.season_type || "",
     trending_count: prop.trending_count,
+    auto_projected: prop.auto_projected,
+    provider_backed: prop.provider_backed,
+    projection_source: prop.projection_source,
+    data_quality: prop.data_quality,
+    data_strength: prop.data_strength,
   }));
   renderEntryProps();
 }
@@ -1656,6 +2077,8 @@ async function placeEntry() {
   state.lastEntryPayload.entry_mode = $("entry-mode")?.value || state.lastEntryPayload.entry_mode || "real";
   state.lastEntryPayload.wager = state.lastEntryPayload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
   state.lastEntryPayload.multiplier = Number($("entry-multiplier").value || state.lastEntryPayload.multiplier || 1);
+  state.lastEntryPayload.platform = $("entry-platform").value || state.lastEntryPayload.platform || "PrizePicks";
+  state.lastEntryPayload.props = state.entryProps;
   if (state.lastEntryPayload.entry_mode !== "paper" && state.lastEntryPayload.wager <= 0) {
     $("entry-status").textContent = "Enter the amount wagered before placing.";
     return;
@@ -1672,12 +2095,16 @@ async function placeEntry() {
     return;
   }
   const checkWarnings = [...(placementCheck.blocks || []), ...(placementCheck.warnings || [])];
+  const valueText = placementCheck.platform_value?.recommendation
+    ? `\n\nBest app value:\n- ${placementCheck.platform_value.recommendation}`
+    : "";
   const checkText = checkWarnings.length
     ? `\n\nProvider check:\n${checkWarnings.slice(0, 6).map((warning) => `- ${warning}`).join("\n")}${checkWarnings.length > 6 ? "\n- More warnings hidden." : ""}`
     : "\n\nProvider check passed: current lines and available game times were reviewed.";
   const confirmed = window.confirm(
     (state.lastEntryPayload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : "Will you place this entry?")
     + checkText
+    + valueText
   );
   if (!confirmed) return;
   let data;
@@ -1694,6 +2121,7 @@ async function placeEntry() {
   state.lastEntryPayload = null;
   state.lastAnalysis = null;
   state.recommendationOrigin = false;
+  $("prepare-handoff").disabled = true;
   $("place-entry").disabled = true;
   renderEntryProps();
   await loadPending();
@@ -1713,7 +2141,10 @@ async function loadSuggestions() {
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
         <span class="subtle">${suggestion.risk_tier || "Standard"} · Score ${suggestion.score}</span>
       </div>
+      ${suggestionMetaRow(suggestion)}
       <p>${propPickList(suggestion.entry.props)}</p>
+      ${confidenceMoveNotes(suggestion.entry.props)}
+      ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
         <button class="secondary" data-load-suggestion="${index}">Load Suggestion</button>
@@ -1751,6 +2182,7 @@ async function loadConfirmedProps() {
         <strong>${propPickText(prop)}</strong>
         <span class="subtle">${prop.platform} · ${formatGameTime(prop.game_time)}</span>
       </div>
+      ${dataStrengthBadges([prop])}
       <div class="metric-strip">
         <span>Conf ${pct(prop.confidence)}</span>
         <span>Edge ${Number(prop.edge || 0).toFixed(2)}</span>
@@ -1785,7 +2217,10 @@ async function loadConfirmedEntries() {
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
         <span class="subtle">${suggestion.risk_tier || "Standard"} · Score ${suggestion.score}</span>
       </div>
+      ${suggestionMetaRow(suggestion)}
       <p>${propPickList(suggestion.entry.props)}</p>
+      ${confidenceMoveNotes(suggestion.entry.props)}
+      ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
         <button class="secondary" data-load-confirmed-entry="${index}">Load Confirmed Entry</button>
@@ -1826,14 +2261,18 @@ async function runOptimizer() {
     apply_feedback: $("optimizer-apply-feedback").checked ? "true" : "false",
   });
   const data = await api(`/api/entries/optimizer?${params.toString()}`);
-  $("optimizer-list").innerHTML = data.suggestions.map((suggestion, index) => `
+  const suggestionsHtml = data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
         <span class="pill">#${suggestion.rank} · ${suggestion.leg_count} Legs</span>
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
-        <span class="subtle">Score ${suggestion.score}</span>
+        <span class="subtle">Score ${suggestion.score} · Value ${Number(suggestion.value_adjusted_score || suggestion.score || 0).toFixed(1)}</span>
       </div>
+      ${suggestionMetaRow(suggestion)}
+      ${platformValueBlock(suggestion.platform_value)}
       <p>${propPickList(suggestion.entry.props)}</p>
+      ${confidenceMoveNotes(suggestion.entry.props)}
+      ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
         <button class="secondary" data-load-optimized="${index}">Load Slip</button>
@@ -1841,6 +2280,7 @@ async function runOptimizer() {
       </div>
     </div>
   `).join("") || `<div class="suggestion">No optimized slips available.</div>`;
+  $("optimizer-list").innerHTML = optimizerSummaryBlock(data) + suggestionsHtml;
   document.querySelectorAll("[data-load-optimized]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadOptimized)];
@@ -2012,6 +2452,145 @@ async function shopLines(event) {
   `;
 }
 
+async function loadPlayerResearch(event) {
+  event.preventDefault();
+  const player = $("research-player").value.trim();
+  const stat = $("research-stat").value.trim();
+  if (!player || !stat) return;
+  $("player-research-result").classList.add("muted-card");
+  $("player-research-result").textContent = "Loading player research...";
+  const params = new URLSearchParams({
+    stat,
+    sport: $("research-sport").value,
+    platform: $("research-platform").value,
+  });
+  if ($("research-line").value) params.set("line", $("research-line").value);
+  const data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
+  const split = data.splits || {};
+  const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
+  $("player-research-result").classList.remove("muted-card");
+  $("player-research-result").innerHTML = `
+    <div class="suggestion-top">
+      <div>
+        <span class="pill">${data.sport}</span>
+        <strong>${data.player} · ${data.stat}</strong>
+      </div>
+      <span class="subtle">${data.history_count} finals · ${data.active_props.length} active</span>
+    </div>
+    <div class="stats-grid" style="margin-top:14px">
+      ${researchSplitCard("Last 5", split.last_5)}
+      ${researchSplitCard("Last 10", split.last_10)}
+      ${researchSplitCard("Season", split.season)}
+      <div class="stat-card"><div class="stat-value">${data.line ?? "-"}</div><div class="stat-label">Research Line</div></div>
+    </div>
+    <div class="player-research-bars">
+      ${(data.chart || []).map((row) => `
+        <div class="research-bar-row">
+          <span>${escapeHtml(row.game || row.game_date || "Tracked game")}</span>
+          <div class="research-bar"><i style="width:${Math.min(100, ((Number(row.actual) || 0) / maxActual) * 100)}%"></i></div>
+          <strong>${Number(row.actual).toFixed(1)}</strong>
+          <span class="${row.hit ? "positive" : "negative"}">${row.hit === null ? "Line needed" : row.hit ? "Over hit" : "Miss"}</span>
+        </div>
+      `).join("") || `<p class="subtle">No final-stat chart data yet.</p>`}
+    </div>
+    ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
+    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(note)}</p>`).join("")}
+  `;
+}
+
+function researchSplitCard(label, split = {}) {
+  return `
+    <div class="stat-card">
+      <div class="stat-value">${split.hit_rate === null || split.hit_rate === undefined ? "-" : pct(split.hit_rate)}</div>
+      <div class="stat-label">${label} · ${split.sample || 0} games · avg ${split.average ?? "-"}</div>
+    </div>
+  `;
+}
+
+async function loadSharpConsensus(event) {
+  event.preventDefault();
+  const player = $("consensus-player").value.trim();
+  const stat = $("consensus-stat").value.trim();
+  if (!player || !stat) return;
+  $("sharp-consensus-result").classList.add("muted-card");
+  $("sharp-consensus-result").textContent = "Checking consensus...";
+  const params = new URLSearchParams({
+    player,
+    stat,
+    sport: $("consensus-sport").value,
+    platform: $("consensus-platform").value,
+  });
+  if ($("consensus-over-odds").value) params.set("over_odds", $("consensus-over-odds").value);
+  if ($("consensus-under-odds").value) params.set("under_odds", $("consensus-under-odds").value);
+  const data = await api(`/api/market/sharp-consensus?${params.toString()}`);
+  $("sharp-consensus-result").classList.remove("muted-card");
+  if (!data.available) {
+    $("sharp-consensus-result").innerHTML = `<h2>No active market</h2><p>${data.message || "No matching provider lines found."}</p>`;
+    return;
+  }
+  $("sharp-consensus-result").innerHTML = `
+    <div class="suggestion-top">
+      <div>
+        <span class="pill">${data.confidence} consensus</span>
+        <strong>${data.player} · ${data.stat}</strong>
+      </div>
+      <span class="subtle">${data.platform_count} platforms</span>
+    </div>
+    <div class="stats-grid" style="margin-top:14px">
+      <div class="stat-card"><div class="stat-value">${data.fair_line}</div><div class="stat-label">Fair Line</div></div>
+      <div class="stat-card"><div class="stat-value">${data.market_width}</div><div class="stat-label">Market Width</div></div>
+      <div class="stat-card"><div class="stat-value">${data.best_over.platform}</div><div class="stat-label">Best Over ${data.best_over.line}</div></div>
+      <div class="stat-card"><div class="stat-value">${data.best_under.platform}</div><div class="stat-label">Best Under ${data.best_under.line}</div></div>
+    </div>
+    ${data.no_vig ? `<p>No-vig: Over ${pct(data.no_vig.over_probability)} (${data.no_vig.over_fair_odds}) · Under ${pct(data.no_vig.under_probability)} (${data.no_vig.under_fair_odds})</p>` : ""}
+    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(note)}</p>`).join("")}
+  `;
+}
+
+async function calculateHedge(event) {
+  event.preventDefault();
+  const payload = {
+    original_odds: Number($("hedge-original-odds").value),
+    hedge_odds: Number($("hedge-odds").value),
+    original_stake: Number($("hedge-stake").value),
+    target: $("hedge-target").value,
+  };
+  const data = await api("/api/market/hedge-calculator", { method: "POST", body: JSON.stringify(payload) });
+  $("hedge-result").classList.remove("muted-card");
+  $("hedge-result").innerHTML = calculatorResultHtml(`Hedge ${money(data.hedge_stake)}`, data);
+}
+
+async function calculateMiddle(event) {
+  event.preventDefault();
+  const payload = {
+    over_line: Number($("middle-over-line").value),
+    under_line: Number($("middle-under-line").value),
+    over_odds: Number($("middle-over-odds").value || -110),
+    under_odds: Number($("middle-under-odds").value || -110),
+    over_stake: Number($("middle-over-stake").value || 0),
+    under_stake: Number($("middle-under-stake").value || 0),
+  };
+  const data = await api("/api/market/middle-calculator", { method: "POST", body: JSON.stringify(payload) });
+  $("middle-result").classList.remove("muted-card");
+  const zone = data.middle_available ? `${data.middle_zone.from} to ${data.middle_zone.to}` : "No middle";
+  $("middle-result").innerHTML = calculatorResultHtml(zone, data);
+}
+
+function calculatorResultHtml(title, data) {
+  return `
+    <h2>${title}</h2>
+    <div class="stats-grid" style="margin-top:14px">
+      ${(data.outcomes || []).map((outcome) => `
+        <div class="stat-card">
+          <div class="stat-value">${outcome.profit === null ? "-" : money(outcome.profit)}</div>
+          <div class="stat-label">${escapeHtml(outcome.label)}</div>
+        </div>
+      `).join("")}
+    </div>
+    <p class="subtle">${escapeHtml(data.note || "")}</p>
+  `;
+}
+
 async function runEvScanner(event) {
   event.preventDefault();
   $("ev-scanner-result").classList.add("muted-card");
@@ -2032,7 +2611,9 @@ async function runEvScanner(event) {
         <strong>${prop.player}</strong>
         <span class="subtle">${prop.platform}</span>
       </div>
-      <p>${prop.sport} · ${directionBadge(prop.direction || "Over")} ${prop.stat} ${prop.line} · Projection ${prop.projection} · Hit ${pct(prop.estimated_probability)}</p>
+      <p>${prop.sport} · ${directionBadge(prop.direction || "Over")} ${prop.stat} ${prop.line} · Projection ${prop.projection} · Adjusted hit ${pct(prop.estimated_probability)}</p>
+      ${prop.probability_adjustment ? `<p class="subtle">${escapeHtml(prop.probability_adjustment)}</p>` : ""}
+      ${dataStrengthBadges([prop])}
       <p class="subtle">Best over ${prop.best_over?.platform || "-"} ${prop.best_over?.line ?? "-"} · Consensus ${prop.consensus_line ?? "-"}</p>
       <button class="secondary" data-load-scan-prop="${index}">Add Prop</button>
     </div>
@@ -2063,6 +2644,70 @@ async function loadClvReport() {
         <p>Avg CLV ${Number(entry.average_clv).toFixed(2)} · ${entry.positive_legs}/${entry.legs.length} positive legs</p>
       </div>
     `).join("") || `<div class="suggestion">No CLV data yet.</div>`}
+  `;
+}
+
+async function loadAlertDeliverySettings() {
+  const data = await api("/api/settings/alert-delivery");
+  const settings = data.settings || {};
+  $("alert-browser-enabled").checked = Boolean(settings.browser_enabled);
+  $("alert-email-enabled").checked = Boolean(settings.email_enabled);
+  $("alert-email-address").value = settings.email_address || "";
+  $("alert-sms-enabled").checked = Boolean(settings.sms_enabled);
+  $("alert-sms-number").value = settings.sms_number || "";
+  $("alert-min-priority").value = settings.min_priority ?? 65;
+  renderAlertDeliveryStatus(data);
+}
+
+async function saveAlertDeliverySettings(event) {
+  event.preventDefault();
+  const payload = {
+    browser_enabled: $("alert-browser-enabled").checked,
+    email_enabled: $("alert-email-enabled").checked,
+    email_address: $("alert-email-address").value.trim(),
+    sms_enabled: $("alert-sms-enabled").checked,
+    sms_number: $("alert-sms-number").value.trim(),
+    min_priority: Number($("alert-min-priority").value || 65),
+  };
+  const data = await api("/api/settings/alert-delivery", { method: "POST", body: JSON.stringify(payload) });
+  renderAlertDeliveryStatus(data);
+}
+
+function renderAlertDeliveryStatus(data) {
+  const settings = data.settings || {};
+  const hooks = data.delivery_hooks || {};
+  $("alert-delivery-status").classList.remove("muted-card");
+  $("alert-delivery-status").innerHTML = `
+    <div class="suggestion-top">
+      <strong>${(settings.channels || []).join(", ") || "No channels"}</strong>
+      <span class="subtle">Min ${pct(settings.min_priority || 0)}</span>
+    </div>
+    <p>Browser ${hooks.browser || "-"} · Email ${hooks.email || "-"} · SMS ${hooks.sms || "-"}</p>
+    <p class="subtle">Email and SMS preferences are saved for the delivery hook; browser alerts can run immediately in this app.</p>
+  `;
+}
+
+async function loadImportWizard() {
+  const data = await api("/api/import-wizard");
+  $("import-wizard-result").classList.remove("muted-card");
+  $("import-wizard-result").innerHTML = `
+    <h2>${escapeHtml(data.title)}</h2>
+    <p>${escapeHtml(data.summary)}</p>
+    <div class="wizard-step-list">
+      ${(data.steps || []).map((step, index) => `
+        <div class="wizard-step">
+          <span class="pill">Step ${index + 1}</span>
+          <strong>${escapeHtml(step.label)}</strong>
+          <p class="subtle">${escapeHtml(step.detail)}</p>
+        </div>
+      `).join("")}
+    </div>
+    ${(data.templates || []).map((template) => `
+      <div class="import-template">
+        <strong>${escapeHtml(template.platform)} template</strong>
+        <code>${escapeHtml(template.sample)}</code>
+      </div>
+    `).join("")}
   `;
 }
 
@@ -2311,6 +2956,7 @@ function renderCompletedEntryHistory(entries) {
 function renderCompletedEntryLeg(prop) {
   const resultClass = prop.result === "Loss" ? "danger-text" : "";
   const actual = prop.actual === null || prop.actual === undefined || prop.actual === "" ? "No final stat" : Number(prop.actual).toLocaleString();
+  const needsDetail = prop.actual === null || prop.actual === undefined || prop.actual === "";
   const source = prop.source === "projection_estimate"
     ? "Projection estimate"
     : prop.source === "unmatched"
@@ -2338,6 +2984,7 @@ function renderCompletedEntryLeg(prop) {
         <span>${source}</span>
         <strong class="${resultClass}">${prop.result || "Pending"}</strong>
       </div>
+      ${needsDetail ? `<p class="subtle entry-leg-detail">${escapeHtml(prop.match_detail || "No matching final stat row found.")}</p>` : ""}
     </div>
   `;
 }
@@ -2538,7 +3185,6 @@ async function loadPerformance() {
   renderPerformanceInsights(data.summary.performance_insights);
   renderEntryPerformance(data.entries);
   renderEntryPlatformProfitability(data.summary.entry_platform_profitability || data.entries.platform_profitability || []);
-  await loadBacktest();
 }
 
 function renderMonthlyProfit(monthly) {
@@ -2700,6 +3346,18 @@ async function refreshCalibrationData() {
   await Promise.allSettled([loadBacktest(), loadPerformance(), loadAccuracyLab(), loadDataHealth(), loadNotifications()]);
 }
 
+async function recheckFinalStats() {
+  $("entry-history-status").textContent = "Checking previous entries against final stat providers...";
+  const data = await api("/api/entries/recheck-final-stats", { method: "POST" });
+  const imported = data.provider_refresh?.imported || 0;
+  const linked = data.backfill?.provider_rows || 0;
+  const settled = data.auto_check?.settled || 0;
+  const corrected = data.result_review?.corrected || 0;
+  const reviewed = data.result_review?.reviewed || 0;
+  $("entry-history-status").textContent = `Final stat recheck complete: ${data.cleared_unknowns || 0} unknown legs cleared, ${data.unknown_after || 0} still unknown. ${imported} provider rows imported, ${linked} leg results linked, ${settled} pending settled, ${corrected}/${reviewed} previous results corrected.`;
+  await Promise.allSettled([loadEntryHistory(), loadEntryProgress({ autoCheck: false, refreshProviders: false }), loadPerformance(), loadBacktest(), loadAccuracyLab(), loadNotifications()]);
+}
+
 async function createAutoPaperCalibrationEntries() {
   const sport = $("auto-paper-sport")?.value || "All Sports";
   const platform = $("auto-paper-platform")?.value || "PrizePicks";
@@ -2837,12 +3495,23 @@ function bindEvents() {
     event.preventDefault();
     const prop = propFromForm();
     if (!prop.player || !prop.line) return;
+    const entryDefaults = {
+      platform: $("entry-platform").value,
+      mode: $("entry-mode").value,
+      wager: $("entry-wager").value,
+      multiplier: $("entry-multiplier").value,
+    };
     state.entryProps.push(prop);
     $("prop-form").reset();
+    $("entry-platform").value = entryDefaults.platform;
+    $("entry-mode").value = entryDefaults.mode;
+    $("entry-wager").value = entryDefaults.wager;
+    $("entry-multiplier").value = entryDefaults.multiplier || "3";
     renderEntryProps();
   });
   $("analyze-entry").addEventListener("click", () => withButtonBusy("analyze-entry", "Analyzing...", analyzeEntry));
   $("ai-review-entry").addEventListener("click", reviewEntryWithAi);
+  $("prepare-handoff").addEventListener("click", () => withButtonBusy("prepare-handoff", "Preparing...", prepareEntryHandoff));
   $("place-entry").addEventListener("click", placeEntry);
   $("clear-entry").addEventListener("click", () => {
     state.entryProps = [];
@@ -2850,21 +3519,33 @@ function bindEvents() {
     state.lastAnalysis = null;
     state.recommendationOrigin = false;
     $("ai-review-entry").disabled = true;
+    $("prepare-handoff").disabled = true;
     $("place-entry").disabled = true;
+    $("entry-handoff").classList.add("muted-card");
+    $("entry-handoff").textContent = "No handoff prepared yet.";
     renderEntryProps();
   });
   $("load-confirmed-props").addEventListener("click", () => withButtonBusy("load-confirmed-props", "Confirming...", loadConfirmedProps));
   $("generate-confirmed-entries").addEventListener("click", () => withButtonBusy("generate-confirmed-entries", "Building...", loadConfirmedEntries));
   $("generate-suggestions").addEventListener("click", () => withButtonBusy("generate-suggestions", "Building...", loadSuggestions));
   $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", runOptimizer));
+  $("refresh-sportsbook-sync").addEventListener("click", () => withButtonBusy("refresh-sportsbook-sync", "Checking...", loadSportsbookSync));
+  $("refresh-opportunity-feed").addEventListener("click", () => withButtonBusy("refresh-opportunity-feed", "Scanning...", loadOpportunityFeed));
+  $("enable-browser-alerts").addEventListener("click", () => withButtonBusy("enable-browser-alerts", "Enabling...", enableBrowserAlerts));
   $("refresh-pending").addEventListener("click", () => withButtonBusy("refresh-pending", "Checking...", loadPending));
   $("classify-default-wagers").addEventListener("click", () => withButtonBusy("classify-default-wagers", "Classifying...", classifyDefaultWagers));
   $("save-dnp-handling").addEventListener("click", saveDnpSetting);
   $("auto-check-entries").addEventListener("click", () => withButtonBusy("auto-check-entries", "Checking...", autoCheckEntries));
   $("expedite-entries").addEventListener("click", () => withButtonBusy("expedite-entries", "Clearing...", expediteEntries));
   $("line-shop-form").addEventListener("submit", shopLines);
+  $("player-research-form").addEventListener("submit", loadPlayerResearch);
+  $("sharp-consensus-form").addEventListener("submit", loadSharpConsensus);
+  $("hedge-form").addEventListener("submit", calculateHedge);
+  $("middle-form").addEventListener("submit", calculateMiddle);
   $("ev-scanner-form").addEventListener("submit", runEvScanner);
   $("load-clv").addEventListener("click", loadClvReport);
+  $("alert-delivery-form").addEventListener("submit", saveAlertDeliverySettings);
+  $("load-import-wizard").addEventListener("click", loadImportWizard);
   $("ev-form").addEventListener("submit", calculateEv);
   $("line-movement-form").addEventListener("submit", loadLineMovement);
   $("hit-rate-form").addEventListener("submit", estimateHitRate);
@@ -2876,6 +3557,9 @@ function bindEvents() {
   $("bet-form").addEventListener("submit", saveBet);
   $("bankroll-transaction-form").addEventListener("submit", saveBankrollTransaction);
   $("refresh-bets").addEventListener("click", () => withButtonBusy("refresh-bets", "Checking...", loadBets));
+  document.querySelectorAll(".recheck-final-stats").forEach((button) => {
+    button.addEventListener("click", () => withButtonBusy(button, "Checking...", recheckFinalStats));
+  });
   $("refresh-backtest").addEventListener("click", () => withButtonBusy("refresh-backtest", "Refreshing...", loadBacktest));
   $("refresh-calibration-data").addEventListener("click", () => withButtonBusy("refresh-calibration-data", "Refreshing...", refreshCalibrationData));
   $("auto-paper-calibration").addEventListener("click", () => withButtonBusy("auto-paper-calibration", "Creating...", createAutoPaperCalibrationEntries));
@@ -2900,10 +3584,31 @@ function bindEvents() {
 function startLiveEntryPolling() {
   window.setInterval(() => {
     if (document.hidden) return;
-    loadEntryProgress({ autoCheck: true, refreshProviders: true }).catch((error) => {
+    loadEntryProgress({ autoCheck: true, refreshProviders: false }).catch((error) => {
       console.warn("Live entry progress polling failed", error);
     });
   }, 60000);
+}
+
+async function loadDeferredSignals() {
+  const tasks = [
+    { label: "Prop Board", before: () => { $("props-status").textContent = "Loading cached board..."; }, run: () => loadProps({ cascade: false }) },
+    { label: "Command Center", before: () => { $("command-center-status").textContent = "Loading cached signal board..."; }, run: loadCommandCenter },
+    { label: "Dashboard Parlay", run: loadDashboardParlay },
+    { label: "Trending Games", before: () => { $("trending-games-status").textContent = "Loading popular games..."; }, run: loadTrendingGames },
+    { label: "Timing Alerts", before: () => { $("timing-alert-status").textContent = "Checking timing signals..."; }, run: loadTimingAlerts },
+    { label: "Advantage Center", before: () => { $("advantage-center-status").textContent = "Checking line value and watchlist..."; }, run: loadAdvantageCenter },
+    { label: "Live Value Feed", run: loadOpportunityFeed },
+    { label: "Sportsbook Sync", run: loadSportsbookSync },
+  ];
+  for (const task of tasks) {
+    try {
+      task.before?.();
+      await task.run();
+    } catch (error) {
+      console.warn(`${task.label} refresh failed`, error);
+    }
+  }
 }
 
 async function loadAll() {
@@ -2930,6 +3635,8 @@ async function loadAll() {
     loadDataHealth(),
     loadNotifications(),
     loadPerformance(),
+    loadBacktest(),
+    loadAlertDeliverySettings(),
   ]).then((results) => {
     const backgroundFailure = results.find((result) => result.status === "rejected");
     if (backgroundFailure) console.warn("Background EdgeIQ panel refresh failed", backgroundFailure.reason);
@@ -2937,7 +3644,7 @@ async function loadAll() {
 
   deferWork(() => {
     Promise.allSettled([
-      loadEntryProgress({ autoCheck: true, refreshProviders: true }),
+      loadEntryProgress({ autoCheck: true, refreshProviders: false }),
       loadBets(),
       loadBankrollTransactions(),
       loadAccuracyLab(),
@@ -2947,21 +3654,11 @@ async function loadAll() {
     });
   }, 2500);
 
-  deferWork(() => {
-    Promise.allSettled([
-      loadAdvantageCenter(),
-      loadTimingAlerts(),
-      loadCommandCenter(),
-      loadDashboardParlay(),
-      loadTrendingGames(),
-    ]).then((results) => {
-      const backgroundFailure = results.find((result) => result.status === "rejected");
-      if (backgroundFailure) console.warn("Deferred EdgeIQ signal refresh failed", backgroundFailure.reason);
-    });
-  }, 5000);
+  deferWork(() => { loadDeferredSignals(); }, 5000);
 }
 
 bindEvents();
 showOnboardingIfNeeded();
+showInitialSkeletons();
 loadAll();
 startLiveEntryPolling();

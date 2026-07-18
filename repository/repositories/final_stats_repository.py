@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from difflib import SequenceMatcher
 
 from repository.database import SessionLocal
@@ -60,8 +61,10 @@ class FinalStatsRepository:
                     .filter(FinalPlayerStatModel.stat.in_(stat_alias_labels(prop.get("stat", ""))))
                 )
                 game = prop.get("game", "")
+                target_date = _prop_game_date(prop)
+                placed_date = _prop_placed_date(prop)
                 rows = query.order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc()).limit(50).all()
-                row = _best_matching_row(rows, game, prop.get("team", ""))
+                row = _best_matching_row(rows, game, prop.get("team", ""), target_date=target_date, placed_date=placed_date)
                 if row is None:
                     row = _best_fuzzy_player_row(session, prop)
                 if row is None:
@@ -144,16 +147,30 @@ def _normalize_status(value: object) -> str:
     return "played"
 
 
-def _best_matching_row(rows: list[FinalPlayerStatModel], game: object, team: object = "") -> FinalPlayerStatModel | None:
+def _best_matching_row(
+    rows: list[FinalPlayerStatModel],
+    game: object,
+    team: object = "",
+    target_date: str | None = None,
+    placed_date: str | None = None,
+) -> FinalPlayerStatModel | None:
     if not rows:
         return None
+    if target_date:
+        dated = [row for row in rows if str(row.game_date or "") == target_date]
+        if dated:
+            rows = dated
     requested_game = str(game or "").strip()
     if not requested_game:
-        return rows[0]
+        if placed_date:
+            dated = [row for row in rows if str(row.game_date or "") >= placed_date]
+            if dated:
+                return dated[-1] if len(dated) == 1 else dated[0]
+        return rows[0] if len(rows) == 1 else None
 
     requested_key = _game_key(requested_game)
     if not requested_key:
-        return rows[0]
+        return rows[0] if len(rows) == 1 else None
 
     for row in rows:
         if _game_key(row.game) == requested_key:
@@ -170,7 +187,7 @@ def _best_matching_row(rows: list[FinalPlayerStatModel], game: object, team: obj
         for row in rows:
             if requested_key in _game_key(row.game):
                 return row
-    return None
+    return rows[0] if len(rows) == 1 else None
 
 
 def _best_fuzzy_player_row(session, prop: dict) -> FinalPlayerStatModel | None:
@@ -195,7 +212,33 @@ def _best_fuzzy_player_row(session, prop: dict) -> FinalPlayerStatModel | None:
     if not candidates:
         return None
 
-    return _best_matching_row(candidates, game, team) or candidates[0]
+    return _best_matching_row(
+        candidates,
+        game,
+        team,
+        target_date=_prop_game_date(prop),
+        placed_date=_prop_placed_date(prop),
+    ) or (candidates[0] if len(candidates) == 1 else None)
+
+
+def _prop_game_date(prop: dict) -> str | None:
+    game_time = str(prop.get("game_time") or "").strip()
+    if not game_time:
+        return None
+    try:
+        return datetime.fromisoformat(game_time.replace("Z", "+00:00")).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _prop_placed_date(prop: dict) -> str | None:
+    placed = prop.get("_placed_date")
+    if placed is None:
+        return None
+    if hasattr(placed, "isoformat"):
+        return placed.isoformat()
+    text = str(placed or "").strip()
+    return text[:10] if text else None
 
 
 def _player_name_matches(requested_key: str, provider_name: object) -> bool:

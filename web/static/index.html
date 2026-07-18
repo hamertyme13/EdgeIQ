@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EdgeIQ Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260715-trust-polish" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260716-desktop-final-stats" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -47,34 +47,41 @@
             </div>
             <div id="daily-briefing-summary" class="daily-briefing-summary muted-card">Building the morning betting plan...</div>
             <div id="daily-scan-status" class="daily-scan-status muted-card">No Daily Briefing scan has run yet today.</div>
-            <div class="daily-briefing-grid">
-              <div class="briefing-column briefing-bet">
+            <div class="daily-briefing-decision">
+              <div class="briefing-column briefing-bet briefing-hero-card">
                 <div class="briefing-column-header">
-                  <span>Bet</span>
-                  <small>Load and confirm</small>
+                  <span>Today's Cleared Card</span>
+                  <small>Real money candidate</small>
                 </div>
                 <div id="daily-bet-list" class="briefing-card-list"></div>
               </div>
-              <div class="briefing-column briefing-paper">
-                <div class="briefing-column-header">
-                  <span>Paper</span>
-                  <small>Calibration</small>
+              <div class="briefing-support-tabs">
+                <div class="tab-strip" role="tablist" aria-label="Daily Briefing support sections">
+                  <button class="tab-button active" type="button" data-briefing-tab="paper">Paper</button>
+                  <button class="tab-button" type="button" data-briefing-tab="watch">Watch</button>
+                  <button class="tab-button" type="button" data-briefing-tab="avoid">Avoid</button>
                 </div>
-                <div id="daily-paper-list" class="briefing-card-list"></div>
-              </div>
-              <div class="briefing-column briefing-watch">
-                <div class="briefing-column-header">
-                  <span>Watch</span>
-                  <small>Need one more check</small>
+                <div class="briefing-tab-panel active briefing-paper" data-briefing-panel="paper">
+                  <div class="briefing-column-header">
+                    <span>Paper</span>
+                    <small>Calibration</small>
+                  </div>
+                  <div id="daily-paper-list" class="briefing-card-list"></div>
                 </div>
-                <div id="daily-watch-list" class="briefing-card-list"></div>
-              </div>
-              <div class="briefing-column briefing-avoid">
-                <div class="briefing-column-header">
-                  <span>Avoid</span>
-                  <small>Pass for now</small>
+                <div class="briefing-tab-panel briefing-watch" data-briefing-panel="watch">
+                  <div class="briefing-column-header">
+                    <span>Watch</span>
+                    <small>Need one more check</small>
+                  </div>
+                  <div id="daily-watch-list" class="briefing-card-list"></div>
                 </div>
-                <div id="daily-avoid-list" class="briefing-card-list"></div>
+                <div class="briefing-tab-panel briefing-avoid" data-briefing-panel="avoid">
+                  <div class="briefing-column-header">
+                    <span>Avoid</span>
+                    <small>Pass for now</small>
+                  </div>
+                  <div id="daily-avoid-list" class="briefing-card-list"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -157,6 +164,33 @@
             </div>
             <div id="advantage-center-list" class="advantage-grid"></div>
             <div class="advantage-tools">
+              <div class="mini-tool stack">
+                <h3>Sportsbook Sync</h3>
+                <div id="sportsbook-sync-list" class="suggestion-list"></div>
+                <button id="refresh-sportsbook-sync" class="secondary" type="button">Refresh Sync Status</button>
+              </div>
+              <div class="mini-tool stack">
+                <h3>Live Value Feed</h3>
+                <div class="form-grid compact-controls tool-form">
+                  <select id="opportunity-platform">
+                    <option>Both</option>
+                    <option>PrizePicks</option>
+                    <option>Underdog</option>
+                  </select>
+                  <select id="opportunity-sport">
+                    <option>All Sports</option>
+                    <option>WNBA</option>
+                    <option>NBA</option>
+                    <option>NFL</option>
+                    <option>MLB</option>
+                    <option>NHL</option>
+                  </select>
+                  <input id="opportunity-min-ev" type="number" value="0" step="0.1" placeholder="Min EV %" />
+                  <button id="refresh-opportunity-feed" type="button">Refresh Feed</button>
+                </div>
+                <div id="opportunity-feed-list" class="suggestion-list"></div>
+                <button id="enable-browser-alerts" class="secondary" type="button">Enable Browser Alerts</button>
+              </div>
               <form id="watchlist-form" class="mini-tool stack">
                 <h3>Prop Watchlist</h3>
                 <div class="form-grid compact-controls tool-form watchlist-controls">
@@ -248,17 +282,23 @@
               <button id="refresh-timing-alerts" class="secondary">Refresh</button>
             </div>
             <div class="form-grid compact-controls timing-filters">
-              <input id="timing-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
-              <input id="timing-min-ev" type="number" step="1" value="-25" placeholder="Min EV" />
-              <select id="timing-alert-type">
-                <option>All</option>
-                <option>Take Now</option>
-                <option>Steam Move</option>
-                <option>Better Number</option>
-                <option>Line Moved Against Price</option>
-                <option>Large Move</option>
-                <option>Avoid</option>
-              </select>
+              <label class="field-label">Min Confidence
+                <input id="timing-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
+              </label>
+              <label class="field-label">Min EV
+                <input id="timing-min-ev" type="number" step="1" value="-25" placeholder="Min EV" />
+              </label>
+              <label class="field-label">Alert Type
+                <select id="timing-alert-type">
+                  <option>All</option>
+                  <option>Take Now</option>
+                  <option>Steam Move</option>
+                  <option>Better Number</option>
+                  <option>Line Moved Against Price</option>
+                  <option>Large Move</option>
+                  <option>Avoid</option>
+                </select>
+              </label>
               <label class="check-row"><input id="timing-hide-outliers" type="checkbox" /> Hide outliers</label>
             </div>
             <div id="timing-alert-list" class="timing-alert-list"></div>
@@ -384,19 +424,27 @@
                 </summary>
                 <div class="tool-group-body">
                   <form id="preferences-form" class="form-grid compact-controls preferences-controls">
-                    <input id="pref-display-name" placeholder="Display name" />
-                    <select id="pref-risk-style">
-                      <option value="conservative">Conservative</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="aggressive">Aggressive</option>
-                    </select>
-                    <select id="pref-legs">
-                      <option value="2">2 Legs</option>
-                      <option value="3">3 Legs</option>
-                      <option value="2-3">2-3 Legs</option>
-                      <option value="2-5">2-5 Legs</option>
-                    </select>
-                    <input id="pref-max-wager-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max wager % bankroll" />
+                    <label class="field-label">Display Name
+                      <input id="pref-display-name" placeholder="Display name" />
+                    </label>
+                    <label class="field-label">Risk Style
+                      <select id="pref-risk-style">
+                        <option value="conservative">Conservative</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="aggressive">Aggressive</option>
+                      </select>
+                    </label>
+                    <label class="field-label">Preferred Legs
+                      <select id="pref-legs">
+                        <option value="2">2 Legs</option>
+                        <option value="3">3 Legs</option>
+                        <option value="2-3">2-3 Legs</option>
+                        <option value="2-5">2-5 Legs</option>
+                      </select>
+                    </label>
+                    <label class="field-label">Max Wager
+                      <input id="pref-max-wager-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max wager % bankroll" />
+                    </label>
                     <label class="check-row"><input id="pref-high-risk" type="checkbox" /> Allow 4/5-leg</label>
                     <label class="check-row"><input id="pref-avoid-same-game" type="checkbox" /> Avoid same game</label>
                     <button type="submit">Save Preferences</button>
@@ -412,26 +460,34 @@
                   </div>
                 </div>
                 <form id="prop-form" class="form-grid">
-                  <input id="prop-player" placeholder="Player" />
-                  <input id="prop-team" placeholder="Team" />
-                  <select id="prop-sport">
-                    <option>WNBA</option>
-                    <option>NBA</option>
-                    <option>NFL</option>
-                    <option>MLB</option>
-                    <option>NHL</option>
-                    <option>NCAAF</option>
-                    <option>NCAAM</option>
-                    <option>NCAAW</option>
-                    <option>MLS</option>
-                    <option>EPL</option>
-                    <option>UCL</option>
-                    <option>TENNIS</option>
-                    <option>PGA</option>
-                    <option>MMA</option>
-                    <option>NASCAR</option>
-                  </select>
-                  <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
+                  <label class="field-label">Player
+                    <input id="prop-player" placeholder="Player" />
+                  </label>
+                  <label class="field-label">Team
+                    <input id="prop-team" placeholder="Team" />
+                  </label>
+                  <label class="field-label">Sport
+                    <select id="prop-sport">
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                  </label>
+                  <label class="field-label">Stat
+                    <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
+                  </label>
                   <datalist id="stat-options">
                     <option value="Points"></option>
                     <option value="Rebounds"></option>
@@ -496,28 +552,40 @@
                     <option value="Laps Led"></option>
                     <option value="Fastest Laps"></option>
                   </datalist>
-                  <input id="prop-line" type="number" step="0.1" placeholder="Line" />
-                  <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
-                  <select id="prop-direction">
-                    <option>Over</option>
-                    <option>Under</option>
-                  </select>
-                  <select id="entry-platform">
-                    <option>PrizePicks</option>
-                    <option>Underdog</option>
-                    <option>Sleeper</option>
-                    <option>Ball Don't Lie</option>
-                  </select>
-                  <button type="submit">Add Prop</button>
+                  <label class="field-label">Line
+                    <input id="prop-line" type="number" step="0.1" placeholder="Line" />
+                  </label>
+                  <label class="field-label">Projection
+                    <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                  </label>
+                  <label class="field-label">Pick
+                    <select id="prop-direction">
+                      <option>Over</option>
+                      <option>Under</option>
+                    </select>
+                  </label>
+                  <label class="field-label">Platform
+                    <select id="entry-platform">
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                  </label>
+                  <label class="field-label">Entry Type
+                    <select id="entry-mode">
+                      <option value="real">Real entry</option>
+                      <option value="paper">Paper entry</option>
+                    </select>
+                  </label>
+                  <label class="field-label">Wager
+                    <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
+                  </label>
+                  <label class="field-label">Multiplier
+                    <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
+                  </label>
+                  <button type="submit" class="add-prop-submit">Add Prop</button>
                 </form>
-                <div class="form-grid entry-economics">
-                  <select id="entry-mode">
-                    <option value="real">Real entry</option>
-                    <option value="paper">Paper entry</option>
-                  </select>
-                  <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
-                  <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
-                </div>
                 <div class="table-wrap compact">
                   <table>
                     <thead>
@@ -537,6 +605,7 @@
                 <div class="button-row">
                   <button id="analyze-entry">Analyze Entry</button>
                   <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
+                  <button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button>
                   <button id="place-entry" class="secondary" disabled>Place Entry</button>
                   <button id="clear-entry" class="danger">Clear</button>
                 </div>
@@ -545,6 +614,7 @@
               <div class="panel">
                 <h2>Entry Intelligence</h2>
                 <div id="entry-analysis" class="analysis-card muted-card">No analysis yet.</div>
+                <div id="entry-handoff" class="analysis-card muted-card">No handoff prepared yet.</div>
               </div>
             </div>
 
@@ -748,6 +818,41 @@
                   </form>
                   <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
                 </div>
+                <div class="mini-tool">
+                  <h2>Prop Research 2.0</h2>
+                  <form id="player-research-form" class="form-grid">
+                    <input id="research-player" placeholder="Player" />
+                    <input id="research-stat" placeholder="Stat" />
+                    <select id="research-sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <select id="research-platform">
+                      <option>Both</option>
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                    <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" />
+                    <button type="submit">Research Prop</button>
+                  </form>
+                  <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
+                </div>
               </div>
             </details>
 
@@ -828,6 +933,70 @@
                   <div id="ev-scanner-result" class="analysis-card muted-card">No EV scan yet.</div>
                 </div>
                 <div class="mini-tool">
+                  <h2>Sharp Consensus</h2>
+                  <form id="sharp-consensus-form" class="form-grid">
+                    <input id="consensus-player" placeholder="Player" />
+                    <input id="consensus-stat" placeholder="Stat" />
+                    <select id="consensus-sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                    <select id="consensus-platform">
+                      <option>Both</option>
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Sleeper</option>
+                      <option>Ball Don't Lie</option>
+                    </select>
+                    <input id="consensus-over-odds" type="number" placeholder="Over odds" />
+                    <input id="consensus-under-odds" type="number" placeholder="Under odds" />
+                    <button type="submit">Find Fair Line</button>
+                  </form>
+                  <div id="sharp-consensus-result" class="analysis-card muted-card">No consensus loaded.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Hedge Calculator</h2>
+                  <form id="hedge-form" class="form-grid">
+                    <input id="hedge-original-odds" type="number" value="-110" placeholder="Original odds" />
+                    <input id="hedge-odds" type="number" value="-110" placeholder="Hedge odds" />
+                    <input id="hedge-stake" type="number" step="0.01" value="10" placeholder="Original stake" />
+                    <select id="hedge-target">
+                      <option value="guarantee">Guarantee</option>
+                      <option value="free_roll">Free roll</option>
+                      <option value="min_loss">Reduce risk</option>
+                    </select>
+                    <button type="submit">Calculate Hedge</button>
+                  </form>
+                  <div id="hedge-result" class="analysis-card muted-card">No hedge calculated.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Middle Finder</h2>
+                  <form id="middle-form" class="form-grid">
+                    <input id="middle-over-line" type="number" step="0.1" placeholder="Over line" />
+                    <input id="middle-under-line" type="number" step="0.1" placeholder="Under line" />
+                    <input id="middle-over-odds" type="number" value="-110" placeholder="Over odds" />
+                    <input id="middle-under-odds" type="number" value="-110" placeholder="Under odds" />
+                    <input id="middle-over-stake" type="number" step="0.01" value="10" placeholder="Over stake" />
+                    <input id="middle-under-stake" type="number" step="0.01" value="10" placeholder="Under stake" />
+                    <button type="submit">Calculate Middle</button>
+                  </form>
+                  <div id="middle-result" class="analysis-card muted-card">No middle calculated.</div>
+                </div>
+                <div class="mini-tool">
                   <h2>EV Calculator</h2>
                   <form id="ev-form" class="form-grid">
                     <input id="ev-odds" type="number" value="-110" />
@@ -855,6 +1024,19 @@
                   <h2>CLV Report</h2>
                   <button id="load-clv" class="secondary">Load CLV</button>
                   <div id="clv-result" class="analysis-card muted-card">No CLV report loaded.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Alert Delivery Settings</h2>
+                  <form id="alert-delivery-form" class="form-grid">
+                    <label class="check-row"><input id="alert-browser-enabled" type="checkbox" checked /> Browser</label>
+                    <label class="check-row"><input id="alert-email-enabled" type="checkbox" /> Email</label>
+                    <input id="alert-email-address" type="email" placeholder="Email address" />
+                    <label class="check-row"><input id="alert-sms-enabled" type="checkbox" /> SMS</label>
+                    <input id="alert-sms-number" placeholder="Phone number" />
+                    <input id="alert-min-priority" type="number" min="0" max="100" step="1" value="65" placeholder="Min priority" />
+                    <button type="submit">Save Alerts</button>
+                  </form>
+                  <div id="alert-delivery-status" class="analysis-card muted-card">Alert delivery settings not loaded.</div>
                 </div>
               </div>
             </details>
@@ -890,6 +1072,11 @@
                     <button type="submit" id="upload-submit-label">Analyze Screenshot / File</button>
                   </form>
                   <div id="upload-result" class="analysis-card muted-card">No screenshot or file analyzed yet.</div>
+                </div>
+                <div class="mini-tool">
+                  <h2>Account Sync Import Wizard</h2>
+                  <button id="load-import-wizard" class="secondary">Open Import Wizard</button>
+                  <div id="import-wizard-result" class="analysis-card muted-card">No import wizard loaded.</div>
                 </div>
               </div>
             </details>
@@ -964,6 +1151,7 @@
                   <h2>Completed Entry History</h2>
                   <p id="entry-history-status">Leg-level final stats from placed entries.</p>
                 </div>
+                <button class="secondary recheck-final-stats">Recheck Final Stats</button>
               </div>
               <div id="entry-history-list" class="suggestion-list"></div>
             </div>
@@ -996,7 +1184,10 @@
                 <h2>Results</h2>
                 <p>Profit, calibration, accuracy, and bet ledger access.</p>
               </div>
-              <button class="secondary" data-view-shortcut="bets">Open Bet Ledger</button>
+              <div class="panel-action">
+                <button class="secondary recheck-final-stats">Recheck Final Stats</button>
+                <button class="secondary" data-view-shortcut="bets">Open Bet Ledger</button>
+              </div>
             </div>
             <div id="performance-summary" class="stats-grid"></div>
           </div>
@@ -1028,64 +1219,76 @@
               <div id="performance-insights" class="suggestion-list"></div>
             </div>
           </div>
-          <div class="two-col">
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Model Scorecard</h2>
-                  <p>Backtest recommendations against tracked results.</p>
+          <div class="results-calibration-layout">
+            <div class="results-insight-stack">
+              <div class="panel scorecard-panel">
+                <div class="panel-header scorecard-header">
+                  <div>
+                    <h2>Model Scorecard</h2>
+                    <p>Backtest recommendations against tracked results.</p>
+                  </div>
+                  <div class="scorecard-toolbar">
+                    <div class="scorecard-filters">
+                      <label class="field-label">Platform
+                        <select id="auto-paper-platform">
+                          <option>PrizePicks</option>
+                          <option>Underdog</option>
+                        </select>
+                      </label>
+                      <label class="field-label">Sport
+                        <select id="auto-paper-sport">
+                          <option>All Sports</option>
+                          <option>WNBA</option>
+                          <option>NBA</option>
+                          <option>NFL</option>
+                          <option>MLB</option>
+                          <option>NHL</option>
+                          <option>NCAAF</option>
+                          <option>NCAAM</option>
+                          <option>NCAAW</option>
+                          <option>MLS</option>
+                          <option>EPL</option>
+                          <option>UCL</option>
+                          <option>TENNIS</option>
+                          <option>PGA</option>
+                          <option>MMA</option>
+                          <option>NASCAR</option>
+                        </select>
+                      </label>
+                      <label class="field-label">Legs
+                        <select id="auto-paper-leg-count">
+                          <option value="2">2 legs</option>
+                          <option value="3">3 legs</option>
+                          <option value="4">4 legs</option>
+                          <option value="5">5 legs</option>
+                        </select>
+                      </label>
+                      <label class="field-label">Max Entries
+                        <input id="auto-paper-max-entries" type="number" min="1" max="10" value="3" />
+                      </label>
+                    </div>
+                    <div class="scorecard-actions">
+                      <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
+                      <button id="refresh-calibration-data" class="secondary">Refresh Provider Data</button>
+                      <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
+                    </div>
+                  </div>
                 </div>
-                <div class="panel-action">
-                  <select id="auto-paper-platform">
-                    <option>PrizePicks</option>
-                    <option>Underdog</option>
-                  </select>
-                  <select id="auto-paper-sport">
-                    <option>All Sports</option>
-                    <option>WNBA</option>
-                    <option>NBA</option>
-                    <option>NFL</option>
-                    <option>MLB</option>
-                    <option>NHL</option>
-                    <option>NCAAF</option>
-                    <option>NCAAM</option>
-                    <option>NCAAW</option>
-                    <option>MLS</option>
-                    <option>EPL</option>
-                    <option>UCL</option>
-                    <option>TENNIS</option>
-                    <option>PGA</option>
-                    <option>MMA</option>
-                    <option>NASCAR</option>
-                  </select>
-                  <select id="auto-paper-leg-count">
-                    <option value="2">2 legs</option>
-                    <option value="3">3 legs</option>
-                    <option value="4">4 legs</option>
-                    <option value="5">5 legs</option>
-                  </select>
-                  <input id="auto-paper-max-entries" type="number" min="1" max="10" value="3" />
-                  <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
-                  <button id="refresh-calibration-data" class="secondary">Refresh Provider Data</button>
-                  <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
-                </div>
+                <div id="auto-paper-calibration-status" class="subtle">Choose a sport and create paper-only entries from weak calibration segments.</div>
+                <div id="backtest-summary" class="suggestion-list"></div>
               </div>
-              <div id="auto-paper-calibration-status" class="subtle">Choose a sport and create paper-only entries from weak calibration segments.</div>
-              <div id="backtest-summary" class="suggestion-list"></div>
+              <div class="panel">
+                <h2>What Works</h2>
+                <div id="backtest-works" class="suggestion-list"></div>
+              </div>
+              <div class="panel">
+                <h2>What Fails</h2>
+                <div id="backtest-fails" class="suggestion-list"></div>
+              </div>
             </div>
             <div class="panel">
               <h2>Calibration Rules</h2>
               <div id="calibration-list" class="suggestion-list"></div>
-            </div>
-          </div>
-          <div class="two-col">
-            <div class="panel">
-              <h2>What Works</h2>
-              <div id="backtest-works" class="suggestion-list"></div>
-            </div>
-            <div class="panel">
-              <h2>What Fails</h2>
-              <div id="backtest-fails" class="suggestion-list"></div>
             </div>
           </div>
           <div class="three-col">
@@ -1187,7 +1390,7 @@
       </div>
     </section>
 
-    <script src="/static/app.js?v=20260715-trust-polish"></script>
+    <script src="/static/app.js?v=20260716-desktop-final-stats"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

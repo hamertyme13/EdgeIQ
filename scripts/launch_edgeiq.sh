@@ -5,8 +5,8 @@ APP_DIR="/Users/joshuahamer/Documents/python_projects/EdgeIQ"
 LOG_FILE="/tmp/edgeiq.log"
 PYTHON_BIN="${PYTHON_BIN:-}"
 HOST="127.0.0.1"
-REQUIRED_UI_VERSION="20260714-pro-dashboard"
-IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8000 8001 8002 8003 8004 8005}"
+REQUIRED_UI_VERSION="20260716-desktop-final-stats"
+IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005}"
 
 cd "$APP_DIR"
 
@@ -63,7 +63,7 @@ find_port() {
 
 PORT="$(find_port)"
 if [[ -z "${PORT:-}" ]]; then
-  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "Ports 8000-8005 are already in use. Close another local server and try again."'
+  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "Ports 8007 and 8000-8005 are already in use. Close another local server and try again."'
   exit 1
 fi
 

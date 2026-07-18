@@ -1,6 +1,6 @@
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 
@@ -9,9 +9,22 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
 _ENGINE_ARGS = {"echo": False}
 
 if DATABASE_URL.startswith("sqlite"):
-    _ENGINE_ARGS["connect_args"] = {"check_same_thread": False}
+    _ENGINE_ARGS["connect_args"] = {"check_same_thread": False, "timeout": 30}
 
 engine = create_engine(DATABASE_URL, **_ENGINE_ARGS)
+
+if DATABASE_URL.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+        finally:
+            cursor.close()
 
 SessionLocal = sessionmaker(
     bind=engine,

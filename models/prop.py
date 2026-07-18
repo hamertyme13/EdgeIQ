@@ -38,6 +38,20 @@ class Prop:
 
     projection_source: str = "user"
 
+    baseline_line: float | None = None
+
+    standard_line: float | None = None
+
+    line_offer_type: str = "standard"
+
+    adjusted_line: bool = False
+
+    is_discounted_line: bool = False
+
+    is_premium_line: bool = False
+
+    line_discount: float = 0.0
+
     espn_recent_average: float | None = None
 
     espn_hit_rate: float | None = None

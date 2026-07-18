@@ -108,12 +108,18 @@ def fetch_projections(limit: int = 500) -> list[dict]:
 
         results.append({
             "projection_id": proj.get("id"),
+            "player_id":     player_id,
             "player":        player_attrs.get("display_name", "Unknown"),
             "team":          player_attrs.get("team", ""),
             "league":        league,
             "position":      player_attrs.get("position", ""),
             "stat":          attrs.get("stat_display_name", attrs.get("stat_type", "")),
             "line":          attrs.get("line_score"),
+            "standard_line":  attrs.get("line_score") if str(attrs.get("odds_type", "standard")).lower() == "standard" else None,
+            "flash_sale_line": attrs.get("flash_sale_line_score"),
+            "odds_type":      str(attrs.get("odds_type", "standard") or "standard").lower(),
+            "adjusted_odds":  bool(attrs.get("adjusted_odds")),
+            "is_promo":      bool(attrs.get("is_promo")),
             "game":          attrs.get("description", ""),
             "game_time":      attrs.get("start_time") or attrs.get("scheduled_at") or attrs.get("game_time") or attrs.get("commence_time") or "",
             "season_type":    _season_type(raw_league, attrs),

@@ -50,10 +50,12 @@ def suggest_entries(
     ]
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
-    candidates = _unique_players(candidates)[:16]
+    candidates = _top_markets_per_player(candidates, per_player=2, limit=24)
 
     scored: list[tuple[float, Entry, list[str]]] = []
     for props in itertools.combinations(candidates, leg_count):
+        if _has_duplicate_players(props):
+            continue
         entry = Entry(platform=platform, props=list(props))
         warnings = detect_correlations(entry)
         if exclude_correlated and warnings:
@@ -64,7 +66,9 @@ def suggest_entries(
             continue
         if apply_feedback:
             for prop in entry.props:
-                prop.confidence = max(0.0, min(100.0, prop.confidence + feedback_adjustment(prop.confidence)))
+                adjustment = feedback_adjustment(prop.confidence, prop)
+                prop.confidence_adjustment = adjustment
+                prop.confidence = max(0.0, min(100.0, prop.confidence + adjustment))
         score = _score_entry(entry, warnings)
         scored.append((score, entry, warnings))
 
@@ -91,12 +95,20 @@ def _score_entry(entry: Entry, warnings: list[str]) -> float:
     trend_score = sum(math.log10(max(prop.trending_count, 1)) for prop in entry.props)
     warning_penalty = len(warnings) * 8
     same_team_penalty = 6 if len({prop.player.team for prop in entry.props}) < len(entry.props) else 0
+    auto_projection_penalty = sum(4.0 for prop in entry.props if prop.auto_projected)
+    provider_bonus = sum(2.0 for prop in entry.props if not prop.auto_projected and prop.projection_source not in {"", "line_model"})
+    adjusted_line_bonus = sum(3.0 for prop in entry.props if getattr(prop, "is_discounted_line", False))
+    premium_line_penalty = sum(2.0 for prop in entry.props if getattr(prop, "is_premium_line", False))
     return (
         entry.average_confidence
         + entry.average_edge * 10
         + trend_score
+        + provider_bonus
+        + adjusted_line_bonus
         - warning_penalty
         - same_team_penalty
+        - auto_projection_penalty
+        - premium_line_penalty
     )
 
 
@@ -120,28 +132,38 @@ def _preferred_tie_side(prop: Prop) -> str:
 
 def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
     line = float(raw.get("line") or 0.0)
+    baseline_line = float(raw.get("baseline_line") or raw.get("standard_line") or line)
     trending_count = int(raw.get("trending_count") or 0)
     explicit_direction = _explicit_direction(raw.get("direction"))
     projection_value = raw.get("projection")
 
     if projection_value not in (None, ""):
         projection = float(projection_value)
-        direction = explicit_direction or ("Under" if projection < line else "Over")
+        direction = explicit_direction or _adjusted_offer_direction(raw, line, baseline_line) or ("Under" if projection < line else "Over")
         return [_prop_from_side(raw, platform, line, trending_count, direction, projection)]
 
     if explicit_direction:
-        projection = _side_projection(line, trending_count, explicit_direction)
+        projection = _side_projection(baseline_line, trending_count, explicit_direction)
         return [_prop_from_side(raw, platform, line, trending_count, explicit_direction, projection)]
 
+    adjusted_direction = _adjusted_offer_direction(raw, line, baseline_line)
+    if adjusted_direction:
+        return [_prop_from_side(raw, platform, line, trending_count, adjusted_direction, _side_projection(baseline_line, trending_count, adjusted_direction))]
+
     return [
-        _prop_from_side(raw, platform, line, trending_count, "Over", _side_projection(line, trending_count, "Over")),
-        _prop_from_side(raw, platform, line, trending_count, "Under", _side_projection(line, trending_count, "Under")),
+        _prop_from_side(raw, platform, line, trending_count, "Over", _side_projection(baseline_line, trending_count, "Over")),
+        _prop_from_side(raw, platform, line, trending_count, "Under", _side_projection(baseline_line, trending_count, "Under")),
     ]
 
 
 def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: int, direction: str, projection: float) -> Prop:
     edge = _directional_edge(line, projection, direction)
     hit_rate = raw.get("hit_rate") or {}
+    auto_projected = raw.get("projection") in (None, "")
+    projection_source = raw.get(
+        "projection_source",
+        "confirmed_provider" if raw.get("confirmation") or not auto_projected else "line_model",
+    )
 
     return Prop(
         player=Player(
@@ -153,16 +175,23 @@ def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: 
         line=line,
         projection=projection,
         edge=edge,
-        confidence=calculate_confidence(edge),
+        confidence=calculate_confidence(edge, raw.get("stat", ""), raw.get("league", "")),
         direction=direction,
         platform=platform,
         game=raw.get("game", ""),
         game_time=raw.get("game_time", ""),
         season_type=raw.get("season_type", ""),
         needs_projection=False,
-        auto_projected=raw.get("projection") in (None, ""),
+        auto_projected=auto_projected,
         trending_count=trending_count,
-        projection_source=raw.get("projection_source", "confirmed_provider" if raw.get("confirmation") else "line_model"),
+        projection_source=projection_source,
+        baseline_line=float(raw.get("baseline_line") or raw.get("standard_line") or line),
+        standard_line=raw.get("standard_line"),
+        line_offer_type=str(raw.get("line_offer_type") or raw.get("odds_type") or "standard"),
+        adjusted_line=bool(raw.get("adjusted_line") or raw.get("adjusted_odds")),
+        is_discounted_line=bool(raw.get("is_discounted_line")),
+        is_premium_line=bool(raw.get("is_premium_line")),
+        line_discount=float(raw.get("line_discount") or 0.0),
         espn_hit_rate=hit_rate.get("estimated_hit_rate"),
         espn_sample_size=int(hit_rate.get("sample_size") or raw.get("espn_sample_size") or 0),
         espn_note=hit_rate.get("note", ""),
@@ -194,18 +223,38 @@ def _explicit_direction(value: object) -> str | None:
     return None
 
 
-def _unique_players(props: list[Prop]) -> list[Prop]:
-    unique: list[Prop] = []
-    seen: set[str] = set()
+def _adjusted_offer_direction(raw: dict, line: float, baseline_line: float) -> str | None:
+    if not (raw.get("adjusted_line") or raw.get("adjusted_odds") or raw.get("line_offer_type") or raw.get("odds_type")):
+        return None
+    delta = line - baseline_line
+    if abs(delta) < 0.01:
+        return None
+    if raw.get("is_discounted_line") or str(raw.get("line_offer_type") or raw.get("odds_type") or "").lower() == "goblin":
+        return "Over" if delta < 0 else "Under"
+    if raw.get("is_premium_line") or str(raw.get("line_offer_type") or raw.get("odds_type") or "").lower() == "demon":
+        return "Over" if delta > 0 else "Under"
+    return None
+
+
+def _top_markets_per_player(props: list[Prop], per_player: int = 2, limit: int = 24) -> list[Prop]:
+    selected: list[Prop] = []
+    counts: dict[str, int] = {}
 
     for prop in props:
         key = prop.player.name.strip().lower()
-        if not key or key in seen:
+        if not key or counts.get(key, 0) >= per_player:
             continue
-        seen.add(key)
-        unique.append(prop)
+        counts[key] = counts.get(key, 0) + 1
+        selected.append(prop)
+        if len(selected) >= limit:
+            break
 
-    return unique
+    return selected
+
+
+def _has_duplicate_players(props: tuple[Prop, ...]) -> bool:
+    names = [prop.player.name.strip().lower() for prop in props]
+    return len(names) != len(set(names))
 
 
 def _stat_from_text(value: str) -> StatType:

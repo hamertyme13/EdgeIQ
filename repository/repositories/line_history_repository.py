@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from repository.database import SessionLocal
 from repository.models.prop_line_history_model import PropLineHistoryModel
 
@@ -24,6 +22,36 @@ class LineHistoryRepository:
                     player=player, stat=stat, platform=platform, line=line
                 ))
                 session.commit()
+
+    @staticmethod
+    def record_many(lines: list[dict]) -> int:
+        """Save changed line snapshots in one transaction."""
+        if not lines:
+            return 0
+        saved = 0
+        with SessionLocal() as session:
+            for row in lines:
+                player = str(row.get("player", "")).strip()
+                stat = str(row.get("stat", "")).strip()
+                platform = str(row.get("platform", "")).strip()
+                line = row.get("line")
+                if not player or not stat or not platform or line is None:
+                    continue
+                last = (
+                    session.query(PropLineHistoryModel)
+                    .filter_by(player=player, stat=stat, platform=platform)
+                    .order_by(PropLineHistoryModel.recorded_at.desc())
+                    .first()
+                )
+                line_value = float(line)
+                if last is None or last.line != line_value:
+                    session.add(PropLineHistoryModel(
+                        player=player, stat=stat, platform=platform, line=line_value
+                    ))
+                    saved += 1
+            if saved:
+                session.commit()
+        return saved
 
     @staticmethod
     def get_history(player: str, stat: str, platform: str) -> list[dict]:
