@@ -4,7 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EdgeIQ Web</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260716-desktop-final-stats" onerror="this.onerror=null;this.href='styles.css';" />
+    <meta name="theme-color" content="#060a12" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="EdgeIQ" />
+    <link rel="manifest" href="/static/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260721-performance" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -30,9 +36,17 @@
             <p class="eyebrow">Rogue Circuit Edition</p>
             <h1 id="view-title">Today</h1>
           </div>
-          <button id="refresh-all" class="secondary">Refresh</button>
+          <div class="topbar-actions">
+            <button id="install-app" class="secondary install-button" hidden>Install</button>
+            <button id="refresh-all" class="secondary">Refresh</button>
+          </div>
         </header>
         <div id="runtime-notice" class="runtime-notice" hidden></div>
+        <div id="install-hint" class="install-hint" hidden>
+          <strong>Install EdgeIQ on your phone</strong>
+          <span>Use Add to Home Screen for a full-screen Daily Briefing.</span>
+          <button id="dismiss-install-hint" class="secondary">Not now</button>
+        </div>
 
         <section id="dashboard" class="view active">
           <div class="stats-grid" id="dashboard-stats"></div>
@@ -47,6 +61,11 @@
             </div>
             <div id="daily-briefing-summary" class="daily-briefing-summary muted-card">Building the morning betting plan...</div>
             <div id="daily-scan-status" class="daily-scan-status muted-card">No Daily Briefing scan has run yet today.</div>
+            <div class="phone-briefing-actions">
+              <button class="secondary" type="button" data-phone-scan>Scan Now</button>
+              <button class="secondary" type="button" data-view-shortcut="entries">Build Entry</button>
+              <button class="secondary" type="button" data-phone-install>Install</button>
+            </div>
             <div class="daily-briefing-decision">
               <div class="briefing-column briefing-bet briefing-hero-card">
                 <div class="briefing-column-header">
@@ -111,6 +130,16 @@
                 <button id="refresh-notifications" class="secondary">Refresh</button>
               </div>
               <div id="notification-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Mobile + Hosting</p>
+                  <h2>Hosted App Readiness</h2>
+                </div>
+                <button id="refresh-deploy-readiness" class="secondary">Check</button>
+              </div>
+              <div id="deploy-readiness-list" class="suggestion-list"></div>
             </div>
             <div class="panel">
               <div class="panel-header">
@@ -265,6 +294,8 @@
                   </select>
                   <input id="strategy-unit" type="number" min="0" step="0.01" placeholder="Unit size" />
                   <input id="strategy-max-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max % bankroll" />
+                  <input id="strategy-open-exposure-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max open exposure %" />
+                  <input id="strategy-stop-loss-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Monthly stop-loss %" />
                   <label class="check-row"><input id="strategy-paper-first" type="checkbox" /> Paper first</label>
                   <button type="submit">Save Strategy</button>
                 </div>
@@ -283,10 +314,10 @@
             </div>
             <div class="form-grid compact-controls timing-filters">
               <label class="field-label">Min Confidence
-                <input id="timing-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
+                <input id="timing-min-confidence" type="number" step="1" value="60" placeholder="Min confidence" />
               </label>
               <label class="field-label">Min EV
-                <input id="timing-min-ev" type="number" step="1" value="-25" placeholder="Min EV" />
+                <input id="timing-min-ev" type="number" step="1" value="0" placeholder="Min EV" />
               </label>
               <label class="field-label">Alert Type
                 <select id="timing-alert-type">
@@ -459,6 +490,7 @@
                     <p id="entry-status">Add props from Today or manually.</p>
                   </div>
                 </div>
+                <div id="entry-loss-protection" class="entry-protection-card muted-card">Checking Loss Protection...</div>
                 <form id="prop-form" class="form-grid">
                   <label class="field-label">Player
                     <input id="prop-player" placeholder="Player" />
@@ -584,6 +616,12 @@
                   <label class="field-label">Multiplier
                     <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
                   </label>
+                  <label class="field-label">Payout Format
+                    <select id="entry-payout-type">
+                      <option value="standard">Standard / Power</option>
+                      <option value="flex">Flex</option>
+                    </select>
+                  </label>
                   <button type="submit" class="add-prop-submit">Add Prop</button>
                 </form>
                 <div class="table-wrap compact">
@@ -650,7 +688,7 @@
                     <button id="load-confirmed-props" class="secondary">Load Confirmed Props</button>
                     <button id="generate-confirmed-entries">Generate Confirmed Top 5</button>
                   </div>
-                  <div id="confirmed-props-status" class="subtle">Only props with current line, game time, market sanity, and analysis context appear here.</div>
+                  <div id="confirmed-props-status" class="subtle">Only props with a current line, confirmed matchup and time, and an official ESPN final-stat path appear here.</div>
                   <div id="confirmed-props-list" class="suggestion-list"></div>
                   <div id="confirmed-entries-list" class="suggestion-list"></div>
                 </div>
@@ -659,11 +697,12 @@
               <details class="panel tool-group" open>
                 <summary>
                   <span>Suggested Entries</span>
-                  <small>Top 3 plus 4/5 leg higher-risk slips</small>
+                  <small>Verified entries plus a high-variance six-leg card</small>
                 </summary>
                 <div class="tool-group-body">
                   <div class="toolbar">
                     <select id="suggest-sport">
+                      <option>All Sports</option>
                       <option>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
@@ -685,8 +724,10 @@
                       <option>Underdog</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
+                      <option>Both</option>
                     </select>
                     <button id="generate-suggestions">Generate Top 5</button>
+                    <button id="generate-crazy-six" class="secondary">Crazy 6-Leg</button>
                   </div>
                   <div id="suggestions-list" class="suggestion-list"></div>
                 </div>
@@ -732,8 +773,8 @@
                     <button id="run-optimizer">Optimize</button>
                   </div>
                   <div class="form-grid compact-controls">
-                    <input id="optimizer-min-confidence" type="number" step="1" value="0" placeholder="Min confidence" />
-                    <input id="optimizer-min-edge" type="number" step="0.1" value="-999" placeholder="Min edge" />
+                    <input id="optimizer-min-confidence" type="number" step="1" value="62" placeholder="Min confidence" />
+                    <input id="optimizer-min-edge" type="number" step="0.1" value="0" placeholder="Min edge" />
                     <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" />
                     <label class="check-row"><input id="optimizer-exclude-correlated" type="checkbox" checked /> No correlated legs</label>
                     <label class="check-row"><input id="optimizer-apply-feedback" type="checkbox" checked /> Feedback adjusted</label>
@@ -1033,9 +1074,12 @@
                     <input id="alert-email-address" type="email" placeholder="Email address" />
                     <label class="check-row"><input id="alert-sms-enabled" type="checkbox" /> SMS</label>
                     <input id="alert-sms-number" placeholder="Phone number" />
+                    <label class="check-row"><input id="alert-webhook-enabled" type="checkbox" /> Webhook</label>
+                    <input id="alert-webhook-url" placeholder="Webhook URL" />
                     <input id="alert-min-priority" type="number" min="0" max="100" step="1" value="65" placeholder="Min priority" />
                     <button type="submit">Save Alerts</button>
                   </form>
+                  <button id="test-alert-delivery" class="secondary">Send Test Alert</button>
                   <div id="alert-delivery-status" class="analysis-card muted-card">Alert delivery settings not loaded.</div>
                 </div>
               </div>
@@ -1155,6 +1199,26 @@
               </div>
               <div id="entry-history-list" class="suggestion-list"></div>
             </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Auto-Grading + CLV</h2>
+                  <p id="grading-report-status">Pending entries, verified finals, and closing-line value.</p>
+                </div>
+                <button id="refresh-grading-report" class="secondary">Refresh</button>
+              </div>
+              <div id="grading-report-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Loss Review</h2>
+                  <p id="loss-review-status">Classifying losing entries into fixable causes.</p>
+                </div>
+                <button id="refresh-loss-review" class="secondary">Refresh</button>
+              </div>
+              <div id="loss-review-list" class="suggestion-list"></div>
+            </div>
             <details class="panel tool-group">
               <summary>
                 <span>Import Betting History</span>
@@ -1190,6 +1254,16 @@
               </div>
             </div>
             <div id="performance-summary" class="stats-grid"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Settlement Audit Queue</h2>
+                <p id="settlement-audit-status">Every final-stat match, retry, and blocked legacy leg.</p>
+              </div>
+              <button id="refresh-settlement-audit" class="secondary">Refresh Audit</button>
+            </div>
+            <div id="settlement-audit-list" class="suggestion-list"></div>
           </div>
           <div class="two-col">
             <div class="panel">
@@ -1274,7 +1348,7 @@
                     </div>
                   </div>
                 </div>
-                <div id="auto-paper-calibration-status" class="subtle">Choose a sport and create paper-only entries from weak calibration segments.</div>
+                <div id="auto-paper-calibration-status" class="subtle">Creates paper-only entries from the weakest confidence buckets using end-to-end verified props.</div>
                 <div id="backtest-summary" class="suggestion-list"></div>
               </div>
               <div class="panel">
@@ -1317,6 +1391,12 @@
         </section>
       </main>
     </div>
+    <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
+      <button class="nav-item active" data-view="dashboard" type="button">Today</button>
+      <button class="nav-item" data-view="entries" type="button">Entry</button>
+      <button class="nav-item" data-view="performance" type="button">Results</button>
+      <button class="nav-item" data-view="analysis" type="button">Tools</button>
+    </nav>
 
     <aside id="recommendation-drawer" class="recommendation-drawer" hidden>
       <div class="drawer-backdrop" data-close-drawer></div>
@@ -1357,9 +1437,9 @@
     <section id="onboarding-modal" class="onboarding-modal" hidden>
       <div class="drawer-backdrop"></div>
       <div class="onboarding-panel">
-        <p class="eyebrow">First Run Setup</p>
-        <h2>Set EdgeIQ up for your betting style</h2>
-        <p>These defaults keep the dashboard focused and make recommended entries easier to size.</p>
+        <p class="eyebrow">Welcome To EdgeIQ</p>
+        <h2>Build your betting operating system</h2>
+        <p>Pick the sports, platforms, and risk posture EdgeIQ should use when it wakes up and builds your daily briefing.</p>
         <form id="onboarding-form" class="form-grid">
           <input id="onboarding-bankroll" type="number" min="1" step="0.01" placeholder="Starting bankroll" />
           <select id="onboarding-platform">
@@ -1376,21 +1456,22 @@
             <option>All Sports</option>
           </select>
           <select id="onboarding-risk">
+            <option value="paper_first">Paper-first</option>
+            <option value="conservative">Loss protection</option>
             <option value="balanced">Balanced</option>
-            <option value="conservative">Conservative</option>
             <option value="aggressive">Aggressive</option>
           </select>
           <input id="onboarding-default-wager" type="number" min="0" step="0.01" placeholder="Default wager" />
           <button type="submit">Save Setup</button>
         </form>
         <div class="button-row">
-          <button id="onboarding-upload-history" class="secondary">Upload Betting History</button>
+          <button id="onboarding-upload-history" class="secondary">Import Past Results</button>
           <button id="onboarding-skip" class="secondary">Skip</button>
         </div>
       </div>
     </section>
 
-    <script src="/static/app.js?v=20260716-desktop-final-stats"></script>
+    <script src="/static/app.js?v=20260721-performance"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -6,6 +6,8 @@ import os
 from datetime import date
 from typing import Any
 
+from utils.entity_normalization import canonical_person_key
+
 from data.providers.cache import get_json
 from data.providers.generic_props import normalize_props
 
@@ -83,7 +85,9 @@ def _extract_player_stat_rows(data: Any, player: str, stat: str, sport: str) -> 
         if not isinstance(row, dict):
             continue
         player_name = _player_name(row)
-        if player.strip().lower() not in player_name.lower():
+        needle = canonical_person_key(player)
+        candidate = canonical_person_key(player_name)
+        if needle not in candidate:
             continue
         value = _stat_value(row, stat)
         if value is None:

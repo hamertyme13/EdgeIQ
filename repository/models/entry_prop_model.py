@@ -1,4 +1,5 @@
 from sqlalchemy import (
+    Boolean,
     Column,
     Float,
     ForeignKey,
@@ -23,6 +24,12 @@ class EntryPropModel(Base):
 
     player_name = Column(String)
 
+    player_identity_id = Column(Integer)
+
+    player_provider = Column(String, default="")
+
+    provider_player_id = Column(String, default="")
+
     team = Column(String)
 
     sport = Column(String)
@@ -44,6 +51,26 @@ class EntryPropModel(Base):
     game = Column(String)
 
     game_time = Column(String, default="")
+
+    position = Column(String, default="")
+
+    baseline_line = Column(Float)
+
+    standard_line = Column(Float)
+
+    line_offer_type = Column(String, default="standard")
+
+    adjusted_line = Column(Boolean, default=False)
+
+    is_discounted_line = Column(Boolean, default=False)
+
+    is_premium_line = Column(Boolean, default=False)
+
+    line_discount = Column(Float, default=0.0)
+
+    projection_source = Column(String, default="")
+
+    auto_projected = Column(Boolean, default=False)
 
     actual = Column(Float)
 

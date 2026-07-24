@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timezone
 
@@ -10,6 +11,8 @@ from utils.time import utc_now
 
 from models.entry import Entry
 from analytics.entry_recommendation import recommendation as entry_recommendation
+from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
+from repository.repositories.player_identity_repository import PlayerIdentityRepository
 
 
 class EntryRepository:
@@ -47,6 +50,7 @@ class EntryRepository:
         recommended_by_app: bool = False,
         audit_snapshot: str = "",
         entry_mode: str = "real",
+        payout_type: str = "standard",
     ) -> int:
 
         EntryRepository._ensure_schema()
@@ -58,6 +62,22 @@ class EntryRepository:
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
             entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
+            payout = payout_analysis(
+                [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
+                entry.platform.value,
+                payout_type,
+                displayed_multiplier=multiplier,
+            )
+            identities = [
+                PlayerIdentityRepository.resolve(
+                    prop.player.name,
+                    prop.player.sport,
+                    prop.player.team,
+                    getattr(prop, "player_provider", "") or prop.platform.value,
+                    getattr(prop, "provider_player_id", ""),
+                )
+                for prop in entry.props
+            ]
 
             entry_model = EntryModel(
                 platform=entry.platform.value,
@@ -67,6 +87,10 @@ class EntryRepository:
                 recommendation=analysis["action"],
                 wager=wager,
                 multiplier=multiplier,
+                payout_type=payout["payout_type"],
+                payout_table_snapshot=json.dumps(payout),
+                expected_return=payout["expected_return"],
+                expected_value=payout["expected_value"],
                 potential_payout=potential_payout,
                 profit=EntryRepository._profit_for_result(result, wager, multiplier),
                 status=status,
@@ -80,11 +104,14 @@ class EntryRepository:
             session.add(entry_model)
             session.flush()
 
-            for prop in entry.props:
+            for prop, identity in zip(entry.props, identities, strict=False):
 
                 prop_model = EntryPropModel(
                     entry_id=entry_model.id,
                     player_name=prop.player.name,
+                    player_identity_id=identity["id"] if identity else getattr(prop, "player_identity_id", None),
+                    player_provider=getattr(prop, "player_provider", "") or prop.platform.value,
+                    provider_player_id=getattr(prop, "provider_player_id", "") or "",
                     team=prop.player.team,
                     sport=prop.player.sport,
                     stat=prop.stat.value,
@@ -96,6 +123,16 @@ class EntryRepository:
                     platform=prop.platform.value,
                     game=getattr(prop, "game", ""),
                     game_time=getattr(prop, "game_time", ""),
+                    position=getattr(prop, "position", ""),
+                    baseline_line=getattr(prop, "baseline_line", None),
+                    standard_line=getattr(prop, "standard_line", None),
+                    line_offer_type=getattr(prop, "line_offer_type", "standard") or "standard",
+                    adjusted_line=bool(getattr(prop, "adjusted_line", False)),
+                    is_discounted_line=bool(getattr(prop, "is_discounted_line", False)),
+                    is_premium_line=bool(getattr(prop, "is_premium_line", False)),
+                    line_discount=float(getattr(prop, "line_discount", 0.0) or 0.0),
+                    projection_source=getattr(prop, "projection_source", "") or "",
+                    auto_projected=bool(getattr(prop, "auto_projected", False)),
                 )
 
                 session.add(prop_model)
@@ -138,6 +175,10 @@ class EntryRepository:
                     "average_edge": entry.average_edge,
                     "wager": entry.wager or 0.0,
                     "multiplier": entry.multiplier or 1.0,
+                    "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+                    "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+                    "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+                    "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
                     "potential_payout": entry.potential_payout or 0.0,
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
@@ -149,6 +190,10 @@ class EntryRepository:
                     "props": [
                         {
                             "player": prop.player_name,
+                            "entry_prop_id": prop.id,
+                            "player_identity_id": getattr(prop, "player_identity_id", None),
+                            "player_provider": getattr(prop, "player_provider", "") or "",
+                            "provider_player_id": getattr(prop, "provider_player_id", "") or "",
                             "team": prop.team,
                             "sport": prop.sport,
                             "stat": prop.stat,
@@ -160,6 +205,16 @@ class EntryRepository:
                             "platform": prop.platform,
                             "game": prop.game,
                             "game_time": getattr(prop, "game_time", "") or "",
+                            "position": getattr(prop, "position", "") or "",
+                            "baseline_line": getattr(prop, "baseline_line", None),
+                            "standard_line": getattr(prop, "standard_line", None),
+                            "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                            "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                            "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                            "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                            "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                            "projection_source": getattr(prop, "projection_source", "") or "",
+                            "auto_projected": bool(getattr(prop, "auto_projected", False)),
                             "actual": getattr(prop, "actual", None),
                             "final_result": getattr(prop, "final_result", "") or "",
                             "final_source": getattr(prop, "final_source", "") or "",
@@ -198,6 +253,10 @@ class EntryRepository:
                     "recommendation": entry.recommendation,
                     "wager": entry.wager or 0.0,
                     "multiplier": entry.multiplier or 1.0,
+                    "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+                    "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+                    "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+                    "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
                     "potential_payout": entry.potential_payout or 0.0,
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
@@ -211,6 +270,10 @@ class EntryRepository:
                     "props": [
                         {
                             "player": prop.player_name,
+                            "entry_prop_id": prop.id,
+                            "player_identity_id": getattr(prop, "player_identity_id", None),
+                            "player_provider": getattr(prop, "player_provider", "") or "",
+                            "provider_player_id": getattr(prop, "provider_player_id", "") or "",
                             "team": prop.team,
                             "sport": prop.sport,
                             "stat": prop.stat,
@@ -222,6 +285,16 @@ class EntryRepository:
                             "platform": prop.platform,
                             "game": prop.game,
                             "game_time": getattr(prop, "game_time", "") or "",
+                            "position": getattr(prop, "position", "") or "",
+                            "baseline_line": getattr(prop, "baseline_line", None),
+                            "standard_line": getattr(prop, "standard_line", None),
+                            "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                            "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                            "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                            "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                            "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                            "projection_source": getattr(prop, "projection_source", "") or "",
+                            "auto_projected": bool(getattr(prop, "auto_projected", False)),
                             "actual": getattr(prop, "actual", None),
                             "final_result": getattr(prop, "final_result", "") or "",
                             "final_source": getattr(prop, "final_source", "") or "",
@@ -245,7 +318,7 @@ class EntryRepository:
         dnp_legs: int = 0,
         dnp_mode: str = "reduce",
         leg_results: list[dict] | None = None,
-    ) -> None:
+    ) -> dict:
         EntryRepository._ensure_schema()
         if result not in {"Win", "Loss", "Push", "DNP"}:
             raise ValueError("Entry result must be Win, Loss, Push, or DNP.")
@@ -254,6 +327,7 @@ class EntryRepository:
             entry = session.get(EntryModel, entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} was not found.")
+            was_settled = entry.status == "Settled"
             leg_count = (
                 session.query(EntryPropModel)
                 .filter(EntryPropModel.entry_id == entry.id)
@@ -266,6 +340,9 @@ class EntryRepository:
                 leg_count,
                 dnp_legs,
                 dnp_mode,
+                platform=entry.platform,
+                payout_type=getattr(entry, "payout_type", "standard") or "standard",
+                leg_results=leg_results,
             )
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
@@ -273,13 +350,43 @@ class EntryRepository:
             entry.status = "Settled"
             entry.result = result
             entry.profit = profit
-            entry.settled_at = utc_now()
+            if not was_settled or entry.settled_at is None:
+                entry.settled_at = utc_now()
             if leg_results:
                 EntryRepository._store_leg_results(session, entry.id, leg_results)
             synced_entry = EntryRepository._entry_dict(session, entry)
             session.commit()
 
         EntryRepository._sync_entry_to_bet_history(synced_entry)
+        return {
+            "id": entry_id,
+            "result": synced_entry["result"],
+            "profit": synced_entry["profit"],
+        }
+
+    @staticmethod
+    def exclude_from_tracking(entry_id: int, reason: str) -> None:
+        """Preserve an ungradable legacy paper entry without keeping it pending."""
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entry = session.get(EntryModel, entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} was not found.")
+            entry.status = "Excluded"
+            entry.result = "Unverifiable"
+            entry.profit = 0.0
+            entry.settled_at = utc_now()
+            snapshot = {}
+            try:
+                snapshot = json.loads(entry.audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                snapshot = {"original_audit": entry.audit_snapshot or ""}
+            snapshot["tracking_exclusion"] = {
+                "reason": reason,
+                "excluded_at": utc_now().isoformat(),
+            }
+            entry.audit_snapshot = json.dumps(snapshot)
+            session.commit()
 
     @staticmethod
     def sync_settled_to_bet_history() -> dict:
@@ -454,11 +561,13 @@ class EntryRepository:
         wins = sum(1 for entry in decisions if entry.get("result") == "Win")
         losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
         pushes = sum(1 for entry in settled if entry.get("result") == "Push")
-        avg_confidence = (
+        average_leg_confidence = (
             sum(float(entry.get("average_confidence") or 0.0) for entry in decisions) / len(decisions)
             if decisions
             else 0.0
         )
+        card_probabilities = [EntryRepository._joint_probability(entry) for entry in decisions]
+        avg_confidence = sum(card_probabilities) / len(card_probabilities) if card_probabilities else 0.0
         actual = (wins / len(decisions) * 100) if decisions else 0.0
         return {
             "active": len(active),
@@ -470,8 +579,24 @@ class EntryRepository:
             "pushes": pushes,
             "accuracy": round(actual, 1),
             "average_confidence": round(avg_confidence, 1),
+            "average_card_probability": round(avg_confidence, 1),
+            "average_leg_confidence": round(average_leg_confidence, 1),
             "calibration_edge": round(actual - avg_confidence, 1) if decisions else 0.0,
         }
+
+    @staticmethod
+    def _joint_probability(entry: dict) -> float:
+        probability = 1.0
+        legs = 0
+        for prop in entry.get("props") or []:
+            confidence = prop.get("confidence")
+            if confidence in (None, ""):
+                continue
+            probability *= max(0.01, min(0.99, float(confidence) / 100.0))
+            legs += 1
+        if legs:
+            return probability * 100.0
+        return max(0.0, min(100.0, float(entry.get("average_confidence") or 0.0)))
 
     @staticmethod
     def _profit_for_result(result: str, wager: float, multiplier: float) -> float:
@@ -647,6 +772,10 @@ class EntryRepository:
             "recommendation": entry.recommendation,
             "wager": entry.wager or 0.0,
             "multiplier": entry.multiplier or 1.0,
+            "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+            "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+            "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+            "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
             "potential_payout": entry.potential_payout or 0.0,
             "profit": entry.profit or 0.0,
             "status": entry.status,
@@ -660,6 +789,10 @@ class EntryRepository:
             "props": [
                 {
                     "player": prop.player_name,
+                    "entry_prop_id": prop.id,
+                    "player_identity_id": getattr(prop, "player_identity_id", None),
+                    "player_provider": getattr(prop, "player_provider", "") or "",
+                    "provider_player_id": getattr(prop, "provider_player_id", "") or "",
                     "team": prop.team,
                     "sport": prop.sport,
                     "stat": prop.stat,
@@ -671,6 +804,16 @@ class EntryRepository:
                     "platform": prop.platform,
                     "game": prop.game,
                     "game_time": getattr(prop, "game_time", "") or "",
+                    "position": getattr(prop, "position", "") or "",
+                    "baseline_line": getattr(prop, "baseline_line", None),
+                    "standard_line": getattr(prop, "standard_line", None),
+                    "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                    "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                    "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                    "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                    "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                    "projection_source": getattr(prop, "projection_source", "") or "",
+                    "auto_projected": bool(getattr(prop, "auto_projected", False)),
                     "actual": getattr(prop, "actual", None),
                     "final_result": getattr(prop, "final_result", "") or "",
                     "final_source": getattr(prop, "final_source", "") or "",
@@ -688,7 +831,20 @@ class EntryRepository:
         leg_count: int,
         dnp_legs: int = 0,
         dnp_mode: str = "reduce",
+        platform: str = "PrizePicks",
+        payout_type: str = "standard",
+        leg_results: list[dict] | None = None,
     ) -> tuple[str, float]:
+        if payout_type == "flex" and leg_results:
+            returned = settlement_return_multiplier(
+                platform,
+                payout_type,
+                leg_results,
+                displayed_multiplier=multiplier,
+            )
+            profit = round(wager * (returned - 1.0), 2)
+            settled_result = "Win" if profit > 0 else "Push" if profit == 0 else "Loss"
+            return settled_result, profit
         dnp_legs = max(0, min(int(dnp_legs or 0), int(leg_count or 0)))
         if result == "DNP":
             return "Push", 0.0

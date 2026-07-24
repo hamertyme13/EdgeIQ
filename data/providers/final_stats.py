@@ -10,6 +10,7 @@ from typing import Any
 
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.stat_normalization import stat_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 
 def find_final_stat(prop: dict) -> dict | None:
@@ -43,19 +44,19 @@ def _find_file_actual_stat(prop: dict) -> float | None:
     if not stats:
         return None
 
-    player = _norm(prop.get("player", ""))
+    player = canonical_person_key(prop.get("player", ""))
     sport = _norm(prop.get("sport", ""))
     stat = stat_key(prop.get("stat", ""))
-    game = _norm(prop.get("game", ""))
+    game = canonical_matchup_key(prop.get("game", ""))
 
     for row in stats:
-        if _norm(row.get("player", "")) != player:
+        if canonical_person_key(row.get("player", "")) != player:
             continue
         if sport and _norm(row.get("sport", "")) not in {"", sport}:
             continue
         if stat and stat_key(row.get("stat", "")) != stat:
             continue
-        if game and _norm(row.get("game", "")) not in {"", game}:
+        if game and canonical_matchup_key(row.get("game", "")) not in {"", game}:
             continue
         try:
             return float(row["actual"])

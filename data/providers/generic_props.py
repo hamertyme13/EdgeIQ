@@ -119,7 +119,7 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
     if trending == 0 and rank > 0:
         trending = max(1, 1_000_000 - rank)
 
-    return {
+    normalized = {
         "projection_id": _first_value(row, "projection_id", "id", "line_id") or f"{platform.lower()}-{index}",
         "player": player,
         "team": _first_value(row, "team", "team_abbr", "team_id", "team_abbreviation"),
@@ -137,6 +137,10 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
         "image_url": _first_value(row, "image_url", "headshot", "photo"),
         "platform": platform,
     }
+    player_id = _first_value(row, "player_id", "athlete_id", "provider_player_id")
+    if player_id:
+        normalized["player_id"] = player_id
+    return normalized
 
 
 def _first_value(row: dict, *keys: str) -> str:

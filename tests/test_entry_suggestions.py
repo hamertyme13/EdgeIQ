@@ -1,3 +1,4 @@
+import analytics.entry_suggestions as suggestions_module
 from analytics.entry_suggestions import suggest_entries
 from models.platform import Platform
 
@@ -84,6 +85,28 @@ def test_provider_backed_projection_scores_above_auto_projected_when_edge_matche
     assert all(prop.projection_source == "confirmed_provider" for prop in suggestions[0].entry.props)
 
 
+def test_generated_projection_keeps_auto_projected_provenance():
+    raw_props = [
+        {
+            "player": name,
+            "team": name,
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 20.5,
+            "projection": 22.0,
+            "auto_projected": True,
+            "projection_source": "line_model",
+            "confirmation": True,
+        }
+        for name in ("A", "B")
+    ]
+
+    suggestion = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=1, leg_count=2)[0]
+
+    assert all(prop.auto_projected for prop in suggestion.entry.props)
+    assert all(prop.projection_source == "line_model" for prop in suggestion.entry.props)
+
+
 def test_adjusted_prizepicks_lines_do_not_create_opposite_side_free_edges():
     raw_props = [
         {
@@ -126,3 +149,30 @@ def test_adjusted_prizepicks_lines_do_not_create_opposite_side_free_edges():
     assert ("A", "Under") not in adjusted_sides
     assert ("A", "Over") in adjusted_sides
     assert ("B", "Over") in adjusted_sides
+
+
+def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypatch):
+    calls = {"history": 0, "adjustments": 0}
+    history = [{"status": "Settled", "result": "Win"} for _ in range(5)]
+
+    def feedback_history():
+        calls["history"] += 1
+        return history
+
+    def adjustment(confidence, prop, entries):
+        calls["adjustments"] += 1
+        assert entries is history
+        return 0.0
+
+    monkeypatch.setattr(suggestions_module, "settled_feedback_entries", feedback_history)
+    monkeypatch.setattr(suggestions_module, "feedback_adjustment", adjustment)
+    raw_props = [
+        {"player": f"Player {index}", "team": f"T{index}", "league": "WNBA", "stat": "Points", "line": 10.5 + index}
+        for index in range(12)
+    ]
+
+    suggestions = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=2, leg_count=5, apply_feedback=True)
+
+    assert suggestions
+    assert calls["history"] == 1
+    assert calls["adjustments"] <= 18

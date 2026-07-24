@@ -30,12 +30,13 @@ class CachedResponse:
 def get_json(
     url: str,
     *,
+    cache_key: str | None = None,
     headers: dict[str, str] | None = None,
     timeout: int = 15,
     ttl_seconds: int = 300,
     retries: int = 2,
 ) -> CachedResponse:
-    cache_path = _cache_path(url)
+    cache_path = _cache_path(cache_key or url)
     cached = _read_cache(cache_path)
 
     if cached and cached.age_seconds <= ttl_seconds:

@@ -43,6 +43,8 @@ def initialize_database():
     from repository.models.settings_model import SettingsModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
     from repository.models.bankroll_transaction_model import BankrollTransactionModel
+    from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel
+    from repository.models.settlement_audit_model import SettlementAuditModel
     from repository.entities import BetEntity
 
     Base.metadata.create_all(bind=engine)
@@ -64,6 +66,10 @@ def _run_lightweight_migrations():
             ("source", "TEXT DEFAULT 'manual'"),
             ("source_entry_id", "INTEGER"),
             ("entry_mode", "TEXT DEFAULT 'real'"),
+            ("payout_type", "TEXT DEFAULT 'standard'"),
+            ("payout_table_snapshot", "TEXT DEFAULT ''"),
+            ("expected_return", "REAL DEFAULT 0.0"),
+            ("expected_value", "REAL DEFAULT 0.0"),
             ("created_at", "DATETIME"),
         ],
         "entries": [
@@ -78,11 +84,28 @@ def _run_lightweight_migrations():
             ("recommended_by_app", "BOOLEAN DEFAULT 0"),
             ("audit_snapshot", "TEXT DEFAULT ''"),
             ("entry_mode", "TEXT DEFAULT 'real'"),
+            ("payout_type", "TEXT DEFAULT 'standard'"),
+            ("payout_table_snapshot", "TEXT DEFAULT ''"),
+            ("expected_return", "REAL DEFAULT 0.0"),
+            ("expected_value", "REAL DEFAULT 0.0"),
         ],
         "entry_props": [
             ("platform", "TEXT DEFAULT ''"),
+            ("player_identity_id", "INTEGER"),
+            ("player_provider", "TEXT DEFAULT ''"),
+            ("provider_player_id", "TEXT DEFAULT ''"),
             ("game", "TEXT DEFAULT ''"),
             ("game_time", "TEXT DEFAULT ''"),
+            ("position", "TEXT DEFAULT ''"),
+            ("baseline_line", "REAL"),
+            ("standard_line", "REAL"),
+            ("line_offer_type", "TEXT DEFAULT 'standard'"),
+            ("adjusted_line", "BOOLEAN DEFAULT 0"),
+            ("is_discounted_line", "BOOLEAN DEFAULT 0"),
+            ("is_premium_line", "BOOLEAN DEFAULT 0"),
+            ("line_discount", "REAL DEFAULT 0.0"),
+            ("projection_source", "TEXT DEFAULT ''"),
+            ("auto_projected", "BOOLEAN DEFAULT 0"),
             ("direction", "TEXT DEFAULT 'Over'"),
             ("actual", "REAL"),
             ("final_result", "TEXT DEFAULT ''"),
@@ -91,6 +114,14 @@ def _run_lightweight_migrations():
         ],
         "final_player_stats": [
             ("status", "TEXT DEFAULT 'played'"),
+            ("player_identity_id", "INTEGER"),
+            ("player_provider", "TEXT DEFAULT ''"),
+            ("provider_player_id", "TEXT DEFAULT ''"),
+        ],
+        "prop_line_history": [
+            ("game", "TEXT DEFAULT ''"),
+            ("game_time", "TEXT DEFAULT ''"),
+            ("line_offer_type", "TEXT DEFAULT 'standard'"),
         ],
     }
 

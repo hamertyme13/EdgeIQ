@@ -8,4 +8,5 @@ edgeiq.db
 edgeiq.db-shm
 edgeiq.db-wal
 .edgeiq_cache/
+.edgeiq_backups/
 assets/*.iconset/

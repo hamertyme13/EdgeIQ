@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from analytics.correlation import detect_correlations
 from analytics.entry_recommendation import recommendation
-from analytics.model_feedback import feedback_adjustment
+from analytics.model_feedback import feedback_adjustment, settled_feedback_entries
 from analytics.prop_metrics import calculate_confidence, calculate_edge
 from analytics.projection import auto_projection
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
+from utils.entity_normalization import canonical_person_key
 from models.stat_type import StatType
 from utils.stat_normalization import stat_type_from_text
 
@@ -45,30 +46,42 @@ def suggest_entries(
     candidates = [
         candidate
         for prop in raw_props
-        if prop.get("line") is not None and prop.get("league", "").upper() == sport.upper()
+        if prop.get("line") is not None
+        and (sport.upper() == "ALL SPORTS" or prop.get("league", "").upper() == sport.upper())
         for candidate in _props_from_feed(prop, platform)
     ]
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
-    candidates = _top_markets_per_player(candidates, per_player=2, limit=24)
+    # Preserve broad player/stat coverage without letting 5-leg combinations
+    # dominate every dashboard refresh.
+    candidates = _top_markets_per_player(candidates, per_player=2, limit=18)
+    adjusted_candidates: dict[int, Prop] = {}
+    if apply_feedback:
+        feedback_entries = settled_feedback_entries()
+        for prop in candidates:
+            adjustment = feedback_adjustment(prop.confidence, prop, feedback_entries)
+            adjusted_candidates[id(prop)] = replace(
+                prop,
+                confidence_adjustment=adjustment,
+                confidence=max(0.0, min(100.0, prop.confidence + adjustment)),
+            )
 
     scored: list[tuple[float, Entry, list[str]]] = []
     for props in itertools.combinations(candidates, leg_count):
         if _has_duplicate_players(props):
             continue
-        entry = Entry(platform=platform, props=list(props))
-        warnings = detect_correlations(entry)
+        raw_entry = Entry(platform=platform, props=list(props))
+        warnings = detect_correlations(raw_entry)
         if exclude_correlated and warnings:
             continue
-        if max_same_team is not None and _max_team_count(entry) > max_same_team:
+        if max_same_team is not None and _max_team_count(raw_entry) > max_same_team:
             continue
-        if entry.average_confidence < min_confidence or entry.average_edge < min_edge:
+        if raw_entry.average_confidence < min_confidence or raw_entry.average_edge < min_edge:
             continue
-        if apply_feedback:
-            for prop in entry.props:
-                adjustment = feedback_adjustment(prop.confidence, prop)
-                prop.confidence_adjustment = adjustment
-                prop.confidence = max(0.0, min(100.0, prop.confidence + adjustment))
+        entry = Entry(
+            platform=platform,
+            props=[adjusted_candidates[id(prop)] for prop in props],
+        ) if apply_feedback else raw_entry
         score = _score_entry(entry, warnings)
         scored.append((score, entry, warnings))
 
@@ -159,7 +172,7 @@ def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
 def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: int, direction: str, projection: float) -> Prop:
     edge = _directional_edge(line, projection, direction)
     hit_rate = raw.get("hit_rate") or {}
-    auto_projected = raw.get("projection") in (None, "")
+    auto_projected = bool(raw.get("auto_projected")) if "auto_projected" in raw else raw.get("projection") in (None, "")
     projection_source = raw.get(
         "projection_source",
         "confirmed_provider" if raw.get("confirmation") or not auto_projected else "line_model",
@@ -180,6 +193,7 @@ def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: 
         platform=platform,
         game=raw.get("game", ""),
         game_time=raw.get("game_time", ""),
+        position=raw.get("position", ""),
         season_type=raw.get("season_type", ""),
         needs_projection=False,
         auto_projected=auto_projected,
@@ -197,6 +211,9 @@ def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: 
         espn_note=hit_rate.get("note", ""),
         source_signals=raw.get("source_signals") or raw.get("confirmation_signals") or [],
         source_score=float(raw.get("source_score") or 0.0),
+        player_identity_id=raw.get("player_identity_id"),
+        player_provider=str(raw.get("player_provider") or raw.get("platform") or platform.value),
+        provider_player_id=str(raw.get("provider_player_id") or raw.get("player_id") or ""),
     )
 
 
@@ -241,7 +258,7 @@ def _top_markets_per_player(props: list[Prop], per_player: int = 2, limit: int =
     counts: dict[str, int] = {}
 
     for prop in props:
-        key = prop.player.name.strip().lower()
+        key = canonical_person_key(prop.player.name)
         if not key or counts.get(key, 0) >= per_player:
             continue
         counts[key] = counts.get(key, 0) + 1
@@ -253,7 +270,7 @@ def _top_markets_per_player(props: list[Prop], per_player: int = 2, limit: int =
 
 
 def _has_duplicate_players(props: tuple[Prop, ...]) -> bool:
-    names = [prop.player.name.strip().lower() for prop in props]
+    names = [canonical_person_key(prop.player.name) for prop in props]
     return len(names) != len(set(names))
 
 

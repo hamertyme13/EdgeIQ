@@ -144,6 +144,7 @@ def fetch_projections() -> list[dict]:
 
         results.append({
             "projection_id": line.get("id"),
+            "player_id":     player_id,
             "player":        name,
             "team":          player.get("team_id", ""),   # no abbrev in feed
             "league":        league,

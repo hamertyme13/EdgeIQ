@@ -10,6 +10,9 @@ class FinalPlayerStatModel(Base):
 
     id = Column(Integer, primary_key=True)
     player = Column(String, nullable=False, index=True)
+    player_identity_id = Column(Integer, index=True)
+    player_provider = Column(String, default="")
+    provider_player_id = Column(String, default="")
     team = Column(String, default="")
     sport = Column(String, nullable=False, index=True)
     stat = Column(String, nullable=False, index=True)

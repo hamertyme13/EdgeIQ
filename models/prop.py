@@ -28,6 +28,8 @@ class Prop:
 
     game_time: str = ""
 
+    position: str = ""
+
     season_type: str = ""
 
     needs_projection: bool = False
@@ -65,3 +67,9 @@ class Prop:
     source_signals: list[dict] | None = None
 
     source_score: float = 0.0
+
+    player_identity_id: int | None = None
+
+    player_provider: str = ""
+
+    provider_player_id: str = ""

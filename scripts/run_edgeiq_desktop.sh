@@ -3,8 +3,8 @@ set -euo pipefail
 
 APP_DIR="/Users/joshuahamer/Documents/python_projects/EdgeIQ"
 HOST="127.0.0.1"
-REQUIRED_UI_VERSION="20260716-desktop-final-stats"
-IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005}"
+REQUIRED_UI_VERSION="20260721-performance"
+IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005 8006 8008 8009 8010}"
 
 cd "$APP_DIR"
 
@@ -64,7 +64,7 @@ PYTHON_BIN="$(pick_python)" || {
 }
 
 PORT_STATE="$(find_port)" || {
-  echo "Ports 8007 and 8000-8005 are already in use."
+  echo "EdgeIQ could not find a free local port from 8000-8010."
   read -r -p "Press Return to close..."
   exit 1
 }

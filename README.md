@@ -115,7 +115,7 @@ EdgeIQ currently normalizes player prop data from:
 - NewsAPI for recent player/team context when `NEWSAPI_KEY` is configured
 - OpenWeather for outdoor NFL/MLB weather context when `OPENWEATHER_API_KEY` is configured
 - ESPN public box scores for NBA/WNBA final-stat settlement
-- SportsDataIO final stats when `SPORTSDATAIO_API_KEY` is configured
+- Official ESPN box scores for automatic final-stat grading; SportsDataIO is supplemental context only
 
 Provider calls use `.edgeiq_cache/providers` for a short cache and stale fallback
 so the desktop app can continue showing recent data if a feed is temporarily

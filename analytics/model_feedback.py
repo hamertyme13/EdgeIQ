@@ -4,11 +4,19 @@ from repository.repositories.entry_repository import EntryRepository
 from utils.stat_normalization import stat_key
 
 
-def feedback_adjustment(confidence: float, prop: object | None = None) -> float:
-    entries = [
+def settled_feedback_entries() -> list[dict]:
+    return [
         entry for entry in EntryRepository.all()
         if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss"}
     ]
+
+
+def feedback_adjustment(
+    confidence: float,
+    prop: object | None = None,
+    entries: list[dict] | None = None,
+) -> float:
+    entries = entries if entries is not None else settled_feedback_entries()
     if len(entries) < 5:
         return 0.0
 

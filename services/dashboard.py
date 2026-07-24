@@ -214,10 +214,13 @@ def _performance_insights(stats: dict) -> list[dict]:
     platform_rows = _rank_group(stats.get("by_platform", {}))
     stat_rows = _rank_group(stats.get("by_stat", {}))
 
-    best_sport = _first_with_decisions(sport_rows)
-    worst_sport = _last_with_decisions(sport_rows)
-    best_platform = _first_with_decisions(platform_rows)
-    weakest_stat = _last_with_decisions(stat_rows)
+    best_sport = next(
+        (row for row in sport_rows if row.get("decisions", 0) >= 5 and row.get("profit", 0.0) > 0 and row.get("win_pct", 0.0) >= 50),
+        None,
+    )
+    worst_sport = _last_with_decisions(sport_rows, minimum=5)
+    best_platform = _first_with_decisions(platform_rows, minimum=5)
+    weakest_stat = _last_with_decisions(stat_rows, minimum=8)
 
     if best_sport:
         insights.append({
@@ -268,18 +271,20 @@ def _performance_insights(stats: dict) -> list[dict]:
 def _rank_group(group: dict) -> list[dict]:
     rows = []
     for name, stats in (group or {}).items():
+        if str(name or "").strip().lower() in {"", "unknown", "unavailable", "test", "smoke"}:
+            continue
         decisions = stats.get("wins", 0) + stats.get("losses", 0)
         rows.append({"name": name, "decisions": decisions, **stats})
     rows.sort(key=lambda row: (row.get("profit", 0.0), row.get("win_pct", 0.0), row["decisions"]), reverse=True)
     return rows
 
 
-def _first_with_decisions(rows: list[dict]) -> dict | None:
-    return next((row for row in rows if row.get("decisions", 0) > 0), None)
+def _first_with_decisions(rows: list[dict], minimum: int = 1) -> dict | None:
+    return next((row for row in rows if row.get("decisions", 0) >= minimum), None)
 
 
-def _last_with_decisions(rows: list[dict]) -> dict | None:
-    candidates = [row for row in rows if row.get("decisions", 0) > 0]
+def _last_with_decisions(rows: list[dict], minimum: int = 1) -> dict | None:
+    candidates = [row for row in rows if row.get("decisions", 0) >= minimum]
     if not candidates:
         return None
     candidates.sort(key=lambda row: (row.get("profit", 0.0), row.get("win_pct", 0.0)))
