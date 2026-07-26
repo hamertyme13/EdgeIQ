@@ -22,6 +22,7 @@ def canonical_matchup_key(value: object, aliases: dict[str, str] | None = None) 
     if not text:
         return ""
     normalized = re.sub(r"\s+(?:VS\.?|V\.?|AT)\s+", "@", text)
+    normalized = re.sub(r"\s+(?:-|·)\s+", "@", normalized)
     parts = [part.strip() for part in re.split(r"[@/]", normalized) if part.strip()]
     keys = [_team_key(part, aliases or {}) for part in parts]
     keys = [key for key in keys if key]

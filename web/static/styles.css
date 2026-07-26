@@ -1223,6 +1223,65 @@ p { color: var(--muted); margin: 5px 0 0; }
 .advantage-center-panel {
   margin-bottom: 16px;
 }
+.journey-strip {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(92px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+.journey-step {
+  min-width: 92px;
+  padding: 9px 10px;
+  border-top: 2px solid var(--line);
+  background: rgba(10, 16, 28, .55);
+}
+.journey-step strong,
+.journey-step span {
+  display: block;
+}
+.journey-step span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.journey-step.journey-ready {
+  border-color: var(--primary);
+}
+.advantage-hero {
+  grid-column: 1 / -1;
+  border-color: rgba(57, 255, 136, .36);
+}
+.advantage-hero-props {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+.advantage-hero-props > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(8, 13, 24, .7);
+}
+.validation-gates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.validation-gate {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.validation-gate progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--primary);
+}
 .advantage-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1529,6 +1588,20 @@ p { color: var(--muted); margin: 5px 0 0; }
   padding-inline: 22px;
 }
 .entry-economics { margin: 12px 0; }
+.entry-payout-details {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.entry-payout-details summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+.entry-payout-details .field-label {
+  margin-top: 10px;
+  max-width: 360px;
+}
 .form-grid.compact-controls {
   margin: 14px 0;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -3580,6 +3653,15 @@ tr:hover td {
 
   .briefing-hero-card .briefing-card {
     min-height: 0;
+  }
+
+  .journey-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .journey-step {
+    min-width: 0;
   }
 }
 .leg-settlement-note {

@@ -73,3 +73,11 @@ class Prop:
     player_provider: str = ""
 
     provider_player_id: str = ""
+
+    model_version: str = ""
+
+    feature_as_of: str = ""
+
+    forecast_snapshot: dict | None = None
+
+    forecast_paid_eligible: bool = False

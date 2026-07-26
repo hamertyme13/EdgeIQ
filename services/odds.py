@@ -40,10 +40,10 @@ def display_games():
 
     console.print()
 
-    selection = input("Choose game: ")
+    selection_text = input("Choose game: ")
 
     try:
-        selection = int(selection)
+        selection = int(selection_text)
     except ValueError:
         console.print("[red]Please enter a valid number.[/red]")
         return

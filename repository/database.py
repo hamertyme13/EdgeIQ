@@ -1,4 +1,5 @@
 import os
+from typing import Any
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base
@@ -6,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
 
-_ENGINE_ARGS = {"echo": False}
+_ENGINE_ARGS: dict[str, Any] = {"echo": False}
 
 if DATABASE_URL.startswith("sqlite"):
     _ENGINE_ARGS["connect_args"] = {"check_same_thread": False, "timeout": 30}
@@ -32,7 +33,7 @@ SessionLocal = sessionmaker(
     autocommit=False,
 )
 
-Base = declarative_base()
+Base: Any = declarative_base()
 
 
 def initialize_database():
@@ -45,6 +46,7 @@ def initialize_database():
     from repository.models.bankroll_transaction_model import BankrollTransactionModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel
     from repository.models.settlement_audit_model import SettlementAuditModel
+    from repository.models.prediction_record_model import PredictionRecordModel
     from repository.entities import BetEntity
 
     Base.metadata.create_all(bind=engine)

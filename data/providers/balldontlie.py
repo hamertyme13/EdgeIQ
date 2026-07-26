@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 from utils.entity_normalization import canonical_person_key
 
@@ -129,10 +129,12 @@ def _stat_value(row: dict, stat: str) -> float | None:
     }
     if "pra" in normalized:
         values = [_value(row, key) for key in ("pts", "reb", "ast", "points", "rebounds", "assists")]
-        if values[:3] and all(value is not None for value in values[:3]):
-            return sum(values[:3])
-        if all(value is not None for value in values[3:]):
-            return sum(values[3:])
+        short_values = values[:3]
+        long_values = values[3:]
+        if short_values and all(value is not None for value in short_values):
+            return sum(cast(list[float], short_values))
+        if long_values and all(value is not None for value in long_values):
+            return sum(cast(list[float], long_values))
         return None
     for label, candidates in keys.items():
         if label in normalized:

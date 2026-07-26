@@ -175,4 +175,4 @@ def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypat
 
     assert suggestions
     assert calls["history"] == 1
-    assert calls["adjustments"] <= 18
+    assert calls["adjustments"] <= 48

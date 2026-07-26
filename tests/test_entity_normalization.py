@@ -12,3 +12,4 @@ def test_matchup_key_ignores_home_away_order_and_aliases():
     aliases = {"NYL": "NY", "LVA": "LV"}
 
     assert canonical_matchup_key("NYL vs LVA", aliases) == canonical_matchup_key("LVA@NYL", aliases)
+    assert canonical_matchup_key("NYL - LVA", aliases) == canonical_matchup_key("LVA · NYL", aliases)

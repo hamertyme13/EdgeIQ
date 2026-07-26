@@ -28,3 +28,18 @@ def test_flex_settlement_uses_partial_win_multiplier():
     )
 
     assert multiplier == 1.09
+
+
+def test_exact_offer_and_correlation_are_used_for_ev() -> None:
+    independent = payout_analysis([0.6, 0.6], "PrizePicks", exact_schedule={"2": 3.0})
+    correlated = payout_analysis(
+        [0.6, 0.6],
+        "PrizePicks",
+        exact_schedule={"2": 3.0},
+        correlation_matrix=[[1.0, 0.25], [0.25, 1.0]],
+    )
+
+    assert correlated["source"] == "exact_offer_snapshot"
+    assert correlated["requires_app_confirmation"] is False
+    assert correlated["correlation_adjusted"] is True
+    assert correlated["all_hit_probability"] != independent["all_hit_probability"]

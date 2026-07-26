@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 MODEL_NAME = "EdgeIQ Local"
-MODEL_VERSION = "edgeiq-local-v1.0"
+MODEL_VERSION = "edgeiq-local-v2.0"
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,8 @@ def model_card(suggestions: list[dict]) -> dict:
             "data_quality",
             "source_signals",
             "correlation_penalty",
-            "market_trending",
+            "forecast_distribution",
+            "segment_calibration",
         ],
     }
 
@@ -88,7 +89,10 @@ def _local_score(suggestion: dict) -> float:
     avg_quality = _average_nested(props, "data_quality", "score", default=50.0)
     source_bonus = min(8.0, sum(len(prop.get("source_signals") or []) for prop in props) * 1.5)
     hit_rate_bonus = _hit_rate_bonus(props)
-    trend_bonus = min(6.0, sum(float(prop.get("trending_count") or 0.0) for prop in props) / 60000.0)
+    evidence_bonus = min(
+        9.0,
+        sum(3.0 for prop in props if prop.get("forecast_paid_eligible")),
+    )
     warning_penalty = len(suggestion.get("warnings") or []) * 7.0
     leg_penalty = max(0, int(suggestion.get("leg_count") or len(props)) - 3) * 2.5
     grade_bonus = {"A": 8.0, "B": 4.0, "C": 1.0, "D": -4.0, "F": -10.0}.get(str(suggestion.get("grade", "")).upper(), 0.0)
@@ -99,7 +103,7 @@ def _local_score(suggestion: dict) -> float:
         + avg_quality * 0.18
         + source_bonus
         + hit_rate_bonus
-        + trend_bonus
+        + evidence_bonus
         + grade_bonus
         - warning_penalty
         - leg_penalty
@@ -122,8 +126,10 @@ def _reasons(suggestion: dict) -> list[str]:
     source_count = sum(len(prop.get("source_signals") or []) for prop in props)
     if source_count:
         reasons.append(f"{source_count} supporting source signals")
-    if any(float(prop.get("trending_count") or 0.0) > 10000 for prop in props):
-        reasons.append("strong market interest")
+    if props and all(prop.get("forecast_paid_eligible") for prop in props):
+        reasons.append("every leg clears model-evidence thresholds")
+    elif props:
+        reasons.append("paper-only candidate while versioned model evidence builds")
     return reasons
 
 
@@ -162,8 +168,8 @@ def _average(props: list[dict], key: str) -> float:
 
 
 def _average_nested(props: list[dict], parent: str, key: str, default: float = 0.0) -> float:
-    values = [
-        float((prop.get(parent) or {}).get(key) if (prop.get(parent) or {}).get(key) is not None else default)
-        for prop in props
-    ]
+    values = []
+    for prop in props:
+        value = (prop.get(parent) or {}).get(key)
+        values.append(float(str(default if value is None else value)))
     return sum(values) / len(values) if values else default

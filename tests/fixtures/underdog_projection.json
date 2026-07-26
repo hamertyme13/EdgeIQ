@@ -1,0 +1,40 @@
+{
+  "players": [
+    {
+      "id": "p2",
+      "first_name": "A'ja",
+      "last_name": "Wilson",
+      "team_id": "LVA",
+      "sport_id": "WNBA",
+      "position_name": "F"
+    }
+  ],
+  "appearances": [
+    {
+      "id": "a2",
+      "player_id": "p2",
+      "match_id": "g2"
+    }
+  ],
+  "games": [
+    {
+      "id": "g2",
+      "abbreviated_title": "LVA @ PHX",
+      "scheduled_at": "2026-07-25T21:00:00Z"
+    }
+  ],
+  "over_under_lines": [
+    {
+      "id": "line-2",
+      "status": "active",
+      "stat_value": "22.5",
+      "rank": 100,
+      "over_under": {
+        "appearance_stat": {
+          "appearance_id": "a2",
+          "display_stat": "Points"
+        }
+      }
+    }
+  ]
+}

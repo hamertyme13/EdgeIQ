@@ -308,6 +308,6 @@ def _entry_description(entry: dict, props: list[dict]) -> str:
 
 def _format_line(value: object) -> str:
     try:
-        return f"{float(value):g}"
+        return f"{float(str(value)):g}"
     except (TypeError, ValueError):
         return str(value or "").strip()

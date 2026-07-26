@@ -12,6 +12,17 @@ def calculate_edge(
     return projection - line
 
 
+def calculate_directional_edge(
+    line: float,
+    projection: float,
+    direction: object = "Over",
+) -> float:
+    """Return positive edge when the projection supports the selected side."""
+
+    raw_edge = calculate_edge(line, projection)
+    return -raw_edge if str(direction or "Over").strip().lower() == "under" else raw_edge
+
+
 def calculate_confidence(
     edge: float,
     stat: object | None = None,

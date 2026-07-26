@@ -8,6 +8,7 @@ scores and normalize them into EdgeIQ's final-player-stat shape.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlencode
 
@@ -152,7 +153,7 @@ def _box_score_params(game_id: str) -> dict[str, str | int]:
     }
 
 
-def _get_json(endpoint: str, params: dict[str, object], ttl_seconds: int) -> dict:
+def _get_json(endpoint: str, params: Mapping[str, object], ttl_seconds: int) -> dict:
     url = f"{_BASE}/{endpoint}?{urlencode(params)}"
     data = get_json(url, headers=_HEADERS, timeout=8, ttl_seconds=ttl_seconds, retries=0).data
     return data if isinstance(data, dict) else {}

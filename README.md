@@ -1,6 +1,6 @@
 # EdgeIQ
 
-EdgeIQ is a Python desktop and CLI application for player prop research, entry
+EdgeIQ is a Python desktop, browser, and CLI application for player prop research, entry
 building, bet tracking, and bankroll/performance review.
 
 The current desktop app is a PyQt6 alpha with live prop feeds, line shopping,
@@ -28,7 +28,7 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-For development with pytest:
+For development with validation tooling:
 
 ```bash
 pip install -e ".[dev]"
@@ -88,11 +88,34 @@ python app.py
 ## Test
 
 ```bash
+ruff check .
+mypy analytics/release_validation.py services/data_management.py utils/entity_normalization.py
 pytest
 ```
 
-The tests are focused on calculation, recommendation, correlation, display, and
-repository smoke coverage. Live provider calls are avoided in tests.
+Tests use an isolated temporary SQLite database. Provider contracts use saved
+fixtures, and migration tests exercise upgrades from legacy schemas. Live
+provider calls are avoided.
+
+## v2.1 Validation
+
+Results contains an evidence-gated release scorecard for settled paper entries,
+verified individual props, segmented accuracy, chronological validation,
+closing-line value, and calibration error. The model remains in
+`collecting_evidence` until every release gate passes.
+
+The primary workflow now begins in Advantage Center: check provider freshness,
+rank opportunities, inspect supporting evidence, add a paper entry, settle it
+from final stats, and review calibration.
+
+See [docs/RELEASE_2_1.md](docs/RELEASE_2_1.md) for the release standard.
+
+## Backup And Export
+
+Use **Create Backup** or **Export Data** under Today > System Status > Data
+Health. SQLite backups are written to `.edgeiq_backups/`; portable versioned
+JSON exports are written to `.edgeiq_exports/`. Both directories and the live
+database are excluded from Git.
 
 ## EdgeIQ Local Model
 
@@ -156,8 +179,6 @@ database and set `EDGEIQ_ALLOWED_ORIGINS` to your website origin.
 
 ## Alpha Notes
 
-This is still an alpha. The app is useful locally, but the next production-grade
-steps are broader UI verification, provider contract tests, a formal migration
-tool if the schema keeps growing, and packaged desktop distribution.
-- Python
-- Rich
+This is still an alpha. The v2.1 scorecard intentionally separates implemented
+validation infrastructure from statistically proven performance; no win-rate or
+profitability claim is made until the evidence gates pass.

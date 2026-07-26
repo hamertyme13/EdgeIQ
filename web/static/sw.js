@@ -1,9 +1,11 @@
-const CACHE_NAME = "edgeiq-shell-20260721-performance";
+const CACHE_NAME = "edgeiq-shell-20260726-api-efficiency-v1";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
   "/static/styles.css",
   "/static/app.js",
+  "/static/ui-shell.js",
+  "/static/ui-utils.js",
   "/static/edgeiq-icon.png",
   "/static/manifest.webmanifest"
 ];

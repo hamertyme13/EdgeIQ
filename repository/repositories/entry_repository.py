@@ -12,7 +12,9 @@ from utils.time import utc_now
 from models.entry import Entry
 from analytics.entry_recommendation import recommendation as entry_recommendation
 from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
+from analytics.correlation import estimate_correlation_matrix
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 
 
 class EntryRepository:
@@ -62,11 +64,24 @@ class EntryRepository:
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
             entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
+            audit_payload = {}
+            try:
+                audit_payload = json.loads(audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                audit_payload = {}
+            audited_payout = audit_payload.get("payout_analysis") or {}
+            exact_schedule = (
+                audited_payout.get("payouts")
+                if audited_payout.get("source") == "exact_offer_snapshot"
+                else None
+            )
             payout = payout_analysis(
                 [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
                 entry.platform.value,
                 payout_type,
                 displayed_multiplier=multiplier,
+                correlation_matrix=estimate_correlation_matrix(entry.props),
+                exact_schedule=exact_schedule,
             )
             identities = [
                 PlayerIdentityRepository.resolve(
@@ -136,6 +151,14 @@ class EntryRepository:
                 )
 
                 session.add(prop_model)
+                session.flush()
+                PredictionLedgerRepository.record(
+                    session,
+                    entry_model,
+                    prop_model,
+                    prop,
+                    entry_model.payout_table_snapshot,
+                )
 
             session.commit()
             return entry_model.id
@@ -363,6 +386,30 @@ class EntryRepository:
             "result": synced_entry["result"],
             "profit": synced_entry["profit"],
         }
+
+    @staticmethod
+    def reopen_for_settlement(entry_id: int, reason: str) -> None:
+        """Return a prematurely settled entry to Pending without discarding final leg snapshots."""
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entry = session.get(EntryModel, entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} was not found.")
+            entry.status = "Pending"
+            entry.result = ""
+            entry.profit = 0.0
+            entry.settled_at = None
+            snapshot = {}
+            try:
+                snapshot = json.loads(entry.audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                snapshot = {"original_audit": entry.audit_snapshot or ""}
+            snapshot["settlement_reopened"] = {
+                "reason": reason,
+                "reopened_at": utc_now().isoformat(),
+            }
+            entry.audit_snapshot = json.dumps(snapshot)
+            session.commit()
 
     @staticmethod
     def exclude_from_tracking(entry_id: int, reason: str) -> None:
@@ -754,6 +801,7 @@ class EntryRepository:
             prop_model.final_result = str(result.get("result") or "")
             prop_model.final_source = str(result.get("source") or "")
             prop_model.final_status = str(result.get("final_status") or result.get("status") or "")
+            PredictionLedgerRepository.settle(session, prop_model)
 
     @staticmethod
     def _entry_dict(session: Session, entry: EntryModel) -> dict:

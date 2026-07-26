@@ -17,8 +17,8 @@ class CalibrationBucket:
     bets:           int
     wins:           int
     actual_pct:     float   # wins / bets
-    predicted_mid:  float   # midpoint of the bucket
-    error:          float   # actual_pct - predicted_mid (positive = better than predicted)
+    predicted_mid:  float   # mean prediction inside the bucket
+    error:          float   # actual_pct - mean prediction (positive = better than predicted)
 
 
 def calibrate(bets_with_probs: list[dict]) -> list[CalibrationBucket]:
@@ -41,15 +41,20 @@ def calibrate(bets_with_probs: list[dict]) -> list[CalibrationBucket]:
         result = bet.get("result", "")
         if prob is None or result == "Push":
             continue
+        try:
+            prob = max(0.0, min(100.0, float(prob)))
+        except (TypeError, ValueError):
+            continue
 
         # Which 10-point bucket?
         bucket_floor = int(prob // 10) * 10
         bucket_floor = max(0, min(90, bucket_floor))
 
         if bucket_floor not in buckets_raw:
-            buckets_raw[bucket_floor] = {"bets": 0, "wins": 0}
+            buckets_raw[bucket_floor] = {"bets": 0, "wins": 0, "probability_sum": 0.0}
 
         buckets_raw[bucket_floor]["bets"] += 1
+        buckets_raw[bucket_floor]["probability_sum"] += float(prob)
         if result == "Win":
             buckets_raw[bucket_floor]["wins"] += 1
 
@@ -58,7 +63,7 @@ def calibrate(bets_with_probs: list[dict]) -> list[CalibrationBucket]:
         data = buckets_raw[floor]
         n    = data["bets"]
         wins = data["wins"]
-        mid  = floor + 5.0
+        mid  = data["probability_sum"] / n if n else floor + 5.0
         actual = (wins / n * 100) if n else 0.0
 
         result_buckets.append(CalibrationBucket(

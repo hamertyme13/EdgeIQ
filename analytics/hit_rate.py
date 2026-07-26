@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from analytics.projection import auto_projection
-from analytics.prop_metrics import calculate_edge
+from analytics.prop_metrics import calculate_directional_edge
 from repository.repositories.final_stats_repository import FinalStatsRepository
 
 
@@ -30,12 +30,13 @@ def estimate_hit_rate(
     projection: float | None = None,
     trending_count: int = 0,
     sport: str | None = None,
+    direction: str = "Over",
 ) -> HitRateSummary:
     resolved_projection = projection if projection is not None else auto_projection(line, trending_count)
-    edge = calculate_edge(line, resolved_projection)
+    edge = calculate_directional_edge(line, resolved_projection, direction)
     history = FinalStatsRepository.history(player, stat, sport=sport, limit=100)
     if history:
-        return _from_history(player, stat, line, resolved_projection, edge, history)
+        return _from_history(player, stat, line, resolved_projection, edge, history, direction)
 
     base = _rate_from_edge(edge)
 
@@ -62,6 +63,7 @@ def _from_history(
     projection: float,
     edge: float,
     history: list[dict],
+    direction: str,
 ) -> HitRateSummary:
     played_history = _played_rows(history)
     return HitRateSummary(
@@ -70,20 +72,23 @@ def _from_history(
         line=line,
         projection=round(projection, 2),
         edge=round(edge, 2),
-        estimated_hit_rate=_hit_rate(played_history, line),
-        last_5=_hit_rate(played_history[:5], line),
-        last_10=_hit_rate(played_history[:10], line),
-        season=_hit_rate(played_history, line),
+        estimated_hit_rate=_hit_rate(played_history, line, direction),
+        last_5=_hit_rate(played_history[:5], line, direction),
+        last_10=_hit_rate(played_history[:10], line, direction),
+        season=_hit_rate(played_history, line, direction),
         source="final_stats",
         sample_size=len(played_history),
         note=f"Calculated from {len(played_history)} played final stat rows.",
     )
 
 
-def _hit_rate(rows: list[dict], line: float) -> float:
+def _hit_rate(rows: list[dict], line: float, direction: str = "Over") -> float:
     if not rows:
         return 0.0
-    hits = sum(1 for row in rows if float(row["actual"]) > line)
+    if str(direction).lower() == "under":
+        hits = sum(1 for row in rows if float(row["actual"]) < line)
+    else:
+        hits = sum(1 for row in rows if float(row["actual"]) > line)
     return round(hits / len(rows) * 100, 1)
 
 

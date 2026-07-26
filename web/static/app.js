@@ -12,11 +12,25 @@ const state = {
   backgroundLoadPromise: null,
   deferredSignalsScheduled: false,
   ledgerLoadScheduled: false,
+  loadedViews: new Set(),
 };
 
 window.EdgeIQLoaded = true;
 
 const $ = (id) => document.getElementById(id);
+const {
+  dataStrengthBadges,
+  directionBadge,
+  escapeHtml,
+  formatDateTime,
+  formatGameTime,
+  friendlyStatus,
+  gradeClass,
+  money,
+  pct,
+  sortNotifications,
+  sortProviderHealth,
+} = window.EdgeIQUi;
 const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:8007" : "";
 const inflightGetRequests = new Map();
 const deferWork = window.requestIdleCallback
@@ -140,40 +154,6 @@ async function withButtonBusy(buttonOrId, busyLabel, task) {
   }
 }
 
-function friendlyStatus(value) {
-  return String(value || "unknown")
-    .split("_")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
-}
-
-function sortProviderHealth(providers) {
-  const rank = {
-    missing_key: 0,
-    not_configured: 1,
-    error: 2,
-    degraded: 3,
-    connected: 4,
-    available: 5,
-  };
-  return [...(providers || [])].sort((a, b) => {
-    const aRank = rank[a.status] ?? 9;
-    const bRank = rank[b.status] ?? 9;
-    if (aRank !== bRank) return aRank - bRank;
-    return String(a.name || "").localeCompare(String(b.name || ""));
-  });
-}
-
-function sortNotifications(notifications) {
-  const rank = { danger: 0, warning: 1, watch: 2, positive: 3, neutral: 4 };
-  return [...(notifications || [])].sort((a, b) => {
-    const aRank = rank[a.severity] ?? 9;
-    const bRank = rank[b.severity] ?? 9;
-    if (aRank !== bRank) return aRank - bRank;
-    return String(a.type || "").localeCompare(String(b.type || ""));
-  });
-}
-
 function showRuntimeNotice(message) {
   const notice = $("runtime-notice");
   if (!notice) return;
@@ -205,65 +185,6 @@ function handleLoadError(error) {
   console.error(error);
 }
 
-function money(value) {
-  return `$${Number(value || 0).toFixed(2)}`;
-}
-
-function pct(value) {
-  return `${Number(value || 0).toFixed(1)}%`;
-}
-
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-const DISPLAY_TIME_ZONE = "America/New_York";
-
-function parseEdgeIQTime(value) {
-  if (!value) return null;
-  const text = String(value).trim();
-  if (!text || text === "Time unavailable") return null;
-  const isoWithoutZone = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(text);
-  return new Date(isoWithoutZone ? `${text}Z` : text);
-}
-
-function formatDateTime(value) {
-  if (!value) return "";
-  const date = parseEdgeIQTime(value);
-  if (!date) return value;
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    timeZone: DISPLAY_TIME_ZONE,
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short",
-  }).format(date);
-}
-
-function formatGameTime(value) {
-  if (!value || value === "Time unavailable") return "Time unavailable";
-  const date = parseEdgeIQTime(value);
-  if (!date) return value;
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    timeZone: DISPLAY_TIME_ZONE,
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short",
-  }).format(date);
-}
-
 function propPickText(prop) {
   const direction = prop.direction || "Over";
   return `<span class="prop-pick-text">${directionBadge(direction)} <span>${prop.player} ${prop.stat} ${prop.line}</span></span>`;
@@ -277,42 +198,6 @@ function shortPropPickText(prop) {
   return `<span class="prop-pick-text">${directionBadge(prop.direction || "Over")} <span>${prop.player} ${prop.stat}</span></span>`;
 }
 
-function directionBadge(direction) {
-  const normalized = direction === "Under" ? "Under" : "Over";
-  const arrow = normalized === "Under" ? "▼" : "▲";
-  return `<span class="direction-badge direction-${normalized.toLowerCase()}"><span class="direction-arrow">${arrow}</span>${normalized}</span>`;
-}
-
-function gradeClass(grade) {
-  const normalized = String(grade || "").trim().toLowerCase().charAt(0);
-  return ["a", "b", "c", "d", "f"].includes(normalized) ? `grade-${normalized}` : "grade-unknown";
-}
-
-function dataStrengthBadges(props = []) {
-  const rows = props || [];
-  if (!rows.length) return "";
-  const labels = [];
-  rows.forEach((prop) => {
-    (prop.data_strength || []).forEach((item) => labels.push({ label: item.label, tone: item.status === "good" ? "positive" : item.status === "warning" ? "warning" : "verified" }));
-  });
-  if (rows.some((prop) => prop.provider_backed || prop.projection_type === "provider-backed" || (!prop.auto_projected && prop.projection_source && prop.projection_source !== "line_model"))) {
-    labels.push({ label: "Provider-backed", tone: "positive" });
-  }
-  if (rows.some((prop) => prop.auto_projected || prop.projection_type === "auto-projected")) {
-    labels.push({ label: "Auto-projected", tone: "warning" });
-  }
-  if (rows.some((prop) => Number(prop.espn?.sample_size || prop.espn_sample_size || prop.hit_rate?.sample_size || 0) > 0 || prop.final_source || prop.actual !== undefined)) {
-    labels.push({ label: "Final stats verified", tone: "verified" });
-  }
-  if (rows.some((prop) => {
-    const quality = prop.data_quality || {};
-    return Number(quality.score || 100) < 60 || /thin|low/i.test(String(quality.label || "")) || Number(prop.espn?.sample_size || prop.espn_sample_size || prop.hit_rate?.sample_size || 0) === 0;
-  })) {
-    labels.push({ label: "Thin history", tone: "thin" });
-  }
-  const unique = [...new Map(labels.map((row) => [row.label, row])).values()];
-  return `<div class="data-strength-row">${unique.map((row) => `<span class="data-strength-badge data-${row.tone}">${escapeHtml(row.label)}</span>`).join("")}</div>`;
-}
 
 function modelTrustBadge(suggestion = {}, props = []) {
   if (suggestion.trust?.score !== undefined) {
@@ -373,15 +258,12 @@ function optimizerSummaryBlock(data) {
 }
 
 function confidenceMovementText(prop) {
-  const adjustment = Number(prop?.espn?.confidence_adjustment || prop?.confidence_adjustment || 0);
-  if (!adjustment) return "";
+  const calibration = prop?.forecast_snapshot?.calibration;
+  if (!calibration || Number(calibration.sample_size || 0) === 0) return "";
+  const adjustment = Number(calibration.probability || 0) - Number(calibration.raw_probability || 0);
+  if (Math.abs(adjustment) < 0.1) return "";
   const direction = adjustment > 0 ? "up" : "down";
-  const why = prop.projection_source === "multi_source_fusion"
-    ? "source fusion adjusted the projection"
-    : Number(prop?.espn?.sample_size || 0) > 0
-      ? "final-stat history changed the read"
-      : "segment calibration changed the read";
-  return `Why this moved: confidence moved ${direction} ${Math.abs(adjustment).toFixed(1)} pts because ${why}.`;
+  return `Why this moved: confidence moved ${direction} ${Math.abs(adjustment).toFixed(1)} pts using ${escapeHtml(calibration.tier || "segment")} calibration from ${Number(calibration.sample_size || 0)} independent results.`;
 }
 
 function suggestionMetaRow(suggestion) {
@@ -447,6 +329,25 @@ function setView(viewId) {
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
   const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Tools", bets: "Bet Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
+  loadViewData(viewId);
+}
+
+function loadViewData(viewId) {
+  if (state.loadedViews.has(viewId)) return;
+  state.loadedViews.add(viewId);
+  const tasks = {
+    performance: [
+      loadPerformance, loadBacktest, loadSettlementAudit, loadAccuracyLab,
+      loadGradingReport, loadBets, loadBankrollTransactions,
+    ],
+    entries: [loadLossProtection],
+    analysis: [loadDataHealth, loadNotifications, loadDeployReadiness],
+  }[viewId] || [];
+  if (!tasks.length) return;
+  Promise.allSettled(tasks.map((task) => task())).then((results) => {
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) console.warn(`${viewId} view refresh failed`, failure.reason);
+  });
 }
 
 function renderStats(stats) {
@@ -1169,6 +1070,8 @@ async function loadModelHealth() {
 async function loadDataHealth() {
   const data = await api("/api/data-health");
   const providers = sortProviderHealth(data.providers);
+  const usage = data.api_usage || {};
+  const totals = usage.totals || {};
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
@@ -1176,6 +1079,7 @@ async function loadDataHealth() {
         <span class="status-pill ${data.summary.warnings ? "status-warning" : "status-connected"}">${data.summary.warnings} warnings</span>
       </div>
       <p>${data.summary.last_daily_refresh ? `Last refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled refresh run recorded yet."}</p>
+      <p>${Number(usage.requests_avoided || 0)} provider calls avoided · ${Number(totals.network_requests || 0)} network requests · ${Number(usage.avoidance_pct || 0).toFixed(1)}% cache efficiency · ${Number(totals.stale_fallbacks || 0)} stale fallbacks</p>
     </div>
     ${providers.map((provider) => `
       <div class="suggestion compact-suggestion health-${provider.status}">
@@ -1184,6 +1088,9 @@ async function loadDataHealth() {
           <span class="status-pill status-${provider.status}">${friendlyStatus(provider.status)}</span>
         </div>
         <p>${provider.purpose} · ${provider.message}</p>
+        <p class="subtle">${provider.api_usage?.used_this_session
+          ? `${Number(provider.api_usage.requests_avoided || 0)} calls avoided · ${Number(provider.api_usage.network_requests || 0)} network requests this session`
+          : "Not requested in this session yet"}</p>
       </div>
     `).join("")}
   `;
@@ -1258,10 +1165,51 @@ async function loadAdvantageCenter() {
   const sport = $("props-sport").value;
   const data = await api(`/api/dashboard/advantage-center?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
   const top = data.top_recommendation;
+  const freshness = data.data_freshness || {};
+  const providerRows = freshness.providers || [];
+  const providerReady = providerRows.length > 0 && providerRows.every((row) => ["fresh", "available", "connected"].includes(row.status));
   $("advantage-center-status").textContent = top
-    ? `${data.competitive_features.length} competitive features active · ${data.sport}`
+    ? `${data.competitive_features.length} competitive features active · ${data.sport} · Updated ${formatDateTime(freshness.as_of || data.as_of)}`
     : "Advantage Center is active, but no top recommendation is available for this board.";
+  $("advantage-journey").innerHTML = [
+    ["Live Props", providerReady, providerRows.map((row) => `${row.name}: ${friendlyStatus(row.status)}`).join(" · ") || "Provider check"],
+    ["Freshness", providerReady, providerReady ? "Ready" : "Review"],
+    ["Ranked", Boolean((data.opportunity_feed || []).length), `${(data.opportunity_feed || []).length} opportunities`],
+    ["Evidence", Boolean(top), top ? `Trust ${Number(data.trust_score?.score || 0).toFixed(0)}` : "Waiting"],
+    ["Paper", Boolean(top), top ? "Ready to add" : "Waiting"],
+    ["Settle", false, "Automatic"],
+    ["Calibrate", false, "Results"],
+  ].map(([label, ready, detail]) => `
+    <div class="journey-step ${ready ? "journey-ready" : ""}">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(String(detail))}</span>
+    </div>
+  `).join("");
   $("advantage-center-list").innerHTML = `
+    ${top ? `
+      <div class="suggestion advantage-hero">
+        <div class="suggestion-top">
+          <span class="pill">Top Ranked</span>
+          <strong>${escapeHtml(top.title || "Best Opportunity")}</strong>
+          <span class="score-pill">${escapeHtml(top.grade || "-")} · ${Number(top.score || 0).toFixed(1)}</span>
+        </div>
+        <div class="advantage-hero-props">
+          ${(top.props || []).map((prop) => `
+            <div>
+              <strong>${escapeHtml(prop.player || "")}</strong>
+              <span>${directionBadge(prop.direction || "Over")} ${escapeHtml(prop.stat || "")} ${prop.line ?? ""}</span>
+              <small>${pct(prop.confidence || 0)} confidence · Edge ${Number(prop.edge || 0).toFixed(2)}</small>
+            </div>
+          `).join("")}
+        </div>
+        <p>${escapeHtml(top.explanation?.summary || top.summary || "")}</p>
+        ${dataStrengthBadges(top.props || [])}
+        <div class="button-row">
+          <button id="advantage-add-paper" type="button">Add as Paper Entry</button>
+          <button class="secondary" data-view-shortcut="performance" type="button">View Calibration</button>
+        </div>
+      </div>
+    ` : ""}
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
         <strong>Recommendation Trust</strong>
@@ -1296,6 +1244,12 @@ async function loadAdvantageCenter() {
       <p>${data.bankroll_strategy?.mode || "balanced"} · Unit ${money(data.bankroll_strategy?.unit_size || 0)} · Max ${Number(data.bankroll_strategy?.max_wager_pct || 0).toFixed(1)}%</p>
     </div>
   `;
+  if ($("advantage-add-paper")) {
+    $("advantage-add-paper").addEventListener("click", () => loadPaperProps(top.props || []));
+  }
+  document.querySelectorAll("#advantage-center-list [data-view-shortcut]").forEach((button) => {
+    button.addEventListener("click", () => setView(button.dataset.viewShortcut));
+  });
   $("watchlist-list").innerHTML = (data.watchlist_alerts || []).map((alert) => `
     <div class="suggestion compact-suggestion">
       <strong>${alert.player} · ${alert.direction} ${alert.stat}</strong>
@@ -1364,6 +1318,7 @@ function renderOpportunityFeed(opportunities) {
       ${dataStrengthBadges([item])}
       <div class="button-row">
         <button class="secondary" data-add-opportunity="${index}">Add Prop</button>
+        <button class="secondary" data-paper-opportunity="${index}">Add Paper</button>
       </div>
     </div>
   `).join("") || `<div class="suggestion compact-suggestion">No live value opportunities cleared the current filters.</div>`;
@@ -1372,6 +1327,14 @@ function renderOpportunityFeed(opportunities) {
       ...opportunities[Number(button.dataset.addOpportunity)],
       league: opportunities[Number(button.dataset.addOpportunity)].sport,
     }));
+  });
+  document.querySelectorAll("[data-paper-opportunity]").forEach((button) => {
+    button.addEventListener("click", () => loadPaperProps([
+      {
+        ...opportunities[Number(button.dataset.paperOpportunity)],
+        league: opportunities[Number(button.dataset.paperOpportunity)].sport,
+      },
+    ]));
   });
 }
 
@@ -2025,8 +1988,8 @@ function formatMovement(movement) {
   return `${movement.direction} ${prefix}${Number(movement.change).toFixed(1)}`;
 }
 
-function addFeedProp(prop) {
-  state.entryProps.push({
+function entryPropFromFeed(prop) {
+  return {
     player: prop.player,
     player_identity_id: prop.player_identity_id ?? null,
     player_provider: prop.player_provider || prop.platform || "",
@@ -2053,14 +2016,37 @@ function addFeedProp(prop) {
     auto_projected: prop.auto_projected,
     provider_backed: prop.provider_backed,
     projection_source: prop.projection_source,
+    model_version: prop.model_version || "",
+    feature_as_of: prop.feature_as_of || "",
+    forecast_snapshot: prop.forecast_snapshot || {},
+    forecast_paid_eligible: Boolean(prop.forecast_paid_eligible),
     data_quality: prop.data_quality,
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
-  });
+  };
+}
+
+function addFeedProp(prop) {
+  state.entryProps.push(entryPropFromFeed(prop));
   renderEntryProps();
   setView("entries");
   $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.`;
+}
+
+function loadPaperProps(props) {
+  state.entryProps = (props || []).map(entryPropFromFeed);
+  if ($("entry-mode")) $("entry-mode").value = "paper";
+  if ($("entry-platform") && props[0]?.platform) $("entry-platform").value = props[0].platform;
+  renderEntryProps();
+  setView("entries");
+  $("entry-status").textContent = `${state.entryProps.length} paper ${state.entryProps.length === 1 ? "prop" : "props"} loaded for review.`;
+}
+
+async function manageDatabase(action) {
+  const result = await api(`/api/data/${action}`, { method: "POST" });
+  const artifact = result[action === "backup" ? "backup" : "export"];
+  $("data-management-status").textContent = `${action === "backup" ? "Backup" : "Export"} created: ${artifact.path}`;
 }
 
 function renderEntryProps() {
@@ -2117,10 +2103,24 @@ function entryPayload() {
     wager: entryMode === "paper" ? 0 : Number($("entry-wager").value || 0),
     multiplier: Number($("entry-multiplier").value || 1),
     payout_type: $("entry-payout-type")?.value || "standard",
+    payout_schedule: parsePayoutSchedule($("entry-payout-schedule")?.value || ""),
     entry_mode: entryMode,
     recommended_by_app: state.recommendationOrigin || Boolean(state.lastAnalysis && state.lastAnalysis.recommendation && state.lastAnalysis.recommendation.grade !== "F"),
     props: state.entryProps,
   };
+}
+
+function parsePayoutSchedule(value) {
+  const schedule = {};
+  String(value || "").split(",").forEach((part) => {
+    const [winsText, multiplierText] = part.split(":").map((item) => item.trim());
+    const wins = Number(winsText);
+    const multiplier = Number(multiplierText);
+    if (Number.isInteger(wins) && wins >= 0 && Number.isFinite(multiplier) && multiplier >= 0) {
+      schedule[String(wins)] = multiplier;
+    }
+  });
+  return schedule;
 }
 
 function renderAnalysis(data) {
@@ -2432,6 +2432,10 @@ function renderEntryPropsFromAnalyzed(props) {
     auto_projected: prop.auto_projected,
     provider_backed: prop.provider_backed,
     projection_source: prop.projection_source,
+    model_version: prop.model_version || "",
+    feature_as_of: prop.feature_as_of || "",
+    forecast_snapshot: prop.forecast_snapshot || {},
+    forecast_paid_eligible: Boolean(prop.forecast_paid_eligible),
     data_quality: prop.data_quality,
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
@@ -2446,6 +2450,7 @@ async function placeEntry() {
   state.lastEntryPayload.wager = state.lastEntryPayload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
   state.lastEntryPayload.multiplier = Number($("entry-multiplier").value || state.lastEntryPayload.multiplier || 1);
   state.lastEntryPayload.payout_type = $("entry-payout-type")?.value || state.lastEntryPayload.payout_type || "standard";
+  state.lastEntryPayload.payout_schedule = parsePayoutSchedule($("entry-payout-schedule")?.value || "");
   state.lastEntryPayload.platform = $("entry-platform").value || state.lastEntryPayload.platform || "PrizePicks";
   state.lastEntryPayload.props = state.entryProps;
   if (state.lastEntryPayload.entry_mode !== "paper" && state.lastEntryPayload.wager <= 0) {
@@ -2495,6 +2500,7 @@ async function placeEntry() {
   state.lastEntryPayload = null;
   state.lastAnalysis = null;
   state.recommendationOrigin = false;
+  if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
   $("prepare-handoff").disabled = true;
   $("place-entry").disabled = true;
   renderEntryProps();
@@ -3873,7 +3879,45 @@ async function loadBacktest() {
   const sources = data.calibration_sources || {};
   const holdout = data.holdout_validation || {};
   const walkForward = data.walk_forward_validation || {};
+  const grouped = data.grouped_validation || {};
+  const ledger = data.prediction_ledger || {};
+  const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
+    <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
+      <div class="suggestion-top">
+        <strong>${escapeHtml(readiness.release || "Release Validation")}</strong>
+        <span class="score-pill">${Number(readiness.progress_pct || 0).toFixed(0)}%</span>
+      </div>
+      <p>${readiness.status === "validated"
+        ? "The required validation evidence is complete."
+        : `${readiness.passed_gates || 0} of ${readiness.total_gates || 0} reliability gates passed.`}</p>
+      <div class="validation-gates">
+        ${(readiness.gates || []).map((gate) => `
+          <div class="validation-gate">
+            <div class="suggestion-top">
+              <strong>${escapeHtml(gate.label)}</strong>
+              <span class="status-pill ${gate.passed ? "status-connected" : "status-degraded"}">${gate.passed ? "Passed" : "Collecting"}</span>
+            </div>
+            <progress value="${Number(gate.progress_pct || 0)}" max="100"></progress>
+            <p class="subtle">${escapeHtml(gate.detail || "")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+    <div class="suggestion ${grouped.passed ? "insight-positive" : "insight-warning"}">
+      <div class="suggestion-top">
+        <strong>Versioned Out-of-Sample Validation</strong>
+        <span class="status-pill ${grouped.passed ? "status-connected" : "status-degraded"}">${grouped.passed ? "Proven" : "Paper Mode"}</span>
+      </div>
+      <div class="metric-strip">
+        <span><strong>${grouped.unique_predictions || 0}</strong><small>Independent</small></span>
+        <span><strong>${grouped.evaluated_predictions || 0}</strong><small>Rolling Tests</small></span>
+        <span><strong>${Number(grouped.brier_score || 0).toFixed(3)}</strong><small>Brier</small></span>
+        <span><strong>${Number(grouped.expected_calibration_error || 0).toFixed(1)}%</strong><small>Calibration Error</small></span>
+      </div>
+      <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
+      <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
+    </div>
     <div class="suggestion accuracy-scorecard">
       <div>
         <div class="suggestion-top">
@@ -4140,6 +4184,8 @@ function bindEvents() {
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));
+  $("backup-database").addEventListener("click", () => withButtonBusy("backup-database", "Backing up...", () => manageDatabase("backup")));
+  $("export-database").addEventListener("click", () => withButtonBusy("export-database", "Exporting...", () => manageDatabase("export")));
   $("refresh-notifications").addEventListener("click", () => withButtonBusy("refresh-notifications", "Checking...", loadNotifications));
   $("refresh-deploy-readiness").addEventListener("click", () => withButtonBusy("refresh-deploy-readiness", "Checking...", loadDeployReadiness));
   $("run-daily-refresh").addEventListener("click", () => withButtonBusy("run-daily-refresh", "Running...", runDailyRefresh));
@@ -4307,8 +4353,7 @@ async function loadAll(options = {}) {
       ? [loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
       : [
           loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(),
-          loadDeployReadiness(), loadPerformance(), loadBacktest(), loadAlertDeliverySettings(), loadLossProtection(),
-          loadGradingReport(), loadSettlementAudit(), loadLossReview(),
+          loadDeployReadiness(), loadAlertDeliverySettings(), loadLossProtection(), loadLossReview(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");
@@ -4321,7 +4366,6 @@ async function loadAll(options = {}) {
     deferWork(() => {
       Promise.allSettled([
         loadEntryProgress({ autoCheck: true, refreshProviders: false, marketDetail: false }),
-        loadBets(), loadBankrollTransactions(), loadAccuracyLab(),
       ]).then((results) => {
         const backgroundFailure = results.find((result) => result.status === "rejected");
         if (backgroundFailure) console.warn("Deferred EdgeIQ ledger refresh failed", backgroundFailure.reason);

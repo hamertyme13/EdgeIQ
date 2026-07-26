@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from analytics.calibration import calibrate
+from analytics.release_validation import validation_readiness
 from models.bet import Bet
 
 
@@ -48,6 +49,13 @@ def backtest_summary(bets: list[Bet], entries: list[dict]) -> dict:
         "what_works": segment_rankings["works"],
         "what_fails": segment_rankings["fails"],
         "calibration_rules": _calibration_rules(calibration_rows, segment_rankings["all"]),
+        "validation_readiness": validation_readiness(
+            settled_entries,
+            segment_rankings["all"],
+            calibration_summary,
+            holdout,
+            walk_forward,
+        ),
     }
 
 

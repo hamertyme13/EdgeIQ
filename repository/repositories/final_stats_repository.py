@@ -131,14 +131,26 @@ class FinalStatsRepository:
     @staticmethod
     def history(player: str, stat: str, sport: str | None = None, limit: int = 100) -> list[dict]:
         try:
+            identity = PlayerIdentityRepository.resolve(player, sport or "", create=False)
             with SessionLocal() as session:
                 query = (
                     session.query(FinalPlayerStatModel)
-                    .filter(FinalPlayerStatModel.player == player)
                     .filter(FinalPlayerStatModel.stat.in_(stat_alias_labels(stat)))
                 )
+                if identity:
+                    query = query.filter(FinalPlayerStatModel.player_identity_id == identity["id"])
+                else:
+                    player_key = canonical_person_key(player)
+                    candidate_ids = [
+                        row.id
+                        for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
+                        if canonical_person_key(row.player) == player_key
+                    ]
+                    if not candidate_ids:
+                        return []
+                    query = query.filter(FinalPlayerStatModel.id.in_(candidate_ids))
                 if sport:
-                    query = query.filter(FinalPlayerStatModel.sport == sport)
+                    query = query.filter(FinalPlayerStatModel.sport == sport.upper())
                 rows = (
                     query.order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc())
                     .limit(limit)

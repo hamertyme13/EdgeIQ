@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import random
+from statistics import NormalDist
 
 
 _PRIZEPICKS_STANDARD = {2: 3.0, 3: 6.0, 4: 10.0, 5: 20.0, 6: 37.5}
@@ -41,11 +43,22 @@ def payout_analysis(
     platform: object,
     payout_type: object = "standard",
     displayed_multiplier: float | None = None,
+    *,
+    correlation_matrix: list[list[float]] | None = None,
+    exact_schedule: dict[str, float] | dict[int, float] | None = None,
 ) -> dict:
     probs = [max(0.01, min(0.99, float(value))) for value in probabilities]
-    schedule = payout_schedule(platform, payout_type, len(probs))
-    schedule = _scale_schedule(schedule, displayed_multiplier)
-    distribution = win_count_distribution(probs)
+    schedule = (
+        {int(wins): float(multiplier) for wins, multiplier in exact_schedule.items()}
+        if exact_schedule
+        else _scale_schedule(payout_schedule(platform, payout_type, len(probs)), displayed_multiplier)
+    )
+    independent_distribution = win_count_distribution(probs)
+    distribution = (
+        correlated_win_count_distribution(probs, correlation_matrix)
+        if correlation_matrix and len(correlation_matrix) == len(probs)
+        else independent_distribution
+    )
     expected_return = sum(distribution.get(wins, 0.0) * multiplier for wins, multiplier in schedule.items())
     profit_probability = sum(
         distribution.get(wins, 0.0)
@@ -67,9 +80,11 @@ def payout_analysis(
         "profit_probability": round(profit_probability * 100.0, 2),
         "refund_probability": round(refund_probability * 100.0, 2),
         "all_hit_probability": round(distribution.get(len(probs), 0.0) * 100.0, 2),
+        "independent_all_hit_probability": round(independent_distribution.get(len(probs), 0.0) * 100.0, 2),
+        "correlation_adjusted": distribution is not independent_distribution,
         "displayed_multiplier": round(max(schedule.values()), 2) if schedule else 0.0,
-        "source": "official_base_schedule",
-        "requires_app_confirmation": True,
+        "source": "exact_offer_snapshot" if exact_schedule else "official_base_schedule",
+        "requires_app_confirmation": not bool(exact_schedule),
         "message": "Confirm the final multiplier in the provider app because promotions, adjusted lines, and correlations can change it.",
     }
 
@@ -97,6 +112,46 @@ def win_count_distribution(probabilities: list[float]) -> dict[int, float]:
             next_distribution[wins + 1] = next_distribution.get(wins + 1, 0.0) + chance * probability
         distribution = next_distribution
     return distribution
+
+
+def correlated_win_count_distribution(
+    probabilities: list[float],
+    correlation_matrix: list[list[float]],
+    simulations: int = 8000,
+) -> dict[int, float]:
+    if not probabilities:
+        return {0: 1.0}
+    factor = _cholesky(correlation_matrix)
+    if factor is None:
+        return win_count_distribution(probabilities)
+    thresholds = [NormalDist().inv_cdf(probability) for probability in probabilities]
+    counts = {wins: 0 for wins in range(len(probabilities) + 1)}
+    rng = random.Random(20260725)
+    for _ in range(simulations):
+        independent = [rng.gauss(0.0, 1.0) for _ in probabilities]
+        correlated = [
+            sum(factor[row][column] * independent[column] for column in range(row + 1))
+            for row in range(len(probabilities))
+        ]
+        wins = sum(1 for value, threshold in zip(correlated, thresholds, strict=False) if value <= threshold)
+        counts[wins] += 1
+    return {wins: count / simulations for wins, count in counts.items()}
+
+
+def _cholesky(matrix: list[list[float]]) -> list[list[float]] | None:
+    size = len(matrix)
+    result = [[0.0 for _ in range(size)] for _ in range(size)]
+    try:
+        for row in range(size):
+            for column in range(row + 1):
+                subtotal = sum(result[row][index] * result[column][index] for index in range(column))
+                if row == column:
+                    result[row][column] = math.sqrt(max(1e-8, float(matrix[row][row]) - subtotal))
+                else:
+                    result[row][column] = (float(matrix[row][column]) - subtotal) / result[column][column]
+    except (IndexError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    return result
 
 
 def normalize_payout_type(value: object) -> str:
