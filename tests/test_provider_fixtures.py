@@ -52,7 +52,9 @@ def test_underdog_fixture_preserves_line_identity_and_game(monkeypatch) -> None:
     row = underdog.fetch_projections()[0]
 
     assert row["player"] == "A'ja Wilson"
-    assert row["player_id"] == "p2"
+    assert row["player_id"] == "2"
     assert row["line"] == 22.5
     assert row["game"] == "LVA @ PHX"
     assert row["game_time"] == "2026-07-25T21:00:00Z"
+    assert row["team"] == "LVA"
+    assert row["match_id"] == "22"

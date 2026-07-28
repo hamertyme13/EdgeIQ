@@ -735,7 +735,7 @@ function renderDailyGame(game, index) {
         ${renderGameMetric("Best Value Prop", propLabel(game.best_value_prop))}
         ${renderGameMetric("Highest Confidence", propLabel(game.highest_confidence))}
         ${renderGameMetric("Fade Candidate", propLabel(game.fade_candidate))}
-        ${renderGameMetric("Vegas Line", game.vegas_line)}
+        ${renderGameMetric(game.vegas_line_source ? `Vegas Line · ${game.sportsbook_count || 0} books` : "Vegas Line", game.vegas_line)}
         ${renderGameMetric("AI Score", Number(game.ai_score || 0).toFixed(1))}
         ${renderGameMetric("Probability", pct(game.probability || 0))}
         ${renderGameMetric("Line Movement", game.line_movement)}
@@ -2494,8 +2494,8 @@ async function placeEntry() {
     return;
   }
   $("entry-status").textContent = state.lastEntryPayload.entry_mode === "paper"
-    ? `Paper entry #${data.id} saved for calibration.`
-    : `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.`;
+    ? `Paper entry #${data.id} saved${data.settlement_tracking === "verified" ? " for verified calibration." : " with manual final-stat verification required."}`
+    : `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.${data.settlement_tracking === "verified" ? "" : " Manual final-stat verification is required for at least one leg."}`;
   state.entryProps = [];
   state.lastEntryPayload = null;
   state.lastAnalysis = null;

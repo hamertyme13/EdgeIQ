@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260726-api-efficiency-v1";
+const CACHE_NAME = "edgeiq-shell-20260728-underdog-placement-v1";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

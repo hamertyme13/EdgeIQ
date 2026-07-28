@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import web.app as web_app
 import services.dashboard as dashboard_service
 import data.providers.final_stats as final_stats
@@ -1374,12 +1376,13 @@ def test_placement_check_flags_missing_time_and_changed_line(monkeypatch):
         )
     )
 
-    assert body["ok"] is False
+    assert body["ok"] is True
     assert body["requires_confirmation"] is True
     assert any("game time is unavailable" in warning for warning in body["warnings"])
     assert any("current Underdog line is 21.5" in warning for warning in body["warnings"])
-    assert any("matchup is missing" in block for block in body["blocks"])
-    assert body["audit"]["status"] == "blocked"
+    assert any("matchup is missing" in warning for warning in body["warnings"])
+    assert any("manual final-stat verification" in warning for warning in body["warnings"])
+    assert body["audit"]["status"] == "review"
     assert any(item["label"] == "Open exposure" for item in body["audit"]["items"])
 
 
@@ -1409,6 +1412,7 @@ def test_placement_check_blocks_unproven_app_recommended_real_entry(monkeypatch)
     body = placement_check(EntryPayload.model_validate(raw))
 
     assert any("versioned forecast and segment-calibration evidence" in block for block in body["blocks"])
+    assert any("matchup is missing" in block for block in body["blocks"])
 
 
 def test_placement_check_warns_for_unproven_manual_real_entry(monkeypatch):
@@ -1462,6 +1466,8 @@ def test_placement_check_allows_auto_projection_for_paper_mode(monkeypatch):
     body = placement_check(payload)
 
     assert not any("provider-backed projections" in block for block in body["blocks"])
+    assert body["ok"] is True
+    assert any("manual final-stat verification" in warning for warning in body["warnings"])
 
 
 def test_line_snapshots_keep_game_and_offer_provenance(monkeypatch):
@@ -1897,6 +1903,56 @@ def test_place_paper_entry_does_not_require_wager(monkeypatch):
     assert saved["payload"]["entry_mode"] == "paper"
     assert saved["payload"]["wager"] == 0
     assert '"entry_mode": "paper"' in saved["payload"]["audit_snapshot"]
+
+
+def test_place_manual_underdog_entry_allows_missing_settlement_context(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: [])
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [])
+    monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 100.0, "monthly_profit": 0.0})
+    monkeypatch.setattr(
+        web_app.EntryRepository,
+        "save",
+        lambda entry, **kwargs: saved.setdefault("entry", entry) and 31,
+    )
+
+    body = place_entry(EntryPayload.model_validate({
+        "platform": "Underdog",
+        "entry_mode": "real",
+        "wager": 5,
+        "multiplier": 6,
+        "recommended_by_app": False,
+        "props": [
+            {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5},
+            {"player": "B", "team": "BBB", "sport": "WNBA", "stat": "Assists", "line": 7.5},
+        ],
+    }))
+
+    assert body["status"] == "Pending"
+    assert body["settlement_tracking"] == "manual_verification_required"
+    assert len(body["verification_warnings"]) == 2
+
+
+def test_place_recommended_real_entry_still_requires_verified_settlement(monkeypatch):
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: [])
+    payload = EntryPayload.model_validate({
+        "platform": "Underdog",
+        "entry_mode": "real",
+        "wager": 5,
+        "recommended_by_app": True,
+        "props": [
+            {"player": "A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 20.5},
+        ],
+    })
+
+    with pytest.raises(web_app.HTTPException) as exc_info:
+        place_entry(payload)
+
+    assert exc_info.value.status_code == 400
+    assert "cannot be tracked automatically" in exc_info.value.detail
 
 
 def test_auto_paper_calibration_creates_zero_wager_paper_entries(monkeypatch):

@@ -78,6 +78,7 @@ from data.providers.injury_feed import fetch_injuries, is_injured
 from services.betting import potential_profit
 from services.data_management import backup_database, export_database
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
+from services import odds as sportsbook_odds
 from utils.stat_normalization import stat_type_from_text
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.time import iso_utc, utc_now
@@ -115,7 +116,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260726-api-efficiency-v1"
+STATIC_ASSET_VERSION = "20260728-underdog-placement-v1"
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 9
 DAILY_BRIEFING_CACHE_TTL_HOURS = 10
@@ -988,7 +989,7 @@ def place_entry(payload: EntryPayload) -> dict:
             detail="Loss Protection is active. Real-money entries are not allowed in this mode. Turn Loss Protection off or save this as a paper entry.",
         )
     settlement_blocks = _end_to_end_placement_blocks(payload)
-    if settlement_blocks:
+    if settlement_blocks and _requires_verified_settlement(payload):
         raise HTTPException(status_code=400, detail="Entry cannot be tracked automatically: " + settlement_blocks[0])
     entry = _entry_from_payload(payload)
     analysis = _entry_analysis(entry, payload)
@@ -1001,7 +1002,7 @@ def place_entry(payload: EntryPayload) -> dict:
         wager=payload.wager,
         multiplier=payload.multiplier,
         recommended_by_app=payload.recommended_by_app,
-        audit_snapshot=json.dumps(_entry_audit_snapshot(entry, payload, analysis)),
+        audit_snapshot=json.dumps(_entry_audit_snapshot(entry, payload, analysis, settlement_blocks)),
         entry_mode=payload.entry_mode,
         payout_type=payload.payout_type,
     )
@@ -1009,6 +1010,12 @@ def place_entry(payload: EntryPayload) -> dict:
         "id": entry_id,
         "status": "Pending",
         "entry_mode": payload.entry_mode,
+        "settlement_tracking": (
+            "verified"
+            if not settlement_blocks
+            else "manual_verification_required"
+        ),
+        "verification_warnings": settlement_blocks,
         "analysis": analysis,
         "dashboard": get_dashboard(),
     }
@@ -4027,6 +4034,7 @@ def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict)
         groups.setdefault(key, []).append(prop)
 
     games: list[dict] = []
+    odds_by_sport: dict[str, list[dict]] = {}
     for (sport, _game_key), game_props in groups.items():
         if len(games) >= 8:
             break
@@ -4037,12 +4045,21 @@ def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict)
             if len(raw_teams) >= 2
             else _matchup_label(raw_game, _teams_from_game(raw_game, game_props))
         )
-        games.append(_daily_game_card(platform, sport, game, game_props))
+        if sport not in odds_by_sport:
+            odds_by_sport[sport] = sportsbook_odds.get_games(sport)
+        sportsbook_game = sportsbook_odds.find_game_odds(game, sport, odds_by_sport[sport])
+        games.append(_daily_game_card(platform, sport, game, game_props, sportsbook_game))
     games.sort(key=lambda game: (game["ai_score"], game["prop_count"]), reverse=True)
     return games[:6]
 
 
-def _daily_game_card(platform: str, sport: str, game: str, props: list[dict]) -> dict:
+def _daily_game_card(
+    platform: str,
+    sport: str,
+    game: str,
+    props: list[dict],
+    sportsbook_game: dict | None = None,
+) -> dict:
     ranked = sorted(props, key=lambda prop: (float(prop.get("confidence") or prop.get("confirmed_score") or 0), float(prop.get("edge") or 0), int(prop.get("trending_count") or 0)), reverse=True)
     best_prop = ranked[0] if ranked else {}
     value_prop = max(ranked, key=lambda prop: abs(float(prop.get("edge") or 0)), default=best_prop)
@@ -4077,11 +4094,13 @@ def _daily_game_card(platform: str, sport: str, game: str, props: list[dict]) ->
         "best_value_prop": _daily_game_prop(value_prop),
         "highest_confidence": _daily_game_prop(high_confidence),
         "fade_candidate": _daily_game_prop(fade),
-        "vegas_line": _vegas_line_proxy(best_prop),
+        "vegas_line": sportsbook_odds.format_consensus_line(sportsbook_game),
+        "vegas_line_source": sportsbook_game.get("source", "") if sportsbook_game else "",
+        "sportsbook_count": sportsbook_game.get("sportsbook_count", 0) if sportsbook_game else 0,
         "ai_score": round(max(0.0, min(100.0, (avg_confidence * 0.72) + (abs(avg_edge) * 6.0) + min(12.0, len(ranked) * 1.5))), 1),
         "probability": round(max(0.0, min(100.0, avg_confidence)), 1),
         "line_movement": movement.get("label") or movement.get("direction") or "flat",
-        "public_betting": _public_betting_proxy(best_prop),
+        "public_betting": "Unavailable from connected APIs",
         "weather": weather_signal.get("message") if weather_signal else ("Indoor/no weather edge" if sport not in {"NFL", "MLB"} else "No weather flag"),
         "generated_entry": {
             "props": [_daily_game_prop(prop) for prop in ranked[:2]],
@@ -4217,18 +4236,6 @@ def _game_injury_summary(props: list[dict]) -> str:
         if float(availability.get("availability_score") or 100) < 70:
             risky.append(f"{availability.get('player')} {availability.get('status')}")
     return ", ".join(risky[:2]) if risky else "No major matched injury flag"
-
-
-def _vegas_line_proxy(prop: dict) -> str:
-    if not prop:
-        return "Unavailable"
-    return f"{prop.get('platform', 'Market')} {prop.get('direction', 'Over')} {prop.get('line', '-')}"
-
-
-def _public_betting_proxy(prop: dict) -> str:
-    trending = int(prop.get("trending_count") or 0) if prop else 0
-    public = max(50, min(78, 50 + trending // 900))
-    return f"{public}% on visible market interest"
 
 
 def _opportunity_stars(score: float) -> str:
@@ -8002,9 +8009,20 @@ def _placement_check(payload: EntryPayload) -> dict:
         label = f"{prop.player} {prop.direction or 'Over'} {prop.stat} {prop.line}"
         settlement = _end_to_end_payload_eligibility(prop, payload.platform, current)
         if not settlement["eligible"]:
-            blocks.append(f"{label}: {settlement['reasons'][0]}.")
+            message = f"{label}: {settlement['reasons'][0]}."
+            if _requires_verified_settlement(payload):
+                blocks.append(message)
+            else:
+                warnings.append(
+                    f"{message} This entry can be saved, but this leg requires manual final-stat verification "
+                    "and will not count as a verified model result."
+                )
         if _is_season_long_prop(prop):
-            blocks.append(f"{label}: season-long markets are hidden from daily placement checks.")
+            message = f"{label}: season-long markets cannot use daily automatic settlement."
+            if _requires_verified_settlement(payload):
+                blocks.append(message)
+            else:
+                warnings.append(f"{message} Manual final-stat verification will be required.")
         if current is None:
             warnings.append(f"{label}: no current {platform} match found. Verify the line and game manually.")
             continue
@@ -8088,6 +8106,10 @@ def _end_to_end_placement_blocks(payload: EntryPayload) -> list[str]:
         label = f"{prop.player} {prop.stat}"
         blocks.append(f"{label}: {eligibility['reasons'][0]}")
     return blocks
+
+
+def _requires_verified_settlement(payload: EntryPayload) -> bool:
+    return payload.entry_mode == "real" and payload.recommended_by_app
 
 
 def _placement_audit_payload(
@@ -8178,9 +8200,13 @@ def _match_current_provider_prop(prop: PropPayload, current_props: list[dict]) -
     stat_key = _stat_match_key(prop.stat)
     sport = prop.sport.upper()
     team = _match_key(prop.team)
+    provider_player_id = str(prop.provider_player_id or "").strip()
     candidates = [
         current for current in current_props
-        if _match_key(str(current.get("player", ""))) == player_key
+        if (
+            (provider_player_id and str(current.get("player_id") or "").strip() == provider_player_id)
+            or _match_key(str(current.get("player", ""))) == player_key
+        )
         and _stat_match_key(str(current.get("stat", ""))) == stat_key
         and str(current.get("league", "")).upper() == sport
     ]
@@ -9120,7 +9146,13 @@ def _confirmation_checklist(entry: Entry, payload: EntryPayload | None, warnings
     ]
 
 
-def _entry_audit_snapshot(entry: Entry, payload: EntryPayload, analysis: dict) -> dict:
+def _entry_audit_snapshot(
+    entry: Entry,
+    payload: EntryPayload,
+    analysis: dict,
+    settlement_warnings: list[str] | None = None,
+) -> dict:
+    settlement_warnings = settlement_warnings or []
     return {
         "schema_version": AUDIT_SNAPSHOT_SCHEMA_VERSION,
         "model_version": EDGEIQ_LOCAL_MODEL_VERSION,
@@ -9132,6 +9164,8 @@ def _entry_audit_snapshot(entry: Entry, payload: EntryPayload, analysis: dict) -
         "payout_analysis": analysis.get("payout_analysis", {}),
         "entry_mode": payload.entry_mode,
         "recommended_by_app": payload.recommended_by_app,
+        "settlement_tracking": "manual_verification_required" if settlement_warnings else "verified",
+        "settlement_warnings": settlement_warnings,
         "recommendation": analysis.get("recommendation", {}),
         "risk": analysis.get("risk", {}),
         "warnings": analysis.get("warnings", []),
@@ -9310,6 +9344,7 @@ def _data_health_payload() -> dict:
         _provider_health_row("SportsDataIO", "supplemental injuries/context only", configured=bool(os.getenv("SPORTSDATAIO_API_KEY")), key_env="SPORTSDATAIO_API_KEY"),
         _provider_health_row("NewsAPI", "news context", configured=bool(os.getenv("NEWSAPI_KEY")), key_env="NEWSAPI_KEY"),
         _provider_health_row("OpenWeather", "outdoor weather", configured=bool(os.getenv("OPENWEATHER_API_KEY")), key_env="OPENWEATHER_API_KEY"),
+        _provider_health_row("The Odds API", "sportsbook moneylines for Games Today", configured=bool(os.getenv("ODDS_API_KEY")), key_env="ODDS_API_KEY"),
         _provider_health_row("Ball Don't Lie", "player stats", configured=bool(os.getenv("BALLDONTLIE_API_KEY") or os.getenv("BALLDONTLIE_PROPS_URL")), key_env="BALLDONTLIE_API_KEY"),
         _provider_health_row("ESPN public", "final stats/injuries", configured=True, key_env=""),
         _provider_health_row("NBA Stats", "Summer League final stats", configured=True, key_env=""),
@@ -9356,6 +9391,7 @@ def _provider_api_usage(name: str, usage: dict) -> dict:
         "SportsDataIO": ("sportsdata.io",),
         "NewsAPI": ("newsapi.org",),
         "OpenWeather": ("openweathermap.org",),
+        "The Odds API": ("the-odds-api.com",),
         "Ball Don't Lie": ("balldontlie.io",),
         "ESPN public": ("espn.com",),
         "NBA Stats": ("nba.com",),

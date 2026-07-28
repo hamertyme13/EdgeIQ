@@ -74,6 +74,30 @@ def _season_type(raw_sport: str, game: dict, app_stat: dict) -> str:
     return "regular"
 
 
+def _string_id(value: object) -> str:
+    return str(value if value is not None else "").strip()
+
+
+def _first_value(*values: object) -> object:
+    return next((value for value in values if value not in (None, "")), "")
+
+
+def _nested_id(value: object) -> str:
+    if isinstance(value, dict):
+        return _string_id(value.get("id"))
+    return _string_id(value)
+
+
+def _game_time(*sources: dict) -> str:
+    keys = ("scheduled_at", "starts_at", "start_time", "game_time", "commence_time")
+    for source in sources:
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
 def fetch_projections() -> list[dict]:
     """
     Fetch active Underdog over/under lines for NBA/WNBA/NFL/MLB.
@@ -87,14 +111,22 @@ def fetch_projections() -> list[dict]:
     data = cached.data
 
     # Build lookup indexes from sideloaded data
-    players     = {p["id"]: p for p in data.get("players", [])}
-    appearances = {a["id"]: a for a in data.get("appearances", [])}
+    players = {
+        _string_id(player.get("id")): player
+        for player in data.get("players", [])
+        if _string_id(player.get("id"))
+    }
+    appearances = {
+        _string_id(appearance.get("id")): appearance
+        for appearance in data.get("appearances", [])
+        if _string_id(appearance.get("id"))
+    }
 
     games: dict[str, dict] = {}
     for g in data.get("games", []):
-        games[str(g["id"])] = g
+        games[_string_id(g.get("id"))] = g
     for g in data.get("solo_games", []):
-        games[str(g["id"])] = g
+        games[_string_id(g.get("id"))] = g
 
     results: list[dict] = []
 
@@ -105,28 +137,46 @@ def fetch_projections() -> list[dict]:
 
         ou        = line.get("over_under", {})
         app_stat  = ou.get("appearance_stat", {})
-        app_id    = app_stat.get("appearance_id")
+        app_id    = _string_id(_first_value(app_stat.get("appearance_id"), app_stat.get("appearance")))
         app       = appearances.get(app_id, {})
-        player_id = app.get("player_id")
+        player_id = _string_id(_first_value(
+            app.get("player_id"),
+            app_stat.get("player_id"),
+            _nested_id(app.get("player")),
+        ))
         player    = players.get(player_id, {})
 
-        raw_sport = player.get("sport_id", "")
+        raw_sport = str(_first_value(
+            player.get("sport_id"),
+            app.get("sport_id"),
+            ou.get("sport_id"),
+            line.get("sport_id"),
+        ))
         league    = _normalize_league(raw_sport)
         if league is None:
             continue
 
         # Reconstruct game matchup string from game title
-        match_id  = str(app.get("match_id", ""))
+        match_id = _string_id(_first_value(
+            app.get("match_id"),
+            app.get("game_id"),
+            app_stat.get("match_id"),
+            app_stat.get("game_id"),
+            _nested_id(app.get("match")),
+            _nested_id(app.get("game")),
+        ))
         game      = games.get(match_id, {})
-        matchup   = game.get("abbreviated_title") or game.get("short_title") or ""
-        game_time = (
-            game.get("scheduled_at")
-            or game.get("starts_at")
-            or game.get("start_time")
-            or game.get("game_time")
-            or game.get("commence_time")
-            or ""
-        )
+        matchup = str(_first_value(
+            game.get("abbreviated_title"),
+            game.get("short_title"),
+            game.get("title"),
+            app.get("abbreviated_title"),
+            app.get("short_title"),
+            app.get("title"),
+            ou.get("abbreviated_title"),
+            ou.get("title"),
+        ))
+        game_time = _game_time(game, app, app_stat, ou, line)
 
         # Rank — lower = more featured; invert for trending_count parity
         raw_rank  = line.get("rank", 999_999_999)
@@ -146,13 +196,19 @@ def fetch_projections() -> list[dict]:
             "projection_id": line.get("id"),
             "player_id":     player_id,
             "player":        name,
-            "team":          player.get("team_id", ""),   # no abbrev in feed
+            "team":          str(_first_value(
+                player.get("team_id"),
+                app.get("team_id"),
+                _nested_id(player.get("team")),
+                _nested_id(app.get("team")),
+            )),
             "league":        league,
             "position":      player.get("position_name", ""),
             "stat":          app_stat.get("display_stat", ""),
             "line":          normalized_line,
             "game":          matchup,
             "game_time":      game_time,
+            "match_id":       match_id,
             "season_type":    _season_type(raw_sport, game, app_stat),
             "status":        "pre_game",
             "trending_count": _rank_to_trending(raw_rank),
