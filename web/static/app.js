@@ -13,6 +13,7 @@ const state = {
   deferredSignalsScheduled: false,
   ledgerLoadScheduled: false,
   loadedViews: new Set(),
+  loadedWorkspacePanes: new Set(),
 };
 
 window.EdgeIQLoaded = true;
@@ -187,7 +188,7 @@ function handleLoadError(error) {
 
 function propPickText(prop) {
   const direction = prop.direction || "Over";
-  return `<span class="prop-pick-text">${directionBadge(direction)} <span>${prop.player} ${prop.stat} ${prop.line}</span></span>`;
+  return `<span class="prop-pick-text">${directionBadge(direction)} <span>${escapeHtml(prop.player)} ${escapeHtml(prop.stat)} ${escapeHtml(prop.line)}</span></span>`;
 }
 
 function propPickList(props) {
@@ -195,7 +196,7 @@ function propPickList(props) {
 }
 
 function shortPropPickText(prop) {
-  return `<span class="prop-pick-text">${directionBadge(prop.direction || "Over")} <span>${prop.player} ${prop.stat}</span></span>`;
+  return `<span class="prop-pick-text">${directionBadge(prop.direction || "Over")} <span>${escapeHtml(prop.player)} ${escapeHtml(prop.stat)}</span></span>`;
 }
 
 
@@ -316,6 +317,120 @@ function syncDefaultInputs() {
   if (defaults.risk === "paper_first" && $("entry-mode")) $("entry-mode").value = "paper";
 }
 
+function activateWorkspace(root, paneName, options = {}) {
+  if (!root || !paneName) return;
+  const tabs = [...root.querySelectorAll("[data-workspace-tab]")].filter(
+    (tab) => tab.closest("[data-workspace]") === root
+  );
+  const panes = [...root.querySelectorAll("[data-workspace-pane]")].filter(
+    (pane) => pane.closest("[data-workspace]") === root
+  );
+  tabs.forEach((tab) => {
+    const active = tab.dataset.workspaceTab === paneName;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  panes.forEach((pane) => {
+    const active = pane.dataset.workspacePane === paneName;
+    pane.hidden = !active;
+    if (active && pane.tagName === "DETAILS") pane.open = true;
+  });
+  if (root.dataset.workspace) {
+    window.sessionStorage.setItem(`edgeiq.workspace.${root.dataset.workspace}`, paneName);
+  }
+  if (options.focus) {
+    root.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  if (options.load !== false) loadWorkspacePaneData(root, paneName);
+}
+
+function loadWorkspacePaneData(root, paneName) {
+  const workspaceId = root?.dataset.workspace;
+  if (!workspaceId) return;
+  const key = `${workspaceId}:${paneName}`;
+  if (state.loadedWorkspacePanes.has(key)) return;
+  const loaders = {
+    "decision-desk:overview": [loadCommandCenter, loadModelHealth],
+    "decision-desk:value": [loadAdvantageCenter, loadOpportunityFeed, loadSportsbookSync],
+    "decision-desk:alerts": [loadTimingAlerts, loadNotifications],
+    "decision-desk:builder": [() => loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }), loadTrendingGames],
+    "decision-desk:board": [() => loadProps({ cascade: false }), loadDashboardParlay],
+    "results-workspace:performance": [loadPerformance],
+    "results-workspace:model": [loadBacktest, loadAccuracyLab],
+    "results-workspace:settlement": [loadSettlementAudit],
+  }[key] || [];
+  if (!loaders.length) return;
+  state.loadedWorkspacePanes.add(key);
+  Promise.allSettled(loaders.map((loader) => loader())).then((results) => {
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) {
+      state.loadedWorkspacePanes.delete(key);
+      console.warn(`${key} refresh failed`, failure.reason);
+    }
+  });
+}
+
+function setupWorkspaces() {
+  document.querySelectorAll("[data-workspace]").forEach((root) => {
+    const tabs = [...root.querySelectorAll("[data-workspace-tab]")].filter(
+      (tab) => tab.closest("[data-workspace]") === root
+    );
+    if (!tabs.length) return;
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => activateWorkspace(root, tab.dataset.workspaceTab));
+    });
+    const stored = window.sessionStorage.getItem(`edgeiq.workspace.${root.dataset.workspace}`);
+    const initial = tabs.some((tab) => tab.dataset.workspaceTab === stored)
+      ? stored
+      : tabs.find((tab) => tab.classList.contains("active"))?.dataset.workspaceTab || tabs[0].dataset.workspaceTab;
+    activateWorkspace(root, initial, { load: false });
+  });
+}
+
+function jumpToWorkspace(button) {
+  const [workspaceId, paneName] = String(button?.dataset.workspaceJump || "").split(":");
+  const root = document.querySelector(`[data-workspace="${workspaceId}"]`);
+  const view = root?.closest(".view");
+  if (view) setView(view.id);
+  activateWorkspace(root, paneName, { focus: true });
+}
+
+function setResearchToolValue(id, value) {
+  const field = $(id);
+  if (!field || value === "") return;
+  if (field.tagName === "SELECT") {
+    const available = [...field.options].some((option) => option.value === value);
+    if (!available) return;
+  }
+  field.value = value;
+}
+
+function runFullResearch(event) {
+  event.preventDefault();
+  const player = $("research-context-player").value.trim();
+  const stat = $("research-context-stat").value.trim();
+  const sport = $("research-context-sport").value;
+  const platform = $("research-context-platform").value;
+  const line = $("research-context-line").value;
+  if (!player || !stat) {
+    $("research-context-status").textContent = "Enter both a player and stat to run research.";
+    return;
+  }
+  ["assist-player", "hit-player", "research-player", "shop-player", "consensus-player", "movement-player"].forEach((id) => setResearchToolValue(id, player));
+  ["assist-stat", "hit-stat", "research-stat", "shop-stat", "consensus-stat", "movement-stat"].forEach((id) => setResearchToolValue(id, stat));
+  ["assist-sport", "research-sport", "shop-sport", "consensus-sport"].forEach((id) => setResearchToolValue(id, sport));
+  ["research-platform", "shop-platform", "consensus-platform", "movement-platform"].forEach((id) => setResearchToolValue(id, platform));
+  ["assist-line", "hit-line", "research-line"].forEach((id) => setResearchToolValue(id, line));
+  $("research-context-status").textContent = line
+    ? "Running projection, hit-rate, and player-context analysis..."
+    : "Running player context. Add a line to include projection and hit-rate analysis.";
+  $("player-research-form").requestSubmit();
+  if (line) {
+    $("projection-assist-form").requestSubmit();
+    $("hit-rate-form").requestSubmit();
+  }
+}
+
 function setView(viewId) {
   if (viewId === "props") {
     viewId = "dashboard";
@@ -327,9 +442,14 @@ function setView(viewId) {
   $(viewId).classList.add("active");
   document.querySelectorAll(`[data-view="${viewId}"]`).forEach((button) => button.classList.add("active"));
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
-  const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Tools", bets: "Bet Ledger" };
+  const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
   loadViewData(viewId);
+  const workspace = $(viewId).matches("[data-workspace]") ? $(viewId) : $(viewId).querySelector("[data-workspace]");
+  const activeWorkspaceTab = workspace?.querySelector("[data-workspace-tab].active");
+  if (workspace && activeWorkspaceTab) {
+    loadWorkspacePaneData(workspace, activeWorkspaceTab.dataset.workspaceTab);
+  }
 }
 
 function loadViewData(viewId) {
@@ -337,9 +457,9 @@ function loadViewData(viewId) {
   state.loadedViews.add(viewId);
   const tasks = {
     performance: [
-      loadPerformance, loadBacktest, loadSettlementAudit, loadAccuracyLab,
-      loadGradingReport, loadBets, loadBankrollTransactions,
+      loadPerformance,
     ],
+    bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection],
     analysis: [loadDataHealth, loadNotifications, loadDeployReadiness],
   }[viewId] || [];
@@ -1129,7 +1249,7 @@ async function loadDeployReadiness() {
       </div>
       <div class="checklist-grid">
         ${(data.checks || []).map((check) => `
-          <div class="checklist-item status-${check.ok ? "checked" : "warning"}">
+          <div class="checklist-item status-${check.ok ? "checked" : check.required ? "warning" : "optional"}">
             <strong>${escapeHtml(check.label)}</strong>
             <span>${escapeHtml(check.status)}</span>
             <p>${escapeHtml(check.action)}</p>
@@ -1648,8 +1768,8 @@ function renderProgressTimeGroups(entry) {
 
 async function loadEntryProgress(options = {}) {
   const params = new URLSearchParams();
-  if (options.autoCheck !== false) params.set("auto_check", "true");
-  if (options.refreshProviders !== false) params.set("refresh_providers", "true");
+  if (options.autoCheck === true) params.set("auto_check", "true");
+  if (options.refreshProviders === true) params.set("refresh_providers", "true");
   if (options.marketDetail === false) params.set("market_detail", "false");
   const query = params.toString();
   const data = await api(`/api/entries/progress${query ? `?${query}` : ""}`);
@@ -3094,7 +3214,7 @@ async function loadClvReport() {
 
 async function loadGradingReport() {
   if (!$("grading-report-list")) return;
-  const data = await api("/api/entries/grading-report");
+  const data = await api("/api/entries/grading-report?compact=true");
   const summary = data.summary || {};
   $("grading-report-status").textContent = `${summary.pending_entries || 0} pending · ${summary.unknown_legs || 0} unknown legs · ${pct(summary.verification_rate || 0)} verified`;
   $("grading-report-list").innerHTML = `
@@ -3121,15 +3241,16 @@ async function loadGradingReport() {
 async function loadSettlementAudit() {
   if (!$("settlement-audit-list")) return;
   const data = await api("/api/entries/settlement-audit?limit=150");
-  $("settlement-audit-status").textContent = `${data.verified || 0} verified · ${data.waiting || 0} waiting · ${data.blocked || 0} blocked`;
+  $("settlement-audit-status").textContent = `${data.verified || 0} verified · ${data.scheduled || 0} scheduled · ${data.waiting || 0} waiting · ${data.blocked || 0} blocked`;
   $("settlement-audit-list").innerHTML = `
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-value">${data.verified || 0}</div><div class="stat-label">Verified</div></div>
+      <div class="stat-card"><div class="stat-value">${data.scheduled || 0}</div><div class="stat-label">Scheduled</div></div>
       <div class="stat-card"><div class="stat-value">${data.waiting || 0}</div><div class="stat-label">Automatic Retry</div></div>
-      <div class="stat-card"><div class="stat-value">${data.blocked || 0}</div><div class="stat-label">Legacy Blocked</div></div>
+      <div class="stat-card"><div class="stat-value">${data.blocked || 0}</div><div class="stat-label">Verification Blocked</div></div>
     </div>
     ${(data.items || []).slice(0, 30).map((item) => `
-      <div class="suggestion compact-suggestion insight-${item.status === "verified" ? "positive" : "warning"}">
+      <div class="suggestion compact-suggestion insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
         <div class="suggestion-top">
           <strong>Entry #${item.entry_id} · ${escapeHtml(item.requested_player || "Unknown player")}</strong>
           <span class="pill">${escapeHtml(item.status || "waiting")}</span>
@@ -3537,16 +3658,22 @@ async function saveBet(event) {
 }
 
 async function loadBets() {
-  const data = await api("/api/bets");
+  const data = await api("/api/bets?limit=100&entry_limit=20");
   const entries = data.entries || [];
-  $("bets-status").textContent = `${data.bets.length} saved bets · ${entries.length} completed entries`;
+  const summary = data.summary || {};
+  const savedCount = summary.saved_bets ?? data.bets.length;
+  const completedCount = summary.completed_entries ?? entries.length;
+  const displayNote = (summary.displayed_bets < savedCount || summary.displayed_entries < completedCount)
+    ? ` · showing newest ${summary.displayed_bets || 0} bets and ${summary.displayed_entries || 0} entries`
+    : "";
+  $("bets-status").textContent = `${savedCount} saved bets · ${completedCount} completed entries${displayNote}`;
   $("bets-table").innerHTML = data.bets.map((bet) => `
     <tr>
-      <td>${bet.sport}</td>
-      <td>${bet.game}</td>
-      <td>${bet.description}</td>
-      <td>${bet.source === "edgeiq_entry" ? `EdgeIQ #${bet.source_entry_id || ""}${bet.entry_mode === "paper" ? " · Paper" : ""}` : bet.source || "Manual"}</td>
-      <td>${bet.result}</td>
+      <td>${escapeHtml(bet.sport)}</td>
+      <td>${escapeHtml(bet.game)}</td>
+      <td>${escapeHtml(bet.description)}</td>
+      <td>${escapeHtml(bet.source || "Manual")}</td>
+      <td>${escapeHtml(bet.result)}</td>
       <td class="${bet.profit < 0 ? "danger-text" : ""}">${money(bet.profit)}</td>
     </tr>
   `).join("");
@@ -3564,7 +3691,7 @@ function renderCompletedEntryHistory(entries) {
       <div class="suggestion-top">
         <div>
           <span class="pill">#${entry.id}</span>
-          <strong>${entry.platform} · ${entry.result}</strong>
+          <strong>${escapeHtml(entry.platform)} · ${escapeHtml(entry.result)}</strong>
           ${entry.entry_mode === "paper" ? `<span class="pill paper-pill">Paper</span>` : ""}
         </div>
         <span class="subtle">${entry.settled_at ? `Settled ${formatDateTime(entry.settled_at)}` : `Placed ${formatDateTime(entry.placed_at)}`}</span>
@@ -3594,12 +3721,12 @@ function renderCompletedEntryLeg(prop) {
   return `
     <div class="entry-leg-row">
       <div>
-        <strong>${prop.player}</strong>
-        <span>${prop.team || prop.game || prop.sport || ""}</span>
+        <strong>${escapeHtml(prop.player)}</strong>
+        <span>${escapeHtml(prop.team || prop.game || prop.sport || "")}</span>
       </div>
       <div>
-        <span>${directionBadge(prop.direction || "Over")} ${prop.stat}</span>
-        <strong>${prop.line}</strong>
+        <span>${directionBadge(prop.direction || "Over")} ${escapeHtml(prop.stat)}</span>
+        <strong>${escapeHtml(prop.line)}</strong>
       </div>
       <div>
         <span>Projection</span>
@@ -3610,8 +3737,8 @@ function renderCompletedEntryLeg(prop) {
         <strong>${actual}</strong>
       </div>
       <div>
-        <span>${source}</span>
-        <strong class="${resultClass}">${prop.result || "Pending"}</strong>
+        <span>${escapeHtml(source)}</span>
+        <strong class="${resultClass}">${escapeHtml(prop.result || "Pending")}</strong>
       </div>
       <div>
         <span>CLV</span>
@@ -3762,12 +3889,14 @@ function openHistoryUploadFromOnboarding() {
   localStorage.setItem("edgeiq.onboardingComplete", "true");
   $("onboarding-modal").hidden = true;
   setView("analysis");
+  activateWorkspace(document.querySelector('[data-workspace="research-workspace"]'), "imports");
   $("upload-target").value = "bet_history";
   $("upload-file").focus();
 }
 
 function openScreenshotImport() {
   setView("analysis");
+  activateWorkspace(document.querySelector('[data-workspace="research-workspace"]'), "imports");
   $("upload-target").value = "bet_history";
   $("upload-source").value = "screenshot";
   $("upload-result").classList.add("muted-card");
@@ -4162,6 +4291,11 @@ async function loadAccuracyLab() {
 }
 
 function bindEvents() {
+  setupWorkspaces();
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-workspace-jump]");
+    if (button) jumpToWorkspace(button);
+  });
   document.querySelectorAll(".nav-item").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
@@ -4255,6 +4389,7 @@ function bindEvents() {
   $("expedite-entries").addEventListener("click", () => withButtonBusy("expedite-entries", "Clearing...", expediteEntries));
   $("line-shop-form").addEventListener("submit", shopLines);
   $("player-research-form").addEventListener("submit", loadPlayerResearch);
+  $("research-context-form").addEventListener("submit", runFullResearch);
   $("sharp-consensus-form").addEventListener("submit", loadSharpConsensus);
   $("hedge-form").addEventListener("submit", calculateHedge);
   $("middle-form").addEventListener("submit", calculateMiddle);
@@ -4304,31 +4439,16 @@ function bindEvents() {
 function startLiveEntryPolling() {
   window.setInterval(() => {
     if (document.hidden) return;
-    loadEntryProgress({ autoCheck: true, refreshProviders: false, marketDetail: false }).catch((error) => {
+    loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }).catch((error) => {
       console.warn("Live entry progress polling failed", error);
     });
   }, 60000);
 }
 
 async function loadDeferredSignals() {
-  const tasks = [
-    { label: "Prop Board", before: () => { $("props-status").textContent = "Loading cached board..."; }, run: () => loadProps({ cascade: false }) },
-    { label: "Command Center", before: () => { $("command-center-status").textContent = "Loading cached signal board..."; }, run: loadCommandCenter },
-    { label: "Dashboard Parlay", run: loadDashboardParlay },
-    { label: "Trending Games", before: () => { $("trending-games-status").textContent = "Loading popular games..."; }, run: loadTrendingGames },
-    { label: "Timing Alerts", before: () => { $("timing-alert-status").textContent = "Checking timing signals..."; }, run: loadTimingAlerts },
-    { label: "Advantage Center", before: () => { $("advantage-center-status").textContent = "Checking line value and watchlist..."; }, run: loadAdvantageCenter },
-    { label: "Live Value Feed", run: loadOpportunityFeed },
-    { label: "Sportsbook Sync", run: loadSportsbookSync },
-  ];
-  for (const task of tasks) {
-    try {
-      task.before?.();
-      await task.run();
-    } catch (error) {
-      console.warn(`${task.label} refresh failed`, error);
-    }
-  }
+  const root = document.querySelector('[data-workspace="decision-desk"]');
+  const activeTab = root?.querySelector("[data-workspace-tab].active");
+  if (root && activeTab) loadWorkspacePaneData(root, activeTab.dataset.workspaceTab);
 }
 
 async function loadAll(options = {}) {

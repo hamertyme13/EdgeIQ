@@ -28,4 +28,5 @@ def test_settlement_audit_deduplicates_retries(monkeypatch):
 
     assert queue["count"] == 1
     assert queue["waiting"] == 1
+    assert queue["scheduled"] == 0
     assert queue["items"][0]["attempt_count"] == 2

@@ -1,5 +1,6 @@
 import json
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
@@ -182,15 +183,11 @@ class EntryRepository:
                 .order_by(EntryModel.placed_at.desc(), EntryModel.created_at.desc())
                 .all()
             )
+            props_by_entry = EntryRepository._props_by_entry(session, entries)
 
             rows: list[dict] = []
             for entry in entries:
-                props = (
-                    session.query(EntryPropModel)
-                    .filter(EntryPropModel.entry_id == entry.id)
-                    .order_by(EntryPropModel.id.asc())
-                    .all()
-                )
+                props = props_by_entry.get(entry.id, [])
                 rows.append({
                     "id": entry.id,
                     "platform": entry.platform,
@@ -258,15 +255,11 @@ class EntryRepository:
                 .order_by(EntryModel.created_at.desc(), EntryModel.id.desc())
                 .all()
             )
+            props_by_entry = EntryRepository._props_by_entry(session, entries)
 
             rows: list[dict] = []
             for entry in entries:
-                props = (
-                    session.query(EntryPropModel)
-                    .filter(EntryPropModel.entry_id == entry.id)
-                    .order_by(EntryPropModel.id.asc())
-                    .all()
-                )
+                props = props_by_entry.get(entry.id, [])
                 rows.append({
                     "id": entry.id,
                     "platform": entry.platform,
@@ -328,6 +321,22 @@ class EntryRepository:
                 })
 
             return rows
+
+    @staticmethod
+    def _props_by_entry(session: Session, entries: list[EntryModel]) -> dict[int, list[EntryPropModel]]:
+        entry_ids = [entry.id for entry in entries]
+        if not entry_ids:
+            return {}
+        props = (
+            session.query(EntryPropModel)
+            .filter(EntryPropModel.entry_id.in_(entry_ids))
+            .order_by(EntryPropModel.entry_id.asc(), EntryPropModel.id.asc())
+            .all()
+        )
+        grouped: dict[int, list[EntryPropModel]] = defaultdict(list)
+        for prop in props:
+            grouped[prop.entry_id].append(prop)
+        return dict(grouped)
 
     @staticmethod
     def get_pending(entry_id: int) -> dict | None:
@@ -575,6 +584,7 @@ class EntryRepository:
             "by_result": EntryRepository._group_by_result(settled),
             "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
             "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
+            "by_stat": EntryRepository._group_by_key(settled, EntryRepository._primary_stat),
             "by_platform": EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown"),
             "platform_profitability": EntryRepository._ranked_groups(
                 EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown")
@@ -918,6 +928,16 @@ class EntryRepository:
     def _primary_sport(entry: dict) -> str:
         props = entry.get("props") or []
         return props[0].get("sport") if props else "Unknown"
+
+    @staticmethod
+    def _primary_stat(entry: dict) -> str:
+        props = entry.get("props") or []
+        stats = [str(prop.get("stat") or "").strip() for prop in props]
+        stats = [stat for stat in stats if stat]
+        if not stats:
+            return "Unknown"
+        counts = {stat: stats.count(stat) for stat in set(stats)}
+        return sorted(counts, key=lambda stat: (-counts[stat], stat))[0]
 
     @staticmethod
     def _group_by_key(entries: list[dict], key) -> dict[str, dict]:

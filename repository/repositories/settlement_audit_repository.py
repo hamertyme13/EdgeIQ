@@ -74,6 +74,7 @@ class SettlementAuditRepository:
             "items": items,
             "count": len(items),
             "verified": counts.get("verified", 0),
+            "scheduled": counts.get("scheduled", 0),
             "waiting": counts.get("waiting", 0),
             "blocked": counts.get("blocked", 0),
             "statuses": counts,

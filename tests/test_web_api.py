@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import base64
 import json
 from pathlib import Path
@@ -120,6 +120,148 @@ def test_web_health_endpoint():
 def test_datetime_serialization_marks_naive_db_values_as_utc():
     assert iso_utc(datetime(2026, 7, 10, 4, 10)) == "2026-07-10T04:10:00+00:00"
     assert iso_utc(utc_now()).endswith("+00:00")
+
+
+def test_automatic_final_refresh_only_includes_due_recent_games(monkeypatch):
+    monkeypatch.setattr(web_app, "_supports_automatic_final_stat", lambda prop: True)
+    now = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)
+    entries = [{
+        "id": 1,
+        "props": [
+            {"player": "Due", "sport": "WNBA", "game_time": "2026-07-28T12:00:00Z"},
+            {"player": "Scheduled", "sport": "WNBA", "game_time": "2026-07-28T20:00:00Z"},
+            {"player": "Expired", "sport": "WNBA", "game_time": "2026-07-27T12:00:00Z"},
+            {
+                "player": "Final",
+                "sport": "WNBA",
+                "game_time": "2026-07-28T12:00:00Z",
+                "actual": 20.0,
+                "final_status": "played",
+            },
+        ],
+    }]
+
+    due = web_app._entries_due_for_automatic_final_refresh(entries, now=now)
+
+    assert [prop["player"] for prop in due[0]["props"]] == ["Due"]
+
+
+def test_settlement_audit_blocks_expired_automatic_retry(monkeypatch):
+    recorded = {}
+    monkeypatch.setattr(web_app, "_supports_automatic_final_stat", lambda prop: True)
+    monkeypatch.setattr(
+        web_app.SettlementAuditRepository,
+        "record",
+        lambda payload: recorded.update(payload),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "utc_now",
+        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc),
+    )
+
+    web_app._record_settlement_audit(
+        {"id": 8},
+        {
+            "entry_prop_id": 9,
+            "player": "A",
+            "sport": "WNBA",
+            "stat": "Points",
+            "line": 10.5,
+            "game_time": "2026-07-27T12:00:00Z",
+        },
+        None,
+        None,
+        "Unknown",
+        "unmatched",
+        "unknown",
+    )
+
+    assert recorded["status"] == "blocked"
+    assert recorded["reason_code"] == "official_final_retry_window_expired"
+    assert "Automatic retries stopped" in recorded["message"]
+
+
+def test_settlement_audit_labels_future_games_scheduled(monkeypatch):
+    recorded = {}
+    monkeypatch.setattr(web_app, "_supports_automatic_final_stat", lambda prop: True)
+    monkeypatch.setattr(
+        web_app.SettlementAuditRepository,
+        "record",
+        lambda payload: recorded.update(payload),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "utc_now",
+        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc),
+    )
+
+    web_app._record_settlement_audit(
+        {"id": 8},
+        {
+            "entry_prop_id": 9,
+            "player": "A",
+            "sport": "WNBA",
+            "stat": "Points",
+            "line": 10.5,
+            "game_time": "2026-07-29T00:00:00Z",
+        },
+        None,
+        None,
+        "Unknown",
+        "unmatched",
+        "unknown",
+    )
+
+    assert recorded["status"] == "scheduled"
+    assert recorded["reason_code"] == "game_not_started"
+    assert "has not started" in recorded["message"]
+
+
+def test_entry_progress_does_not_refresh_providers_by_default(monkeypatch):
+    calls = []
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
+    monkeypatch.setattr(
+        web_app,
+        "_auto_check_pending_entries",
+        lambda allow_estimates, refresh_providers: calls.append(refresh_providers) or {
+            "checked": 0,
+            "settled": 0,
+        },
+    )
+
+    entry_progress(auto_check=True)
+
+    assert calls == [False]
+
+
+def test_pending_serializer_excludes_heavy_audit_fields():
+    serialized = web_app._serialize_pending({
+        "id": 4,
+        "platform": "PrizePicks",
+        "entry_mode": "paper",
+        "wager": 0.0,
+        "multiplier": 3.0,
+        "potential_payout": 0.0,
+        "placed_at": datetime(2026, 7, 28, tzinfo=timezone.utc),
+        "audit_snapshot": "large internal snapshot",
+        "props": [{
+            "player": "A",
+            "direction": "Over",
+            "stat": "Points",
+            "line": 10.5,
+            "projection": 12.0,
+            "data_quality": {"large": "payload"},
+        }],
+    })
+
+    assert "audit_snapshot" not in serialized
+    assert serialized["props"] == [{
+        "player": "A",
+        "direction": "Over",
+        "stat": "Points",
+        "line": 10.5,
+    }]
 
 
 def test_nba_summer_league_game_finder_parses_unique_game_ids(monkeypatch):
@@ -2593,16 +2735,39 @@ def test_alert_delivery_posts_configured_webhook(monkeypatch):
     assert posted["url"] == "https://example.test/hook"
 
 
-def test_deploy_readiness_reports_pwa_assets(monkeypatch):
+def test_deploy_readiness_reports_local_app_as_ready(monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("EDGEIQ_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.delenv("EDGEIQ_DEPLOYMENT_MODE", raising=False)
+    monkeypatch.delenv("EDGEIQ_ALERT_WEBHOOK_URL", raising=False)
+
+    body = deploy_readiness()
+
+    labels = {check["label"]: check for check in body["checks"]}
+    assert body["mode"] == "local"
+    assert body["status"] == "local ready"
+    assert body["score"] == 100
+    assert labels["PWA manifest"]["ok"] is True
+    assert labels["Service worker"]["ok"] is True
+    assert labels["App database"]["ok"] is True
+    assert labels["App database"]["status"] == "local ready"
+    assert labels["Allowed origins"]["required"] is False
+    assert labels["Alert webhook"]["status"] == "optional"
+
+
+def test_deploy_readiness_requires_hosted_database_in_hosted_mode(monkeypatch):
+    monkeypatch.setenv("EDGEIQ_DEPLOYMENT_MODE", "hosted")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///edgeiq.db")
     monkeypatch.delenv("EDGEIQ_ALLOWED_ORIGINS", raising=False)
 
     body = deploy_readiness()
 
     labels = {check["label"]: check for check in body["checks"]}
-    assert labels["PWA manifest"]["ok"] is True
-    assert labels["Service worker"]["ok"] is True
+    assert body["mode"] == "hosted"
+    assert body["status"] == "hosted needs setup"
+    assert labels["Production database"]["required"] is True
     assert labels["Production database"]["ok"] is False
+    assert labels["Allowed origins"]["required"] is True
 
 
 def test_share_entry_persists_copy_ready_slip(monkeypatch):
@@ -2654,6 +2819,41 @@ def test_grading_report_summarizes_unknowns_and_clv(monkeypatch):
     assert body["summary"]["unknown_legs"] == 1
     assert body["summary"]["verified_legs"] == 1
     assert body["summary"]["verification_rate"] == 50.0
+
+
+def test_compact_grading_report_omits_heavy_detail(monkeypatch):
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [{"id": 9}])
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [])
+    monkeypatch.setattr(
+        web_app,
+        "_entry_progress_payload",
+        lambda entry, include_market_detail=False: {
+            "id": entry["id"],
+            "tracker_status": "waiting",
+            "next_game_time_label": "Tonight",
+            "time_groups": [{"large": "payload"}],
+            "legs": [{"player": "A", "status": "scheduled", "timeline_label": "Starts tonight", "large": "payload"}],
+        },
+    )
+    monkeypatch.setattr(web_app, "clv_report", lambda: {
+        "entries": [{"id": 1, "legs": [{"player": "A"}]}],
+        "average_clv": 1.5,
+        "positive_clv_rate": 60.0,
+        "tracked_legs": 5,
+        "quarantined_legs": 1,
+    })
+
+    body = grading_report(compact=True)
+
+    assert body["summary"]["average_clv"] == 1.5
+    assert "completed" not in body
+    assert "clv" not in body
+    assert body["pending"] == [{
+        "id": 9,
+        "status": "waiting",
+        "timeline_label": "Tonight",
+        "legs": [{"player": "A", "status": "scheduled", "timeline_label": "Starts tonight"}],
+    }]
 
 
 def test_import_wizard_exposes_provider_templates(monkeypatch):
@@ -3095,6 +3295,23 @@ def test_bets_endpoint_includes_completed_entry_leg_final_stats(monkeypatch):
     assert body["entries"][0]["props"][0]["actual"] == 24.0
     assert body["entries"][0]["props"][0]["source"] == "espn"
     assert body["entries"][0]["props"][0]["result"] == "Win"
+    assert body["summary"]["saved_bets"] == 0
+    assert body["summary"]["completed_entries"] == 1
+
+
+def test_bets_endpoint_does_not_return_synced_entry_mirrors(monkeypatch):
+    calls = []
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [])
+    monkeypatch.setattr(
+        web_app.BetRepository,
+        "get_all",
+        lambda self, include_synced_entries=False: calls.append(include_synced_entries) or [],
+    )
+
+    body = bets()
+
+    assert body["bets"] == []
+    assert calls == [False]
 
 
 def test_final_stat_import_endpoint_saves_rows(monkeypatch):
@@ -3750,7 +3967,7 @@ def test_entry_progress_backfills_missing_game_times(monkeypatch):
     )
     monkeypatch.setattr(web_app.EntryRepository, "backfill_game_times", lambda rows, **kwargs: {"updated": 1})
 
-    body = entry_progress()
+    body = entry_progress(refresh_providers=True)
 
     assert body["game_time_sync"]["updated"] == 1
     assert body["entries"][0]["next_game_time_label"] == "2026-07-09T23:30:00+00:00"
@@ -3787,13 +4004,13 @@ def test_entry_progress_endpoint_can_run_local_auto_check(monkeypatch):
     monkeypatch.setattr(web_app, "_auto_check_pending_entries", fake_auto_check)
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
 
-    body = entry_progress(auto_check=True)
+    body = entry_progress(auto_check=True, refresh_providers=True)
 
     assert calls == {"allow_estimates": False, "refresh_providers": True}
     assert body["auto_check"]["settled"] == 1
 
 
-def test_entry_progress_refreshes_live_stats_by_default(monkeypatch):
+def test_entry_progress_refreshes_live_stats_when_explicitly_requested(monkeypatch):
     pending = [{
         "id": 1,
         "platform": "PrizePicks",
@@ -3830,7 +4047,7 @@ def test_entry_progress_refreshes_live_stats_by_default(monkeypatch):
         lambda prop, entry: {"actual": 8.0, "status": "live", "source": "espn", "game_date": "2026-07-12"},
     )
 
-    body = entry_progress()
+    body = entry_progress(refresh_providers=True)
 
     assert calls["live"] == 1
     assert body["with_live_stats"] == 1
@@ -4036,6 +4253,44 @@ def test_dashboard_merges_entry_sport_performance_and_insights(monkeypatch):
     assert body["by_sport"]["WNBA"]["losses"] == 1
     assert body["by_sport"]["WNBA"]["profit"] == -1.0
     assert body["performance_insights"]
+
+
+def test_performance_insights_do_not_call_a_losing_platform_best():
+    insights = dashboard_service._performance_insights({
+        "by_platform": {
+            "PrizePicks": {
+                "wins": 1,
+                "losses": 5,
+                "profit": -40.0,
+                "roi": -66.7,
+            },
+            "Underdog": {
+                "wins": 2,
+                "losses": 4,
+                "profit": -10.0,
+                "roi": -16.7,
+            },
+        },
+    })
+
+    platform_insight = next(
+        insight for insight in insights
+        if "platform" in insight["title"].lower()
+    )
+    assert platform_insight["title"] == "No profitable platform yet"
+    assert "least-negative" in platform_insight["summary"]
+
+
+def test_entry_primary_stat_uses_the_dominant_leg_market():
+    entry = {
+        "props": [
+            {"stat": "Points"},
+            {"stat": "Assists"},
+            {"stat": "Points"},
+        ],
+    }
+
+    assert EntryRepository._primary_stat(entry) == "Points"
 
 
 def test_monthly_profit_log_groups_manual_bets_and_entries(monkeypatch):

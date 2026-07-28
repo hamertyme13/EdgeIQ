@@ -51,6 +51,11 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
         stats.get("by_platform", {}),
         entry_stats.get("by_platform", {}),
     )
+    stats["by_platform"] = _display_groups(
+        stats["by_platform"],
+        hidden={"test", "smoke"},
+    )
+    stats["by_stat"] = _display_groups(stats["by_stat"])
     stats["entry_platform_profitability"] = entry_stats.get("platform_profitability", [])
     stats["monthly_profit"] = monthly_profit_log()
     stats["bankroll_transactions"] = bankroll_transactions
@@ -70,6 +75,18 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     stats["starting_bankroll"] = starting_bankroll
 
     return stats
+
+
+def _display_groups(groups: dict, hidden: set[str] | None = None) -> dict:
+    hidden_names = {name.lower() for name in (hidden or set())}
+    displayed = {}
+    for name, values in groups.items():
+        normalized = str(name or "").strip()
+        if normalized.lower() in hidden_names:
+            continue
+        label = "Unspecified" if normalized.lower() in {"", "unknown", "unavailable"} else normalized
+        displayed[label] = values
+    return displayed
 
 
 def monthly_profit_log() -> dict:
@@ -241,13 +258,24 @@ def _performance_insights(stats: dict) -> list[dict]:
             "tone": "warning",
         })
     if best_platform:
+        profitable = best_platform["profit"] > 0
         insights.append({
-            "title": f"Best platform: {best_platform['name']}",
-            "summary": (
-                f"{best_platform['name']} leads platform profitability with "
-                f"{best_platform['profit']:+.2f} profit and {best_platform['roi']}% ROI."
+            "title": (
+                f"Best platform: {best_platform['name']}"
+                if profitable
+                else "No profitable platform yet"
             ),
-            "tone": "positive" if best_platform["profit"] >= 0 else "neutral",
+            "summary": (
+                f"{best_platform['name']} currently has the least-negative tracked result at "
+                f"{best_platform['profit']:+.2f} profit and {best_platform['roi']}% ROI. "
+                "Keep paid sizing conservative until a platform turns profitable."
+                if not profitable
+                else (
+                    f"{best_platform['name']} leads platform profitability with "
+                    f"{best_platform['profit']:+.2f} profit and {best_platform['roi']}% ROI."
+                )
+            ),
+            "tone": "positive" if profitable else "warning",
         })
     if weakest_stat:
         insights.append({

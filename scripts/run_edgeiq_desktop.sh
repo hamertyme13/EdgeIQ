@@ -3,8 +3,7 @@ set -euo pipefail
 
 APP_DIR="/Users/joshuahamer/Documents/python_projects/EdgeIQ"
 HOST="127.0.0.1"
-REQUIRED_UI_VERSION="20260721-performance"
-IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005 8006 8008 8009 8010}"
+IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005 8006 8008 8009 8010 8011 8012 8013}"
 
 cd "$APP_DIR"
 
@@ -38,6 +37,37 @@ current_app_ok() {
   /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
 }
 
+edgeiq_server() {
+  local port="$1"
+  /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null |
+    /usr/bin/grep -q '"app":"EdgeIQ Web"'
+}
+
+stop_stale_edgeiq_servers() {
+  local port pid
+  for port in "${PORTS[@]}"; do
+    if edgeiq_server "$port" && ! current_app_ok "$port"; then
+      pid="$(/usr/sbin/lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+      if [[ -n "$pid" ]]; then
+        echo "Stopping outdated EdgeIQ server on ${HOST}:${port} (PID ${pid})"
+        /bin/kill "$pid" >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+
+  for _ in {1..20}; do
+    local stale_running=0
+    for port in "${PORTS[@]}"; do
+      if edgeiq_server "$port" && ! current_app_ok "$port"; then
+        stale_running=1
+        break
+      fi
+    done
+    [[ "$stale_running" -eq 0 ]] && return 0
+    /bin/sleep 0.1
+  done
+}
+
 find_port() {
   for port in "${PORTS[@]}"; do
     if current_app_ok "$port"; then
@@ -62,9 +92,13 @@ PYTHON_BIN="$(pick_python)" || {
   read -r -p "Press Return to close..."
   exit 1
 }
+REQUIRED_UI_VERSION="$(
+  "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+)"
 
+stop_stale_edgeiq_servers
 PORT_STATE="$(find_port)" || {
-  echo "EdgeIQ could not find a free local port from 8000-8010."
+  echo "EdgeIQ could not find a free local port from 8000-8013."
   read -r -p "Press Return to close..."
   exit 1
 }

@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260728-underdog-placement-v1" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260728-desktop-reliability-v7" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,7 +27,7 @@
           <button class="nav-item active" data-view="dashboard">Today</button>
           <button class="nav-item" data-view="entries">Entries</button>
           <button class="nav-item" data-view="performance">Results</button>
-          <button class="nav-item" data-view="analysis">Tools</button>
+          <button class="nav-item" data-view="analysis">Research</button>
         </nav>
       </aside>
 
@@ -108,8 +108,8 @@
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
           <details class="dashboard-support-drawer">
             <summary>
-              <span>System Status</span>
-              <small>Provider health, alerts, and daily automation</small>
+              <span>System + Settings</span>
+              <small>Providers, automation, preferences, alerts, and imports</small>
             </summary>
           <div class="reliability-grid">
             <div class="panel">
@@ -140,8 +140,8 @@
             <div class="panel">
               <div class="panel-header">
                 <div>
-                  <p class="eyebrow">Mobile + Hosting</p>
-                  <h2>Hosted App Readiness</h2>
+                  <p class="eyebrow">Desktop + Mobile</p>
+                  <h2>App Readiness</h2>
                 </div>
                 <button id="refresh-deploy-readiness" class="secondary">Check</button>
               </div>
@@ -157,14 +157,33 @@
               </div>
               <div id="refresh-schedule-list" class="suggestion-list"></div>
             </div>
+            <div class="panel settings-hub">
+              <div>
+                <p class="eyebrow">Settings Hub</p>
+                <h2>Manage EdgeIQ</h2>
+              </div>
+              <div class="button-row">
+                <button class="secondary" type="button" data-view-shortcut="entries">Betting Preferences</button>
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:value">Bankroll + Watchlist</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:market">Alerts + Market Settings</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:imports">Import Center</button>
+              </div>
+            </div>
           </div>
           </details>
-          <details class="dashboard-support-drawer">
+          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk">
             <summary>
-              <span>Advanced Signals</span>
-              <small>Command cards, advantage tools, timing alerts, and market board</small>
+              <span>Decision Desk</span>
+              <small>Opportunities, value, alerts, entry ideas, and the market board</small>
             </summary>
-          <div class="release-grid">
+          <div class="workspace-tab-strip" role="tablist" aria-label="Decision Desk sections">
+            <button class="workspace-tab active" type="button" data-workspace-tab="overview">Top Moves</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="value">Value</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="alerts">Alerts</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="builder">Ask EdgeIQ</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="board">Market Board</button>
+          </div>
+          <div class="release-grid" data-workspace-pane="overview">
             <div class="panel command-center-panel">
               <div class="panel-header">
                 <div>
@@ -188,7 +207,7 @@
               <div id="model-health-detail" class="model-health-detail muted-card">Checking model health...</div>
             </div>
           </div>
-          <div class="panel advantage-center-panel">
+          <div class="panel advantage-center-panel" data-workspace-pane="value" hidden>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Competitive Edge</p>
@@ -310,7 +329,7 @@
               </form>
             </div>
           </div>
-          <div class="panel timing-alert-panel">
+          <div class="panel timing-alert-panel" data-workspace-pane="alerts" hidden>
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Market Timing</p>
@@ -341,7 +360,7 @@
             </div>
             <div id="timing-alert-list" class="timing-alert-list"></div>
           </div>
-          <div class="dashboard-layout">
+          <div class="dashboard-layout" data-workspace-pane="builder" hidden>
             <div class="panel ai-parlay-panel command-panel">
               <div class="panel-header">
                 <div>
@@ -392,7 +411,7 @@
             </div>
           </div>
 
-          <div class="panel board-panel">
+          <div class="panel board-panel" data-workspace-pane="board" hidden>
             <div class="panel-header">
               <div>
                 <h2>Prop Board</h2>
@@ -670,8 +689,20 @@
               </div>
             </div>
 
-            <div class="stack">
-              <details class="panel tool-group" open>
+            <div class="stack" data-workspace="entry-generator">
+              <div class="workspace-hub">
+                <div>
+                  <p class="eyebrow">Entry Generator</p>
+                  <h2>Build From One Place</h2>
+                  <p>Choose the generation method; every result can load directly into the Entry Builder.</p>
+                </div>
+                <div class="workspace-tab-strip" role="tablist" aria-label="Entry Generator modes">
+                  <button class="workspace-tab active" type="button" data-workspace-tab="best">Best Entries</button>
+                  <button class="workspace-tab" type="button" data-workspace-tab="verified">Verified Only</button>
+                  <button class="workspace-tab" type="button" data-workspace-tab="custom">Custom Rules</button>
+                </div>
+              </div>
+              <details class="panel tool-group" data-workspace-pane="verified" hidden>
                 <summary>
                   <span>Confirmed Prop Lab</span>
                   <small>Verified API data + historical context</small>
@@ -708,7 +739,7 @@
                 </div>
               </details>
 
-              <details class="panel tool-group" open>
+              <details class="panel tool-group" open data-workspace-pane="best">
                 <summary>
                   <span>Suggested Entries</span>
                   <small>Verified entries plus a high-variance six-leg card</small>
@@ -747,7 +778,7 @@
                 </div>
               </details>
 
-              <details class="panel tool-group">
+              <details class="panel tool-group" data-workspace-pane="custom" hidden>
                 <summary>
                   <span>Bet Slip Organizer</span>
                   <small>Optimizer filters</small>
@@ -825,12 +856,61 @@
           </div>
         </section>
 
-        <section id="analysis" class="view">
+        <section id="analysis" class="view" data-workspace="research-workspace">
+          <div class="workspace-hub">
+            <div>
+              <p class="eyebrow">Prop Research Workspace</p>
+              <h2>Research Once, Then Compare</h2>
+              <p>Projection, history, market value, risk tools, and imports are grouped by purpose.</p>
+            </div>
+            <div class="workspace-tab-strip" role="tablist" aria-label="Research sections">
+              <button class="workspace-tab active" type="button" data-workspace-tab="prop">Prop Research</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="market">Market + Risk</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="imports">Import Center</button>
+            </div>
+          </div>
+          <form id="research-context-form" class="panel research-context-bar">
+            <div>
+              <p class="eyebrow">Shared Research Context</p>
+              <h3>Enter The Prop Once</h3>
+            </div>
+            <div class="form-grid compact-controls">
+              <input id="research-context-player" placeholder="Player" />
+              <input id="research-context-stat" placeholder="Stat" />
+              <select id="research-context-sport">
+                <option>WNBA</option>
+                <option>NBA</option>
+                <option>NFL</option>
+                <option>MLB</option>
+                <option>NHL</option>
+                <option>NCAAF</option>
+                <option>NCAAM</option>
+                <option>NCAAW</option>
+                <option>MLS</option>
+                <option>EPL</option>
+                <option>UCL</option>
+                <option>TENNIS</option>
+                <option>PGA</option>
+                <option>MMA</option>
+                <option>NASCAR</option>
+              </select>
+              <select id="research-context-platform">
+                <option>Both</option>
+                <option>PrizePicks</option>
+                <option>Underdog</option>
+                <option>Sleeper</option>
+                <option>Ball Don't Lie</option>
+              </select>
+              <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" />
+              <button type="submit">Run Full Research</button>
+            </div>
+            <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
+          </form>
           <div class="tool-groups">
-            <details class="panel tool-group" open>
+            <details class="panel tool-group" open data-workspace-pane="prop">
               <summary>
-                <span>Projection Tools</span>
-                <small>AI assist and hit rates</small>
+                <span>Prop Research</span>
+                <small>Projection, hit rate, and complete player context</small>
               </summary>
               <div class="tool-group-body two-col">
                 <div class="mini-tool">
@@ -911,10 +991,10 @@
               </div>
             </details>
 
-            <details class="panel tool-group">
+            <details class="panel tool-group" data-workspace-pane="market" hidden>
               <summary>
-                <span>Market Tools</span>
-                <small>EV, line shopping, CLV</small>
+                <span>Market Value + Risk</span>
+                <small>Line shopping, EV, consensus, hedges, and movement</small>
               </summary>
               <div class="tool-group-body two-col">
                 <div class="mini-tool">
@@ -1099,10 +1179,10 @@
               </div>
             </details>
 
-            <details class="panel tool-group">
+            <details class="panel tool-group" data-workspace-pane="imports" hidden>
               <summary>
-                <span>Data Imports + Screenshot Uploads</span>
-                <small>Stats, phone screenshots, bet history</small>
+                <span>Import Center</span>
+                <small>Final stats, phone screenshots, and historical entries</small>
               </summary>
               <div class="tool-group-body two-col">
                 <div class="mini-tool">
@@ -1142,6 +1222,12 @@
         </section>
 
         <section id="bets" class="view">
+          <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
+            <button class="workspace-tab" type="button" data-workspace-jump="results-workspace:performance">Performance</button>
+            <button class="workspace-tab" type="button" data-workspace-jump="results-workspace:model">Model Validation</button>
+            <button class="workspace-tab" type="button" data-workspace-jump="results-workspace:settlement">Settlement</button>
+            <button class="workspace-tab active" type="button">Ledger</button>
+          </div>
           <div class="two-col">
             <div class="panel">
               <h2>Track Bet</h2>
@@ -1255,7 +1341,7 @@
           </div>
         </section>
 
-        <section id="performance" class="view">
+        <section id="performance" class="view" data-workspace="results-workspace">
           <div class="panel">
             <div class="panel-header">
               <div>
@@ -1269,7 +1355,13 @@
             </div>
             <div id="performance-summary" class="stats-grid"></div>
           </div>
-          <div class="panel">
+          <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
+            <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="model">Model Validation</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="settlement">Settlement</button>
+            <button class="workspace-tab" type="button" data-view-shortcut="bets">Ledger</button>
+          </div>
+          <div class="panel" data-workspace-pane="settlement" hidden>
             <div class="panel-header">
               <div>
                 <h2>Settlement Audit Queue</h2>
@@ -1279,17 +1371,25 @@
             </div>
             <div id="settlement-audit-list" class="suggestion-list"></div>
           </div>
-          <div class="two-col">
-            <div class="panel">
-              <h2>Monthly Profit</h2>
-              <div id="monthly-profit-current" class="suggestion-list"></div>
+          <div class="panel" data-workspace-pane="performance">
+            <div class="panel-header">
+              <div>
+                <h2>Monthly Profit</h2>
+                <p>Current performance and historical monthly results in one ledger.</p>
+              </div>
             </div>
-            <div class="panel">
-              <h2>Monthly Profit Log</h2>
-              <div id="monthly-profit-log" class="suggestion-list"></div>
+            <div class="two-col monthly-profit-layout">
+              <div>
+                <h3>Current Month</h3>
+                <div id="monthly-profit-current" class="suggestion-list"></div>
+              </div>
+              <div>
+                <h3>Monthly History</h3>
+                <div id="monthly-profit-log" class="suggestion-list"></div>
+              </div>
             </div>
           </div>
-          <div class="two-col">
+          <div class="two-col" data-workspace-pane="performance">
             <div class="panel">
               <div class="panel-header">
                 <div>
@@ -1307,7 +1407,7 @@
               <div id="performance-insights" class="suggestion-list"></div>
             </div>
           </div>
-          <div class="results-calibration-layout">
+          <div class="results-calibration-layout" data-workspace-pane="model" hidden>
             <div class="results-insight-stack">
               <div class="panel scorecard-panel">
                 <div class="panel-header scorecard-header">
@@ -1379,20 +1479,20 @@
               <div id="calibration-list" class="suggestion-list"></div>
             </div>
           </div>
-          <div class="three-col">
+          <div class="three-col" data-workspace-pane="performance">
             <div class="panel"><h2>By Sport</h2><div id="perf-sport"></div></div>
             <div class="panel"><h2>By Stat</h2><div id="perf-stat"></div></div>
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
           </div>
-          <div class="panel">
+          <div class="panel" data-workspace-pane="performance">
             <h2>Platform Profitability</h2>
             <div id="entry-platform-profitability" class="suggestion-list"></div>
           </div>
-          <div class="panel">
+          <div class="panel" data-workspace-pane="performance">
             <h2>Result Breakdown</h2>
             <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
-          <div class="panel">
+          <div class="panel" data-workspace-pane="model" hidden>
             <div class="panel-header">
               <div>
                 <h2>Accuracy Lab</h2>
@@ -1409,23 +1509,23 @@
       <button class="nav-item active" data-view="dashboard" type="button">Today</button>
       <button class="nav-item" data-view="entries" type="button">Entry</button>
       <button class="nav-item" data-view="performance" type="button">Results</button>
-      <button class="nav-item" data-view="analysis" type="button">Tools</button>
+      <button class="nav-item" data-view="analysis" type="button">Research</button>
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260728-underdog-placement-v1"></script>
+    <script src="/static/ui-shell.js?v=20260728-desktop-reliability-v7"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260728-underdog-placement-v1"></script>
+    <script src="/static/ui-utils.js?v=20260728-desktop-reliability-v7"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260728-underdog-placement-v1"></script>
+    <script src="/static/app.js?v=20260728-desktop-reliability-v7"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

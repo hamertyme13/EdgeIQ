@@ -116,15 +116,19 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260728-underdog-placement-v1"
+STATIC_ASSET_VERSION = "20260728-desktop-reliability-v7"
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 9
 DAILY_BRIEFING_CACHE_TTL_HOURS = 10
 DAILY_SCAN_STATUS_KEY = "daily_briefing_scan_status"
 DAILY_SCAN_LOG_KEY = "daily_briefing_run_log"
 PROP_FETCH_CACHE_SECONDS = 60
-SETTLEMENT_REFRESH_SECONDS = max(300, int(os.getenv("EDGEIQ_SETTLEMENT_REFRESH_SECONDS", "300")))
+SETTLEMENT_REFRESH_SECONDS = max(900, int(os.getenv("EDGEIQ_SETTLEMENT_REFRESH_SECONDS", "1800")))
 SETTLEMENT_INITIAL_REFRESH_SECONDS = max(15, int(os.getenv("EDGEIQ_SETTLEMENT_INITIAL_REFRESH_SECONDS", "30")))
+SETTLEMENT_AUTOMATIC_RETRY_HOURS = max(
+    6.0,
+    float(os.getenv("EDGEIQ_SETTLEMENT_AUTOMATIC_RETRY_HOURS", "24")),
+)
 COMMAND_CENTER_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_COMMAND_CENTER_CACHE_SECONDS", "120")))
 SETTLEMENT_REFRESH_STATUS_KEY = "settlement_refresh_status"
 _PROP_FETCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
@@ -879,8 +883,8 @@ def loss_review(limit: int = 10) -> dict:
 
 
 @app.get("/api/entries/grading-report")
-def grading_report() -> dict:
-    return _grading_report_payload()
+def grading_report(compact: bool = False) -> dict:
+    return _grading_report_payload(compact=compact)
 
 
 @app.get("/api/entries/settlement-audit")
@@ -1032,7 +1036,7 @@ def pending_entries() -> dict:
 
 
 @app.get("/api/entries/progress")
-def entry_progress(auto_check: bool = False, refresh_providers: bool = True, market_detail: bool = True) -> dict:
+def entry_progress(auto_check: bool = False, refresh_providers: bool = False, market_detail: bool = True) -> dict:
     auto_check_result = None
     if auto_check:
         auto_check_result = _auto_check_pending_entries(
@@ -1434,11 +1438,14 @@ def _auto_check_pending_entries(allow_estimates: bool = False, refresh_providers
     excluded = _exclude_stale_unverifiable_paper_entries(pending_entries)
     if excluded:
         pending_entries = EntryRepository.pending()
+    refresh_entries = _entries_due_for_automatic_final_refresh(pending_entries)
     refresh = (
-        _refresh_final_stats(pending_entries)
-        if pending_entries and refresh_providers
-        else {"provider": "local_cache", "skipped": not refresh_providers, "imported": 0, "errors": []}
+        _refresh_final_stats(refresh_entries)
+        if refresh_entries and refresh_providers
+        else {"provider": "local_cache", "skipped": True, "imported": 0, "errors": []}
     )
+    refresh["eligible_entries"] = len(refresh_entries)
+    refresh["deferred_entries"] = max(0, len(pending_entries) - len(refresh_entries))
     checks = [_check_entry_result(entry, allow_estimates) for entry in pending_entries]
     settled = [check for check in checks if check["settled"]]
     return {
@@ -1450,6 +1457,46 @@ def _auto_check_pending_entries(allow_estimates: bool = False, refresh_providers
         "excluded_legacy_paper_entries": excluded,
         "reopened_partial_settlements": reopened,
     }
+
+
+def _entries_due_for_automatic_final_refresh(
+    entries: list[dict],
+    now: datetime | None = None,
+) -> list[dict]:
+    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    due_entries = []
+    for entry in entries:
+        props = [
+            prop
+            for prop in entry.get("props", [])
+            if _prop_due_for_automatic_final_refresh(prop, current)
+        ]
+        if props:
+            due_entries.append({**entry, "props": props})
+    return due_entries
+
+
+def _prop_due_for_automatic_final_refresh(prop: dict, now: datetime) -> bool:
+    if not _supports_automatic_final_stat(prop):
+        return False
+    if prop.get("actual") is not None or str(prop.get("final_status") or "").lower() in {"played", "dnp"}:
+        return False
+    start = _parse_game_time(prop.get("game_time", ""))
+    if start is None:
+        return False
+    age = now - start
+    return (
+        age >= timedelta(hours=_sport_final_pending_hours(prop.get("sport", "")))
+        and age < timedelta(hours=SETTLEMENT_AUTOMATIC_RETRY_HOURS)
+    )
+
+
+def _automatic_final_retry_expired(prop: dict, now: datetime | None = None) -> bool:
+    start = _parse_game_time(prop.get("game_time", ""))
+    if start is None:
+        return False
+    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    return current - start >= timedelta(hours=SETTLEMENT_AUTOMATIC_RETRY_HOURS)
 
 
 def _reopen_recent_partial_settlements(max_age_hours: float = 72.0) -> list[int]:
@@ -1623,6 +1670,17 @@ def _record_settlement_audit(
         status = "verified"
         reason_code = "final_stat_matched"
         message = f"Final result verified from {source}."
+    elif _game_has_not_started(prop):
+        status = "scheduled"
+        reason_code = "game_not_started"
+        message = "The game has not started. Final-stat checks will begin after the expected completion window."
+    elif eligible and _automatic_final_retry_expired(prop):
+        status = "blocked"
+        reason_code = "official_final_retry_window_expired"
+        message = (
+            f"No verified final appeared within {SETTLEMENT_AUTOMATIC_RETRY_HOURS:g} hours of game time. Automatic retries stopped "
+            "to protect provider limits; this leg is excluded from calibration until verified."
+        )
     elif eligible:
         status = "waiting"
         reason_code = "official_final_not_available"
@@ -1657,6 +1715,14 @@ def _record_settlement_audit(
         pass
 
 
+def _game_has_not_started(prop: dict, now: datetime | None = None) -> bool:
+    start = _parse_game_time(prop.get("game_time", ""))
+    if start is None:
+        return False
+    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    return current < start
+
+
 @app.post("/api/entries/classify-default-wagers")
 def classify_default_entry_wagers() -> dict:
     result = EntryRepository.classify_missing_economics()
@@ -1670,16 +1736,24 @@ def import_final_stats_endpoint(payload: FinalStatsPayload) -> dict:
 
 
 @app.get("/api/bets")
-def bets() -> dict:
-    EntryRepository.sync_settled_to_bet_history()
-    entries = [
+def bets(limit: int = 100, entry_limit: int = 50) -> dict:
+    limit = max(1, min(limit, 250))
+    entry_limit = max(1, min(entry_limit, 100))
+    all_bets = BetRepository().get_all()
+    all_entries = [
         _serialize_bet_history_entry(entry)
         for entry in EntryRepository.all()
         if entry.get("status") == "Settled"
     ]
     return {
-        "bets": [_serialize_bet(bet) for bet in BetRepository().get_all(include_synced_entries=True)],
-        "entries": entries,
+        "bets": [_serialize_bet(bet) for bet in all_bets[:limit]],
+        "entries": all_entries[:entry_limit],
+        "summary": {
+            "saved_bets": len(all_bets),
+            "completed_entries": len(all_entries),
+            "displayed_bets": min(len(all_bets), limit),
+            "displayed_entries": min(len(all_entries), entry_limit),
+        },
     }
 
 
@@ -5260,7 +5334,13 @@ def _personal_profile_payload() -> dict:
         },
         "strengths": [
             f"{best_sport['name']} is your strongest sport by profit/ROI." if best_sport else "Settle more entries to identify strongest sport.",
-            f"{best_platform['name']} is your best platform so far." if best_platform else "Track platform on each entry to find the best app for you.",
+            (
+                f"{best_platform['name']} is your best platform so far."
+                if best_platform and float(best_platform.get("profit", 0.0)) > 0
+                else "No platform is profitable yet; keep platform comparisons in paper or conservative mode."
+                if best_platform
+                else "Track platform on each entry to find the best app for you."
+            ),
         ],
         "weaknesses": [
             f"{weak_spot['name']} is lagging; consider paper-only until calibration improves." if weak_spot else "No weak segment detected yet.",
@@ -6059,29 +6139,85 @@ def _deliver_webhook_alert(url: str, alert: dict) -> dict:
 
 def _deploy_readiness_payload() -> dict:
     database_url = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
-    allowed_origins = os.getenv("EDGEIQ_ALLOWED_ORIGINS", "")
+    allowed_origins = os.getenv("EDGEIQ_ALLOWED_ORIGINS", "").strip()
+    configured_mode = os.getenv("EDGEIQ_DEPLOYMENT_MODE", "auto").strip().lower()
+    hosted = configured_mode == "hosted" or (
+        configured_mode != "local"
+        and (not database_url.startswith("sqlite") or bool(allowed_origins))
+    )
+    mode = "hosted" if hosted else "local"
     checks = [
         _readiness_check("PWA manifest", (STATIC_DIR / "manifest.webmanifest").exists(), "Phone install metadata is present."),
         _readiness_check("Service worker", (STATIC_DIR / "sw.js").exists(), "Offline app shell support is present."),
         _readiness_check("Static asset version", bool(STATIC_ASSET_VERSION), f"Current asset version {STATIC_ASSET_VERSION}."),
-        _readiness_check("Production database", not database_url.startswith("sqlite"), "Use Postgres or another hosted SQL database for multi-device use."),
-        _readiness_check("Allowed origins", bool(allowed_origins), "Set EDGEIQ_ALLOWED_ORIGINS to the hosted app domain."),
-        _readiness_check("OpenAI key", bool(os.getenv("OPENAI_API_KEY")), "Optional, but improves screenshots and language review."),
+        _readiness_check(
+            "App database" if not hosted else "Production database",
+            not hosted or not database_url.startswith("sqlite"),
+            (
+                "Local SQLite storage is ready. A hosted SQL database is only needed for multi-device sync."
+                if not hosted
+                else "Set DATABASE_URL to Postgres or another hosted SQL database."
+            ),
+            status="local ready" if not hosted else None,
+        ),
+        _readiness_check(
+            "Allowed origins",
+            bool(allowed_origins),
+            (
+                "Not required while EdgeIQ runs only on this device."
+                if not hosted
+                else "Set EDGEIQ_ALLOWED_ORIGINS to the hosted app domain."
+            ),
+            required=hosted,
+            status="local only" if not hosted else None,
+        ),
+        _readiness_check(
+            "OpenAI key",
+            bool(os.getenv("OPENAI_API_KEY")),
+            "Optional. Adds enhanced screenshot and language review.",
+            required=False,
+        ),
         _readiness_check("Final stat provider", True, "Official ESPN box scores grade every prop allowed onto the board."),
-        _readiness_check("Alert webhook", bool(os.getenv("EDGEIQ_ALERT_WEBHOOK_URL")), "Webhook delivery can bridge push/email/SMS providers."),
+        _readiness_check(
+            "Alert webhook",
+            bool(os.getenv("EDGEIQ_ALERT_WEBHOOK_URL")),
+            "Optional. Connect a webhook only when external alerts are wanted.",
+            required=False,
+        ),
     ]
-    passed = sum(1 for check in checks if check["ok"])
-    score = round((passed / len(checks)) * 100, 1) if checks else 0.0
+    required_checks = [check for check in checks if check["required"]]
+    passed = sum(1 for check in required_checks if check["ok"])
+    score = round((passed / len(required_checks)) * 100, 1) if required_checks else 100.0
+    ready = all(check["ok"] for check in required_checks)
     return {
+        "mode": mode,
         "score": score,
-        "status": "ready" if score >= 80 else "nearly ready" if score >= 60 else "local-only",
+        "status": f"{mode} ready" if ready else f"{mode} needs setup",
         "checks": checks,
-        "next_steps": [check["action"] for check in checks if not check["ok"]][:5],
+        "next_steps": [
+            check["action"]
+            for check in checks
+            if check["required"] and not check["ok"]
+        ][:5],
     }
 
 
-def _readiness_check(label: str, ok: bool, action: str) -> dict:
-    return {"label": label, "ok": bool(ok), "status": "pass" if ok else "needs setup", "action": action}
+def _readiness_check(
+    label: str,
+    ok: bool,
+    action: str,
+    *,
+    required: bool = True,
+    status: str | None = None,
+) -> dict:
+    resolved_status = status or ("pass" if ok else "needs setup" if required else "optional")
+    return {
+        "label": label,
+        "ok": bool(ok),
+        "required": required,
+        "status": resolved_status,
+        "action": action,
+    }
 
 
 def _import_wizard_payload() -> dict:
@@ -6990,11 +7126,13 @@ def _entry_clv_payload(entry: dict) -> dict:
     }
 
 
-def _grading_report_payload() -> dict:
+def _grading_report_payload(compact: bool = False) -> dict:
     pending = EntryRepository.pending()
     all_entries = EntryRepository.all()
     completed = [entry for entry in all_entries if entry.get("status") == "Settled"]
     pending_rows = [_entry_progress_payload(entry, include_market_detail=False) for entry in pending[:12]]
+    if compact:
+        pending_rows = [_compact_grading_pending(row) for row in pending_rows]
     completed_rows = [_serialize_bet_history_entry(entry) for entry in completed[:12]]
     unknown_legs = [
         prop
@@ -7009,7 +7147,7 @@ def _grading_report_payload() -> dict:
         if prop.get("final_source") and prop.get("final_source") not in {"projection_estimate", "unmatched"}
     ]
     clv = clv_report()
-    return {
+    payload = {
         "summary": {
             "pending_entries": len(pending),
             "completed_entries": len(completed),
@@ -7022,9 +7160,27 @@ def _grading_report_payload() -> dict:
             "quarantined_clv_legs": clv.get("quarantined_legs", 0),
         },
         "pending": pending_rows,
-        "completed": completed_rows,
-        "clv": clv,
         "next_actions": _grading_next_actions(len(unknown_legs), clv),
+    }
+    if not compact:
+        payload["completed"] = completed_rows
+        payload["clv"] = clv
+    return payload
+
+
+def _compact_grading_pending(entry: dict) -> dict:
+    return {
+        "id": entry.get("id"),
+        "status": entry.get("tracker_status", "pending"),
+        "timeline_label": entry.get("next_game_time_label", ""),
+        "legs": [
+            {
+                "player": leg.get("player", ""),
+                "status": leg.get("status", "pending"),
+                "timeline_label": leg.get("timeline_label", ""),
+            }
+            for leg in entry.get("legs", [])
+        ],
     }
 
 
@@ -9774,8 +9930,22 @@ def _serialize_suggestion(suggestion, include_release: bool = True) -> dict:
 
 def _serialize_pending(entry: dict) -> dict:
     return {
-        **entry,
+        "id": entry.get("id"),
+        "platform": entry.get("platform", ""),
+        "entry_mode": entry.get("entry_mode", "real"),
+        "wager": entry.get("wager", 0.0),
+        "multiplier": entry.get("multiplier", 1.0),
+        "potential_payout": entry.get("potential_payout", 0.0),
         "placed_at": iso_utc(entry.get("placed_at")),
+        "props": [
+            {
+                "player": prop.get("player", ""),
+                "direction": prop.get("direction", "Over"),
+                "stat": prop.get("stat", ""),
+                "line": prop.get("line"),
+            }
+            for prop in entry.get("props", [])
+        ],
     }
 
 
