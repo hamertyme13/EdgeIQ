@@ -34,7 +34,7 @@
         </div>
         <div class="button-row">
           <button id="mobile-analyze-entry">Analyze</button>
-          <button id="mobile-place-entry" class="secondary">Place</button>
+          <button id="mobile-place-entry" class="secondary circuit-action" disabled>Place</button>
         </div>
       </div>
     </section>

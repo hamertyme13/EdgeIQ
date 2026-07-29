@@ -7,6 +7,8 @@ import json
 import base64
 import hashlib
 import re
+import subprocess
+import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
@@ -116,9 +118,9 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260728-desktop-reliability-v7"
+STATIC_ASSET_VERSION = "20260729-market-consensus-v6"
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
-DAILY_BRIEFING_CACHE_VERSION = 9
+DAILY_BRIEFING_CACHE_VERSION = 10
 DAILY_BRIEFING_CACHE_TTL_HOURS = 10
 DAILY_SCAN_STATUS_KEY = "daily_briefing_scan_status"
 DAILY_SCAN_LOG_KEY = "daily_briefing_run_log"
@@ -793,6 +795,27 @@ def sharp_consensus(
     return _sharp_consensus_payload(player, stat, sport_filter, platform, over_odds, under_odds)
 
 
+@app.get("/api/market/player-odds")
+def player_market_odds(
+    player: str,
+    stat: str,
+    sport: str,
+    game: str,
+    line: float,
+    direction: str = "Over",
+    team: str = "",
+) -> dict:
+    return sportsbook_odds.get_player_prop_consensus(
+        player,
+        stat,
+        sport,
+        game,
+        line,
+        direction,
+        team,
+    )
+
+
 @app.post("/api/market/hedge-calculator")
 def hedge_calculator(payload: HedgeCalculatorPayload) -> dict:
     return _hedge_calculator_payload(payload)
@@ -990,13 +1013,17 @@ def place_entry(payload: EntryPayload) -> dict:
     if payload.entry_mode == "real" and _loss_protection_payload()["active"]:
         raise HTTPException(
             status_code=409,
-            detail="Loss Protection is active. Real-money entries are not allowed in this mode. Turn Loss Protection off or save this as a paper entry.",
+            detail="Loss Protection is active. Real-money entries are not allowed in this mode. Save this as a paper entry and wait for tracked performance to recover.",
         )
     settlement_blocks = _end_to_end_placement_blocks(payload)
     if settlement_blocks and _requires_verified_settlement(payload):
         raise HTTPException(status_code=400, detail="Entry cannot be tracked automatically: " + settlement_blocks[0])
     entry = _entry_from_payload(payload)
     analysis = _entry_analysis(entry, payload)
+    release = analysis.get("release_verdict") or {}
+    if payload.entry_mode == "real" and not release.get("paid_allowed"):
+        reason = (release.get("reasons") or ["This entry did not clear the paid-entry release checks."])[0]
+        raise HTTPException(status_code=400, detail=f"Paid entry blocked: {reason}")
     hard_blocks = [guard for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
     if hard_blocks:
         raise HTTPException(status_code=400, detail="Placement blocked: " + hard_blocks[0]["message"])
@@ -1057,10 +1084,34 @@ def entry_progress(auto_check: bool = False, refresh_providers: bool = False, ma
     if game_time_sync.get("updated") or live_stats_sync.get("imported"):
         pending = EntryRepository.pending()
     entries = [_entry_progress_payload(entry, include_market_detail=market_detail) for entry in pending]
+    overdue_legs = [
+        {
+            "entry_id": entry["id"],
+            "player": leg.get("player", ""),
+            "sport": leg.get("sport", ""),
+            "stat": leg.get("stat", ""),
+            **(leg.get("settlement_sla") or {}),
+        }
+        for entry in entries
+        for leg in entry.get("legs", [])
+        if (leg.get("settlement_sla") or {}).get("overdue")
+    ]
     return {
         "entries": entries,
         "active": len(entries),
         "with_live_stats": sum(1 for entry in entries if _entry_has_stat_data(entry)),
+        "settlement_sla": {
+            "status": "escalated" if overdue_legs else "clear",
+            "overdue_legs": len(overdue_legs),
+            "overdue_entries": len({row["entry_id"] for row in overdue_legs}),
+            "legs": overdue_legs,
+            "message": (
+                f"{len(overdue_legs)} leg{'s are' if len(overdue_legs) != 1 else ' is'} beyond the final-stat SLA. "
+                "Provider refresh and Recheck Final Stats should be escalated."
+                if overdue_legs
+                else "No pending legs are beyond the final-stat SLA."
+            ),
+        },
         "auto_check": auto_check_result,
         "game_time_sync": game_time_sync,
         "live_stats_sync": live_stats_sync,
@@ -1088,6 +1139,14 @@ def entry_suggestions(
     entry_platform = _canonical_platform(platform)
     if entry_platform not in ENTRY_PLATFORMS and entry_platform != "Both":
         entry_platform = "PrizePicks"
+    cached_briefing = _cached_daily_briefing_payload(entry_platform, sport_filter, cached_only=True)
+    cache_meta = cached_briefing.get("cache") or {}
+    if not cache_meta.get("requires_refresh") and not (cached_briefing.get("sections") or {}).get("bet"):
+        return {
+            "suggestions": [],
+            "mode": "paid_scan_cleared_zero",
+            "message": "Today's scan cleared zero paid cards. Paid generation stopped immediately; use paper calibration instead.",
+        }
     platform_pairs = _props_by_platform_from_props(
         entry_platform,
         _fetch_props(entry_platform, sport_filter),
@@ -2042,9 +2101,10 @@ def _enrich_prizepicks_adjusted_lines(props: list[dict]) -> list[dict]:
         standard_line = _median_line(standard_lines) if standard_lines else None
         for prop in group:
             row = dict(prop)
-            offer_type = _prizepicks_offer_type(row)
             if standard_line is not None:
                 row["standard_line"] = standard_line
+            offer_type = _prizepicks_offer_type(row)
+            if standard_line is not None:
                 row["baseline_line"] = standard_line
             else:
                 row["baseline_line"] = float(row.get("line") or 0.0)
@@ -2075,9 +2135,13 @@ def _prizepicks_offer_type(prop: dict) -> str:
     odds_type = str(prop.get("odds_type") or "").strip().lower()
     if odds_type in {"goblin", "demon"}:
         return odds_type
-    if prop.get("adjusted_odds") and float(prop.get("line") or 0.0) < float(prop.get("standard_line") or prop.get("line") or 0.0):
-        return "goblin"
     if prop.get("adjusted_odds"):
+        line = float(prop.get("line") or 0.0)
+        standard_line = float(prop.get("standard_line") or line)
+        if line < standard_line:
+            return "goblin"
+        if line > standard_line:
+            return "demon"
         return "adjusted"
     return "standard"
 
@@ -2151,7 +2215,17 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
 
 
 def _settlement_stat_key(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+    key = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+    aliases = {
+        "pts rebs asts": "points rebounds assists",
+        "pts reb ast": "points rebounds assists",
+        "points rebs asts": "points rebounds assists",
+        "pts rebs": "points rebounds",
+        "pts asts": "points assists",
+        "rebs asts": "rebounds assists",
+        "stls blks": "steals blocks",
+    }
+    return aliases.get(key, key)
 
 
 def _is_season_long_prop(prop: dict | PropPayload) -> bool:
@@ -2683,6 +2757,22 @@ def _paper_calibration_suggestions_for_props(
         exclude_correlated=True,
         apply_feedback=True,
     )
+    if target.get("type") == "Confidence":
+        low = float(target.get("confidence_low") or 0.0)
+        high = float(target.get("confidence_high") or 100.0)
+        suggestions = [
+            suggestion
+            for suggestion in suggestions
+            if not getattr(suggestion, "entry", None)
+            or (
+                suggestion.entry.props
+                and all(
+                    low <= float(prop.confidence or 0.0) < high
+                    or (high == 100 and float(prop.confidence or 0.0) == high)
+                    for prop in suggestion.entry.props
+                )
+            )
+        ]
     return suggestions
 
 
@@ -2919,13 +3009,20 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
     if payload.target == "bet_history":
         extracted = _openai_extract_bets_from_image(raw, payload.mime_type or "image/png")
         if extracted is None:
+            ocr_text = _local_ocr_image(raw, payload.file_name)
             return {
                 "kind": "bet_history",
                 "file_name": payload.file_name,
                 "imported": 0,
                 "skipped": 0,
                 "ai_enabled": False,
-                "message": "Bet-history screenshot parsing needs OPENAI_API_KEY. CSV, TSV, TXT, and JSON history files can still be imported locally.",
+                "local_ocr": bool(ocr_text),
+                "ocr_text": ocr_text,
+                "message": (
+                    "Local OCR read the screenshot, but settled bet history still needs review before import."
+                    if ocr_text
+                    else "The screenshot could not be read locally. Try a clearer image, or connect OpenAI for enhanced extraction."
+                ),
             }
         rows = extracted.get("bets", [])
         imported = _import_betting_rows(rows, extracted.get("platform") or payload.source or "screenshot")
@@ -2939,6 +3036,10 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
         }
 
     extracted = _openai_extract_props_from_image(raw, payload.mime_type or "image/png")
+    extraction_method = "openai"
+    if extracted is None:
+        extracted = _local_extract_props_from_image(raw, payload.file_name, payload.source)
+        extraction_method = "local_ocr"
     if extracted is None:
         return {
             "kind": "image",
@@ -2947,7 +3048,8 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
             "prop_count": 0,
             "analysis": None,
             "ai_enabled": False,
-            "message": "Screenshot parsing needs OPENAI_API_KEY. Text, CSV, TSV, and JSON files can be analyzed locally.",
+            "local_ocr": False,
+            "message": "The screenshot could not be read locally. Try a clearer crop, or connect OpenAI for enhanced extraction.",
         }
 
     props = _normalize_uploaded_props(extracted.get("props", []), extracted.get("platform") or payload.source or "Upload")
@@ -2958,10 +3060,137 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
         "props": props,
         "prop_count": len(props),
         "analysis": analysis,
-        "ai_enabled": True,
-        "raw_ai": extracted,
-        "message": f"Extracted {len(props)} props from screenshot.",
+        "ai_enabled": extraction_method == "openai",
+        "local_ocr": extraction_method == "local_ocr",
+        "ocr_text": extracted.get("ocr_text", "") if extraction_method == "local_ocr" else "",
+        "raw_ai": extracted if extraction_method == "openai" else None,
+        "message": (
+            f"Extracted {len(props)} props with on-device OCR."
+            if extraction_method == "local_ocr"
+            else f"Extracted {len(props)} props from screenshot."
+        ),
     }
+
+
+def _local_extract_props_from_image(raw: bytes, file_name: str, source: str) -> dict | None:
+    text = _local_ocr_image(raw, file_name)
+    if not text:
+        return None
+    platform = _platform_from_ocr_text(text, source)
+    props = _match_ocr_text_to_live_props(text, platform)
+    return {
+        "platform": platform,
+        "props": props,
+        "ocr_text": text,
+        "notes": (
+            ["Matched on-device OCR text against current provider markets."]
+            if props
+            else ["Text was recognized, but no current provider props matched confidently."]
+        ),
+    }
+
+
+def _local_ocr_image(raw: bytes, file_name: str) -> str:
+    image_signatures = (
+        raw.startswith(b"\x89PNG\r\n\x1a\n"),
+        raw.startswith(b"\xff\xd8\xff"),
+        raw.startswith(b"RIFF") and raw[8:12] == b"WEBP",
+    )
+    if not any(image_signatures):
+        return ""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "ocr_image.swift"
+    swift = Path("/usr/bin/swift")
+    if not script.exists() or not swift.exists():
+        return ""
+    suffix = Path(file_name).suffix.lower()
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        suffix = ".png"
+    try:
+        with tempfile.NamedTemporaryFile(suffix=suffix) as image_file:
+            image_file.write(raw)
+            image_file.flush()
+            result = subprocess.run(
+                [str(swift), str(script), image_file.name],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=25,
+                env={
+                    **os.environ,
+                    "SWIFT_MODULECACHE_PATH": str(Path(tempfile.gettempdir()) / "edgeiq-swift-cache"),
+                    "CLANG_MODULE_CACHE_PATH": str(Path(tempfile.gettempdir()) / "edgeiq-clang-cache"),
+                },
+            )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _platform_from_ocr_text(text: str, source: str) -> str:
+    lowered = text.lower()
+    if "prizepicks" in lowered or "prize picks" in lowered:
+        return "PrizePicks"
+    if "underdog" in lowered:
+        return "Underdog"
+    if "sleeper" in lowered:
+        return "Sleeper"
+    canonical = _canonical_platform(source)
+    return canonical if canonical in {"PrizePicks", "Underdog", "Sleeper"} else "Both"
+
+
+def _match_ocr_text_to_live_props(text: str, platform: str) -> list[dict]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    text_key = canonical_person_key(" ".join(lines))
+    try:
+        active_props = _fetch_props(platform, None)
+    except Exception:
+        return []
+    matches: list[dict] = []
+    seen: set[tuple[str, str, float, str]] = set()
+    for prop in active_props:
+        player = str(prop.get("player") or "").strip()
+        stat = str(prop.get("stat") or "").strip()
+        line = prop.get("line")
+        if not player or not stat or line is None:
+            continue
+        player_key = canonical_person_key(player)
+        stat_key = canonical_person_key(stat)
+        if player_key not in text_key or stat_key not in text_key:
+            continue
+        line_value = float(line)
+        line_tokens = {f"{line_value:g}", f"{line_value:.1f}"}
+        if not any(re.search(rf"(?<!\d){re.escape(token)}(?!\d)", text) for token in line_tokens):
+            continue
+        window = _ocr_player_window(lines, player)
+        direction = _ocr_direction(window) or str(prop.get("direction") or "Over")
+        key = (player_key, _stat_match_key(stat), line_value, direction)
+        if key in seen:
+            continue
+        seen.add(key)
+        matches.append({
+            **prop,
+            "direction": direction,
+            "provider_backed": True,
+            "projection_source": "local_ocr_provider_match",
+        })
+    return matches[:12]
+
+
+def _ocr_player_window(lines: list[str], player: str) -> str:
+    player_key = canonical_person_key(player)
+    for index, line in enumerate(lines):
+        if player_key in canonical_person_key(line):
+            return " ".join(lines[max(0, index - 2):index + 6])
+    return " ".join(lines)
+
+
+def _ocr_direction(text: str) -> str:
+    lowered = text.lower()
+    if re.search(r"\b(less|lower|under)\b", lowered):
+        return "Under"
+    if re.search(r"\b(more|higher|over)\b", lowered):
+        return "Over"
+    return ""
 
 
 def _decode_text(raw: bytes) -> str:
@@ -3006,6 +3235,8 @@ def _normalize_uploaded_props(rows: list[dict], platform: str) -> list[dict]:
 def _uploaded_prop_payload(prop: dict) -> dict:
     return {
         "player": prop.get("player", ""),
+        "player_provider": prop.get("player_provider") or prop.get("platform", ""),
+        "provider_player_id": prop.get("provider_player_id") or prop.get("player_id", ""),
         "team": prop.get("team", ""),
         "position": prop.get("position", ""),
         "sport": prop.get("league", prop.get("sport", "WNBA")) or "WNBA",
@@ -3015,6 +3246,11 @@ def _uploaded_prop_payload(prop: dict) -> dict:
         "direction": prop.get("direction") or prop.get("pick") or prop.get("side"),
         "platform": prop.get("platform", "Upload"),
         "game": prop.get("game", ""),
+        "game_time": prop.get("game_time", ""),
+        "line_offer_type": prop.get("line_offer_type") or prop.get("odds_type") or "standard",
+        "adjusted_line": bool(prop.get("adjusted_line") or prop.get("adjusted_odds")),
+        "is_discounted_line": bool(prop.get("is_discounted_line")),
+        "is_premium_line": bool(prop.get("is_premium_line")),
         "trending_count": int(prop.get("trending_count") or 0),
     }
 
@@ -3447,13 +3683,19 @@ def _recommended_parlay(platform: str, sport_filter: str | None):
     return best
 
 
-def _command_center_payload(platform: str, sport_filter: str | None) -> dict:
+def _command_center_payload(
+    platform: str,
+    sport_filter: str | None,
+    *,
+    fast: bool = False,
+) -> dict:
     dashboard_stats = get_dashboard()
     prefs = _user_preferences()
     model = _model_health_payload()
     props = _fetch_props(platform, sport_filter)
     props.sort(key=lambda prop: prop.get("trending_count", 0), reverse=True)
-    platform_props = _props_by_platform_from_props(platform, props)
+    optimization_props = _top_props_by_sport(props, 16, sport_filter) if fast else props
+    platform_props = _props_by_platform_from_props(platform, optimization_props)
     ranked_props = [_analyzed_feed_prop(prop) for prop in _top_props_by_sport(props, 5, sport_filter)]
     ranked_props.sort(key=lambda prop: (prop["confidence"], prop["edge"], prop["trending_count"]), reverse=True)
 
@@ -3483,7 +3725,7 @@ def _command_center_payload(platform: str, sport_filter: str | None) -> dict:
         apply_feedback=True,
         platform_props=platform_props,
     )
-    high_risk_slips = _optimized_entries(
+    high_risk_slips = [] if fast else _optimized_entries(
         platform,
         sport_filter,
         min_legs=4,
@@ -3944,8 +4186,8 @@ def _daily_empty_states(
 def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
     dashboard_stats = get_dashboard()
     prefs = _user_preferences()
-    command = dashboard_command_center(platform, sport_filter or "All Sports")
-    confirmed = _confirmed_props_payload(platform, sport_filter, limit=80)
+    command = _command_center_payload(platform, sport_filter, fast=True)
+    confirmed = _confirmed_props_payload(platform, sport_filter, limit=40, analysis_limit=80)
     loss_protection = _loss_protection_payload()
     candidate_bet_cards = _daily_bet_cards(command["cards"])
     paper_cards = _daily_paper_cards(
@@ -4048,11 +4290,19 @@ def _card_release_status(card: dict, model_health: dict | None = None) -> dict:
 def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
     rows: list[dict] = []
     seen: set[tuple[str, str, str, float]] = set()
+    pending_entries = EntryRepository.pending()
     sources = []
     for card in command.get("cards", []):
         sources.extend(card.get("props", []))
     sources.extend(confirmed.get("props", []))
     for prop in sources:
+        offer_type = str(prop.get("line_offer_type") or "").lower()
+        if (
+            prop.get("is_premium_line")
+            or offer_type == "demon"
+            or (prop.get("adjusted_line") and not prop.get("is_discounted_line"))
+        ):
+            continue
         player = str(prop.get("player", "")).strip()
         stat = str(prop.get("stat", "")).strip()
         direction = str(prop.get("direction") or "Over").strip()
@@ -4063,11 +4313,16 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        confidence = float(prop.get("confidence") or prop.get("confirmed_score") or 0.0)
+        confidence = _sample_adjusted_probability(prop)
         quality = float((prop.get("data_quality") or {}).get("score") or 50.0)
         score = max(confidence, (confidence * 0.74) + (quality * 0.18) + min(8.0, abs(float(prop.get("edge") or 0.0)) * 3.0))
         rows.append({
             "player": player,
+            "player_identity_id": prop.get("player_identity_id"),
+            "player_provider": prop.get("player_provider", ""),
+            "provider_player_id": prop.get("provider_player_id", ""),
+            "team": prop.get("team", ""),
+            "position": prop.get("position", ""),
             "stat": stat,
             "direction": direction,
             "line": line,
@@ -4080,6 +4335,10 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "line_discount": prop.get("line_discount", 0.0),
             "sport": prop.get("sport") or prop.get("league") or "",
             "platform": prop.get("platform", ""),
+            "game": prop.get("game", ""),
+            "game_time": prop.get("game_time", ""),
+            "projection": prop.get("projection"),
+            "edge": prop.get("edge", 0.0),
             "confidence": round(confidence, 1),
             "score": round(max(0.0, min(100.0, score)), 1),
             "stars": _opportunity_stars(score),
@@ -4087,9 +4346,150 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "auto_projected": prop.get("auto_projected", False),
             "provider_backed": prop.get("provider_backed", False),
             "projection_source": prop.get("projection_source", ""),
+            "model_version": prop.get("model_version", ""),
+            "feature_as_of": prop.get("feature_as_of", ""),
+            "forecast_snapshot": prop.get("forecast_snapshot") or {},
+            "forecast_paid_eligible": bool(prop.get("forecast_paid_eligible")),
+            "end_to_end_confirmed": bool(prop.get("end_to_end_confirmed")),
+            "settlement_provider": prop.get("settlement_provider", ""),
+            "data_quality": prop.get("data_quality") or {},
+            "decision_receipt": {},
         })
-    rows.sort(key=lambda row: (row["score"], row["confidence"]), reverse=True)
-    return rows[:5]
+    rows.sort(
+        key=lambda row: (
+            not row.get("adjusted_line"),
+            row["score"],
+            row["confidence"],
+        ),
+        reverse=True,
+    )
+    top_rows = rows[:5]
+    for row in top_rows:
+        row["decision_receipt"] = _opportunity_decision_receipt(
+            row,
+            float(row.get("confidence") or 0.0),
+            pending_entries,
+        )
+        market = row["decision_receipt"].get("market_consensus") or {}
+        labels = list(row.get("data_strength") or [])
+        if market.get("available"):
+            labels.append({
+                "label": f"Market verified · {int(market.get('book_count') or 0)} books",
+                "status": "verified",
+            })
+        if market.get("dfs_offers"):
+            labels.append({"label": "Live DFS offer matched", "status": "verified"})
+        row["data_strength"] = labels
+    return top_rows
+
+
+def _opportunity_decision_receipt(
+    prop: dict,
+    confidence: float,
+    pending_entries: list[dict],
+) -> dict:
+    movement = prop.get("line_movement") or _line_movement_payload(
+        str(prop.get("player") or ""),
+        str(prop.get("stat") or ""),
+        str(prop.get("platform") or "PrizePicks"),
+        LineHistoryRepository.get_history(
+            str(prop.get("player") or ""),
+            str(prop.get("stat") or ""),
+            str(prop.get("platform") or "PrizePicks"),
+            game=str(prop.get("game") or "") or None,
+            line_offer_type=str(prop.get("line_offer_type") or "standard"),
+        ),
+        current_line=float(prop.get("line") or 0.0),
+    )
+    exposure = _prop_portfolio_exposure(prop, pending_entries)
+    feature_age = _age_minutes(prop.get("feature_as_of"))
+    market = sportsbook_odds.get_player_prop_consensus(
+        str(prop.get("player") or ""),
+        str(prop.get("stat") or ""),
+        str(prop.get("sport") or prop.get("league") or ""),
+        str(prop.get("game") or ""),
+        float(prop.get("line") or 0.0),
+        str(prop.get("direction") or "Over"),
+        str(prop.get("team") or ""),
+    )
+    market_probability = market.get("market_probability") if market.get("available") else None
+    model_market_edge = (
+        round(confidence - float(market_probability), 2)
+        if market_probability is not None
+        else None
+    )
+    return {
+        "status": "Research",
+        "probability": round(confidence, 1),
+        "probability_source": "EdgeIQ calibrated model",
+        "market_probability": market_probability,
+        "market_probability_note": market.get("reason", "Multi-book player odds are unavailable."),
+        "market_source": market.get("source", ""),
+        "market_book_count": int(market.get("book_count") or 0),
+        "market_quality": market.get("quality", "unavailable"),
+        "model_market_edge": model_market_edge,
+        "market_consensus": market,
+        "provider_payout_note": market.get("payout_note", ""),
+        "projection": prop.get("projection"),
+        "edge": round(float(prop.get("edge") or 0.0), 2),
+        "movement": {
+            "current": movement.get("current"),
+            "previous": movement.get("previous"),
+            "change": movement.get("change", 0.0),
+            "direction": movement.get("direction", "flat"),
+            "snapshots": len(movement.get("snapshots") or []),
+        },
+        "freshness": {
+            "feature_age_minutes": feature_age,
+            "label": f"Model snapshot {feature_age}m old" if feature_age is not None else "Refresh before paid use",
+        },
+        "portfolio_exposure": exposure,
+        "valid_until": prop.get("game_time") or "Until the provider line, injury status, or matchup changes",
+        "invalidation_rules": [
+            "Re-analyze after any provider line or payout change.",
+            "Do not use if player availability or matchup context changes.",
+            "Paid use still requires positive provider-specific card EV.",
+        ],
+    }
+
+
+def _prop_portfolio_exposure(prop: dict, pending_entries: list[dict]) -> dict:
+    player_key = canonical_person_key(prop.get("player"))
+    stat_key = _settlement_stat_key(prop.get("stat"))
+    game_key = canonical_matchup_key(prop.get("game"))
+    same_player_entries: set[int] = set()
+    same_market_entries: set[int] = set()
+    same_game_entries: set[int] = set()
+    exposed_wager = 0.0
+    for entry in pending_entries:
+        entry_id = int(entry.get("id") or 0)
+        matched_entry = False
+        for pending_prop in entry.get("props") or []:
+            pending_player = canonical_person_key(pending_prop.get("player"))
+            pending_game = canonical_matchup_key(pending_prop.get("game"))
+            if player_key and pending_player == player_key:
+                same_player_entries.add(entry_id)
+                matched_entry = True
+                if _settlement_stat_key(pending_prop.get("stat")) == stat_key:
+                    same_market_entries.add(entry_id)
+            if game_key and pending_game == game_key:
+                same_game_entries.add(entry_id)
+                matched_entry = True
+        if matched_entry and str(entry.get("entry_mode") or "real").lower() == "real":
+            exposed_wager += float(entry.get("wager") or 0.0)
+    return {
+        "same_player_entries": len(same_player_entries),
+        "same_market_entries": len(same_market_entries),
+        "same_game_entries": len(same_game_entries),
+        "real_money_exposure": round(exposed_wager, 2),
+        "label": (
+            f"{len(same_market_entries)} matching pending market"
+            if same_market_entries
+            else f"{len(same_player_entries)} pending player exposure"
+            if same_player_entries
+            else "No matching pending exposure"
+        ),
+    }
 
 
 def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict) -> list[dict]:
@@ -4377,6 +4777,20 @@ def _daily_paper_cards(
     dashboard_stats: dict,
     model_health: dict | None = None,
 ) -> list[dict]:
+    paper = (dashboard_stats.get("entries") or {}).get("paper", {})
+    pending_paper = int(paper.get("pending") or 0)
+    if pending_paper:
+        return [{
+            "type": "paper_status",
+            "title": "Paper Calibration Active",
+            "summary": f"{pending_paper} paper entries are already pending.",
+            "reason": "EdgeIQ skipped duplicate sample generation until the pending calibration entries settle.",
+            "props": [],
+            "stake": {"amount": 0.0, "unit_label": "Paper only"},
+            "trust": {"score": 0, "label": "Learning"},
+            "timing": {"score": 0, "label": "Pending"},
+            "button_label": "View Performance",
+        }]
     backtest_data = backtest_summary(BetRepository().get_all(), EntryRepository.all())
     selected_sport = sport_filter or "All Sports"
     payload = AutoPaperCalibrationPayload(
@@ -4419,19 +4833,6 @@ def _daily_paper_cards(
             cards.append(action)
             if len(cards) >= 2:
                 return cards
-    paper = (dashboard_stats.get("entries") or {}).get("paper", {})
-    if not cards and int(paper.get("pending") or 0):
-        cards.append({
-            "type": "paper_status",
-            "title": "Paper Calibration Active",
-            "summary": f"{paper.get('pending', 0)} paper entries are already pending.",
-            "reason": "Let the pending calibration samples settle before creating more.",
-            "props": [],
-            "stake": {"amount": 0.0, "unit_label": "Paper only"},
-            "trust": {"score": 0, "label": "Learning"},
-            "timing": {"score": 0, "label": "Pending"},
-            "button_label": "View Performance",
-        })
     return cards
 
 
@@ -5130,9 +5531,25 @@ def _advantage_center_payload(platform: str, sport_filter: str | None) -> dict:
 def _sportsbook_integrations_payload() -> dict:
     bet_file = os.getenv("EDGEIQ_BET_HISTORY_FILE", "").strip()
     final_stats_file = os.getenv("EDGEIQ_FINAL_STATS_FILE", "").strip()
+    odds_connected = bool(os.getenv("ODDS_API_KEY", "").strip())
     import_ready = bool(bet_file or final_stats_file)
-    connected = False
+    connected = odds_connected
     connectors = [
+        {
+            "name": "The Odds API",
+            "status": "configured" if odds_connected else "not_configured",
+            "capabilities": (
+                [
+                    "multi-book player prop odds",
+                    "exact-line no-vig probability",
+                    "PrizePicks/Underdog DFS offer evidence",
+                    "quota-aware cached refresh",
+                ]
+                if odds_connected
+                else ["game and player market odds"]
+            ),
+            "missing": [] if odds_connected else ["Set ODDS_API_KEY to enable live market consensus."],
+        },
         {
             "name": "PrizePicks",
             "status": "manual_handoff",
@@ -5154,11 +5571,18 @@ def _sportsbook_integrations_payload() -> dict:
     ]
     return {
         "connected": connected,
+        "market_data_connected": odds_connected,
         "import_ready": import_ready,
         "connectors": connectors,
-        "headline": "Manual handoff active; direct account sync is not connected.",
+        "headline": (
+            "Multi-book market data connected; provider account handoff remains manual."
+            if odds_connected
+            else "Manual handoff active; multi-book market data is not connected."
+        ),
         "next_step": (
-            "Configured import files will be synced by Run Sync."
+            "Review exact-line book count and freshness before using market probability."
+            if odds_connected
+            else "Configured import files will be synced by Run Sync."
             if import_ready
             else "Use screenshot/CSV upload now; official read-only provider sync can plug into this connector layer later."
         ),
@@ -5721,7 +6145,13 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         raw.get("player", ""),
         raw.get("stat", ""),
         platform,
-        LineHistoryRepository.get_history(raw.get("player", ""), raw.get("stat", ""), platform),
+        LineHistoryRepository.get_history(
+            raw.get("player", ""),
+            raw.get("stat", ""),
+            platform,
+            game=str(raw.get("game") or "") or None,
+            line_offer_type=str(raw.get("line_offer_type") or raw.get("odds_type") or "standard"),
+        ),
         current_line=baseline_line,
     )
     hit_rate = estimate_hit_rate(
@@ -5788,12 +6218,21 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     return row
 
 
-def _confirmed_props_payload(platform: str, sport_filter: str | None, limit: int = 20) -> dict:
+def _confirmed_props_payload(
+    platform: str,
+    sport_filter: str | None,
+    limit: int = 20,
+    analysis_limit: int | None = None,
+) -> dict:
     raw_props = _fetch_props(platform, sport_filter)
     confirmed: list[dict] = []
     eligible = [raw for raw in raw_props if _end_to_end_prop_eligibility(raw)["eligible"]]
     eligible.sort(key=_confirmed_prop_prefilter_key, reverse=True)
-    pool_limit = max(120, min(400, max(1, limit) * 4))
+    pool_limit = (
+        max(1, int(analysis_limit))
+        if analysis_limit is not None
+        else max(120, min(400, max(1, limit) * 4))
+    )
 
     for raw in eligible[:pool_limit]:
         analyzed = _analyzed_feed_prop(raw)
@@ -5832,9 +6271,9 @@ def _confirmed_props_payload(platform: str, sport_filter: str | None, limit: int
 
 def _confirmed_prop_prefilter_key(raw: dict) -> tuple[int, int, float, str]:
     has_game_time = int(bool(raw.get("game_time")))
-    adjusted_offer = int(bool(raw.get("adjusted_line") or raw.get("adjusted_odds")))
+    standard_offer = int(not bool(raw.get("adjusted_line") or raw.get("adjusted_odds")))
     source_score = float(raw.get("source_score") or 0.0)
-    return has_game_time, adjusted_offer, source_score, str(raw.get("player") or "")
+    return has_game_time, standard_offer, source_score, str(raw.get("player") or "")
 
 
 def _confirmed_slate_summary(confirmed: list[dict]) -> list[dict]:
@@ -5857,6 +6296,13 @@ def _confirmed_slate_summary(confirmed: list[dict]) -> list[dict]:
 def _confirmed_prop_candidate(raw: dict, analyzed: dict) -> dict | None:
     platform = str(raw.get("platform") or analyzed.get("platform") or "")
     if _canonical_platform(platform) not in {"PrizePicks", "Underdog"}:
+        return None
+    offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "").lower()
+    if (
+        raw.get("is_premium_line")
+        or offer_type == "demon"
+        or (raw.get("adjusted_line") and not raw.get("is_discounted_line"))
+    ):
         return None
     settlement = _end_to_end_prop_eligibility(raw)
     if not settlement["eligible"]:
@@ -5913,7 +6359,7 @@ def _confirmed_prop_candidate(raw: dict, analyzed: dict) -> dict | None:
         "confirmation": True,
         "end_to_end_confirmed": True,
         "settlement_provider": settlement["provider"],
-        "source_signals": [{"source": "Confirmed Prop Lab", "message": "Provider line, game time, and official final-stat route confirmed before entry generation."}],
+        "source_signals": [{"source": "Verified Entry Generator", "message": "Provider line, game time, and official final-stat route confirmed before entry generation."}],
         "source_score": min(100.0, score),
     }
     return {
@@ -6004,20 +6450,53 @@ def _line_shop_payload(
 
     analyzed = [_analyzed_feed_prop(prop) for prop in props]
     analyzed.sort(key=lambda prop: (prop["line"], -prop["trending_count"], prop["platform"]))
-    best_over = analyzed[0]
-    best_under = max(analyzed, key=lambda prop: (prop["line"], prop["trending_count"]))
     standard_rows = [prop for prop in analyzed if prop.get("line_offer_type") == "standard"]
-    consensus_rows = standard_rows or analyzed
+    comparison_rows = standard_rows or analyzed
+    best_over = comparison_rows[0]
+    best_under = max(comparison_rows, key=lambda prop: (prop["line"], prop["trending_count"]))
+    consensus_rows = comparison_rows
     consensus = round(sum(prop["line"] for prop in consensus_rows) / len(consensus_rows), 2)
     projection = round(sum(prop["projection"] for prop in consensus_rows) / len(consensus_rows), 2)
     line_spread = round(best_under["line"] - best_over["line"], 2)
+    best_over_market = sportsbook_odds.get_player_prop_consensus(
+        player,
+        stat,
+        str(sport_filter or best_over.get("sport") or ""),
+        str(best_over.get("game") or ""),
+        float(best_over["line"]),
+        "Over",
+        str(best_over.get("team") or ""),
+    )
+    best_under_market = (
+        best_over_market
+        if abs(float(best_under["line"]) - float(best_over["line"])) < 0.001
+        else sportsbook_odds.get_player_prop_consensus(
+            player,
+            stat,
+            str(sport_filter or best_under.get("sport") or ""),
+            str(best_under.get("game") or ""),
+            float(best_under["line"]),
+            "Under",
+            str(best_under.get("team") or ""),
+        )
+    )
+    manual_no_vig = _no_vig_payload(over_odds, under_odds)
+    live_no_vig = (
+        _market_no_vig_payload(best_over_market)
+        if best_over_market.get("available")
+        and abs(float(best_under["line"]) - float(best_over["line"])) < 0.001
+        else None
+    )
     return {
         "player": player,
         "stat": stat,
         "sport": sport_filter or "All Sports",
         "available": True,
-        "message": "Lower line is better for overs; higher line is better for unders.",
+        "message": "Standard lines are compared separately from payout-adjusted promotional lines.",
         "lines": analyzed,
+        "provider_count": len({prop.get("platform") for prop in analyzed if prop.get("platform")}),
+        "market_count": len(analyzed),
+        "adjusted_market_count": sum(1 for prop in analyzed if prop.get("line_offer_type") != "standard"),
         "best_over": {
             "platform": best_over["platform"],
             "line": best_over["line"],
@@ -6036,11 +6515,16 @@ def _line_shop_payload(
         "projection": projection,
         "line_spread": line_spread,
         "value_note": (
-            f"Best over is {line_spread:g} points better than the highest posted line."
+            f"Best standard over is {line_spread:g} points better than the highest standard line."
             if line_spread > 0
-            else "All matching books are showing the same line."
+            else "All matching providers are showing the same standard line."
         ),
-        "no_vig": _no_vig_payload(over_odds, under_odds),
+        "no_vig": manual_no_vig or live_no_vig,
+        "no_vig_source": "Manual odds" if manual_no_vig else "The Odds API" if live_no_vig else "",
+        "multi_book": {
+            "best_over": best_over_market,
+            "best_under": best_under_market,
+        },
     }
 
 
@@ -6343,10 +6827,14 @@ def _sharp_consensus_payload(
     confidence = "Strong" if platform_count >= 2 and market_width <= 1 else "Usable" if platform_count >= 2 else "Thin"
     notes = [
         "Consensus uses active provider lines already loaded into EdgeIQ.",
-        "Treat this as a fair-line screen, not a full sharp book feed, until paid odds feeds are connected.",
+        (
+            "Exact-line no-vig probability is connected through The Odds API."
+            if line_shop.get("no_vig_source") == "The Odds API"
+            else "No paired exact-line sportsbook probability was available for this market."
+        ),
     ]
     if line_shop.get("no_vig"):
-        notes.append("No-vig probabilities are included from the odds you entered.")
+        notes.append(f"No-vig probabilities use {line_shop.get('no_vig_source') or 'the supplied odds'}.")
     return {
         **line_shop,
         "fair_line": fair_line,
@@ -6514,6 +7002,23 @@ def _platform_value_check(payload: EntryPayload) -> dict:
             payload.payout_type,
             displayed_multiplier=payload.multiplier if total["platform"] == selected_platform else None,
         )
+        live_offers = [row for row in total["legs"] if row.get("live_dfs_offer")]
+        total["payout_evidence"] = {
+            "source": "The Odds API" if live_offers else "official_base_schedule",
+            "live_offer_legs": len(live_offers),
+            "total_legs": len(payload.props),
+            "selection_multipliers": [
+                row.get("selection_multiplier")
+                for row in live_offers
+                if row.get("selection_multiplier") is not None
+            ],
+            "indicative": bool(live_offers),
+            "note": (
+                "Live DFS selection multipliers are indicative. The complete card payout must still be confirmed in the provider app."
+                if live_offers
+                else "Expected value uses EdgeIQ's provider-specific base payout schedule."
+            ),
+        }
     complete = [row for row in totals if row["complete_entry"]]
     candidates = complete or totals
     best = max(
@@ -6531,6 +7036,8 @@ def _platform_value_check(payload: EntryPayload) -> dict:
     selected_ev = float((selected_total or {}).get("payout_analysis", {}).get("expected_value") or 0.0)
     best_ev = float((best or {}).get("payout_analysis", {}).get("expected_value") or 0.0)
     ev_delta = round(best_ev - selected_ev, 2)
+    authoritative_economics = dict((best or {}).get("payout_analysis") or {}) if best and best.get("complete_entry") else {}
+    positive_ev = bool(authoritative_economics and float(authoritative_economics.get("expected_value") or 0.0) > 0)
     return {
         "selected_platform": selected_platform,
         "recommended_platform": best.get("platform") if best else selected_platform,
@@ -6538,6 +7045,9 @@ def _platform_value_check(payload: EntryPayload) -> dict:
         "value_delta": value_delta,
         "ev_delta": ev_delta,
         "complete_on_recommended_platform": bool(best and best.get("complete_entry")),
+        "authoritative_platform": best.get("platform") if best and best.get("complete_entry") else None,
+        "authoritative_economics": authoritative_economics,
+        "positive_ev": positive_ev,
         "platforms": sorted(
             totals,
             key=lambda row: (
@@ -6554,6 +7064,15 @@ def _platform_value_check(payload: EntryPayload) -> dict:
 def _platform_value_for_prop(prop: PropPayload, selected_platform: str) -> dict:
     direction = prop.direction or "Over"
     matches = [_analyzed_feed_prop(row) for row in _matching_market_props(prop.player, prop.stat, prop.sport, "Both")]
+    market = sportsbook_odds.get_player_prop_consensus(
+        prop.player,
+        prop.stat,
+        prop.sport,
+        prop.game,
+        prop.line,
+        direction,
+        prop.team,
+    )
     platform_rows: dict[str, list[dict]] = {}
     for row in matches:
         platform_rows.setdefault(_canonical_platform(row.get("platform", "")), []).append(row)
@@ -6563,6 +7082,32 @@ def _platform_value_for_prop(prop: PropPayload, selected_platform: str) -> dict:
         best = min(rows, key=lambda row: float(row.get("line") or 0.0)) if _normalize_direction(direction) == "Over" else max(rows, key=lambda row: float(row.get("line") or 0.0))
         line = float(best.get("line") or 0.0)
         value = selected_line - line if _normalize_direction(direction) == "Over" else line - selected_line
+        line_market = (
+            market
+            if abs(selected_line - line) < 0.001
+            else sportsbook_odds.get_player_prop_consensus(
+                prop.player,
+                prop.stat,
+                prop.sport,
+                prop.game,
+                line,
+                direction,
+                prop.team,
+            )
+        )
+        dfs_offer = next(
+            (
+                offer for offer in line_market.get("dfs_offers", [])
+                if _canonical_platform(offer.get("platform", "")) == platform
+                and abs(float(offer.get("line") or 0.0) - line) < 0.001
+            ),
+            None,
+        )
+        selection = (
+            (dfs_offer or {}).get("under")
+            if _normalize_direction(direction) == "Under"
+            else (dfs_offer or {}).get("over")
+        ) or {}
         platform_values.append({
             "platform": platform,
             "line": line,
@@ -6574,6 +7119,10 @@ def _platform_value_for_prop(prop: PropPayload, selected_platform: str) -> dict:
             "projection": best.get("projection"),
             "confidence": best.get("confidence"),
             "edge": best.get("edge"),
+            "live_dfs_offer": bool(dfs_offer),
+            "selection_multiplier": selection.get("multiplier"),
+            "selection_price": selection.get("price"),
+            "payout_source": "The Odds API" if dfs_offer else "official_base_schedule",
         })
     best_row = max(platform_values, key=lambda row: (row["value_vs_selected"], row["is_discounted_line"]), default=None)
     return {
@@ -6586,6 +7135,7 @@ def _platform_value_for_prop(prop: PropPayload, selected_platform: str) -> dict:
         "best_line": best_row.get("line") if best_row else selected_line,
         "best_value": best_row.get("value_vs_selected") if best_row else 0.0,
         "platforms": sorted(platform_values, key=lambda row: row["value_vs_selected"], reverse=True),
+        "market_consensus": market,
     }
 
 
@@ -6600,6 +7150,12 @@ def _platform_value_recommendation(
         return "No cross-platform match found; verify manually."
     if not best.get("complete_entry"):
         return f"{best['platform']} has the best partial value, but not all {leg_count} legs were matched there."
+    best_ev = float((best.get("payout_analysis") or {}).get("expected_value") or 0.0)
+    if best_ev <= 0:
+        return (
+            f"No matched provider clears positive expected value. "
+            f"{best['platform']} is least unfavorable at {best_ev:.1f}% EV; keep this entry paper-only or avoid it."
+        )
     if best["platform"] == selected_platform:
         return f"{selected_platform} has the best combined line and payout value for this entry."
     return (
@@ -7088,6 +7644,27 @@ def _no_vig_payload(over_odds: int | None, under_odds: int | None) -> dict | Non
     }
 
 
+def _market_no_vig_payload(market: dict) -> dict | None:
+    if not market.get("available"):
+        return None
+    over_probability = market.get("over_probability")
+    under_probability = market.get("under_probability")
+    if over_probability is None or under_probability is None:
+        return None
+    fair_over = float(over_probability) / 100.0
+    fair_under = float(under_probability) / 100.0
+    return {
+        "over_probability": round(float(over_probability), 2),
+        "under_probability": round(float(under_probability), 2),
+        "over_fair_odds": _probability_to_american(fair_over),
+        "under_fair_odds": _probability_to_american(fair_under),
+        "hold": market.get("average_hold"),
+        "book_count": int(market.get("book_count") or 0),
+        "last_update": market.get("last_update", ""),
+        "stale": bool(market.get("stale")),
+    }
+
+
 def _probability_to_american(probability: float) -> int:
     probability = max(0.0001, min(0.9999, probability))
     if probability >= 0.5:
@@ -7258,22 +7835,30 @@ def _loss_protection_payload() -> dict:
         score -= 12.0
     score = round(max(0.0, min(100.0, score)), 1)
     triggered = score < 82 or bool(recovery_reasons)
-    active = enabled and triggered
+    forced = (
+        (real_decisions >= 10 and (real_win_rate < 25 or roi <= -25))
+        or (recommendation_decisions >= 10 and recommendation_accuracy < 30)
+        or monthly_profit <= -25
+    )
+    active = triggered and (enabled or forced)
     reasons = list(recovery_reasons)
     if active and int(grading.get("unknown_legs") or 0) >= 3:
         reasons.append(f"{int(grading.get('unknown_legs') or 0)} legs still need verified final stats.")
     mode = "off" if not enabled else "normal"
     if active:
         mode = "lockdown" if score < 55 or monthly_profit < -5 or roi < -10 else "watch"
-    if not enabled:
+    if forced and not enabled:
+        reasons.insert(0, "Automatic Loss Protection overrode the toggle because the tracked drawdown crossed the hard safety limit.")
+    elif not enabled:
         reasons = ["Loss Protection is turned off. Standard bankroll and provider checks still apply."]
     return {
         "active": active,
         "enabled": enabled,
         "triggered": triggered,
+        "forced": forced,
         "mode": mode,
         "score": score,
-        "label": "Loss Protection Active" if active else "Loss Protection Off" if not enabled else "Paid Entries Enabled",
+        "label": "Automatic Loss Protection Active" if forced and active else "Loss Protection Active" if active else "Loss Protection Off" if not enabled else "Paid Entries Enabled",
         "reasons": reasons or ["Bankroll, CLV, and final-stat tracking are inside release limits."],
         "metrics": metrics,
         "paid_rules": _loss_protection_rules(mode),
@@ -7340,7 +7925,7 @@ def _loss_protection_entry_flags(entry: Entry, payload: EntryPayload | None) -> 
         return []
     guards: list[dict] = [{
         "severity": "danger",
-        "message": "Loss Protection is active. Real-money entries are not allowed in this mode. Turn Loss Protection off or save this as a paper entry.",
+        "message": "Loss Protection is active. Real-money entries are not allowed in this mode. Save this as a paper entry and wait for tracked performance to recover.",
     }]
     if float((protection.get("metrics") or {}).get("average_clv") or 0.0) < 0:
         guards.append({
@@ -7618,6 +8203,7 @@ def _entry_progress_payload(entry: dict, include_market_detail: bool = True) -> 
         status_value = str(final_stat.get("status") if final_stat else "").strip().lower()
         timeline_status = _leg_timeline_status(prop, actual, status_value, now)
         settlement_note = _settlement_support_note(prop, timeline_status)
+        settlement_sla = _leg_settlement_sla(prop, actual, now)
         if status_value == "dnp":
             status = "DNP"
             projected = "Push"
@@ -7655,6 +8241,7 @@ def _entry_progress_payload(entry: dict, include_market_detail: bool = True) -> 
             "timeline_status": timeline_status,
             "timeline_label": _leg_timeline_label(timeline_status),
             "settlement_note": settlement_note,
+            "settlement_sla": settlement_sla,
             "final_status": status_value or ("played" if actual is not None else "pending"),
             "projected_status": projected,
             "progress_text": _leg_progress_text({**prop, "status": status, "timeline_status": timeline_status}, actual),
@@ -7698,6 +8285,10 @@ def _entry_progress_payload(entry: dict, include_market_detail: bool = True) -> 
         "next_game_time": _next_game_time(legs),
         "next_game_time_label": _next_game_time_label(legs),
         "time_groups": _entry_time_groups(legs),
+        "settlement_sla": {
+            "status": "escalated" if any((leg.get("settlement_sla") or {}).get("overdue") for leg in legs) else "clear",
+            "overdue_legs": sum(1 for leg in legs if (leg.get("settlement_sla") or {}).get("overdue")),
+        },
         "legs": legs,
     }
 
@@ -7918,6 +8509,35 @@ def _sport_final_pending_hours(sport: object) -> float:
     if sport_key in {"NHL", "MLS", "EPL", "UCL"}:
         return 3.0
     return 4.0
+
+
+def _leg_settlement_sla(prop: dict, actual: float | None, now: datetime) -> dict:
+    start_time = _parse_game_time(prop.get("game_time", ""))
+    threshold = _sport_final_pending_hours(prop.get("sport", "")) + 2.0
+    if actual is not None:
+        return {"status": "settled", "overdue": False, "threshold_hours": threshold}
+    if start_time is None:
+        return {
+            "status": "start_time_needed",
+            "overdue": False,
+            "threshold_hours": threshold,
+            "message": "A game start time is required to monitor the final-stat SLA.",
+        }
+    hours_since_start = (now - start_time).total_seconds() / 3600
+    overdue = hours_since_start >= threshold
+    remaining = max(0.0, threshold - hours_since_start)
+    return {
+        "status": "overdue" if overdue else "monitoring",
+        "overdue": overdue,
+        "threshold_hours": threshold,
+        "hours_since_start": round(max(0.0, hours_since_start), 1),
+        "hours_remaining": round(remaining, 1),
+        "message": (
+            "Final stats are overdue. Escalate provider refresh and Recheck Final Stats."
+            if overdue
+            else f"Final-stat SLA has {remaining:.1f} hours remaining."
+        ),
+    }
 
 
 def _leg_progress_text(prop: dict, actual: float | None) -> str:
@@ -8145,14 +8765,14 @@ def _entry_from_payload(payload: EntryPayload) -> Entry:
     )
 
 
-def _placement_check(payload: EntryPayload) -> dict:
+def _placement_check(payload: EntryPayload, platform_value: dict | None = None) -> dict:
     checked_props: list[dict] = []
     warnings: list[str] = []
     blocks: list[str] = []
     current_by_platform: dict[str, list[dict]] = {}
 
     for index, prop in enumerate(payload.props, start=1):
-        platform = _canonical_platform(prop.platform or payload.platform)
+        platform = _canonical_platform(payload.platform or prop.platform)
         if platform not in {"PrizePicks", "Underdog"}:
             checked_props.append(_placement_prop_row(index, prop, None, "skipped"))
             continue
@@ -8163,6 +8783,12 @@ def _placement_check(payload: EntryPayload) -> dict:
         checked_props.append(row)
 
         label = f"{prop.player} {prop.direction or 'Over'} {prop.stat} {prop.line}"
+        market_issue = _provider_market_issue(prop, platform, current_by_platform[platform], current)
+        if market_issue:
+            if _requires_verified_settlement(payload):
+                blocks.append(market_issue)
+            else:
+                warnings.append(market_issue)
         settlement = _end_to_end_payload_eligibility(prop, payload.platform, current)
         if not settlement["eligible"]:
             message = f"{label}: {settlement['reasons'][0]}."
@@ -8180,7 +8806,6 @@ def _placement_check(payload: EntryPayload) -> dict:
             else:
                 warnings.append(f"{message} Manual final-stat verification will be required.")
         if current is None:
-            warnings.append(f"{label}: no current {platform} match found. Verify the line and game manually.")
             continue
         current_time = str(current.get("game_time") or "").strip()
         current_line = current.get("line")
@@ -8190,12 +8815,10 @@ def _placement_check(payload: EntryPayload) -> dict:
             warnings.append(f"{label}: game time confirmed as {_short_time_label(current_time)} but was missing from the slip.")
         elif str(prop.game_time).strip() != current_time:
             warnings.append(f"{label}: game time differs from current {platform} feed ({_short_time_label(current_time)}).")
-        if current_line is not None and abs(float(current_line) - float(prop.line)) >= 0.05:
-            warnings.append(f"{label}: current {platform} line is {float(current_line):g}.")
         for flag in _line_sanity_flags(prop):
             warnings.append(f"{label}: {flag}")
 
-    platform_value = _platform_value_check(payload)
+    platform_value = platform_value or _platform_value_check(payload)
     entry = _entry_from_payload(payload)
     if payload.entry_mode == "real":
         unproven_legs = [prop for prop in entry.props if not prop.forecast_paid_eligible]
@@ -8204,10 +8827,15 @@ def _placement_check(payload: EntryPayload) -> dict:
                 f"{len(unproven_legs)} leg{'s' if len(unproven_legs) != 1 else ''} lack enough "
                 "versioned forecast and segment-calibration evidence."
             )
-            if payload.recommended_by_app:
-                blocks.append(f"{message} EdgeIQ cannot release this as a paid recommendation.")
-            else:
-                warnings.append(f"{message} This manual entry can be logged, but EdgeIQ does not endorse it.")
+            blocks.append(f"{message} EdgeIQ cannot release this as a paid entry.")
+        economics = platform_value.get("authoritative_economics") or {}
+        if not platform_value.get("complete_on_recommended_platform"):
+            blocks.append("Every paid leg must match one current provider board before placement.")
+        elif float(economics.get("expected_value") or 0.0) <= 0:
+            blocks.append(
+                f"Best matched provider expected value is {float(economics.get('expected_value') or 0.0):.1f}%. "
+                "Paid entries require positive provider-specific expected value."
+            )
     loss_protection = _loss_protection_payload()
     protection_flags = _loss_protection_entry_flags(entry, payload)
     for protection_flag in protection_flags:
@@ -8255,7 +8883,16 @@ def _end_to_end_payload_eligibility(
 
 def _end_to_end_placement_blocks(payload: EntryPayload) -> list[str]:
     blocks: list[str] = []
+    current_by_platform: dict[str, list[dict]] = {}
     for prop in payload.props:
+        platform = _canonical_platform(payload.platform or prop.platform)
+        if platform in {"PrizePicks", "Underdog"}:
+            if platform not in current_by_platform:
+                current_by_platform[platform] = _fetch_platform_props(platform)
+            current = _match_current_provider_prop(prop, current_by_platform[platform])
+            market_issue = _provider_market_issue(prop, platform, current_by_platform[platform], current)
+            if market_issue and _requires_verified_settlement(payload):
+                blocks.append(market_issue)
         eligibility = _end_to_end_payload_eligibility(prop, payload.platform)
         if eligibility["eligible"]:
             continue
@@ -8383,6 +9020,39 @@ def _match_current_provider_prop(prop: PropPayload, current_props: list[dict]) -
     return min(candidates, key=lambda current: abs(float(current.get("line") or 0) - float(prop.line)))
 
 
+def _provider_market_issue(
+    prop: PropPayload,
+    platform: str,
+    current_props: list[dict],
+    current: dict | None,
+) -> str:
+    label = f"{prop.player} {prop.stat}"
+    if current is None:
+        player_key = _match_key(prop.player)
+        sport = prop.sport.upper()
+        player_rows = [
+            row for row in current_props
+            if _match_key(str(row.get("player", ""))) == player_key
+            and str(row.get("league", "")).upper() == sport
+        ]
+        if player_rows:
+            return (
+                f"{platform} currently lists {prop.player}, but does not offer a {prop.stat} market. "
+                "Choose a stat shown on that platform or switch the entire entry to a platform that offers this market."
+            )
+        return (
+            f"{label} is not available in the current {platform} feed. "
+            "Refresh provider data or choose another platform before placing a real entry."
+        )
+    current_line = current.get("line")
+    if current_line is not None and abs(float(current_line) - float(prop.line)) >= 0.05:
+        return (
+            f"{platform} does not currently offer {label} at {float(prop.line):g}; "
+            f"the closest active line is {float(current_line):g}. Update the leg before placing."
+        )
+    return ""
+
+
 def _match_key(value: str) -> str:
     return canonical_person_key(value)
 
@@ -8453,7 +9123,7 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str) -> Prop:
         confidence / 100.0,
         sport=payload.sport,
         stat=payload.stat,
-        provider=payload.platform or entry_platform,
+        provider=entry_platform or payload.platform,
         direction=direction,
         projection_source=projection_source,
         rows=_versioned_calibration_rows(),
@@ -8472,7 +9142,7 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str) -> Prop:
         edge=edge,
         confidence=confidence,
         direction=direction,
-        platform=_entry_platform_from_text(payload.platform or entry_platform),
+        platform=_entry_platform_from_text(entry_platform or payload.platform),
         game=payload.game or str(provider_context.get("game", "") or ""),
         game_time=payload.game_time or str(provider_context.get("game_time", "") or ""),
         position=payload.position or str(provider_context.get("position", "") or ""),
@@ -8513,7 +9183,7 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str) -> Prop:
 def _provider_context_for_payload_prop(payload: PropPayload, entry_platform: str) -> dict:
     if payload.game and payload.game_time and payload.team:
         return {}
-    platform = _canonical_platform(payload.platform or entry_platform)
+    platform = _canonical_platform(entry_platform or payload.platform)
     if platform not in {"PrizePicks", "Underdog"}:
         return {}
     try:
@@ -8989,14 +9659,25 @@ def _signal(
 
 
 def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
-    result = entry_recommendation(entry)
+    model_result = entry_recommendation(entry)
     risk = calculate_entry_risk(entry.props)
     warnings = detect_correlations(entry)
     espn_notes = _entry_espn_notes(entry.props)
-    risk_guardrails = _risk_guardrails(entry, payload)
+    platform_value = _platform_value_check(payload) if payload else None
+    risk_guardrails = _risk_guardrails(entry, payload, platform_value)
     confirmation = _confirmation_checklist(entry, payload, warnings + espn_notes)
     loss_protection = _loss_protection_payload()
-    payout = _entry_payout_analysis(entry, payload)
+    model_payout = _entry_payout_analysis(entry, payload)
+    payout = (platform_value or {}).get("authoritative_economics") or model_payout
+    release_verdict = _entry_release_verdict(payload, model_result, risk_guardrails, platform_value)
+    result = {
+        **model_result,
+        "action": release_verdict["verdict"],
+        "reason": release_verdict["summary"],
+        "verdict": release_verdict["verdict"],
+        "model_grade": model_result.get("grade"),
+        "model_action": model_result.get("action"),
+    }
     return {
         "entry": _serialize_entry(entry),
         "recommendation": result,
@@ -9015,9 +9696,65 @@ def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
             "source": "ESPN final stats via imported box scores",
         },
         "source_fusion": _source_fusion_summary(entry.props),
-        "platform_value": _platform_value_check(payload) if payload else None,
+        "platform_value": platform_value,
         "loss_protection": loss_protection,
         "payout_analysis": payout,
+        "model_payout_analysis": model_payout,
+        "release_verdict": release_verdict,
+    }
+
+
+def _entry_release_verdict(
+    payload: EntryPayload | None,
+    model_result: dict,
+    guardrails: list[dict],
+    platform_value: dict | None,
+) -> dict:
+    mode = payload.entry_mode if payload else "paper"
+    economics = (platform_value or {}).get("authoritative_economics") or {}
+    complete = bool((platform_value or {}).get("complete_on_recommended_platform"))
+    expected_value = float(economics.get("expected_value") or 0.0)
+    profit_probability = float(economics.get("profit_probability") or 0.0)
+    break_even = float(economics.get("break_even_probability") or 0.0)
+    hard_blocks = [guard["message"] for guard in guardrails if guard.get("severity") == "danger"]
+    warnings = [guard["message"] for guard in guardrails if guard.get("severity") == "warning"]
+
+    if mode == "paper":
+        verdict = "Paper"
+        reasons = ["Paper entries build calibration without risking bankroll."]
+    elif not complete:
+        verdict = "Watch"
+        reasons = ["A complete current provider match is required before paid placement."]
+    elif expected_value <= 0:
+        verdict = "Avoid"
+        reasons = [f"Best provider-specific expected value is {expected_value:.1f}%, which is not positive."]
+    elif hard_blocks:
+        verdict = "Paper"
+        reasons = hard_blocks
+    elif profit_probability < break_even:
+        verdict = "Watch"
+        reasons = [
+            f"Estimated profit probability {profit_probability:.1f}% is below the "
+            f"{break_even:.1f}% provider break-even threshold."
+        ]
+    else:
+        verdict = "Paid"
+        reasons = ["Positive provider EV and all paid-entry release checks passed."]
+
+    paid_allowed = verdict == "Paid" and not hard_blocks and complete and expected_value > 0
+    summary = reasons[0]
+    return {
+        "verdict": verdict,
+        "paid_allowed": paid_allowed,
+        "authoritative_platform": (platform_value or {}).get("authoritative_platform"),
+        "expected_value": round(expected_value, 2),
+        "profit_probability": round(profit_probability, 2),
+        "break_even_probability": round(break_even, 2),
+        "reasons": reasons,
+        "warnings": warnings,
+        "model_grade": model_result.get("grade"),
+        "model_score": model_result.get("score"),
+        "summary": summary,
     }
 
 
@@ -9149,7 +9886,11 @@ def _entry_segment_flags(props: list[dict | Prop], platform: str = "") -> list[d
     return flags[:4]
 
 
-def _risk_guardrails(entry: Entry, payload: EntryPayload | None) -> list[dict]:
+def _risk_guardrails(
+    entry: Entry,
+    payload: EntryPayload | None,
+    platform_value: dict | None = None,
+) -> list[dict]:
     prefs = _user_preferences()
     strategy = _bankroll_strategy()
     dashboard_stats = get_dashboard()
@@ -9212,19 +9953,21 @@ def _risk_guardrails(entry: Entry, payload: EntryPayload | None) -> list[dict]:
                 "severity": "danger",
                 "message": "Enter the exact flex payout table shown by the provider before paid placement.",
             })
-        payout = _entry_payout_analysis(entry, payload)
+        payout = (platform_value or {}).get("authoritative_economics") or {}
         if not payout.get("payouts"):
-            guards.append({"severity": "danger", "message": "This platform and entry format do not have a supported payout table."})
+            guards.append({"severity": "danger", "message": "No complete provider-backed payout could be verified for this entry."})
         elif float(payout.get("expected_value") or 0.0) <= 0:
             guards.append({
-                "severity": "warning",
-                "message": f"Payout-adjusted expected value is {float(payout.get('expected_value') or 0.0):.1f}%; verify model confidence and the displayed payout before placing.",
+                "severity": "danger",
+                "message": f"Provider-specific expected value is {float(payout.get('expected_value') or 0.0):.1f}%; paid entries require positive EV.",
             })
+        guards.extend(_market_consensus_guardrails(entry, platform_value or {}, payload))
+        guards.extend(_pending_portfolio_exposure_flags(entry))
     segment_flags = _entry_segment_flags(entry.props, payload.platform if payload else entry.platform.value)
     if payload and payload.entry_mode == "real":
         guards.extend(segment_flags)
         guards.extend(_loss_protection_entry_flags(entry, payload))
-        provider_check = _placement_check(payload)
+        provider_check = _placement_check(payload, platform_value)
         missing = [row for row in provider_check.get("props", []) if row.get("status") == "missing"]
         line_warnings = provider_check.get("warnings", [])
         provider_rows = int(provider_check.get("provider_rows") or 0)
@@ -9256,6 +9999,101 @@ def _open_real_money_exposure() -> float:
         for entry in EntryRepository.pending()
         if entry.get("entry_mode", "real") == "real"
     ), 2)
+
+
+def _market_consensus_guardrails(
+    entry: Entry,
+    platform_value: dict,
+    payload: EntryPayload,
+) -> list[dict]:
+    legs = platform_value.get("legs") or []
+    by_market = {
+        (
+            canonical_person_key(leg.get("player")),
+            _settlement_stat_key(leg.get("stat")),
+        ): leg.get("market_consensus") or {}
+        for leg in legs
+    }
+    flags = []
+    for prop in entry.props:
+        market = by_market.get(
+            (canonical_person_key(prop.player.name), _settlement_stat_key(prop.stat.value)),
+            {},
+        )
+        if not market.get("available"):
+            flags.append({
+                "severity": "danger" if payload.recommended_by_app else "warning",
+                "message": (
+                    f"{prop.player.name} {prop.stat.value} has no exact-line multi-book probability; "
+                    "keep app-generated paid use blocked."
+                ),
+            })
+            continue
+        book_count = int(market.get("book_count") or 0)
+        if book_count < 2:
+            flags.append({
+                "severity": "danger" if payload.recommended_by_app else "warning",
+                "message": f"{prop.player.name} has only {book_count} paired sportsbook price; require at least 2.",
+            })
+        if market.get("stale"):
+            flags.append({
+                "severity": "danger",
+                "message": f"{prop.player.name} market odds are stale; refresh before paid placement.",
+            })
+        market_probability = market.get("market_probability")
+        if market_probability is None:
+            continue
+        disagreement = abs(float(prop.confidence or 0.0) - float(market_probability))
+        if disagreement >= 20:
+            flags.append({
+                "severity": "danger" if disagreement >= 30 else "warning",
+                "message": (
+                    f"{prop.player.name} model and no-vig market differ by {disagreement:.1f} points; "
+                    "inspect the evidence before using this leg."
+                ),
+            })
+    return flags[:5]
+
+
+def _pending_portfolio_exposure_flags(entry: Entry) -> list[dict]:
+    pending = EntryRepository.pending()
+    exact_matches: set[tuple[str, str, str]] = set()
+    player_matches: set[str] = set()
+    game_matches: set[str] = set()
+    for prop in entry.props:
+        player_key = canonical_person_key(prop.player.name)
+        stat_key = _settlement_stat_key(prop.stat.value)
+        direction = _normalize_direction(prop.direction)
+        game_key = canonical_matchup_key(prop.game)
+        for pending_entry in pending:
+            for pending_prop in pending_entry.get("props") or []:
+                if canonical_person_key(pending_prop.get("player")) == player_key:
+                    player_matches.add(prop.player.name)
+                    if (
+                        _settlement_stat_key(pending_prop.get("stat")) == stat_key
+                        and _normalize_direction(pending_prop.get("direction") or "Over") == direction
+                    ):
+                        exact_matches.add((prop.player.name, prop.stat.value, direction))
+                if game_key and canonical_matchup_key(pending_prop.get("game")) == game_key:
+                    game_matches.add(prop.game)
+    flags = []
+    if exact_matches:
+        labels = ", ".join(f"{player} {direction} {stat}" for player, stat, direction in sorted(exact_matches))
+        flags.append({
+            "severity": "danger",
+            "message": f"Duplicate pending market exposure: {labels}. Wait for the existing position to settle or use paper mode.",
+        })
+    elif player_matches:
+        flags.append({
+            "severity": "warning",
+            "message": f"Pending entries already include {', '.join(sorted(player_matches))}; total player exposure is concentrated.",
+        })
+    if game_matches:
+        flags.append({
+            "severity": "warning",
+            "message": f"Pending entries already include {len(game_matches)} matching game{'s' if len(game_matches) != 1 else ''}; review correlated portfolio risk.",
+        })
+    return flags
 
 
 def _money_value(value: object) -> float:

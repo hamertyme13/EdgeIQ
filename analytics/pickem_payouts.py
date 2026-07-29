@@ -70,6 +70,7 @@ def payout_analysis(
         for wins, multiplier in schedule.items()
         if math.isclose(multiplier, 1.0, abs_tol=1e-9)
     )
+    displayed_payout = max(schedule.values()) if schedule else 0.0
     return {
         "platform": _platform_label(platform),
         "payout_type": normalize_payout_type(payout_type),
@@ -78,11 +79,12 @@ def payout_analysis(
         "expected_return": round(expected_return, 4),
         "expected_value": round((expected_return - 1.0) * 100.0, 2),
         "profit_probability": round(profit_probability * 100.0, 2),
+        "break_even_probability": round(100.0 / displayed_payout, 2) if displayed_payout > 0 else 0.0,
         "refund_probability": round(refund_probability * 100.0, 2),
         "all_hit_probability": round(distribution.get(len(probs), 0.0) * 100.0, 2),
         "independent_all_hit_probability": round(independent_distribution.get(len(probs), 0.0) * 100.0, 2),
         "correlation_adjusted": distribution is not independent_distribution,
-        "displayed_multiplier": round(max(schedule.values()), 2) if schedule else 0.0,
+        "displayed_multiplier": round(displayed_payout, 2),
         "source": "exact_offer_snapshot" if exact_schedule else "official_base_schedule",
         "requires_app_confirmation": not bool(exact_schedule),
         "message": "Confirm the final multiplier in the provider app because promotions, adjusted lines, and correlations can change it.",

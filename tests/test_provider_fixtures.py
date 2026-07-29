@@ -58,3 +58,33 @@ def test_underdog_fixture_preserves_line_identity_and_game(monkeypatch) -> None:
     assert row["game_time"] == "2026-07-25T21:00:00Z"
     assert row["team"] == "LVA"
     assert row["match_id"] == "22"
+
+
+def test_underdog_team_uuid_is_normalized_from_matchup() -> None:
+    game = {
+        "away_team_id": "team-indiana-uuid",
+        "home_team_id": "team-seattle-uuid",
+    }
+
+    assert underdog._team_abbreviation("team-indiana-uuid", "IND @ SEA", game) == "IND"
+    assert underdog._team_abbreviation("team-seattle-uuid", "IND @ SEA", game) == "SEA"
+
+
+def test_underdog_alternate_line_keeps_direction_and_payout() -> None:
+    metadata = underdog._offer_metadata(
+        {
+            "line_type": "alternate",
+            "options": [{
+                "status": "active",
+                "choice": "higher",
+                "payout_multiplier": "1.25",
+            }],
+        },
+        19.5,
+        16.5,
+    )
+
+    assert metadata["direction"] == "Over"
+    assert metadata["line_offer_type"] == "demon"
+    assert metadata["is_premium_line"] is True
+    assert metadata["payout_multiplier"] == 1.25

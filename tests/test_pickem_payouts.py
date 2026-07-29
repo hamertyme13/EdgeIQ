@@ -18,6 +18,7 @@ def test_displayed_multiplier_scales_adjusted_entry():
 
     assert result["displayed_multiplier"] == 9.0
     assert result["expected_return"] == 3.087
+    assert result["break_even_probability"] == 11.11
 
 
 def test_flex_settlement_uses_partial_win_multiplier():

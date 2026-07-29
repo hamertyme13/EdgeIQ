@@ -41,6 +41,9 @@ Create a `.env` file in the project root when you need local overrides:
 ```bash
 STARTING_BANKROLL=500
 ODDS_API_KEY=your_odds_api_key
+EDGEIQ_ODDS_CACHE_SECONDS=180
+# Optional: up to 10 sportsbook/DFS keys keeps each player-market request in one quota region.
+EDGEIQ_ODDS_BOOKMAKERS=draftkings,fanduel,betmgm,williamhill_us,fanatics,prizepicks,underdog,pick6
 OPENAI_API_KEY=your_openai_api_key
 BALLDONTLIE_API_KEY=your_balldontlie_api_key
 NEWSAPI_KEY=your_newsapi_key
@@ -132,7 +135,9 @@ EdgeIQ currently normalizes player prop data from:
 - PrizePicks
 - Underdog
 - Sleeper when configured with a prop feed URL or file
-- The Odds API for sportsbook game odds when `ODDS_API_KEY` is configured
+- The Odds API for game odds, exact-line multi-book player-prop consensus,
+  no-vig probabilities, and indicative PrizePicks/Underdog DFS offer
+  multipliers when `ODDS_API_KEY` is configured
 - OpenAI for AI parlay explanations, entry review, and screenshot extraction
 - Ball Don't Lie for optional stats/props context when `BALLDONTLIE_API_KEY` or `BALLDONTLIE_PROPS_URL` is configured
 - NewsAPI for recent player/team context when `NEWSAPI_KEY` is configured

@@ -98,6 +98,66 @@ def _game_time(*sources: dict) -> str:
     return ""
 
 
+def _team_abbreviation(team_id: str, matchup: str, game: dict) -> str:
+    parts = [part.strip() for part in matchup.replace(" vs. ", " @ ").replace(" vs ", " @ ").split("@")]
+    if len(parts) != 2:
+        return team_id
+    if team_id == _string_id(game.get("away_team_id")):
+        return parts[0]
+    if team_id == _string_id(game.get("home_team_id")):
+        return parts[1]
+    return team_id
+
+
+def _line_market_key(line: dict) -> str:
+    over_under = line.get("over_under", {})
+    appearance_stat = over_under.get("appearance_stat", {})
+    return _string_id(_first_value(
+        line.get("over_under_id"),
+        over_under.get("id"),
+        appearance_stat.get("id"),
+    ))
+
+
+def _active_option(line: dict) -> dict:
+    return next(
+        (option for option in line.get("options", []) if option.get("status") == "active"),
+        {},
+    )
+
+
+def _offer_metadata(line: dict, value: float | None, standard_line: float | None) -> dict:
+    line_type = str(line.get("line_type") or "balanced").strip().lower()
+    option = _active_option(line)
+    choice = str(option.get("choice") or "").strip().lower()
+    direction = "Over" if choice in {"higher", "over"} else "Under" if choice in {"lower", "under"} else ""
+    adjusted = line_type not in {"balanced", "standard"}
+    offer_type = "standard"
+    if adjusted:
+        if value is not None and standard_line is not None and direction == "Under":
+            offer_type = "goblin" if value > standard_line else "demon"
+        elif value is not None and standard_line is not None:
+            offer_type = "goblin" if value < standard_line else "demon"
+        else:
+            offer_type = "adjusted"
+    return {
+        "line_type": line_type,
+        "line_offer_type": offer_type,
+        "adjusted_line": adjusted,
+        "is_discounted_line": offer_type == "goblin",
+        "is_premium_line": offer_type == "demon",
+        "standard_line": standard_line,
+        "baseline_line": standard_line if standard_line is not None else value,
+        "line_discount": (
+            round(standard_line - value, 2)
+            if standard_line is not None and value is not None
+            else 0.0
+        ),
+        "direction": direction,
+        "payout_multiplier": float(option.get("payout_multiplier") or 1.0),
+    }
+
+
 def fetch_projections() -> list[dict]:
     """
     Fetch active Underdog over/under lines for NBA/WNBA/NFL/MLB.
@@ -127,6 +187,15 @@ def fetch_projections() -> list[dict]:
         games[_string_id(g.get("id"))] = g
     for g in data.get("solo_games", []):
         games[_string_id(g.get("id"))] = g
+
+    standard_lines: dict[str, float] = {}
+    for source_line in data.get("over_under_lines", []):
+        if str(source_line.get("line_type") or "").lower() not in {"balanced", "standard"}:
+            continue
+        try:
+            standard_lines[_line_market_key(source_line)] = float(source_line.get("stat_value"))
+        except (TypeError, ValueError):
+            continue
 
     results: list[dict] = []
 
@@ -177,6 +246,12 @@ def fetch_projections() -> list[dict]:
             ou.get("title"),
         ))
         game_time = _game_time(game, app, app_stat, ou, line)
+        team_id = str(_first_value(
+            player.get("team_id"),
+            app.get("team_id"),
+            _nested_id(player.get("team")),
+            _nested_id(app.get("team")),
+        ))
 
         # Rank — lower = more featured; invert for trending_count parity
         raw_rank  = line.get("rank", 999_999_999)
@@ -191,17 +266,13 @@ def fetch_projections() -> list[dict]:
             normalized_line = float(raw_line) if raw_line is not None else None
         except (TypeError, ValueError):
             normalized_line = None
+        offer = _offer_metadata(line, normalized_line, standard_lines.get(_line_market_key(line)))
 
         results.append({
             "projection_id": line.get("id"),
             "player_id":     player_id,
             "player":        name,
-            "team":          str(_first_value(
-                player.get("team_id"),
-                app.get("team_id"),
-                _nested_id(player.get("team")),
-                _nested_id(app.get("team")),
-            )),
+            "team":          _team_abbreviation(team_id, matchup, game),
             "league":        league,
             "position":      player.get("position_name", ""),
             "stat":          app_stat.get("display_stat", ""),
@@ -213,6 +284,7 @@ def fetch_projections() -> list[dict]:
             "status":        "pre_game",
             "trending_count": _rank_to_trending(raw_rank),
             "rank":          raw_rank,
+            **offer,
             "image_url":     player.get("image_url", ""),
             "platform":      "Underdog",
             "stale":         cached.stale,

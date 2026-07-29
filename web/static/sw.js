@@ -1,9 +1,10 @@
-const CACHE_NAME = "edgeiq-shell-20260728-desktop-reliability-v7";
+const CACHE_NAME = "edgeiq-shell-20260729-market-v6";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
   "/static/styles.css",
   "/static/app.js",
+  "/static/circuit-audio.js",
   "/static/ui-shell.js",
   "/static/ui-utils.js",
   "/static/edgeiq-icon.png",

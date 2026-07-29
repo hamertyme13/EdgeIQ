@@ -169,7 +169,7 @@ def _entry_calibration_rows(entries: list[dict]) -> list[dict]:
     rows = [
         {"win_probability": _entry_joint_probability(entry), "result": entry.get("result", "")}
         for entry in entries
-        if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss", "Push"}
+        if _entry_is_officially_settled(entry)
     ]
     return _calibrated_buckets(rows)
 
@@ -205,7 +205,7 @@ def _entry_joint_probability(entry: dict) -> float:
 def _prop_calibration_rows(entries: list[dict]) -> list[dict]:
     rows: list[dict] = []
     for entry in entries:
-        if entry.get("status") != "Settled":
+        if not _entry_is_officially_settled(entry):
             continue
         for prop in entry.get("props") or []:
             result = prop.get("final_result") or ""
@@ -221,13 +221,27 @@ def _prop_calibration_rows(entries: list[dict]) -> list[dict]:
     return rows
 
 
+def _entry_is_officially_settled(entry: dict) -> bool:
+    if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push"}:
+        return False
+    props = entry.get("props") or []
+    if not props:
+        return False
+    excluded_sources = {"", "unknown", "unmatched", "projection_estimate"}
+    return all(
+        prop.get("final_result") in {"Win", "Loss", "Push", "DNP"}
+        and str(prop.get("final_source") or "").strip().lower() not in excluded_sources
+        for prop in props
+    )
+
+
 def _calibration_source_summary(bets: list[Bet], entries: list[dict]) -> dict:
     bet_rows = sum(1 for bet in bets if bet.win_probability and bet.result in {"Win", "Loss", "Push"})
-    entry_rows = sum(1 for entry in entries if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss", "Push"})
+    entry_rows = sum(1 for entry in entries if _entry_is_officially_settled(entry))
     prop_rows = _prop_calibration_rows(entries)
     source_counts: dict[str, int] = {}
     for entry in entries:
-        if entry.get("status") != "Settled":
+        if not _entry_is_officially_settled(entry):
             continue
         for prop in entry.get("props") or []:
             if prop.get("final_result") not in {"Win", "Loss", "Push"}:

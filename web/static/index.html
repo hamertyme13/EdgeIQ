@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260728-desktop-reliability-v7" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260729-market-v6" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -173,51 +173,36 @@
           </details>
           <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk">
             <summary>
-              <span>Decision Desk</span>
-              <small>Opportunities, value, alerts, entry ideas, and the market board</small>
+              <span>Tools + Signals</span>
+              <small>Watchlists, alerts, custom analysis, and raw provider lines</small>
             </summary>
           <div class="workspace-tab-strip" role="tablist" aria-label="Decision Desk sections">
-            <button class="workspace-tab active" type="button" data-workspace-tab="overview">Top Moves</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="value">Value</button>
+            <button class="workspace-tab active" type="button" data-workspace-tab="value">Value Tools</button>
             <button class="workspace-tab" type="button" data-workspace-tab="alerts">Alerts</button>
             <button class="workspace-tab" type="button" data-workspace-tab="builder">Ask EdgeIQ</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="board">Market Board</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="board">Provider Lines</button>
           </div>
-          <div class="release-grid" data-workspace-pane="overview">
-            <div class="panel command-center-panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Daily Command Center</p>
-                  <h2>Today's Best Moves</h2>
-                  <p id="command-center-status">Building the board...</p>
-                </div>
-                <button id="refresh-command-center" class="secondary">Refresh</button>
-              </div>
-              <div id="command-center-list" class="command-card-grid"></div>
-              <div id="command-center-avoid" class="avoid-strip"></div>
-            </div>
-            <div class="panel model-health-panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Model Trust</p>
-                  <h2>Calibration Health</h2>
-                </div>
-                <span id="model-health-score" class="health-orb">--</span>
-              </div>
-              <div id="model-health-detail" class="model-health-detail muted-card">Checking model health...</div>
-            </div>
-          </div>
-          <div class="panel advantage-center-panel" data-workspace-pane="value" hidden>
+          <div class="panel advantage-center-panel" data-workspace-pane="value">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Competitive Edge</p>
-                <h2>Advantage Center</h2>
-                <p id="advantage-center-status">Checking line value, profile, boosts, watchlist, and trust score...</p>
+                <p class="eyebrow">Supporting Tools</p>
+                <h2>Value Tools</h2>
+                <p>Track a prop, test a boost, or set bankroll rules. Ranked recommendations stay on Today.</p>
               </div>
-              <button id="refresh-advantage-center" class="secondary">Refresh</button>
+              <button class="secondary" type="button" data-focus-opportunity-board>View Opportunity Board</button>
             </div>
-            <div id="advantage-journey" class="journey-strip" aria-label="Recommendation workflow"></div>
-            <div id="advantage-center-list" class="advantage-grid"></div>
+            <div class="compatibility-output" hidden>
+              <p id="command-center-status">Recommendations are available on Today.</p>
+              <button id="refresh-command-center" type="button">Refresh</button>
+              <div id="command-center-list"></div>
+              <div id="command-center-avoid"></div>
+              <span id="model-health-score">--</span>
+              <div id="model-health-detail"></div>
+              <p id="advantage-center-status">Value tools ready.</p>
+              <button id="refresh-advantage-center" type="button">Refresh</button>
+              <div id="advantage-journey"></div>
+              <div id="advantage-center-list"></div>
+            </div>
             <div class="advantage-tools">
               <div class="mini-tool stack">
                 <h3>Sportsbook Sync</h3>
@@ -225,26 +210,9 @@
                 <button id="refresh-sportsbook-sync" class="secondary" type="button">Refresh Sync Status</button>
               </div>
               <div class="mini-tool stack">
-                <h3>Live Value Feed</h3>
-                <div class="form-grid compact-controls tool-form">
-                  <select id="opportunity-platform">
-                    <option>Both</option>
-                    <option>PrizePicks</option>
-                    <option>Underdog</option>
-                  </select>
-                  <select id="opportunity-sport">
-                    <option>All Sports</option>
-                    <option>WNBA</option>
-                    <option>NBA</option>
-                    <option>NFL</option>
-                    <option>MLB</option>
-                    <option>NHL</option>
-                  </select>
-                  <input id="opportunity-min-ev" type="number" value="0" step="0.1" placeholder="Min EV %" />
-                  <button id="refresh-opportunity-feed" type="button">Refresh Feed</button>
-                </div>
-                <div id="opportunity-feed-list" class="suggestion-list"></div>
-                <button id="enable-browser-alerts" class="secondary" type="button">Enable Browser Alerts</button>
+                <h3>Ranked Props</h3>
+                <p>There is one ranked list so recommendations do not conflict across pages.</p>
+                <button class="secondary" type="button" data-focus-opportunity-board>Open Opportunity Board</button>
               </div>
               <form id="watchlist-form" class="mini-tool stack">
                 <h3>Prop Watchlist</h3>
@@ -334,7 +302,7 @@
               <div>
                 <p class="eyebrow">Market Timing</p>
                 <h2>Line Movement Alerts</h2>
-                <p id="timing-alert-status">Checking timing signals...</p>
+                <p id="timing-alert-status">Signals for watched props and Opportunity Board selections, not a second recommendation list.</p>
               </div>
               <button id="refresh-timing-alerts" class="secondary">Refresh</button>
             </div>
@@ -414,8 +382,8 @@
           <div class="panel board-panel" data-workspace-pane="board" hidden>
             <div class="panel-header">
               <div>
-                <h2>Prop Board</h2>
-                <p id="props-status">Loading props...</p>
+                <h2>Provider Lines</h2>
+                <p id="props-status">Raw provider markets for research. These rows are not ranked recommendations.</p>
               </div>
               <div class="toolbar">
                 <select id="props-platform">
@@ -446,7 +414,6 @@
                 <button id="load-props">Load Props</button>
               </div>
             </div>
-            <div id="dashboard-parlay" class="parlay-card muted-card">Finding the best 3-leg parlay...</div>
             <div id="player-detail" class="player-detail muted-card" hidden></div>
             <div class="table-wrap">
               <table>
@@ -504,6 +471,11 @@
                     </label>
                     <label class="check-row"><input id="pref-high-risk" type="checkbox" /> Allow 4/5-leg</label>
                     <label class="check-row"><input id="pref-avoid-same-game" type="checkbox" /> Avoid same game</label>
+                    <label class="check-row"><input id="pref-sound-effects" type="checkbox" /> Sound Effects</label>
+                    <label class="field-label">Sound Volume
+                      <input id="pref-sound-volume" type="range" min="0" max="100" step="5" value="42" />
+                    </label>
+                    <button id="preview-sound" class="secondary" type="button">Preview Sound</button>
                     <button type="submit">Save Preferences</button>
                   </form>
                   <div id="preferences-status" class="subtle">Preferences load with the app.</div>
@@ -677,7 +649,7 @@
                   <button id="analyze-entry">Analyze Entry</button>
                   <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
                   <button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button>
-                  <button id="place-entry" class="secondary" disabled>Place Entry</button>
+                  <button id="place-entry" class="secondary circuit-action" disabled>Place Entry</button>
                   <button id="clear-entry" class="danger">Clear</button>
                 </div>
               </div>
@@ -704,8 +676,8 @@
               </div>
               <details class="panel tool-group" data-workspace-pane="verified" hidden>
                 <summary>
-                  <span>Confirmed Prop Lab</span>
-                  <small>Verified API data + historical context</small>
+                  <span>Verified Entry Generator</span>
+                  <small>Build cards from end-to-end verifiable provider data</small>
                 </summary>
                 <div class="tool-group-body">
                   <div class="toolbar">
@@ -730,11 +702,9 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                     </select>
-                    <button id="load-confirmed-props" class="secondary">Load Confirmed Props</button>
                     <button id="generate-confirmed-entries">Generate Confirmed Top 5</button>
                   </div>
-                  <div id="confirmed-props-status" class="subtle">Only props with a current line, confirmed matchup and time, and an official ESPN final-stat path appear here.</div>
-                  <div id="confirmed-props-list" class="suggestion-list"></div>
+                  <div id="confirmed-props-status" class="subtle">Entry generation uses only current lines with a confirmed matchup, start time, and official final-stat path.</div>
                   <div id="confirmed-entries-list" class="suggestion-list"></div>
                 </div>
               </details>
@@ -1513,19 +1483,25 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260728-desktop-reliability-v7"></script>
+    <script src="/static/ui-shell.js?v=20260728-circuit-audio-v2"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260728-desktop-reliability-v7"></script>
+    <script src="/static/ui-utils.js?v=20260728-circuit-audio-v2"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260728-desktop-reliability-v7"></script>
+    <script src="/static/circuit-audio.js?v=20260728-circuit-audio-v2"></script>
+    <script>
+      if (!window.EdgeIQAudio) {
+        document.write('<script src="circuit-audio.js"><\/script>');
+      }
+    </script>
+    <script src="/static/app.js?v=20260729-market-v6"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');
