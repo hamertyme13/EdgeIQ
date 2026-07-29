@@ -23,6 +23,14 @@ class EntryModel(Base):
 
     multiplier = Column(Float, nullable=False, default=1.0)
 
+    payout_type = Column(String, nullable=False, default="standard")
+
+    payout_table_snapshot = Column(Text, nullable=False, default="")
+
+    expected_return = Column(Float, nullable=False, default=0.0)
+
+    expected_value = Column(Float, nullable=False, default=0.0)
+
     potential_payout = Column(Float, nullable=False, default=0.0)
 
     profit = Column(Float, nullable=False, default=0.0)

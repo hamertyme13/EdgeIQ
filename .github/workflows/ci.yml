@@ -1,0 +1,26 @@
+name: EdgeIQ CI
+
+on:
+  push:
+    branches: ["main", "codex/**", "codex-*"]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check .
+      - run: mypy analytics/release_validation.py services/data_management.py utils/entity_normalization.py
+      - name: Reject tracked local databases
+        run: test -z "$(git ls-files '*.db' '*.db-wal' '*.db-shm')"
+      - run: pytest

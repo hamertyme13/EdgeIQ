@@ -26,6 +26,12 @@ class Prop:
 
     game: str = ""
 
+    game_time: str = ""
+
+    position: str = ""
+
+    season_type: str = ""
+
     needs_projection: bool = False
 
     auto_projected: bool = False
@@ -33,6 +39,20 @@ class Prop:
     trending_count: int = 0
 
     projection_source: str = "user"
+
+    baseline_line: float | None = None
+
+    standard_line: float | None = None
+
+    line_offer_type: str = "standard"
+
+    adjusted_line: bool = False
+
+    is_discounted_line: bool = False
+
+    is_premium_line: bool = False
+
+    line_discount: float = 0.0
 
     espn_recent_average: float | None = None
 
@@ -47,3 +67,17 @@ class Prop:
     source_signals: list[dict] | None = None
 
     source_score: float = 0.0
+
+    player_identity_id: int | None = None
+
+    player_provider: str = ""
+
+    provider_player_id: str = ""
+
+    model_version: str = ""
+
+    feature_as_of: str = ""
+
+    forecast_snapshot: dict | None = None
+
+    forecast_paid_eligible: bool = False

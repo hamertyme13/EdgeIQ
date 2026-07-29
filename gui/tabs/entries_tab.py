@@ -38,6 +38,7 @@ from analytics.entry_recommendation import recommendation as entry_recommendatio
 from analytics.risk import calculate_entry_risk
 from analytics.correlation import detect_correlations
 from repository.repositories.entry_repository import EntryRepository
+from utils.stat_normalization import stat_type_from_text
 from utils.logging import get_logger
 import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
@@ -54,19 +55,7 @@ def _platform_from_text(value: str) -> Platform:
 
 
 def _stat_from_text(value: str) -> StatType:
-    normalized = (value or "").lower()
-    for stat in StatType:
-        if stat.value.lower() == normalized or stat.value.lower() in normalized:
-            return stat
-    if "point" in normalized:
-        return StatType.POINTS
-    if "rebound" in normalized:
-        return StatType.REBOUNDS
-    if "assist" in normalized:
-        return StatType.ASSISTS
-    if "pra" in normalized:
-        return StatType.PRA
-    return StatType.POINTS
+    return stat_type_from_text(value)
 
 
 class _SuggestionFetcher(QThread):

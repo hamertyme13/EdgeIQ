@@ -1,13 +1,21 @@
-from datetime import datetime
+import json
+import re
+from collections import defaultdict
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
+from utils.time import utc_now
 
 from models.entry import Entry
 from analytics.entry_recommendation import recommendation as entry_recommendation
+from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
+from analytics.correlation import estimate_correlation_matrix
+from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 
 
 class EntryRepository:
@@ -19,6 +27,13 @@ class EntryRepository:
         4: 10.0,
         5: 20.0,
         6: 37.5,
+    }
+    TEAM_ALIASES = {
+        "LAS": "LV",
+        "LVA": "LV",
+        "NYL": "NY",
+        "PHO": "PHX",
+        "GSV": "GS",
     }
 
     @staticmethod
@@ -38,6 +53,7 @@ class EntryRepository:
         recommended_by_app: bool = False,
         audit_snapshot: str = "",
         entry_mode: str = "real",
+        payout_type: str = "standard",
     ) -> int:
 
         EntryRepository._ensure_schema()
@@ -49,6 +65,35 @@ class EntryRepository:
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
             entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
+            audit_payload = {}
+            try:
+                audit_payload = json.loads(audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                audit_payload = {}
+            audited_payout = audit_payload.get("payout_analysis") or {}
+            exact_schedule = (
+                audited_payout.get("payouts")
+                if audited_payout.get("source") == "exact_offer_snapshot"
+                else None
+            )
+            payout = payout_analysis(
+                [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
+                entry.platform.value,
+                payout_type,
+                displayed_multiplier=multiplier,
+                correlation_matrix=estimate_correlation_matrix(entry.props),
+                exact_schedule=exact_schedule,
+            )
+            identities = [
+                PlayerIdentityRepository.resolve(
+                    prop.player.name,
+                    prop.player.sport,
+                    prop.player.team,
+                    getattr(prop, "player_provider", "") or prop.platform.value,
+                    getattr(prop, "provider_player_id", ""),
+                )
+                for prop in entry.props
+            ]
 
             entry_model = EntryModel(
                 platform=entry.platform.value,
@@ -58,6 +103,10 @@ class EntryRepository:
                 recommendation=analysis["action"],
                 wager=wager,
                 multiplier=multiplier,
+                payout_type=payout["payout_type"],
+                payout_table_snapshot=json.dumps(payout),
+                expected_return=payout["expected_return"],
+                expected_value=payout["expected_value"],
                 potential_payout=potential_payout,
                 profit=EntryRepository._profit_for_result(result, wager, multiplier),
                 status=status,
@@ -65,17 +114,20 @@ class EntryRepository:
                 entry_mode=entry_mode,
                 recommended_by_app=bool(recommended_by_app),
                 audit_snapshot=audit_snapshot or "",
-                placed_at=datetime.utcnow() if status == "Pending" else None,
+                placed_at=utc_now() if status == "Pending" else None,
             )
 
             session.add(entry_model)
             session.flush()
 
-            for prop in entry.props:
+            for prop, identity in zip(entry.props, identities, strict=False):
 
                 prop_model = EntryPropModel(
                     entry_id=entry_model.id,
                     player_name=prop.player.name,
+                    player_identity_id=identity["id"] if identity else getattr(prop, "player_identity_id", None),
+                    player_provider=getattr(prop, "player_provider", "") or prop.platform.value,
+                    provider_player_id=getattr(prop, "provider_player_id", "") or "",
                     team=prop.player.team,
                     sport=prop.player.sport,
                     stat=prop.stat.value,
@@ -86,9 +138,28 @@ class EntryRepository:
                     direction=prop.direction,
                     platform=prop.platform.value,
                     game=getattr(prop, "game", ""),
+                    game_time=getattr(prop, "game_time", ""),
+                    position=getattr(prop, "position", ""),
+                    baseline_line=getattr(prop, "baseline_line", None),
+                    standard_line=getattr(prop, "standard_line", None),
+                    line_offer_type=getattr(prop, "line_offer_type", "standard") or "standard",
+                    adjusted_line=bool(getattr(prop, "adjusted_line", False)),
+                    is_discounted_line=bool(getattr(prop, "is_discounted_line", False)),
+                    is_premium_line=bool(getattr(prop, "is_premium_line", False)),
+                    line_discount=float(getattr(prop, "line_discount", 0.0) or 0.0),
+                    projection_source=getattr(prop, "projection_source", "") or "",
+                    auto_projected=bool(getattr(prop, "auto_projected", False)),
                 )
 
                 session.add(prop_model)
+                session.flush()
+                PredictionLedgerRepository.record(
+                    session,
+                    entry_model,
+                    prop_model,
+                    prop,
+                    entry_model.payout_table_snapshot,
+                )
 
             session.commit()
             return entry_model.id
@@ -112,15 +183,11 @@ class EntryRepository:
                 .order_by(EntryModel.placed_at.desc(), EntryModel.created_at.desc())
                 .all()
             )
+            props_by_entry = EntryRepository._props_by_entry(session, entries)
 
             rows: list[dict] = []
             for entry in entries:
-                props = (
-                    session.query(EntryPropModel)
-                    .filter(EntryPropModel.entry_id == entry.id)
-                    .order_by(EntryPropModel.id.asc())
-                    .all()
-                )
+                props = props_by_entry.get(entry.id, [])
                 rows.append({
                     "id": entry.id,
                     "platform": entry.platform,
@@ -128,6 +195,10 @@ class EntryRepository:
                     "average_edge": entry.average_edge,
                     "wager": entry.wager or 0.0,
                     "multiplier": entry.multiplier or 1.0,
+                    "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+                    "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+                    "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+                    "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
                     "potential_payout": entry.potential_payout or 0.0,
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
@@ -139,6 +210,10 @@ class EntryRepository:
                     "props": [
                         {
                             "player": prop.player_name,
+                            "entry_prop_id": prop.id,
+                            "player_identity_id": getattr(prop, "player_identity_id", None),
+                            "player_provider": getattr(prop, "player_provider", "") or "",
+                            "provider_player_id": getattr(prop, "provider_player_id", "") or "",
                             "team": prop.team,
                             "sport": prop.sport,
                             "stat": prop.stat,
@@ -149,6 +224,21 @@ class EntryRepository:
                             "direction": prop.direction or "Over",
                             "platform": prop.platform,
                             "game": prop.game,
+                            "game_time": getattr(prop, "game_time", "") or "",
+                            "position": getattr(prop, "position", "") or "",
+                            "baseline_line": getattr(prop, "baseline_line", None),
+                            "standard_line": getattr(prop, "standard_line", None),
+                            "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                            "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                            "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                            "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                            "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                            "projection_source": getattr(prop, "projection_source", "") or "",
+                            "auto_projected": bool(getattr(prop, "auto_projected", False)),
+                            "actual": getattr(prop, "actual", None),
+                            "final_result": getattr(prop, "final_result", "") or "",
+                            "final_source": getattr(prop, "final_source", "") or "",
+                            "final_status": getattr(prop, "final_status", "") or "",
                         }
                         for prop in props
                     ],
@@ -165,15 +255,11 @@ class EntryRepository:
                 .order_by(EntryModel.created_at.desc(), EntryModel.id.desc())
                 .all()
             )
+            props_by_entry = EntryRepository._props_by_entry(session, entries)
 
             rows: list[dict] = []
             for entry in entries:
-                props = (
-                    session.query(EntryPropModel)
-                    .filter(EntryPropModel.entry_id == entry.id)
-                    .order_by(EntryPropModel.id.asc())
-                    .all()
-                )
+                props = props_by_entry.get(entry.id, [])
                 rows.append({
                     "id": entry.id,
                     "platform": entry.platform,
@@ -183,6 +269,10 @@ class EntryRepository:
                     "recommendation": entry.recommendation,
                     "wager": entry.wager or 0.0,
                     "multiplier": entry.multiplier or 1.0,
+                    "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+                    "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+                    "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+                    "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
                     "potential_payout": entry.potential_payout or 0.0,
                     "profit": entry.profit or 0.0,
                     "status": entry.status,
@@ -196,6 +286,10 @@ class EntryRepository:
                     "props": [
                         {
                             "player": prop.player_name,
+                            "entry_prop_id": prop.id,
+                            "player_identity_id": getattr(prop, "player_identity_id", None),
+                            "player_provider": getattr(prop, "player_provider", "") or "",
+                            "provider_player_id": getattr(prop, "provider_player_id", "") or "",
                             "team": prop.team,
                             "sport": prop.sport,
                             "stat": prop.stat,
@@ -206,6 +300,21 @@ class EntryRepository:
                             "direction": prop.direction or "Over",
                             "platform": prop.platform,
                             "game": prop.game,
+                            "game_time": getattr(prop, "game_time", "") or "",
+                            "position": getattr(prop, "position", "") or "",
+                            "baseline_line": getattr(prop, "baseline_line", None),
+                            "standard_line": getattr(prop, "standard_line", None),
+                            "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                            "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                            "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                            "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                            "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                            "projection_source": getattr(prop, "projection_source", "") or "",
+                            "auto_projected": bool(getattr(prop, "auto_projected", False)),
+                            "actual": getattr(prop, "actual", None),
+                            "final_result": getattr(prop, "final_result", "") or "",
+                            "final_source": getattr(prop, "final_source", "") or "",
+                            "final_status": getattr(prop, "final_status", "") or "",
                         }
                         for prop in props
                     ],
@@ -214,12 +323,34 @@ class EntryRepository:
             return rows
 
     @staticmethod
+    def _props_by_entry(session: Session, entries: list[EntryModel]) -> dict[int, list[EntryPropModel]]:
+        entry_ids = [entry.id for entry in entries]
+        if not entry_ids:
+            return {}
+        props = (
+            session.query(EntryPropModel)
+            .filter(EntryPropModel.entry_id.in_(entry_ids))
+            .order_by(EntryPropModel.entry_id.asc(), EntryPropModel.id.asc())
+            .all()
+        )
+        grouped: dict[int, list[EntryPropModel]] = defaultdict(list)
+        for prop in props:
+            grouped[prop.entry_id].append(prop)
+        return dict(grouped)
+
+    @staticmethod
     def get_pending(entry_id: int) -> dict | None:
         entries = EntryRepository.pending()
         return next((entry for entry in entries if entry["id"] == entry_id), None)
 
     @staticmethod
-    def settle(entry_id: int, result: str, dnp_legs: int = 0, dnp_mode: str = "reduce") -> None:
+    def settle(
+        entry_id: int,
+        result: str,
+        dnp_legs: int = 0,
+        dnp_mode: str = "reduce",
+        leg_results: list[dict] | None = None,
+    ) -> dict:
         EntryRepository._ensure_schema()
         if result not in {"Win", "Loss", "Push", "DNP"}:
             raise ValueError("Entry result must be Win, Loss, Push, or DNP.")
@@ -228,6 +359,7 @@ class EntryRepository:
             entry = session.get(EntryModel, entry_id)
             if entry is None:
                 raise ValueError(f"Entry {entry_id} was not found.")
+            was_settled = entry.status == "Settled"
             leg_count = (
                 session.query(EntryPropModel)
                 .filter(EntryPropModel.entry_id == entry.id)
@@ -240,6 +372,9 @@ class EntryRepository:
                 leg_count,
                 dnp_legs,
                 dnp_mode,
+                platform=entry.platform,
+                payout_type=getattr(entry, "payout_type", "standard") or "standard",
+                leg_results=leg_results,
             )
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
@@ -247,8 +382,126 @@ class EntryRepository:
             entry.status = "Settled"
             entry.result = result
             entry.profit = profit
-            entry.settled_at = datetime.utcnow()
+            if not was_settled or entry.settled_at is None:
+                entry.settled_at = utc_now()
+            if leg_results:
+                EntryRepository._store_leg_results(session, entry.id, leg_results)
+            synced_entry = EntryRepository._entry_dict(session, entry)
             session.commit()
+
+        EntryRepository._sync_entry_to_bet_history(synced_entry)
+        return {
+            "id": entry_id,
+            "result": synced_entry["result"],
+            "profit": synced_entry["profit"],
+        }
+
+    @staticmethod
+    def reopen_for_settlement(entry_id: int, reason: str) -> None:
+        """Return a prematurely settled entry to Pending without discarding final leg snapshots."""
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entry = session.get(EntryModel, entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} was not found.")
+            entry.status = "Pending"
+            entry.result = ""
+            entry.profit = 0.0
+            entry.settled_at = None
+            snapshot = {}
+            try:
+                snapshot = json.loads(entry.audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                snapshot = {"original_audit": entry.audit_snapshot or ""}
+            snapshot["settlement_reopened"] = {
+                "reason": reason,
+                "reopened_at": utc_now().isoformat(),
+            }
+            entry.audit_snapshot = json.dumps(snapshot)
+            session.commit()
+
+    @staticmethod
+    def exclude_from_tracking(entry_id: int, reason: str) -> None:
+        """Preserve an ungradable legacy paper entry without keeping it pending."""
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entry = session.get(EntryModel, entry_id)
+            if entry is None:
+                raise ValueError(f"Entry {entry_id} was not found.")
+            entry.status = "Excluded"
+            entry.result = "Unverifiable"
+            entry.profit = 0.0
+            entry.settled_at = utc_now()
+            snapshot = {}
+            try:
+                snapshot = json.loads(entry.audit_snapshot or "{}")
+            except (TypeError, ValueError):
+                snapshot = {"original_audit": entry.audit_snapshot or ""}
+            snapshot["tracking_exclusion"] = {
+                "reason": reason,
+                "excluded_at": utc_now().isoformat(),
+            }
+            entry.audit_snapshot = json.dumps(snapshot)
+            session.commit()
+
+    @staticmethod
+    def sync_settled_to_bet_history() -> dict:
+        EntryRepository._ensure_schema()
+        synced = 0
+        with SessionLocal() as session:
+            entries = (
+                session.query(EntryModel)
+                .filter(EntryModel.status == "Settled")
+                .all()
+            )
+            payloads = [EntryRepository._entry_dict(session, entry) for entry in entries]
+
+        for entry in payloads:
+            EntryRepository._sync_entry_to_bet_history(entry)
+            synced += 1
+
+        return {"synced": synced}
+
+    @staticmethod
+    def store_settled_leg_results(entry_id: int, leg_results: list[dict]) -> None:
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            EntryRepository._store_leg_results(session, entry_id, leg_results)
+            session.commit()
+
+    @staticmethod
+    def backfill_game_times(
+        game_times: list[dict],
+        pending_only: bool = False,
+        overwrite: bool = False,
+    ) -> dict:
+        """Attach missing game start times to entry legs from provider scoreboard rows."""
+        EntryRepository._ensure_schema()
+        indexed = EntryRepository._index_game_times(game_times)
+        if not indexed.get("records"):
+            return {"updated": 0, "candidates": 0}
+
+        updated = 0
+        with SessionLocal() as session:
+            query = session.query(EntryPropModel, EntryModel).join(
+                EntryModel,
+                EntryPropModel.entry_id == EntryModel.id,
+            )
+            if pending_only:
+                query = query.filter(EntryModel.status == "Pending")
+            if not overwrite:
+                query = query.filter((EntryPropModel.game_time.is_(None)) | (EntryPropModel.game_time == ""))
+
+            for prop, entry in query.all():
+                game_time = EntryRepository._matching_game_time(prop, indexed, getattr(entry, "placed_at", None))
+                if not game_time or prop.game_time == game_time:
+                    continue
+                prop.game_time = game_time
+                updated += 1
+
+            session.commit()
+
+        return {"updated": updated, "candidates": len(indexed)}
 
     @staticmethod
     def classify_missing_economics(default_wager: float = DEFAULT_WAGER) -> dict:
@@ -331,6 +584,7 @@ class EntryRepository:
             "by_result": EntryRepository._group_by_result(settled),
             "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
             "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
+            "by_stat": EntryRepository._group_by_key(settled, EntryRepository._primary_stat),
             "by_platform": EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown"),
             "platform_profitability": EntryRepository._ranked_groups(
                 EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown")
@@ -364,11 +618,13 @@ class EntryRepository:
         wins = sum(1 for entry in decisions if entry.get("result") == "Win")
         losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
         pushes = sum(1 for entry in settled if entry.get("result") == "Push")
-        avg_confidence = (
+        average_leg_confidence = (
             sum(float(entry.get("average_confidence") or 0.0) for entry in decisions) / len(decisions)
             if decisions
             else 0.0
         )
+        card_probabilities = [EntryRepository._joint_probability(entry) for entry in decisions]
+        avg_confidence = sum(card_probabilities) / len(card_probabilities) if card_probabilities else 0.0
         actual = (wins / len(decisions) * 100) if decisions else 0.0
         return {
             "active": len(active),
@@ -380,8 +636,24 @@ class EntryRepository:
             "pushes": pushes,
             "accuracy": round(actual, 1),
             "average_confidence": round(avg_confidence, 1),
+            "average_card_probability": round(avg_confidence, 1),
+            "average_leg_confidence": round(average_leg_confidence, 1),
             "calibration_edge": round(actual - avg_confidence, 1) if decisions else 0.0,
         }
+
+    @staticmethod
+    def _joint_probability(entry: dict) -> float:
+        probability = 1.0
+        legs = 0
+        for prop in entry.get("props") or []:
+            confidence = prop.get("confidence")
+            if confidence in (None, ""):
+                continue
+            probability *= max(0.01, min(0.99, float(confidence) / 100.0))
+            legs += 1
+        if legs:
+            return probability * 100.0
+        return max(0.0, min(100.0, float(entry.get("average_confidence") or 0.0)))
 
     @staticmethod
     def _profit_for_result(result: str, wager: float, multiplier: float) -> float:
@@ -400,6 +672,216 @@ class EntryRepository:
         return EntryRepository._normalize_entry_mode(entry.get("entry_mode", "real")) == "paper"
 
     @staticmethod
+    def _sync_entry_to_bet_history(entry: dict) -> None:
+        from repository.bet_repository import BetRepository
+
+        if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push", "DNP"}:
+            return
+        BetRepository().save_entry_result(entry)
+
+    @staticmethod
+    def _index_game_times(game_times: list[dict]) -> dict[str, list[dict]]:
+        records: list[dict] = []
+        for row in game_times:
+            sport = str(row.get("sport") or "").upper()
+            game_time = str(row.get("game_time") or "").strip()
+            if not sport or not game_time:
+                continue
+            parts = EntryRepository._game_parts(row.get("game", ""))
+            if not parts:
+                continue
+            records.append({
+                "sport": sport,
+                "game_time": game_time,
+                "parts": set(parts),
+                "starts_at": EntryRepository._parse_game_time(game_time),
+            })
+        return {"records": records}
+
+    @staticmethod
+    def _matching_game_time(
+        prop: EntryPropModel,
+        indexed: dict[str, list[dict]],
+        placed_at: datetime | None = None,
+    ) -> str:
+        sport = str(getattr(prop, "sport", "") or "").upper()
+        team = EntryRepository._game_token(getattr(prop, "team", ""))
+        game_parts = EntryRepository._game_parts(getattr(prop, "game", ""))
+
+        if team and game_parts:
+            matched = EntryRepository._best_game_time(indexed["records"], sport, {team, *game_parts}, placed_at)
+            if matched:
+                return matched
+
+        if len(game_parts) >= 2:
+            matched = EntryRepository._best_game_time(indexed["records"], sport, set(game_parts), placed_at)
+            if matched:
+                return matched
+
+        if team:
+            matched = EntryRepository._best_game_time(indexed["records"], sport, {team}, placed_at, require_unique=True)
+            if matched:
+                return matched
+        return ""
+
+    @staticmethod
+    def _game_lookup_tokens(value: object) -> list[str]:
+        text = str(value or "").upper().strip()
+        if not text:
+            return []
+        normalized = text.replace(" VS ", "@").replace(" V ", "@").replace(" AT ", "@")
+        raw_parts = [part for part in re.split(r"[@/\-\s]+", normalized) if part]
+        tokens = [EntryRepository._game_token(normalized)]
+        tokens.extend(EntryRepository._game_token(part) for part in raw_parts)
+        return [token for index, token in enumerate(tokens) if token and token not in tokens[:index]]
+
+    @staticmethod
+    def _game_token(value: object) -> str:
+        text = re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+        return EntryRepository.TEAM_ALIASES.get(text, text)
+
+    @staticmethod
+    def _game_parts(value: object) -> list[str]:
+        text = str(value or "").upper().strip()
+        if not text:
+            return []
+        normalized = text.replace(" VS ", "@").replace(" V ", "@").replace(" AT ", "@")
+        parts = [EntryRepository._game_token(part) for part in re.split(r"[@/\-\s]+", normalized) if part]
+        return [part for index, part in enumerate(parts) if part and part not in parts[:index]]
+
+    @staticmethod
+    def _best_game_time(
+        records: list[dict],
+        sport: str,
+        required_parts: set[str],
+        placed_at: datetime | None,
+        require_unique: bool = False,
+    ) -> str:
+        candidates = [
+            record
+            for record in records
+            if record["sport"] == sport and required_parts.issubset(record["parts"])
+        ]
+        if not candidates:
+            return ""
+        placed = EntryRepository._aware_datetime(placed_at)
+        if placed is not None:
+            future = [
+                candidate
+                for candidate in candidates
+                if candidate.get("starts_at") is not None and candidate["starts_at"] >= placed
+            ]
+            if future:
+                candidates = future
+        if require_unique and len(candidates) != 1:
+            return ""
+        candidates.sort(key=lambda candidate: candidate.get("starts_at") or datetime.max.replace(tzinfo=timezone.utc))
+        return str(candidates[0].get("game_time") or "")
+
+    @staticmethod
+    def _parse_game_time(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return EntryRepository._aware_datetime(parsed)
+
+    @staticmethod
+    def _aware_datetime(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _store_leg_results(session: Session, entry_id: int, leg_results: list[dict]) -> None:
+        props = (
+            session.query(EntryPropModel)
+            .filter(EntryPropModel.entry_id == entry_id)
+            .order_by(EntryPropModel.id.asc())
+            .all()
+        )
+        for prop_model, result in zip(props, leg_results, strict=False):
+            actual = result.get("actual")
+            prop_model.actual = float(actual) if actual is not None else None
+            prop_model.final_result = str(result.get("result") or "")
+            prop_model.final_source = str(result.get("source") or "")
+            prop_model.final_status = str(result.get("final_status") or result.get("status") or "")
+            PredictionLedgerRepository.settle(session, prop_model)
+
+    @staticmethod
+    def _entry_dict(session: Session, entry: EntryModel) -> dict:
+        props = (
+            session.query(EntryPropModel)
+            .filter(EntryPropModel.entry_id == entry.id)
+            .order_by(EntryPropModel.id.asc())
+            .all()
+        )
+        return {
+            "id": entry.id,
+            "platform": entry.platform,
+            "average_confidence": entry.average_confidence,
+            "average_edge": entry.average_edge,
+            "grade": entry.grade,
+            "recommendation": entry.recommendation,
+            "wager": entry.wager or 0.0,
+            "multiplier": entry.multiplier or 1.0,
+            "payout_type": getattr(entry, "payout_type", "standard") or "standard",
+            "payout_table_snapshot": getattr(entry, "payout_table_snapshot", "") or "",
+            "expected_return": float(getattr(entry, "expected_return", 0.0) or 0.0),
+            "expected_value": float(getattr(entry, "expected_value", 0.0) or 0.0),
+            "potential_payout": entry.potential_payout or 0.0,
+            "profit": entry.profit or 0.0,
+            "status": entry.status,
+            "result": entry.result,
+            "entry_mode": getattr(entry, "entry_mode", "real") or "real",
+            "recommended_by_app": bool(getattr(entry, "recommended_by_app", False)),
+            "audit_snapshot": getattr(entry, "audit_snapshot", "") or "",
+            "placed_at": entry.placed_at,
+            "settled_at": entry.settled_at,
+            "created_at": entry.created_at,
+            "props": [
+                {
+                    "player": prop.player_name,
+                    "entry_prop_id": prop.id,
+                    "player_identity_id": getattr(prop, "player_identity_id", None),
+                    "player_provider": getattr(prop, "player_provider", "") or "",
+                    "provider_player_id": getattr(prop, "provider_player_id", "") or "",
+                    "team": prop.team,
+                    "sport": prop.sport,
+                    "stat": prop.stat,
+                    "line": prop.line,
+                    "projection": prop.projection,
+                    "edge": prop.edge,
+                    "confidence": prop.confidence,
+                    "direction": prop.direction or "Over",
+                    "platform": prop.platform,
+                    "game": prop.game,
+                    "game_time": getattr(prop, "game_time", "") or "",
+                    "position": getattr(prop, "position", "") or "",
+                    "baseline_line": getattr(prop, "baseline_line", None),
+                    "standard_line": getattr(prop, "standard_line", None),
+                    "line_offer_type": getattr(prop, "line_offer_type", "standard") or "standard",
+                    "adjusted_line": bool(getattr(prop, "adjusted_line", False)),
+                    "is_discounted_line": bool(getattr(prop, "is_discounted_line", False)),
+                    "is_premium_line": bool(getattr(prop, "is_premium_line", False)),
+                    "line_discount": float(getattr(prop, "line_discount", 0.0) or 0.0),
+                    "projection_source": getattr(prop, "projection_source", "") or "",
+                    "auto_projected": bool(getattr(prop, "auto_projected", False)),
+                    "actual": getattr(prop, "actual", None),
+                    "final_result": getattr(prop, "final_result", "") or "",
+                    "final_source": getattr(prop, "final_source", "") or "",
+                    "final_status": getattr(prop, "final_status", "") or "",
+                }
+                for prop in props
+            ],
+        }
+
+    @staticmethod
     def _settlement_profit(
         result: str,
         wager: float,
@@ -407,7 +889,20 @@ class EntryRepository:
         leg_count: int,
         dnp_legs: int = 0,
         dnp_mode: str = "reduce",
+        platform: str = "PrizePicks",
+        payout_type: str = "standard",
+        leg_results: list[dict] | None = None,
     ) -> tuple[str, float]:
+        if payout_type == "flex" and leg_results:
+            returned = settlement_return_multiplier(
+                platform,
+                payout_type,
+                leg_results,
+                displayed_multiplier=multiplier,
+            )
+            profit = round(wager * (returned - 1.0), 2)
+            settled_result = "Win" if profit > 0 else "Push" if profit == 0 else "Loss"
+            return settled_result, profit
         dnp_legs = max(0, min(int(dnp_legs or 0), int(leg_count or 0)))
         if result == "DNP":
             return "Push", 0.0
@@ -433,6 +928,16 @@ class EntryRepository:
     def _primary_sport(entry: dict) -> str:
         props = entry.get("props") or []
         return props[0].get("sport") if props else "Unknown"
+
+    @staticmethod
+    def _primary_stat(entry: dict) -> str:
+        props = entry.get("props") or []
+        stats = [str(prop.get("stat") or "").strip() for prop in props]
+        stats = [stat for stat in stats if stat]
+        if not stats:
+            return "Unknown"
+        counts = {stat: stats.count(stat) for stat in set(stats)}
+        return sorted(counts, key=lambda stat: (-counts[stat], stat))[0]
 
     @staticmethod
     def _group_by_key(entries: list[dict], key) -> dict[str, dict]:

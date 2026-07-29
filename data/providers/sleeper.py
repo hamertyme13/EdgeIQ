@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+from utils.entity_normalization import canonical_person_key
+
 import os
 
 from data.providers.cache import cache_status, get_json
@@ -132,9 +134,9 @@ def top_props(n: int = 25, sport: Optional[str] = None) -> list[dict]:
 
 
 def _find_player_trend(player_name: str, trends: list[dict]) -> dict | None:
-    needle = player_name.strip().lower()
+    needle = canonical_person_key(player_name)
     for trend in trends:
-        name = trend.get("player", "").strip().lower()
+        name = canonical_person_key(trend.get("player"))
         if name == needle or (needle and needle in name):
             return trend
     return None

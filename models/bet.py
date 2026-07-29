@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 
 
 @dataclass
@@ -13,3 +14,7 @@ class Bet:
     platform: str = ""
     stat_type: str = ""
     win_probability: float = 0.0
+    source: str = "manual"
+    source_entry_id: int | None = None
+    entry_mode: str = "real"
+    created_at: datetime | None = None

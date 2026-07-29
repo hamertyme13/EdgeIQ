@@ -1,0 +1,38 @@
+{
+  "included": [
+    {
+      "type": "new_player",
+      "id": "p1",
+      "attributes": {
+        "display_name": "Azurá Stevens",
+        "team": "LAS",
+        "league": "WNBA",
+        "position": "F"
+      }
+    }
+  ],
+  "data": [
+    {
+      "id": "projection-1",
+      "attributes": {
+        "status": "pre_game",
+        "projection_type": "Single Stat",
+        "stat_display_name": "Points + Rebounds + Assists",
+        "line_score": 24.5,
+        "odds_type": "goblin",
+        "adjusted_odds": true,
+        "description": "LAS @ NY",
+        "start_time": "2026-07-25T19:00:00Z",
+        "trending_count": 1200,
+        "rank": 4
+      },
+      "relationships": {
+        "new_player": {
+          "data": {
+            "id": "p1"
+          }
+        }
+      }
+    }
+  ]
+}

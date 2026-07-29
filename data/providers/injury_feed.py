@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import requests
 from typing import Optional
+
+from data.providers.cache import get_json
 
 _SPORT_ENDPOINTS = {
     "NBA":  "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
@@ -39,10 +40,8 @@ def fetch_injuries(sport: str) -> list[dict]:
         return []
 
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception:
+        data = get_json(url, headers=_HEADERS, timeout=10, ttl_seconds=300).data
+    except RuntimeError:
         return []
 
     results = []

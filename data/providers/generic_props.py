@@ -12,6 +12,7 @@ from typing import Any
 import requests
 
 from data.providers.cache import get_json
+from data.providers.prop_filters import is_combined_player_prop
 
 
 _HEADERS = {
@@ -51,7 +52,7 @@ def normalize_props(payload: Any, platform: str) -> list[dict]:
     return [
         prop
         for prop in (_normalize_row(row, platform, index) for index, row in enumerate(rows))
-        if prop is not None
+        if prop is not None and not is_combined_player_prop(prop)
     ]
 
 
@@ -110,13 +111,15 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
     if not player or not stat or line is None:
         return None
 
-    league = _normalize_sport(_first_value(row, "league", "sport", "sport_id", "league_name"))
+    raw_league = _first_value(row, "league", "sport", "sport_id", "league_name")
+    game = _first_value(row, "game", "matchup", "event", "opponent", "description")
+    league = _normalize_sport(raw_league)
     trending = _int_value(row, "trending_count", "popular_count", "rank_score", "popularity")
     rank = _int_value(row, "rank", "display_order", "sort_order")
     if trending == 0 and rank > 0:
         trending = max(1, 1_000_000 - rank)
 
-    return {
+    normalized = {
         "projection_id": _first_value(row, "projection_id", "id", "line_id") or f"{platform.lower()}-{index}",
         "player": player,
         "team": _first_value(row, "team", "team_abbr", "team_id", "team_abbreviation"),
@@ -125,13 +128,19 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
         "stat": stat,
         "line": line,
         "direction": _first_value(row, "direction", "pick", "side", "over_under"),
-        "game": _first_value(row, "game", "matchup", "event", "opponent", "description"),
+        "game": game,
+        "game_time": _first_value(row, "game_time", "start_time", "starts_at", "scheduled_at", "commence_time", "event_time"),
+        "season_type": _season_type(raw_league, game, row),
         "status": _first_value(row, "status") or "pre_game",
         "trending_count": trending,
         "rank": rank or index + 1,
         "image_url": _first_value(row, "image_url", "headshot", "photo"),
         "platform": platform,
     }
+    player_id = _first_value(row, "player_id", "athlete_id", "provider_player_id")
+    if player_id:
+        normalized["player_id"] = player_id
+    return normalized
 
 
 def _first_value(row: dict, *keys: str) -> str:
@@ -162,6 +171,9 @@ def _int_value(row: dict, *keys: str) -> int:
 def _normalize_sport(value: str) -> str:
     normalized = value.strip().upper()
     aliases = {
+        "NBASL": "NBA",
+        "NBA SUMMER LEAGUE": "NBA",
+        "NBA_SUMMER_LEAGUE": "NBA",
         "BASKETBALL": "NBA",
         "WOMENS_BASKETBALL": "WNBA",
         "WOMEN'S BASKETBALL": "WNBA",
@@ -185,6 +197,17 @@ def _normalize_sport(value: str) -> str:
         "UFC": "MMA",
     }
     return aliases.get(normalized, normalized)
+
+
+def _season_type(raw_league: str, game: str, row: dict) -> str:
+    text = " ".join([
+        raw_league or "",
+        game or "",
+        _first_value(row, "season_type", "event_type", "league_name"),
+    ]).lower()
+    if "summer league" in text or "nbasl" in text:
+        return "summer_league"
+    return _first_value(row, "season_type") or "regular"
 
 
 def _clean_key(value: object) -> str:
