@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-
 LOG_PATH = Path(".edgeiq_cache") / "edgeiq.log"
 
 

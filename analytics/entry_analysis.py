@@ -1,7 +1,6 @@
+from analytics.entry_recommendation import recommendation
 from models.entry import Entry
 from models.prop import Prop
-
-from analytics.entry_recommendation import recommendation
 
 
 def strongest_prop(entry: Entry) -> Prop:

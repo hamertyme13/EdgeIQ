@@ -1,16 +1,16 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
-import csv
-from io import StringIO
 from functools import lru_cache
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
 from repository.repositories.final_stats_repository import FinalStatsRepository
-from utils.stat_normalization import stat_key
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
+from utils.stat_normalization import stat_key
 
 
 def find_final_stat(prop: dict) -> dict | None:

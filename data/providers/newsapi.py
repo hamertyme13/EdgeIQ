@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
 from data.providers.cache import get_json
-
 
 _BASE = "https://newsapi.org/v2/everything"
 
@@ -17,7 +16,7 @@ def fetch_context(query: str, days: int = 7, page_size: int = 5) -> list[dict]:
     if not api_key or not query.strip():
         return []
 
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    since = (datetime.now(UTC) - timedelta(days=days)).date().isoformat()
     url = (
         f"{_BASE}?q={quote_plus(query)}"
         f"&from={since}&language=en&sortBy=publishedAt&pageSize={page_size}"

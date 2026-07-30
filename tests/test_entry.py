@@ -1,11 +1,11 @@
+from analytics.correlation import detect_correlations
+from analytics.entry_recommendation import recommendation
+from analytics.prop_metrics import calculate_confidence
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
-from analytics.entry_recommendation import recommendation
-from analytics.correlation import detect_correlations
-from analytics.prop_metrics import calculate_confidence
 
 
 def test_entry_defaults_to_empty_props():

@@ -26,25 +26,25 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from models.player import Player
-from models.prop import Prop
-from models.entry import Entry
-from models.platform import Platform
-from models.stat_type import StatType
-from analytics.entry_suggestions import SuggestedEntry, suggest_entries
-from analytics.prop_metrics import calculate_edge, calculate_confidence
-from analytics.projection import auto_projection
-from analytics.entry_recommendation import recommendation as entry_recommendation
-from analytics.risk import calculate_entry_risk
-from analytics.correlation import detect_correlations
-from repository.repositories.entry_repository import EntryRepository
-from utils.stat_normalization import stat_type_from_text
-from utils.logging import get_logger
 import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
+from analytics.correlation import detect_correlations
+from analytics.entry_recommendation import recommendation as entry_recommendation
+from analytics.entry_suggestions import SuggestedEntry, suggest_entries
+from analytics.projection import auto_projection
+from analytics.prop_metrics import calculate_confidence, calculate_edge
+from analytics.risk import calculate_entry_risk
+from models.entry import Entry
+from models.platform import Platform
+from models.player import Player
+from models.prop import Prop
+from models.stat_type import StatType
+from repository.repositories.entry_repository import EntryRepository
+from utils.logging import get_logger
+from utils.stat_normalization import stat_type_from_text
 
 logger = get_logger(__name__)
-from gui.styles import ACCENT, GREEN, RED, YELLOW, MUTED, CYAN
+from gui.styles import ACCENT, CYAN, GREEN, MUTED, RED, YELLOW
 
 
 def _platform_from_text(value: str) -> Platform:
@@ -504,10 +504,7 @@ class EntriesTab(QWidget):
             self._props_table.setItem(row, 1, _item(prop.stat.value))
             self._props_table.setItem(row, 2, _item(f"{prop.line:.1f}", center))
 
-            if prop.needs_projection:
-                edge_text = "Auto"
-            else:
-                edge_text = f"{prop.edge:+.1f}{'*' if prop.auto_projected else ''}"
+            edge_text = "Auto" if prop.needs_projection else f"{prop.edge:+.1f}{'*' if prop.auto_projected else ''}"
             edge_item = _item(edge_text, center)
             edge_item.setForeground(QColor(YELLOW if prop.needs_projection else (GREEN if prop.edge >= 0 else RED)))
             self._props_table.setItem(row, 3, edge_item)

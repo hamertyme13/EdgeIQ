@@ -1,9 +1,8 @@
 from analytics.correlation import detect_correlations
-
-from models.player import Player
-from models.prop import Prop
 from models.entry import Entry
 from models.platform import Platform
+from models.player import Player
+from models.prop import Prop
 from models.stat_type import StatType
 
 

@@ -55,7 +55,7 @@ _LEAGUE_MAP = {
 _SUPPORTED = set(_LEAGUE_MAP.keys())
 
 
-def _normalize_league(raw: str) -> Optional[str]:
+def _normalize_league(raw: str) -> str | None:
     return _LEAGUE_MAP.get(raw.upper())
 
 
@@ -306,7 +306,7 @@ def _rank_to_trending(rank: int) -> int:
     return int(10_000_000_000_000 / safe)
 
 
-def top_props(n: int = 25, sport: Optional[str] = None) -> list[dict]:
+def top_props(n: int = 25, sport: str | None = None) -> list[dict]:
     """
     Return the top-N Underdog props sorted by featured rank.
 

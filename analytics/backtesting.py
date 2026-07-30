@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC
 
 from analytics.calibration import calibrate
 from analytics.release_validation import validation_readiness
@@ -454,14 +455,14 @@ def _datetime_value(value):
         except ValueError:
             return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _minimum_datetime():
     from datetime import datetime, timezone
 
-    return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _entry_time_key(entry: dict) -> str:

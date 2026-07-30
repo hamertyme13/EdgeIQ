@@ -4,8 +4,14 @@ Performance tab — bankroll curve chart, profit breakdowns, model calibration.
 
 from __future__ import annotations
 
+from PyQt6.QtCharts import (
+    QChart,
+    QChartView,
+    QLineSeries,
+    QValueAxis,
+)
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QColor, QPen, QFont
+from PyQt6.QtGui import QColor, QFont, QPen
 from PyQt6.QtWidgets import (
     QFrame,
     QGroupBox,
@@ -19,17 +25,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtCharts import (
-    QChart,
-    QChartView,
-    QLineSeries,
-    QValueAxis,
-)
 
+from analytics.calibration import calibrate
+from gui.styles import ACCENT, BG, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW
 from repository.bet_repository import BetRepository
 from services.dashboard import get_starting_bankroll
-from analytics.calibration import calibrate
-from gui.styles import ACCENT, BORDER, BG, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW
 
 
 class PerformanceTab(QWidget):

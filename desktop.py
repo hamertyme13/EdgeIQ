@@ -6,7 +6,9 @@ Run with:
 """
 
 import sys
+
 from PyQt6.QtWidgets import QApplication
+
 from gui.app import EdgeIQWindow
 
 

@@ -92,7 +92,7 @@ python app.py
 
 ```bash
 ruff check .
-mypy analytics/release_validation.py services/data_management.py utils/entity_normalization.py
+mypy analytics/release_validation.py services/data_management.py services/odds.py utils/entity_normalization.py web/application web/routers web/schemas
 pytest
 ```
 
@@ -120,6 +120,19 @@ Health. SQLite backups are written to `.edgeiq_backups/`; portable versioned
 JSON exports are written to `.edgeiq_exports/`. Both directories and the live
 database are excluded from Git.
 
+## Database Migrations
+
+Fresh databases should be created through the versioned migration history:
+
+```bash
+alembic upgrade head
+```
+
+An existing EdgeIQ database already managed by the earlier lightweight migrator
+should be backed up, verified on the current app version, and adopted once with
+`alembic stamp head`. New schema changes should be added with
+`alembic revision --autogenerate -m "description"` and reviewed before use.
+
 ## EdgeIQ Local Model
 
 Ask EdgeIQ does not require OpenAI to return recommendations. The app ranks
@@ -142,8 +155,9 @@ EdgeIQ currently normalizes player prop data from:
 - Ball Don't Lie for optional stats/props context when `BALLDONTLIE_API_KEY` or `BALLDONTLIE_PROPS_URL` is configured
 - NewsAPI for recent player/team context when `NEWSAPI_KEY` is configured
 - OpenWeather for outdoor NFL/MLB weather context when `OPENWEATHER_API_KEY` is configured
-- ESPN public box scores for NBA/WNBA final-stat settlement
-- Official ESPN box scores for automatic final-stat grading; SportsDataIO is supplemental context only
+- ESPN public box-score endpoints for automatic NBA/WNBA final-stat grading;
+  these endpoints are contract-tested but are not an officially documented API
+- SportsDataIO as supplemental context only
 
 Provider calls use `.edgeiq_cache/providers` for a short cache and stale fallback
 so the desktop app can continue showing recent data if a feed is temporarily

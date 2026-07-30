@@ -1,11 +1,9 @@
 import json
 from datetime import date
 from pathlib import Path
-
-from data.providers import espn
-from data.providers import prizepicks, underdog
 from types import SimpleNamespace
 
+from data.providers import espn, prizepicks, underdog
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 

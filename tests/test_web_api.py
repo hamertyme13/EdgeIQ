@@ -1,105 +1,109 @@
-from datetime import datetime, timedelta, timezone
 import base64
 import json
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-import web.app as web_app
-import services.dashboard as dashboard_service
-import data.providers.final_stats as final_stats
+import analytics.hit_rate as hit_rate_module
 import data.providers.espn as espn
+import data.providers.final_stats as final_stats
 import data.providers.nba_summer_league as nba_summer_league
 import data.providers.sleeper as sleeper
-from data.providers.prop_filters import is_combined_player_prop
+import services.dashboard as dashboard_service
+import web.app as web_app
 from data.providers.generic_props import normalize_props
-import analytics.hit_rate as hit_rate_module
+from data.providers.prop_filters import is_combined_player_prop
+from models.bet import Bet
+from models.stat_type import StatType
+from repository.bet_repository import BetRepository
+from repository.repositories.entry_repository import EntryRepository
+from repository.repositories.final_stats_repository import _best_matching_row
+from utils.time import iso_utc, utc_now
 from web.app import (
-    EntryPayload,
-    AutoPaperCalibrationPayload,
-    EvPayload,
-    ParlayChatPayload,
-    PropPayload,
-    DnpSettingPayload,
-    UploadAnalyzePayload,
     AiEntryReviewPayload,
-    BankrollTransactionPayload,
-    BankrollStrategyPayload,
     AlertDeliveryPayload,
+    AlertDeliveryTestPayload,
+    AutoPaperCalibrationPayload,
+    BankrollStrategyPayload,
+    BankrollTransactionPayload,
+    BettingHistoryPayload,
+    DnpSettingPayload,
+    EntryPayload,
+    EvPayload,
+    FinalStatsPayload,
     HedgeCalculatorPayload,
     MiddleCalculatorPayload,
-    AlertDeliveryTestPayload,
+    ParlayChatPayload,
+    ProjectionAssistPayload,
+    PropPayload,
     ShareSlipPayload,
-    _check_entry_result,
+    UploadAnalyzePayload,
     _calibration_feedback_signals,
+    _check_entry_result,
     _entry_progress_payload,
     _leg_result,
     _line_movement_payload,
-    _parse_parlay_request,
     _parse_betting_history,
+    _parse_parlay_request,
+    _stat_from_text,
     _trending_games_payload,
+    ai_entry_review,
+    ai_parlay_chat,
+    ai_status,
     analyze_entry,
-    auto_paper_calibration,
     analyze_ev,
-    backtest,
+    analyze_uploaded_file,
+    auto_paper_calibration,
     backfill_entry_final_stats,
+    backtest,
     bets,
+    classify_default_entry_wagers,
+    clv_report,
+    confirmed_entry_suggestions,
+    confirmed_props,
+    daily_briefing,
     dashboard_command_center,
     dashboard_parlay,
-    daily_briefing,
+    deploy_readiness,
     dnp_setting,
     entry_progress,
+    entry_suggestions,
     ev_scanner,
+    grading_report,
     health,
+    hedge_calculator,
+    import_betting_history,
     import_final_stats_endpoint,
+    import_wizard,
+    line_shop,
+    market_timing_alerts,
+    middle_calculator,
+    model_health,
     optimize_entries,
     place_entry,
     placement_check,
-    player_hit_rate,
     player_detail,
-    classify_default_entry_wagers,
-    import_betting_history,
-    ai_parlay_chat,
-    ai_entry_review,
-    ai_status,
-    entry_suggestions,
-    confirmed_props,
-    confirmed_entry_suggestions,
-    trending_games,
-    line_shop,
-    market_timing_alerts,
-    clv_report,
-    deploy_readiness,
-    grading_report,
-    hedge_calculator,
-    import_wizard,
-    run_sync,
-    middle_calculator,
-    top_props,
+    player_hit_rate,
     player_research,
     projection_assist,
-    refresh_calibration_data,
     recheck_entry_final_stats,
-    sharp_consensus,
+    refresh_calibration_data,
+    run_sync,
+    save_bankroll_transaction,
     share_entry,
     shared_entry,
-    test_alert_delivery as send_test_alert_delivery,
+    sharp_consensus,
+    top_props,
+    trending_games,
     update_alert_delivery_settings,
-    save_bankroll_transaction,
-    update_dnp_setting,
     update_bankroll_strategy,
-    analyze_uploaded_file,
-    model_health,
-    _stat_from_text,
+    update_dnp_setting,
 )
-from models.bet import Bet
-from web.app import BettingHistoryPayload, FinalStatsPayload, ProjectionAssistPayload
-from repository.repositories.entry_repository import EntryRepository
-from repository.repositories.final_stats_repository import _best_matching_row
-from repository.bet_repository import BetRepository
-from models.stat_type import StatType
-from utils.time import iso_utc, utc_now
+from web.app import (
+    test_alert_delivery as send_test_alert_delivery,
+)
 
 
 def _verified_rows(rows: list[dict]) -> list[dict]:
@@ -124,7 +128,7 @@ def test_datetime_serialization_marks_naive_db_values_as_utc():
 
 def test_automatic_final_refresh_only_includes_due_recent_games(monkeypatch):
     monkeypatch.setattr(web_app, "_supports_automatic_final_stat", lambda prop: True)
-    now = datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 28, 18, 0, tzinfo=UTC)
     entries = [{
         "id": 1,
         "props": [
@@ -157,7 +161,7 @@ def test_settlement_audit_blocks_expired_automatic_retry(monkeypatch):
     monkeypatch.setattr(
         web_app,
         "utc_now",
-        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc),
+        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=UTC),
     )
 
     web_app._record_settlement_audit(
@@ -193,7 +197,7 @@ def test_settlement_audit_labels_future_games_scheduled(monkeypatch):
     monkeypatch.setattr(
         web_app,
         "utc_now",
-        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=timezone.utc),
+        lambda: datetime(2026, 7, 28, 18, 0, tzinfo=UTC),
     )
 
     web_app._record_settlement_audit(
@@ -243,7 +247,7 @@ def test_pending_serializer_excludes_heavy_audit_fields():
         "wager": 0.0,
         "multiplier": 3.0,
         "potential_payout": 0.0,
-        "placed_at": datetime(2026, 7, 28, tzinfo=timezone.utc),
+        "placed_at": datetime(2026, 7, 28, tzinfo=UTC),
         "audit_snapshot": "large internal snapshot",
         "props": [{
             "player": "A",
@@ -506,8 +510,8 @@ def test_daily_top_opportunities_excludes_premium_adjusted_lines_and_preserves_p
         },
     )
     monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [
-        {"line": 19.5, "recorded_at": datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc)},
-        {"line": 20.5, "recorded_at": datetime(2026, 7, 29, 11, 0, tzinfo=timezone.utc)},
+        {"line": 19.5, "recorded_at": datetime(2026, 7, 29, 10, 0, tzinfo=UTC)},
+        {"line": 20.5, "recorded_at": datetime(2026, 7, 29, 11, 0, tzinfo=UTC)},
     ])
     command = {
         "cards": [{
@@ -4364,7 +4368,7 @@ def test_entry_progress_endpoint_uses_pending_entries(monkeypatch):
 
 
 def test_settlement_sla_escalates_overdue_final_stats():
-    now = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
     row = web_app._leg_settlement_sla(
         {"sport": "WNBA", "game_time": "2026-07-29T04:00:00Z"},
         None,
@@ -5141,9 +5145,11 @@ def test_circuit_audio_is_offline_capable_and_user_controllable():
 
 
 def test_place_entry_feedback_prevents_duplicate_submissions():
-    source = Path(web_app.__file__).with_name("static").joinpath("app.js").read_text(encoding="utf-8")
+    static_dir = Path(web_app.__file__).with_name("static")
+    source = static_dir.joinpath("app.js").read_text(encoding="utf-8")
+    state_source = static_dir.joinpath("js", "state.js").read_text(encoding="utf-8")
 
-    assert "placementInFlight: false" in source
+    assert "placementInFlight: false" in state_source
     assert "if (state.placementInFlight || !state.lastEntryPayload) return false;" in source
     assert 'playCircuitSound("engage")' in source
     assert 'playCircuitSound("success")' in source

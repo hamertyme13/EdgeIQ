@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 _COMBO_MARKERS = (
     "combo",
     "combined",

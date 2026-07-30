@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from repository.repositories.entry_repository import EntryRepository
 from analytics.prediction_evidence import deduplicate_outcomes
+from repository.repositories.entry_repository import EntryRepository
 from utils.stat_normalization import stat_key
 
 

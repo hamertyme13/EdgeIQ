@@ -19,7 +19,6 @@ from urllib.parse import urlparse
 
 import requests
 
-
 _CACHE_DIR = Path(".edgeiq_cache") / "providers"
 _LOCKS_GUARD = threading.Lock()
 _CACHE_LOCKS: dict[str, threading.Lock] = {}

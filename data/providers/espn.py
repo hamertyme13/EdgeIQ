@@ -9,7 +9,6 @@ from typing import Any
 from data.providers.cache import get_json
 from repository.repositories.final_stats_repository import FinalStatsRepository
 
-
 _BASE = "https://site.api.espn.com/apis/site/v2/sports"
 _SPORT_PATHS = {
     "WNBA": "basketball/wnba",

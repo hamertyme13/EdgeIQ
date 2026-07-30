@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from sqlalchemy import or_
+
 from models.bet import Bet
 from repository.database import SessionLocal, initialize_database
 from repository.entities import BetEntity
-from sqlalchemy import or_
 
 
 class BetRepository:

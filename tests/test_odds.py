@@ -8,6 +8,7 @@ from services.odds import (
     summarize_player_prop_market,
 )
 
+
 def test_positive_odds():
     assert round(implied_probability(150), 3) == 0.400
 

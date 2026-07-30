@@ -1,7 +1,8 @@
-from services.betting import implied_probability
 from rich.console import Console
 
 from analytics.recommendation import recommendation
+from services.betting import implied_probability
+
 
 def decimal_odds(american_odds: int) -> float:
     """

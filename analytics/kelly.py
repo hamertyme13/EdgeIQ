@@ -24,10 +24,7 @@ def kelly_fraction(american_odds: int, win_probability: float) -> float:
     Returns:
         Kelly fraction clipped to [0, 1].  Negative values (no edge) → 0.
     """
-    if american_odds > 0:
-        b = american_odds / 100
-    else:
-        b = 100 / abs(american_odds)
+    b = american_odds / 100 if american_odds > 0 else 100 / abs(american_odds)
 
     p = win_probability
     q = 1 - p

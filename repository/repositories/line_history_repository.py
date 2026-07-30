@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from repository.database import SessionLocal
 from repository.models.prop_line_history_model import PropLineHistoryModel
-from utils.entity_normalization import canonical_person_key
-from utils.entity_normalization import canonical_matchup_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 
 class LineHistoryRepository:

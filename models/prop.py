@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
-from models.player import Player
 from models.platform import Platform
+from models.player import Player
 from models.stat_type import StatType
 
 

@@ -1,64 +1,67 @@
 from __future__ import annotations
 
-import os
 import asyncio
-import csv
-import json
 import base64
+import csv
 import hashlib
+import json
+import os
 import re
 import subprocess
 import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
-from datetime import date, datetime, timezone, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
 
-import data.providers.prizepicks as prizepicks
-import data.providers.underdog as underdog
-import data.providers.sleeper as sleeper
-import data.providers.sportsdataio as sportsdataio
-import data.providers.nba_summer_league as nba_summer_league
-import data.providers.balldontlie as balldontlie
-import data.providers.newsapi as newsapi
-import data.providers.openweather as openweather
-from data.providers.generic_props import normalize_props
-from data.providers.prop_filters import is_combined_player_prop
-from data.providers.cache import cache_metrics as provider_cache_metrics
-from data.providers.espn import (
-    refresh_final_stats_for_entries,
-    refresh_game_times_for_entries,
-    refresh_live_stats_for_entries,
-)
 import requests
 from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+import data.providers.balldontlie as balldontlie
+import data.providers.nba_summer_league as nba_summer_league
+import data.providers.newsapi as newsapi
+import data.providers.openweather as openweather
+import data.providers.prizepicks as prizepicks
+import data.providers.sleeper as sleeper
+import data.providers.sportsdataio as sportsdataio
+import data.providers.underdog as underdog
 from analytics.backtesting import backtest_summary
-from analytics.grouped_validation import grouped_rolling_validation
-from analytics.release_validation import validation_readiness
-from analytics.hit_rate import estimate_hit_rate
-from analytics.hierarchical_calibration import calibrate_probability
-from analytics.probabilistic_forecast import forecast_prop
-from analytics.prediction_evidence import deduplicate_outcomes
 from analytics.correlation import detect_correlations, estimate_correlation_matrix
+from analytics.defense_vs_position import analyze_matchup
 from analytics.edgeiq_model import MODEL_VERSION as EDGEIQ_LOCAL_MODEL_VERSION
 from analytics.edgeiq_model import compose_parlay_response as local_parlay_response
 from analytics.edgeiq_model import model_card as local_model_card
 from analytics.entry_recommendation import recommendation as entry_recommendation
 from analytics.entry_suggestions import suggest_entries
 from analytics.ev import decimal_odds, expected_value, sportsbook_probability
-from analytics.pickem_payouts import payout_analysis
+from analytics.grouped_validation import grouped_rolling_validation
+from analytics.hierarchical_calibration import calibrate_probability
+from analytics.hit_rate import estimate_hit_rate
 from analytics.kelly import breakeven_probability, half_kelly, kelly_fraction, suggested_wager
+from analytics.pickem_payouts import payout_analysis
+from analytics.prediction_evidence import deduplicate_outcomes
+from analytics.probabilistic_forecast import forecast_prop
 from analytics.projection import auto_projection
 from analytics.prop_metrics import calculate_confidence, calculate_directional_edge, calculate_edge
-from analytics.risk import calculate_entry_risk
 from analytics.recommendation import recommendation as ev_recommendation
-from analytics.defense_vs_position import analyze_matchup
-from fastapi import BackgroundTasks, FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from analytics.release_validation import validation_readiness
+from analytics.risk import calculate_entry_risk
+from data.providers.cache import cache_metrics as provider_cache_metrics
+from data.providers.espn import (
+    refresh_final_stats_for_entries,
+    refresh_game_times_for_entries,
+    refresh_live_stats_for_entries,
+)
+from data.providers.final_stats import find_actual_stat, find_final_stat, import_final_stats
+from data.providers.generic_props import normalize_props
+from data.providers.injury_feed import fetch_injuries, is_injured
+from data.providers.prop_filters import is_combined_player_prop
 from models.bet import Bet
 from models.entry import Entry
 from models.platform import Platform
@@ -66,24 +69,39 @@ from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
 from repository.bet_repository import BetRepository
-from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
 from repository.database import initialize_database
+from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
-from repository.repositories.settings_repository import SettingsRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
-from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
-from data.providers.final_stats import find_actual_stat, find_final_stat, import_final_stats
-from data.providers.injury_feed import fetch_injuries, is_injured
-from services.betting import potential_profit
-from services.data_management import backup_database, export_database
-from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
+from repository.repositories.settings_repository import SettingsRepository
+from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services import odds as sportsbook_odds
-from utils.stat_normalization import stat_type_from_text
+from services.betting import potential_profit
+from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
+from services.data_management import backup_database, export_database
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
+from utils.stat_normalization import stat_type_from_text
 from utils.time import iso_utc, utc_now
+from web.application.provider_contracts import enrich_provider_health
+from web.routers.market import (
+    MarketDependencies,
+    boost_analysis,
+    clv_report,
+    configure_market_router,
+    ev_scanner,
+    hedge_calculator,
+    line_shop,
+    market_timing_alerts,
+    middle_calculator,
+    player_market_odds,
+    sharp_consensus,
+)
+from web.routers.market import (
+    router as market_router,
+)
 from web.schemas import (
     AiEntryReviewPayload,
     AlertDeliveryPayload,
@@ -113,7 +131,6 @@ from web.schemas import (
     UserPreferencePayload,
     WatchlistItemPayload,
 )
-
 
 load_dotenv()
 
@@ -239,10 +256,8 @@ async def _settlement_refresh_loop() -> None:
                 "imported": 0,
                 "message": "The automatic final-stat check could not finish. EdgeIQ will try again.",
             }
-        try:
+        with suppress(Exception):
             SettingsRepository.set(SETTLEMENT_REFRESH_STATUS_KEY, json.dumps(status))
-        except Exception:
-            pass
         await asyncio.sleep(SETTLEMENT_REFRESH_SECONDS)
 
 
@@ -769,111 +784,7 @@ def projection_assist(payload: ProjectionAssistPayload) -> dict:
     }
 
 
-@app.get("/api/market/line-shop")
-def line_shop(
-    player: str,
-    stat: str,
-    sport: str = "All Sports",
-    platform: str = "Both",
-    over_odds: int | None = None,
-    under_odds: int | None = None,
-) -> dict:
-    sport_filter = None if sport == "All Sports" else sport.upper()
-    return _line_shop_payload(player, stat, sport_filter, platform, over_odds, under_odds)
-
-
-@app.get("/api/market/sharp-consensus")
-def sharp_consensus(
-    player: str,
-    stat: str,
-    sport: str = "All Sports",
-    platform: str = "Both",
-    over_odds: int | None = None,
-    under_odds: int | None = None,
-) -> dict:
-    sport_filter = None if sport == "All Sports" else sport.upper()
-    return _sharp_consensus_payload(player, stat, sport_filter, platform, over_odds, under_odds)
-
-
-@app.get("/api/market/player-odds")
-def player_market_odds(
-    player: str,
-    stat: str,
-    sport: str,
-    game: str,
-    line: float,
-    direction: str = "Over",
-    team: str = "",
-) -> dict:
-    return sportsbook_odds.get_player_prop_consensus(
-        player,
-        stat,
-        sport,
-        game,
-        line,
-        direction,
-        team,
-    )
-
-
-@app.post("/api/market/hedge-calculator")
-def hedge_calculator(payload: HedgeCalculatorPayload) -> dict:
-    return _hedge_calculator_payload(payload)
-
-
-@app.post("/api/market/middle-calculator")
-def middle_calculator(payload: MiddleCalculatorPayload) -> dict:
-    return _middle_calculator_payload(payload)
-
-
-@app.post("/api/market/boost-analysis")
-def boost_analysis(payload: BoostAnalysisPayload) -> dict:
-    return _boost_analysis_payload(payload)
-
-
-@app.get("/api/market/ev-scanner")
-def ev_scanner(
-    platform: str = "Both",
-    sport: str = "All Sports",
-    min_ev: float = 0.0,
-    limit: int = 25,
-    odds: int = -110,
-) -> dict:
-    sport_filter = None if sport == "All Sports" else sport.upper()
-    rows = _ev_scanner_rows(platform, sport_filter, min_ev, limit, odds)
-    return {
-        "props": rows,
-        "platform": platform,
-        "sport": sport,
-        "min_ev": min_ev,
-        "odds": odds,
-        "count": len(rows),
-    }
-
-
-@app.get("/api/market/timing-alerts")
-def market_timing_alerts(
-    platform: str = "PrizePicks",
-    sport: str = "All Sports",
-    limit: int = 8,
-    odds: int = -110,
-    min_confidence: float = 0.0,
-    min_ev: float = -25.0,
-    alert_type: str = "All",
-    hide_outliers: bool = False,
-) -> dict:
-    sport_filter = None if sport == "All Sports" else sport.upper()
-    rows = _market_timing_alert_rows(platform, sport_filter, limit, odds, min_confidence, min_ev, alert_type, hide_outliers)
-    return {
-        "alerts": rows,
-        "platform": platform,
-        "sport": sport,
-        "count": len(rows),
-    }
-
-
-@app.get("/api/market/clv")
-def clv_report() -> dict:
+def _clv_report_payload() -> dict:
     entries = [_entry_clv_payload(entry) for entry in EntryRepository.all()]
     tracked = [entry for entry in entries if entry["legs"]]
     clv_values = [leg["clv"] for entry in tracked for leg in entry["legs"] if leg["clv"] is not None]
@@ -1522,7 +1433,7 @@ def _entries_due_for_automatic_final_refresh(
     entries: list[dict],
     now: datetime | None = None,
 ) -> list[dict]:
-    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    current = (now or utc_now()).replace(tzinfo=UTC)
     due_entries = []
     for entry in entries:
         props = [
@@ -1554,12 +1465,12 @@ def _automatic_final_retry_expired(prop: dict, now: datetime | None = None) -> b
     start = _parse_game_time(prop.get("game_time", ""))
     if start is None:
         return False
-    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    current = (now or utc_now()).replace(tzinfo=UTC)
     return current - start >= timedelta(hours=SETTLEMENT_AUTOMATIC_RETRY_HOURS)
 
 
 def _reopen_recent_partial_settlements(max_age_hours: float = 72.0) -> list[int]:
-    now = utc_now().replace(tzinfo=timezone.utc)
+    now = utc_now().replace(tzinfo=UTC)
     reopened: list[int] = []
     for entry in EntryRepository.all():
         if entry.get("status") != "Settled" or entry.get("result") != "Loss":
@@ -1598,7 +1509,7 @@ def _latest_entry_game_time(entry: dict) -> datetime | None:
 
 
 def _exclude_stale_unverifiable_paper_entries(entries: list[dict]) -> int:
-    now = utc_now().replace(tzinfo=timezone.utc)
+    now = utc_now().replace(tzinfo=UTC)
     excluded = 0
     for entry in entries:
         if str(entry.get("entry_mode") or "real").lower() != "paper":
@@ -1635,8 +1546,8 @@ def _legacy_entry_is_past_due(entry: dict, now: datetime) -> bool:
     if not isinstance(placed_at, datetime):
         return False
     if placed_at.tzinfo is None:
-        placed_at = placed_at.replace(tzinfo=timezone.utc)
-    return now >= placed_at.astimezone(timezone.utc) + timedelta(hours=24)
+        placed_at = placed_at.replace(tzinfo=UTC)
+    return now >= placed_at.astimezone(UTC) + timedelta(hours=24)
 
 
 def _recheck_entry_results(entries: list[dict], allow_estimates: bool = False) -> dict:
@@ -1748,7 +1659,7 @@ def _record_settlement_audit(
         status = "blocked"
         reason_code = "unsupported_settlement_path"
         message = "This legacy market does not have a supported automatic final-stat path."
-    try:
+    with suppress(Exception):
         SettlementAuditRepository.record({
             "entry_id": entry.get("id"),
             "entry_prop_id": prop.get("entry_prop_id"),
@@ -1770,15 +1681,13 @@ def _record_settlement_audit(
                 "final_status": final_status,
             },
         })
-    except Exception:
-        pass
 
 
 def _game_has_not_started(prop: dict, now: datetime | None = None) -> bool:
     start = _parse_game_time(prop.get("game_time", ""))
     if start is None:
         return False
-    current = (now or utc_now()).replace(tzinfo=timezone.utc)
+    current = (now or utc_now()).replace(tzinfo=UTC)
     return current < start
 
 
@@ -2080,10 +1989,8 @@ def _record_provider_fetch_status(platform: str, attempted_at: str, row_count: i
         "last_error": error,
         "row_count": int(row_count if not error else previous.get("row_count", 0) or 0),
     }
-    try:
+    with suppress(Exception):
         SettingsRepository.set(key, json.dumps(payload))
-    except Exception:
-        pass
 
 
 def _enrich_prizepicks_adjusted_lines(props: list[dict]) -> list[dict]:
@@ -2364,7 +2271,7 @@ def _sportsdataio_refresh(pending_entries: list[dict]) -> dict:
         if hasattr(entry.get("placed_at"), "date")
     })
     if not dates:
-        dates = [datetime.now(timezone.utc).date()]
+        dates = [datetime.now(UTC).date()]
     window = sorted({day + timedelta(days=offset) for day in dates for offset in range(-2, 3)})
     for sport in sports:
         for day in window:
@@ -3952,7 +3859,7 @@ def _daily_scan_status_payload(platform: str, sport_filter: str | None) -> dict:
         try:
             completed = datetime.fromisoformat(str(current["completed_at"]).replace("Z", "+00:00"))
             if completed.tzinfo is None:
-                completed = completed.replace(tzinfo=timezone.utc)
+                completed = completed.replace(tzinfo=UTC)
             if completed.date() != today:
                 current = {
                     **current,
@@ -4094,13 +4001,13 @@ def _daily_briefing_placeholder(platform: str, sport_filter: str | None, key: st
 def _daily_briefing_cache_is_fresh(cached: dict) -> bool:
     now = utc_now()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     expires_at = str(cached.get("expires_at") or "").strip()
     if expires_at:
         try:
             expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
             if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
+                expires = expires.replace(tzinfo=UTC)
             return expires > now
         except ValueError:
             return False
@@ -4111,7 +4018,7 @@ def _daily_briefing_cache_is_fresh(cached: dict) -> bool:
     try:
         created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
         if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
+            created = created.replace(tzinfo=UTC)
     except ValueError:
         return False
     if created.date() != now.date():
@@ -8098,8 +8005,8 @@ def _aware_datetime_value(value: object) -> datetime | None:
         except ValueError:
             return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _count_values(values) -> dict[str, int]:
@@ -8195,7 +8102,7 @@ def _entry_progress_payload(entry: dict, include_market_detail: bool = True) -> 
     completed = 0
     source = "unavailable"
     projected_wins = projected_losses = projected_pushes = 0
-    now = utc_now().replace(tzinfo=timezone.utc)
+    now = utc_now().replace(tzinfo=UTC)
 
     for prop in entry["props"]:
         final_stat = _usable_final_stat_for_entry(prop, entry)
@@ -8623,8 +8530,8 @@ def _next_game_time(legs: list[dict]) -> str:
         try:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            dated.append((parsed.astimezone(timezone.utc), raw))
+                parsed = parsed.replace(tzinfo=UTC)
+            dated.append((parsed.astimezone(UTC), raw))
         except ValueError:
             undated.append(raw)
     if dated:
@@ -8660,14 +8567,14 @@ def _entry_time_groups(legs: list[dict]) -> list[dict]:
 def _game_time_sort_value(value: str) -> datetime:
     text = str(value or "").strip()
     if not text:
-        return datetime.max.replace(tzinfo=timezone.utc)
+        return datetime.max.replace(tzinfo=UTC)
     try:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return datetime.max.replace(tzinfo=timezone.utc)
+        return datetime.max.replace(tzinfo=UTC)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _parse_game_time(value: object) -> datetime | None:
@@ -8679,8 +8586,8 @@ def _parse_game_time(value: object) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _actual_stat_for_prop(prop: dict) -> float | None:
@@ -10338,11 +10245,12 @@ def _data_health_payload() -> dict:
         _provider_health_row("SportsDataIO", "supplemental injuries/context only", configured=bool(os.getenv("SPORTSDATAIO_API_KEY")), key_env="SPORTSDATAIO_API_KEY"),
         _provider_health_row("NewsAPI", "news context", configured=bool(os.getenv("NEWSAPI_KEY")), key_env="NEWSAPI_KEY"),
         _provider_health_row("OpenWeather", "outdoor weather", configured=bool(os.getenv("OPENWEATHER_API_KEY")), key_env="OPENWEATHER_API_KEY"),
-        _provider_health_row("The Odds API", "sportsbook moneylines for Games Today", configured=bool(os.getenv("ODDS_API_KEY")), key_env="ODDS_API_KEY"),
+        _provider_health_row("The Odds API", "multi-book prices and no-vig market consensus", configured=bool(os.getenv("ODDS_API_KEY")), key_env="ODDS_API_KEY"),
         _provider_health_row("Ball Don't Lie", "player stats", configured=bool(os.getenv("BALLDONTLIE_API_KEY") or os.getenv("BALLDONTLIE_PROPS_URL")), key_env="BALLDONTLIE_API_KEY"),
         _provider_health_row("ESPN public", "final stats/injuries", configured=True, key_env=""),
         _provider_health_row("NBA Stats", "Summer League final stats", configured=True, key_env=""),
     ]
+    providers = [enrich_provider_health(provider) for provider in providers]
     weights = _provider_weights()
     api_usage = provider_cache_metrics()
     with _PROP_FETCH_LOCK:
@@ -10470,7 +10378,7 @@ def _age_minutes(value: object) -> int | None:
     parsed = _aware_datetime_value(value)
     if parsed is None:
         return None
-    return max(0, int((utc_now().astimezone(timezone.utc) - parsed).total_seconds() / 60))
+    return max(0, int((utc_now().astimezone(UTC) - parsed).total_seconds() / 60))
 
 
 def _provider_status_key(name: object) -> str:
@@ -10876,3 +10784,18 @@ def _platform_from_text(value: str) -> Platform:
 
 def _stat_from_text(value: str) -> StatType:
     return stat_type_from_text(value)
+
+
+configure_market_router(
+    MarketDependencies(
+        line_shop=lambda *args: _line_shop_payload(*args),
+        sharp_consensus=lambda *args: _sharp_consensus_payload(*args),
+        hedge_calculator=lambda payload: _hedge_calculator_payload(payload),
+        middle_calculator=lambda payload: _middle_calculator_payload(payload),
+        boost_analysis=lambda payload: _boost_analysis_payload(payload),
+        ev_scanner=lambda *args: _ev_scanner_rows(*args),
+        timing_alerts=lambda *args: _market_timing_alert_rows(*args),
+        clv_report=lambda: _clv_report_payload(),
+    )
+)
+app.include_router(market_router)

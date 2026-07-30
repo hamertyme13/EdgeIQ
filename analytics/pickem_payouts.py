@@ -4,7 +4,6 @@ import math
 import random
 from statistics import NormalDist
 
-
 _PRIZEPICKS_STANDARD = {2: 3.0, 3: 6.0, 4: 10.0, 5: 20.0, 6: 37.5}
 _PRIZEPICKS_FLEX = {
     3: {3: 3.0, 2: 1.0},

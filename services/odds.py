@@ -280,7 +280,7 @@ def summarize_player_prop_market(
     for bookmaker in event.get("bookmakers") or []:
         book_key = str(bookmaker.get("key") or "")
         title = str(bookmaker.get("title") or book_key)
-        outcomes = []
+        outcomes: list[dict] = []
         for market in bookmaker.get("markets") or []:
             if str(market.get("key") or "") != market_key:
                 continue
@@ -348,7 +348,7 @@ def summarize_player_prop_market(
         "market_key": market_key,
         "line": target_line,
         "direction": selected_direction,
-        "market_probability": round(float(selected_probability), 2) if available else None,
+        "market_probability": round(float(selected_probability), 2) if selected_probability is not None else None,
         "over_probability": round(float(fair_over), 2) if fair_over is not None else None,
         "under_probability": round(float(fair_under), 2) if fair_under is not None else None,
         "book_count": book_count,
@@ -515,7 +515,7 @@ def _prop_bookmakers() -> tuple[str, ...]:
 
 def _same_line(value: object, target: float) -> bool:
     try:
-        return abs(float(value) - float(target)) < 0.001
+        return abs(float(str(value)) - float(target)) < 0.001
     except (TypeError, ValueError):
         return False
 

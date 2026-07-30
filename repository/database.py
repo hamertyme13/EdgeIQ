@@ -2,8 +2,7 @@ import os
 from typing import Any
 
 from sqlalchemy import create_engine, event
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
 
@@ -38,16 +37,16 @@ Base: Any = declarative_base()
 
 def initialize_database():
 
+    from repository.entities import BetEntity
+    from repository.models.bankroll_transaction_model import BankrollTransactionModel
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
     from repository.models.final_player_stat_model import FinalPlayerStatModel
-    from repository.models.settings_model import SettingsModel
-    from repository.models.prop_line_history_model import PropLineHistoryModel
-    from repository.models.bankroll_transaction_model import BankrollTransactionModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel
-    from repository.models.settlement_audit_model import SettlementAuditModel
     from repository.models.prediction_record_model import PredictionRecordModel
-    from repository.entities import BetEntity
+    from repository.models.prop_line_history_model import PropLineHistoryModel
+    from repository.models.settings_model import SettingsModel
+    from repository.models.settlement_audit_model import SettlementAuditModel
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()

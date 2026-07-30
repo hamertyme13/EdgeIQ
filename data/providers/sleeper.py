@@ -7,15 +7,12 @@ EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE.
 
 from __future__ import annotations
 
-from typing import Optional
-
-from utils.entity_normalization import canonical_person_key
-
 import os
+from typing import Optional
 
 from data.providers.cache import cache_status, get_json
 from data.providers.generic_props import fetch_configured_props
-
+from utils.entity_normalization import canonical_person_key
 
 _BASE = "https://api.sleeper.app/v1"
 _PLAYER_CACHE_TTL_SECONDS = 86400
@@ -125,7 +122,7 @@ def player_trend_signal(player_name: str, sport: str = "NFL") -> dict | None:
     }
 
 
-def top_props(n: int = 25, sport: Optional[str] = None) -> list[dict]:
+def top_props(n: int = 25, sport: str | None = None) -> list[dict]:
     props = fetch_projections()
     if sport:
         props = [prop for prop in props if prop.get("league", "").upper() == sport.upper()]

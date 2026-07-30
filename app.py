@@ -160,10 +160,7 @@ def dashboard():
 
     total = stats["wins"] + stats["losses"]
 
-    if total:
-        pct = stats["wins"] / total * 100
-    else:
-        pct = 0
+    pct = stats["wins"] / total * 100 if total else 0
 
     table.add_row("Win %", f"{pct:.1f}%")
     table.add_row("Total Wagered", f"${stats['wagered']:.2f}")

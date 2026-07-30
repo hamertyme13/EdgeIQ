@@ -3,14 +3,15 @@ from __future__ import annotations
 from datetime import datetime
 from difflib import SequenceMatcher
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from repository.database import SessionLocal
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
 from repository.models.final_player_stat_model import FinalPlayerStatModel
-from sqlalchemy.exc import SQLAlchemyError
-from utils.stat_normalization import canonical_stat_label, stat_alias_labels
-from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
+from utils.stat_normalization import canonical_stat_label, stat_alias_labels
 
 
 class FinalStatsRepository:

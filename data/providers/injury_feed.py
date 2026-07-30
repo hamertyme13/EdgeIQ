@@ -73,7 +73,7 @@ def fetch_all_injuries() -> list[dict]:
     return all_injuries
 
 
-def is_injured(player_name: str, injuries: list[dict]) -> Optional[dict]:
+def is_injured(player_name: str, injuries: list[dict]) -> dict | None:
     """
     Return the injury record for a player if found, else None.
     Case-insensitive partial match on player name.

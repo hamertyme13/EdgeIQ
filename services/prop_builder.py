@@ -1,21 +1,15 @@
 from rich.console import Console
 
-from models.platform import Platform
-
-from ui.wizard import wizard_step
-
-from models.stat_type import StatType
-
-from models.player import Player
-
-from models.prop import Prop
-
 from analytics.confidence import confidence
-
 from analytics.prop_metrics import (
-    calculate_edge,
     calculate_confidence,
+    calculate_edge,
 )
+from models.platform import Platform
+from models.player import Player
+from models.prop import Prop
+from models.stat_type import StatType
+from ui.wizard import wizard_step
 from utils.display import divider
 
 console = Console()

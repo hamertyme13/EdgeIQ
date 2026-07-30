@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from analytics.grouped_validation import grouped_rolling_validation
 
 
 def test_grouped_rolling_validation_uses_only_prior_settled_unique_markets() -> None:
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2025, 1, 1, tzinfo=UTC)
     rows = []
     for index in range(180):
         predicted = start + timedelta(days=index)

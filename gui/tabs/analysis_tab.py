@@ -27,19 +27,19 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+import data.providers.prizepicks as _pp
+import data.providers.underdog as _ud
 from analytics.ev import expected_value, sportsbook_probability
-from analytics.recommendation import recommendation
+from analytics.form import form_signal, weighted_projection
+from analytics.kelly import breakeven_probability, half_kelly, kelly_fraction, suggested_wager
+from analytics.prop_metrics import calculate_confidence, calculate_edge
 from analytics.prop_recommendation import recommendation as prop_recommendation
-from analytics.prop_metrics import calculate_edge, calculate_confidence
-from analytics.kelly import kelly_fraction, half_kelly, suggested_wager, breakeven_probability
-from analytics.form import weighted_projection, form_signal
+from analytics.recommendation import recommendation
+from gui.styles import ACCENT, ACCENT2, BORDER, CYAN, GREEN, MUTED, RED, SURFACE, TEXT, YELLOW
 from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
 from services.dashboard import get_starting_bankroll
-import data.providers.prizepicks as _pp
-import data.providers.underdog as _ud
-from gui.styles import ACCENT, ACCENT2, GREEN, RED, YELLOW, SURFACE, BORDER, TEXT, MUTED, CYAN
 from utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -132,7 +132,6 @@ class AnalysisTab(QWidget):
         fields.addRow("Win Probability", self._ev_prob)
         layout.addLayout(fields)
 
-        QPushButton("Calculate EV").clicked  # placeholder — wired below
         calc_btn = QPushButton("Calculate EV")
         calc_btn.clicked.connect(self._run_ev)
         layout.addWidget(calc_btn)

@@ -1,7 +1,7 @@
 [project]
 name = "edgeiq"
 version = "2.1.0a0"
-description = "Desktop and CLI tools for player prop analysis and bet tracking."
+description = "Desktop, browser, and CLI platform for player-prop research, probabilistic forecasting, entry validation, and performance tracking."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0,<1.0.0",
@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "alembic>=1.14",
     "mypy>=1.14",
     "pytest>=8.0",
     "ruff>=0.9",
@@ -31,7 +32,10 @@ target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E9", "F63", "F7", "F82"]
+select = ["E9", "F63", "F7", "F82", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
 
 [tool.mypy]
 python_version = "3.11"

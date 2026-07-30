@@ -7,7 +7,6 @@ from urllib.parse import quote_plus
 
 from data.providers.cache import get_json
 
-
 _BASE = "https://api.openweathermap.org/data/2.5/weather"
 _TEAM_LOCATIONS = {
     "ARI": "Phoenix,US",

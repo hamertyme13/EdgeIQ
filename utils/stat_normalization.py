@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from models.stat_type import StatType
 
-
 _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
     StatType.PRA: (
         "pra",

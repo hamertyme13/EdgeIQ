@@ -1,6 +1,7 @@
-from config import APP_NAME, APP_SUBTITLE, APP_VERSION
 from rich.console import Console
 from rich.panel import Panel
+
+from config import APP_NAME, APP_SUBTITLE, APP_VERSION
 
 console = Console()
 

@@ -1,3 +1,5 @@
+from datetime import UTC
+
 from config import STARTING_BANKROLL
 from repository.bet_repository import BetRepository
 from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
@@ -188,7 +190,7 @@ def _month_key(value) -> str:
 def _current_month_key() -> str:
     from datetime import datetime, timezone
 
-    return datetime.now(timezone.utc).strftime("%Y-%m")
+    return datetime.now(UTC).strftime("%Y-%m")
 
 
 def _month_label(key: str) -> str:

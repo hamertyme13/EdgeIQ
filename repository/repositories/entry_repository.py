@@ -1,21 +1,20 @@
 import json
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from sqlalchemy.orm import Session
 
+from analytics.correlation import estimate_correlation_matrix
+from analytics.entry_recommendation import recommendation as entry_recommendation
+from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
+from models.entry import Entry
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
-from utils.time import utc_now
-
-from models.entry import Entry
-from analytics.entry_recommendation import recommendation as entry_recommendation
-from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
-from analytics.correlation import estimate_correlation_matrix
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+from utils.time import utc_now
 
 
 class EntryRepository:
@@ -775,7 +774,7 @@ class EntryRepository:
                 candidates = future
         if require_unique and len(candidates) != 1:
             return ""
-        candidates.sort(key=lambda candidate: candidate.get("starts_at") or datetime.max.replace(tzinfo=timezone.utc))
+        candidates.sort(key=lambda candidate: candidate.get("starts_at") or datetime.max.replace(tzinfo=UTC))
         return str(candidates[0].get("game_time") or "")
 
     @staticmethod
@@ -794,8 +793,8 @@ class EntryRepository:
         if value is None:
             return None
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     @staticmethod
     def _store_leg_results(session: Session, entry_id: int, leg_results: list[dict]) -> None:

@@ -1,8 +1,8 @@
 from rich.console import Console
 from rich.panel import Panel
 
-from models.prop import Prop
 from analytics.prop_recommendation import recommendation
+from models.prop import Prop
 
 console = Console()
 

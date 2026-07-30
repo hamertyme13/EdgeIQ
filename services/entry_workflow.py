@@ -1,11 +1,9 @@
 from rich.console import Console
 
-from services.entry_builder import build_entry
-
-from ui.review_entry import review_entry
-from ui.entry_analysis import display_entry_analysis
-
 from repository.repositories.entry_repository import EntryRepository
+from services.entry_builder import build_entry
+from ui.entry_analysis import display_entry_analysis
+from ui.review_entry import review_entry
 
 console = Console()
 

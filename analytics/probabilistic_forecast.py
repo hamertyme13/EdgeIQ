@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
-
 
 MODEL_VERSION = "edgeiq-historical-distribution-v2.0"
 MIN_HISTORY_FOR_FORECAST = 5
@@ -47,7 +46,7 @@ def forecast_prop(
     rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100)
     rows = _eligible_history(rows, game_time)
     actuals = [float(row["actual"]) for row in rows]
-    feature_as_of = datetime.now(timezone.utc).isoformat()
+    feature_as_of = datetime.now(UTC).isoformat()
 
     if len(actuals) < MIN_HISTORY_FOR_FORECAST:
         return PropForecast(

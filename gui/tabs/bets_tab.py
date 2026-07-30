@@ -18,19 +18,19 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QSizePolicy,
+    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from gui.styles import ACCENT, BORDER, GREEN, MUTED, RED, SURFACE, YELLOW
 from models.bet import Bet
+from repository.bet_repository import BetRepository
 from services.betting import potential_profit
 from services.tracker import save_bet
-from repository.bet_repository import BetRepository
-from gui.styles import GREEN, RED, YELLOW, MUTED, ACCENT, SURFACE, BORDER
 
 
 class BetsTab(QWidget):

@@ -5,15 +5,15 @@ from dataclasses import dataclass, replace
 from analytics.correlation import detect_correlations
 from analytics.entry_recommendation import recommendation
 from analytics.model_feedback import feedback_adjustment, settled_feedback_entries
-from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
-from analytics.projection import auto_projection
 from analytics.probabilistic_forecast import forecast_prop
+from analytics.projection import auto_projection
+from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
-from utils.entity_normalization import canonical_person_key
 from models.stat_type import StatType
+from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import stat_type_from_text
 
 

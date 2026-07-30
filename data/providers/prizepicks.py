@@ -50,7 +50,7 @@ _HEADERS = {
 }
 
 
-def _normalize_league(raw_league: str) -> Optional[str]:
+def _normalize_league(raw_league: str) -> str | None:
     """Return normalized sport name, or None if unsupported."""
     return _LEAGUE_MAP.get(raw_league.upper())
 
@@ -134,7 +134,7 @@ def fetch_projections(limit: int = 500) -> list[dict]:
     return results
 
 
-def top_props(n: int = 25, sport: Optional[str] = None) -> list[dict]:
+def top_props(n: int = 25, sport: str | None = None) -> list[dict]:
     """
     Return the top-N props sorted by trending count.
 
