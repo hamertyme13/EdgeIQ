@@ -20,7 +20,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import data.providers.balldontlie as balldontlie
@@ -40,7 +40,6 @@ from analytics.edgeiq_model import model_card as local_model_card
 from analytics.entry_recommendation import recommendation as entry_recommendation
 from analytics.entry_suggestions import suggest_entries
 from analytics.ev import decimal_odds, expected_value, sportsbook_probability
-from analytics.grouped_validation import grouped_rolling_validation
 from analytics.hierarchical_calibration import calibrate_probability
 from analytics.hit_rate import estimate_hit_rate
 from analytics.kelly import breakeven_probability, half_kelly, kelly_fraction, suggested_wager
@@ -50,9 +49,7 @@ from analytics.probabilistic_forecast import forecast_prop
 from analytics.projection import auto_projection
 from analytics.prop_metrics import calculate_confidence, calculate_directional_edge, calculate_edge
 from analytics.recommendation import recommendation as ev_recommendation
-from analytics.release_validation import validation_readiness
 from analytics.risk import calculate_entry_risk
-from data.providers.cache import cache_metrics as provider_cache_metrics
 from data.providers.espn import (
     refresh_final_stats_for_entries,
     refresh_game_times_for_entries,
@@ -85,7 +82,73 @@ from services.data_management import backup_database, export_database
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.stat_normalization import stat_type_from_text
 from utils.time import iso_utc, utc_now
-from web.application.provider_contracts import enrich_provider_health
+from web.application.entry_creation_service import (
+    analyze_entry_payload as build_analyze_entry_payload,
+)
+from web.application.entry_creation_service import (
+    payout_analysis_payload as build_entry_payout_analysis_payload,
+)
+from web.application.entry_creation_service import (
+    place_entry_payload as build_place_entry_payload,
+)
+from web.application.entry_creation_service import (
+    validated_call,
+)
+from web.application.provider_health_service import (
+    age_minutes as _age_minutes,
+)
+from web.application.provider_health_service import (
+    build_data_health_payload,
+)
+from web.application.provider_health_service import (
+    provider_status_key as _provider_status_key,
+)
+from web.application.results_service import (
+    accuracy_lab_payload as build_accuracy_lab_payload,
+)
+from web.application.results_service import (
+    backtest_payload as build_backtest_payload,
+)
+from web.application.results_service import (
+    model_health_payload as build_model_health_payload,
+)
+from web.application.results_service import (
+    performance_payload as build_performance_payload,
+)
+from web.application.settlement_service import (
+    backfill_final_stats_payload as build_backfill_final_stats_payload,
+)
+from web.application.settlement_service import (
+    classify_default_wagers_payload as build_classify_default_wagers_payload,
+)
+from web.application.settlement_service import (
+    entry_progress_payload as build_entry_progress_payload,
+)
+from web.application.settlement_service import (
+    pending_entries_payload as build_pending_entries_payload,
+)
+from web.application.settlement_service import (
+    recheck_final_stats_payload as build_recheck_final_stats_payload,
+)
+from web.application.settlement_service import (
+    settle_entry_payload as build_settle_entry_payload,
+)
+from web.routers.entries import (
+    EntryDependencies,
+    analyze_entry,
+    configure_entry_router,
+    entry_handoff,
+    entry_payout_analysis,
+    place_entry,
+    placement_check,
+    platform_value_check,
+    share_entry,
+    shared_entry,
+    shared_entry_page,
+)
+from web.routers.entries import (
+    router as entry_router,
+)
 from web.routers.market import (
     MarketDependencies,
     boost_analysis,
@@ -101,6 +164,46 @@ from web.routers.market import (
 )
 from web.routers.market import (
     router as market_router,
+)
+from web.routers.providers import (
+    ProviderDependencies,
+    configure_provider_router,
+    data_health,
+    sleeper_status,
+)
+from web.routers.providers import (
+    router as provider_router,
+)
+from web.routers.results import (
+    ResultsDependencies,
+    accuracy_lab,
+    backtest,
+    configure_results_router,
+    create_database_backup,
+    create_database_export,
+    model_health,
+    performance,
+    refresh_calibration_data,
+)
+from web.routers.results import (
+    router as results_router,
+)
+from web.routers.settlement import (
+    SettlementDependencies,
+    auto_check_entries,
+    backfill_entry_final_stats,
+    classify_default_entry_wagers,
+    configure_settlement_router,
+    entry_progress,
+    grading_report,
+    import_final_stats_endpoint,
+    pending_entries,
+    recheck_entry_final_stats,
+    settle_entry,
+    settlement_audit,
+)
+from web.routers.settlement import (
+    router as settlement_router,
 )
 from web.schemas import (
     AiEntryReviewPayload,
@@ -386,16 +489,6 @@ def update_provider_weights(payload: ProviderWeightsPayload) -> dict:
     merged = {**_provider_weights(), **weights}
     SettingsRepository.set("provider_weights", json.dumps(merged))
     return {"weights": merged}
-
-
-@app.get("/api/data-health")
-def data_health() -> dict:
-    return _data_health_payload()
-
-
-@app.get("/api/providers/sleeper/status")
-def sleeper_status() -> dict:
-    return sleeper.public_api_status()
 
 
 @app.get("/api/automation/refresh-schedule")
@@ -816,16 +909,6 @@ def loss_review(limit: int = 10) -> dict:
     return _loss_review_payload(limit)
 
 
-@app.get("/api/entries/grading-report")
-def grading_report(compact: bool = False) -> dict:
-    return _grading_report_payload(compact=compact)
-
-
-@app.get("/api/entries/settlement-audit")
-def settlement_audit(limit: int = 100) -> dict:
-    return SettlementAuditRepository.queue(limit)
-
-
 @app.post("/api/sync/run")
 def run_sync(allow_estimates: bool = False) -> dict:
     default_wagers = EntryRepository.classify_missing_economics()
@@ -850,192 +933,9 @@ def run_sync(allow_estimates: bool = False) -> dict:
     }
 
 
-@app.post("/api/entries/analyze")
-def analyze_entry(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    entry = _entry_from_payload(payload)
-    return _entry_analysis(entry, payload)
-
-
-@app.post("/api/entries/payout-analysis")
-def entry_payout_analysis(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    probabilities = []
-    for prop in payload.props:
-        if prop.confidence is not None:
-            confidence = float(prop.confidence)
-        elif prop.projection is not None:
-            edge = calculate_edge(prop.line, prop.projection)
-            if _normalize_direction(prop.direction or "Over") == "Under":
-                edge *= -1
-            confidence = calculate_confidence(edge, prop.stat, prop.sport)
-        else:
-            confidence = 50.0
-        probabilities.append(confidence / 100.0)
-    return payout_analysis(
-        probabilities,
-        payload.platform,
-        payload.payout_type,
-        displayed_multiplier=payload.multiplier,
-        correlation_matrix=estimate_correlation_matrix(payload.props),
-        exact_schedule=payload.payout_schedule or None,
-    )
-
-
-@app.post("/api/entries/placement-check")
-def placement_check(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    return _placement_check(payload)
-
-
-@app.post("/api/entries/platform-value-check")
-def platform_value_check(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    return _platform_value_check(payload)
-
-
-@app.post("/api/entries/handoff")
-def entry_handoff(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    return _entry_handoff_payload(payload)
-
-
-@app.post("/api/entries/share")
-def share_entry(payload: ShareSlipPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    return _share_entry_payload(payload)
-
-
-@app.get("/api/share/{share_id}")
-def shared_entry(share_id: str) -> dict:
-    return _shared_entry_payload(share_id)
-
-
-@app.get("/share/{share_id}")
-def shared_entry_page(share_id: str) -> HTMLResponse:
-    return HTMLResponse(_shared_entry_html(share_id))
-
-
-@app.post("/api/entries/place")
-def place_entry(payload: EntryPayload) -> dict:
-    _reject_combined_player_props(payload.props)
-    if payload.entry_mode == "real" and payload.wager <= 0:
-        raise HTTPException(status_code=400, detail="Enter an amount wagered before placing the entry.")
-    if payload.entry_mode == "real" and _loss_protection_payload()["active"]:
-        raise HTTPException(
-            status_code=409,
-            detail="Loss Protection is active. Real-money entries are not allowed in this mode. Save this as a paper entry and wait for tracked performance to recover.",
-        )
-    settlement_blocks = _end_to_end_placement_blocks(payload)
-    if settlement_blocks and _requires_verified_settlement(payload):
-        raise HTTPException(status_code=400, detail="Entry cannot be tracked automatically: " + settlement_blocks[0])
-    entry = _entry_from_payload(payload)
-    analysis = _entry_analysis(entry, payload)
-    release = analysis.get("release_verdict") or {}
-    if payload.entry_mode == "real" and not release.get("paid_allowed"):
-        reason = (release.get("reasons") or ["This entry did not clear the paid-entry release checks."])[0]
-        raise HTTPException(status_code=400, detail=f"Paid entry blocked: {reason}")
-    hard_blocks = [guard for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
-    if hard_blocks:
-        raise HTTPException(status_code=400, detail="Placement blocked: " + hard_blocks[0]["message"])
-    entry_id = EntryRepository.save(
-        entry,
-        status="Pending",
-        wager=payload.wager,
-        multiplier=payload.multiplier,
-        recommended_by_app=payload.recommended_by_app,
-        audit_snapshot=json.dumps(_entry_audit_snapshot(entry, payload, analysis, settlement_blocks)),
-        entry_mode=payload.entry_mode,
-        payout_type=payload.payout_type,
-    )
-    return {
-        "id": entry_id,
-        "status": "Pending",
-        "entry_mode": payload.entry_mode,
-        "settlement_tracking": (
-            "verified"
-            if not settlement_blocks
-            else "manual_verification_required"
-        ),
-        "verification_warnings": settlement_blocks,
-        "analysis": analysis,
-        "dashboard": get_dashboard(),
-    }
-
-
 @app.post("/api/entries/auto-paper-calibration")
 def auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
     return _auto_paper_calibration(payload)
-
-
-@app.get("/api/entries/pending")
-def pending_entries() -> dict:
-    return {"entries": [_serialize_pending(entry) for entry in EntryRepository.pending()]}
-
-
-@app.get("/api/entries/progress")
-def entry_progress(auto_check: bool = False, refresh_providers: bool = False, market_detail: bool = True) -> dict:
-    auto_check_result = None
-    if auto_check:
-        auto_check_result = _auto_check_pending_entries(
-            allow_estimates=False,
-            refresh_providers=refresh_providers,
-        )
-    pending = EntryRepository.pending()
-    live_stats_sync = (
-        _refresh_live_stats(pending)
-        if pending and refresh_providers
-        else {"provider": "espn_live", "skipped": True, "imported": 0, "fetched_rows": 0, "errors": []}
-    )
-    game_time_sync = (
-        _backfill_missing_game_times(pending)
-        if pending and refresh_providers
-        else {"provider": "espn", "skipped": True, "updated": 0, "fetched_rows": 0, "errors": []}
-    )
-    if game_time_sync.get("updated") or live_stats_sync.get("imported"):
-        pending = EntryRepository.pending()
-    entries = [_entry_progress_payload(entry, include_market_detail=market_detail) for entry in pending]
-    overdue_legs = [
-        {
-            "entry_id": entry["id"],
-            "player": leg.get("player", ""),
-            "sport": leg.get("sport", ""),
-            "stat": leg.get("stat", ""),
-            **(leg.get("settlement_sla") or {}),
-        }
-        for entry in entries
-        for leg in entry.get("legs", [])
-        if (leg.get("settlement_sla") or {}).get("overdue")
-    ]
-    return {
-        "entries": entries,
-        "active": len(entries),
-        "with_live_stats": sum(1 for entry in entries if _entry_has_stat_data(entry)),
-        "settlement_sla": {
-            "status": "escalated" if overdue_legs else "clear",
-            "overdue_legs": len(overdue_legs),
-            "overdue_entries": len({row["entry_id"] for row in overdue_legs}),
-            "legs": overdue_legs,
-            "message": (
-                f"{len(overdue_legs)} leg{'s are' if len(overdue_legs) != 1 else ' is'} beyond the final-stat SLA. "
-                "Provider refresh and Recheck Final Stats should be escalated."
-                if overdue_legs
-                else "No pending legs are beyond the final-stat SLA."
-            ),
-        },
-        "auto_check": auto_check_result,
-        "game_time_sync": game_time_sync,
-        "live_stats_sync": live_stats_sync,
-        "settlement_refresh": _safe_json_loads(
-            SettingsRepository.get(SETTLEMENT_REFRESH_STATUS_KEY, "")
-        ),
-    }
-
-
-@app.post("/api/entries/{entry_id}/settle")
-def settle_entry(entry_id: int, payload: SettlePayload) -> dict:
-    EntryRepository.settle(entry_id, payload.result, payload.dnp_legs, _dnp_mode())
-    return {"id": entry_id, "result": payload.result, "status": "Settled", "dashboard": get_dashboard()}
 
 
 @app.get("/api/entries/suggestions")
@@ -1309,36 +1209,6 @@ def personal_profile() -> dict:
     return _personal_profile_payload()
 
 
-@app.post("/api/entries/auto-check")
-def auto_check_entries(allow_estimates: bool = False, refresh_providers: bool = True) -> dict:
-    return _auto_check_pending_entries(allow_estimates, refresh_providers=refresh_providers)
-
-
-@app.post("/api/entries/backfill-final-stats")
-def backfill_entry_final_stats(allow_estimates: bool = True) -> dict:
-    entries = [
-        entry for entry in EntryRepository.all()
-        if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss", "Push", "DNP"}
-    ]
-    backfilled = 0
-    leg_rows = 0
-    estimated = 0
-    for entry in entries:
-        legs = _entry_leg_final_snapshots(entry, allow_estimates=allow_estimates)
-        if not legs:
-            continue
-        EntryRepository.store_settled_leg_results(entry["id"], legs)
-        backfilled += 1
-        leg_rows += len(legs)
-        estimated += sum(1 for leg in legs if leg.get("source") == "projection_estimate")
-    return {
-        "entries": len(entries),
-        "backfilled": backfilled,
-        "leg_rows": leg_rows,
-        "estimated_leg_rows": estimated,
-    }
-
-
 def _unknown_entry_leg_count(entries: list[dict]) -> int:
     unknown = 0
     for entry in entries:
@@ -1352,32 +1222,6 @@ def _unknown_entry_leg_count(entries: list[dict]) -> int:
                 continue
             unknown += 1
     return unknown
-
-
-@app.post("/api/entries/recheck-final-stats")
-def recheck_entry_final_stats(allow_estimates: bool = False) -> dict:
-    before_entries = EntryRepository.all()
-    unknown_before = _unknown_entry_leg_count(before_entries)
-    refresh_entries = _entries_needing_final_stat_refresh(before_entries)
-    provider_refresh = _refresh_final_stats(refresh_entries)
-    refreshed_entries = EntryRepository.all()
-    backfill = _backfill_settled_entry_leg_results(refreshed_entries)
-    auto_check = _auto_check_pending_entries(allow_estimates=allow_estimates, refresh_providers=False)
-    after_entries = EntryRepository.all()
-    result_review = _recheck_entry_results(after_entries, allow_estimates=allow_estimates)
-    after_entries = EntryRepository.all()
-    unknown_after = _unknown_entry_leg_count(after_entries)
-    return {
-        "entries": len(before_entries),
-        "entries_refreshed": len(refresh_entries),
-        "unknown_before": unknown_before,
-        "unknown_after": unknown_after,
-        "cleared_unknowns": max(0, unknown_before - unknown_after),
-        "provider_refresh": provider_refresh,
-        "backfill": backfill,
-        "auto_check": auto_check,
-        "result_review": result_review,
-    }
 
 
 def _entries_needing_final_stat_refresh(entries: list[dict]) -> list[dict]:
@@ -1691,18 +1535,6 @@ def _game_has_not_started(prop: dict, now: datetime | None = None) -> bool:
     return current < start
 
 
-@app.post("/api/entries/classify-default-wagers")
-def classify_default_entry_wagers() -> dict:
-    result = EntryRepository.classify_missing_economics()
-    return {**result, "dashboard": get_dashboard()}
-
-
-@app.post("/api/final-stats/import")
-def import_final_stats_endpoint(payload: FinalStatsPayload) -> dict:
-    imported = import_final_stats(payload.payload, payload.source)
-    return {"imported": imported, "source": payload.source}
-
-
 @app.get("/api/bets")
 def bets(limit: int = 100, entry_limit: int = 50) -> dict:
     limit = max(1, min(limit, 250))
@@ -1755,65 +1587,15 @@ def import_betting_history(payload: BettingHistoryPayload) -> dict:
     return {**result, "dashboard": get_dashboard()}
 
 
-@app.get("/api/performance")
-def performance() -> dict:
-    stats = get_dashboard()
-    return {
-        "bankroll_curve": stats.get("bankroll_curve", []),
-        "by_sport": stats.get("by_sport", {}),
-        "by_stat": stats.get("by_stat", {}),
-        "by_platform": stats.get("by_platform", {}),
-        "entries": stats.get("entries", {}),
-        "monthly_profit": stats.get("monthly_profit", {}),
-        "summary": stats,
-    }
+def _performance_payload() -> dict:
+    return build_performance_payload()
 
 
-@app.post("/api/data/backup")
-def create_database_backup() -> dict:
-    try:
-        return {"backup": backup_database()}
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _backtest_payload() -> dict:
+    return build_backtest_payload(clv_report())
 
 
-@app.post("/api/data/export")
-def create_database_export() -> dict:
-    try:
-        return {"export": export_database()}
-    except (FileNotFoundError, ValueError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/api/analytics/backtest")
-def backtest() -> dict:
-    entries = EntryRepository.all()
-    payload = backtest_summary(BetRepository().get_all(), entries)
-    readiness = payload.get("validation_readiness") or {}
-    PredictionLedgerRepository.backfill_legacy_quarantine()
-    prediction_rows = PredictionLedgerRepository.evidence_rows(include_legacy=False)
-    grouped_validation = grouped_rolling_validation(prediction_rows)
-    payload["grouped_validation"] = grouped_validation
-    payload["validation_readiness"] = validation_readiness(
-        entries,
-        [
-            row
-            for dimension_rows in (readiness.get("dimensions") or {}).values()
-            for row in dimension_rows
-        ],
-        readiness.get("calibration_error") or {},
-        payload.get("holdout_validation") or {},
-        payload.get("walk_forward_validation") or {},
-        clv_report(),
-        prediction_rows=prediction_rows,
-        grouped_validation=grouped_validation,
-    )
-    payload["prediction_ledger"] = PredictionLedgerRepository.summary()
-    return payload
-
-
-@app.post("/api/analytics/refresh-calibration-data")
-def refresh_calibration_data() -> dict:
+def _refresh_calibration_data_payload() -> dict:
     entries = EntryRepository.all()
     provider_refresh = _refresh_final_stats(entries)
     backfill = _backfill_settled_entry_leg_results(entries)
@@ -1822,16 +1604,6 @@ def refresh_calibration_data() -> dict:
         "backfill": backfill,
         "backtest": backtest_summary(BetRepository().get_all(), EntryRepository.all()),
     }
-
-
-@app.get("/api/analytics/model-health")
-def model_health() -> dict:
-    return _model_health_payload()
-
-
-@app.get("/api/analytics/accuracy-lab")
-def accuracy_lab() -> dict:
-    return _accuracy_lab_payload()
 
 
 def _import_betting_history_payload(payload: str, source: str) -> dict:
@@ -5284,100 +5056,7 @@ def _grade_from_confidence(confidence: float) -> str:
 
 
 def _model_health_payload() -> dict:
-    backtest_data = backtest_summary(BetRepository().get_all(), EntryRepository.all())
-    entry_confidence = backtest_data.get("entries", {}).get("confidence", {})
-    calibration = backtest_data.get("calibration", [])
-    scorecard = backtest_data.get("scorecard", {})
-    holdout = backtest_data.get("holdout_validation", {})
-    versioned_predictions = PredictionLedgerRepository.evidence_rows(include_legacy=False)
-    grouped_validation = grouped_rolling_validation(versioned_predictions)
-    calibrated_rows = sum(bucket.get("bets", 0) for bucket in calibration)
-    avg_error = (
-        sum(abs(bucket.get("error", 0.0)) * bucket.get("bets", 0) for bucket in calibration) / calibrated_rows
-        if calibrated_rows
-        else 0.0
-    )
-    settled_entries = backtest_data.get("entries", {}).get("count", 0)
-    ai = ai_status()
-    dashboard_stats = get_dashboard()
-    source_score = min(100.0, 35.0 + (calibrated_rows * 2.5) + (settled_entries * 3.0))
-    calibration_score = max(0.0, 100.0 - (avg_error * 2.0)) if calibrated_rows else 45.0
-    confidence_edge = abs(float(entry_confidence.get("edge") or 0.0))
-    confidence_score = max(0.0, 100.0 - (confidence_edge * 2.0)) if settled_entries else 50.0
-    ai_score = 100.0 if ai["configured"] and ai["key_format_ok"] else 55.0
-    recommendation_accuracy = dashboard_stats.get("recommendation_accuracy", {})
-    rec_accuracy = float(recommendation_accuracy.get("accuracy") or 0.0)
-    accuracy_score = rec_accuracy if recommendation_accuracy.get("tracked") else 50.0
-    raw_trust_score = round(
-        (calibration_score * 0.34)
-        + (confidence_score * 0.22)
-        + (source_score * 0.18)
-        + (ai_score * 0.12)
-        + (accuracy_score * 0.14),
-        1,
-    )
-    scorecard_score = float(scorecard.get("score") or raw_trust_score)
-    trust_score = round(min(raw_trust_score, scorecard_score), 1)
-    verdict = str(scorecard.get("verdict") or "")
-    paid_entry_mode = "enabled"
-    if scorecard_score < 55 or verdict in {"Model needs calibration", "Collect more samples"}:
-        paid_entry_mode = "paper_first"
-    if float(scorecard.get("roi") or 0.0) < 0:
-        paid_entry_mode = "paper_first"
-    if not holdout.get("ready") or not holdout.get("passed"):
-        paid_entry_mode = "paper_first"
-    if not grouped_validation.get("ready") or not grouped_validation.get("passed"):
-        paid_entry_mode = "paper_first"
-    if int(grouped_validation.get("unique_predictions") or 0) < 500:
-        paid_entry_mode = "paper_first"
-    if trust_score >= 78:
-        status = "Strong"
-    elif trust_score >= 62:
-        status = "Usable"
-    elif trust_score >= 48:
-        status = "Learning"
-    else:
-        status = "Needs Data"
-    if paid_entry_mode != "enabled":
-        status = "Needs Calibration" if calibrated_rows or settled_entries else "Learning"
-
-    return {
-        "trust_score": trust_score,
-        "status": status,
-        "paid_entry_mode": paid_entry_mode,
-        "scorecard": scorecard,
-        "holdout_validation": holdout,
-        "grouped_validation": grouped_validation,
-        "prediction_ledger": PredictionLedgerRepository.summary(),
-        "settled_entries": settled_entries,
-        "calibrated_picks": calibrated_rows,
-        "average_calibration_error": round(avg_error, 1),
-        "actual_vs_confidence_edge": entry_confidence.get("edge", 0.0),
-        "openai": ai,
-        "recommendation_accuracy": recommendation_accuracy,
-        "components": {
-            "calibration": round(calibration_score, 1),
-            "confidence_alignment": round(confidence_score, 1),
-            "data_depth": round(source_score, 1),
-            "ai_readiness": round(ai_score, 1),
-            "recommendation_accuracy": round(accuracy_score, 1),
-            "scorecard": round(scorecard_score, 1),
-        },
-        "next_steps": _model_health_next_steps(calibrated_rows, settled_entries, ai, avg_error),
-    }
-
-
-def _model_health_next_steps(calibrated_rows: int, settled_entries: int, ai: dict, avg_error: float) -> list[str]:
-    steps = []
-    if calibrated_rows < 25:
-        steps.append("Upload or import more betting history to strengthen confidence calibration.")
-    if settled_entries < 10:
-        steps.append("Settle more EdgeIQ-recommended entries so the model can learn from its own calls.")
-    if not (ai.get("configured") and ai.get("key_format_ok")):
-        steps.append("Connect a valid OpenAI API key for richer reasoning and screenshot extraction.")
-    if avg_error > 15:
-        steps.append("Review high-confidence misses in Performance before increasing bet size.")
-    return steps or ["Model inputs look healthy. Keep logging results to preserve calibration."]
+    return build_model_health_payload(ai_status())
 
 
 def _advantage_center_payload(platform: str, sport_filter: str | None) -> dict:
@@ -10237,178 +9916,16 @@ def _apply_provider_weights(signals: list[dict]) -> list[dict]:
 
 
 def _data_health_payload() -> dict:
-    providers = [
-        _provider_health_row("PrizePicks", "props", configured=True, key_env=""),
-        _provider_health_row("Underdog", "props", configured=True, key_env=""),
-        _sleeper_health_row(),
-        _provider_health_row("OpenAI", "AI recommendations/screenshots", configured=bool(os.getenv("OPENAI_API_KEY")), key_env="OPENAI_API_KEY"),
-        _provider_health_row("SportsDataIO", "supplemental injuries/context only", configured=bool(os.getenv("SPORTSDATAIO_API_KEY")), key_env="SPORTSDATAIO_API_KEY"),
-        _provider_health_row("NewsAPI", "news context", configured=bool(os.getenv("NEWSAPI_KEY")), key_env="NEWSAPI_KEY"),
-        _provider_health_row("OpenWeather", "outdoor weather", configured=bool(os.getenv("OPENWEATHER_API_KEY")), key_env="OPENWEATHER_API_KEY"),
-        _provider_health_row("The Odds API", "multi-book prices and no-vig market consensus", configured=bool(os.getenv("ODDS_API_KEY")), key_env="ODDS_API_KEY"),
-        _provider_health_row("Ball Don't Lie", "player stats", configured=bool(os.getenv("BALLDONTLIE_API_KEY") or os.getenv("BALLDONTLIE_PROPS_URL")), key_env="BALLDONTLIE_API_KEY"),
-        _provider_health_row("ESPN public", "final stats/injuries", configured=True, key_env=""),
-        _provider_health_row("NBA Stats", "Summer League final stats", configured=True, key_env=""),
-    ]
-    providers = [enrich_provider_health(provider) for provider in providers]
-    weights = _provider_weights()
-    api_usage = provider_cache_metrics()
     with _PROP_FETCH_LOCK:
         platform_memory = {
             platform: dict(metrics)
             for platform, metrics in _PROP_FETCH_METRICS.items()
         }
-    memory_avoided = sum(
-        metrics.get("memory_cache_hits", 0) + metrics.get("coalesced_hits", 0)
-        for metrics in platform_memory.values()
+    return build_data_health_payload(
+        _provider_weights(),
+        platform_memory,
+        SETTLEMENT_REFRESH_STATUS_KEY,
     )
-    api_usage["platform_memory"] = platform_memory
-    api_usage["requests_avoided"] = int(api_usage.get("requests_avoided") or 0) + memory_avoided
-    network_requests = int((api_usage.get("totals") or {}).get("network_requests") or 0)
-    considered = int(api_usage["requests_avoided"]) + network_requests
-    api_usage["avoidance_pct"] = round(api_usage["requests_avoided"] / considered * 100.0, 1) if considered else 0.0
-    for provider in providers:
-        provider["api_usage"] = _provider_api_usage(provider["name"], api_usage)
-    connected = sum(1 for provider in providers if provider["status"] in {"connected", "available", "fresh"})
-    warnings = [provider for provider in providers if provider["status"] in {"missing_key", "not_configured", "stale", "degraded"}]
-    return {
-        "providers": providers,
-        "provider_weights": weights,
-        "api_usage": api_usage,
-        "summary": {
-            "connected": connected,
-            "total": len(providers),
-            "warnings": len(warnings),
-            "last_daily_refresh": SettingsRepository.get("last_daily_refresh", ""),
-        },
-    }
-
-
-def _provider_api_usage(name: str, usage: dict) -> dict:
-    host_fragments = {
-        "PrizePicks": ("prizepicks.com",),
-        "Underdog": ("underdogfantasy.com",),
-        "Sleeper": ("sleeper.app",),
-        "OpenAI": ("openai.com",),
-        "SportsDataIO": ("sportsdata.io",),
-        "NewsAPI": ("newsapi.org",),
-        "OpenWeather": ("openweathermap.org",),
-        "The Odds API": ("the-odds-api.com",),
-        "Ball Don't Lie": ("balldontlie.io",),
-        "ESPN public": ("espn.com",),
-        "NBA Stats": ("nba.com",),
-    }
-    fragments = host_fragments.get(name, ())
-    totals: dict[str, int] = {}
-    for host, metrics in (usage.get("hosts") or {}).items():
-        if not any(fragment in host for fragment in fragments):
-            continue
-        for metric, value in metrics.items():
-            totals[metric] = totals.get(metric, 0) + int(value)
-    avoided = totals.get("cache_hits", 0) + totals.get("coalesced_hits", 0) + totals.get("not_modified", 0)
-    memory = (usage.get("platform_memory") or {}).get(name, {})
-    avoided += int(memory.get("memory_cache_hits") or 0) + int(memory.get("coalesced_hits") or 0)
-    return {
-        **totals,
-        **{f"memory_{key}": value for key, value in memory.items()},
-        "requests_avoided": avoided,
-        "used_this_session": bool(totals or memory),
-    }
-
-
-def _provider_health_row(name: str, purpose: str, configured: bool, key_env: str) -> dict:
-    has_key = bool(os.getenv(key_env, "").strip()) if key_env else configured
-    fetch_key = _provider_status_key(name)
-    runtime = _safe_json_loads(SettingsRepository.get(fetch_key, ""))
-    if name == "ESPN public" and not runtime:
-        settlement = _safe_json_loads(SettingsRepository.get(SETTLEMENT_REFRESH_STATUS_KEY, ""))
-        if settlement:
-            runtime = {
-                "last_attempt_at": settlement.get("ran_at", ""),
-                "last_success_at": settlement.get("ran_at", "") if settlement.get("ok") else "",
-                "last_error_at": settlement.get("ran_at", "") if not settlement.get("ok") else "",
-                "last_error": "" if settlement.get("ok") else settlement.get("message", "refresh failed"),
-                "row_count": settlement.get("imported", 0),
-            }
-    last_success = str(runtime.get("last_success_at") or "")
-    age_minutes = _age_minutes(last_success)
-    if runtime.get("last_error") and (not last_success or str(runtime.get("last_error_at") or "") >= last_success):
-        status = "degraded"
-    elif last_success and age_minutes is not None:
-        status = "fresh" if age_minutes <= 30 else "stale"
-    elif configured and has_key:
-        status = "configured" if key_env else "available"
-    elif configured and key_env and not has_key:
-        status = "missing_key"
-    else:
-        status = "not_configured"
-    return {
-        "name": name,
-        "purpose": purpose,
-        "status": status,
-        "configured": bool(configured),
-        "key_env": key_env,
-        "has_key": has_key,
-        "last_success_at": last_success,
-        "last_error": str(runtime.get("last_error") or ""),
-        "age_minutes": age_minutes,
-        "row_count": int(runtime.get("row_count") or 0),
-        "message": _provider_health_message(name, status, key_env, runtime),
-    }
-
-
-def _provider_health_message(name: str, status: str, key_env: str, runtime: dict | None = None) -> str:
-    runtime = runtime or {}
-    if status == "fresh":
-        return f"{name} returned {int(runtime.get('row_count') or 0)} usable rows recently."
-    if status == "stale":
-        return f"{name} last succeeded at {runtime.get('last_success_at')}; refresh before relying on it."
-    if status == "degraded":
-        return f"{name} most recent refresh failed: {runtime.get('last_error') or 'provider unavailable'}."
-    if status in {"connected", "available"}:
-        return f"{name} is available to EdgeIQ."
-    if status == "configured":
-        return f"{name} is configured but has not completed a recent verified refresh."
-    if status == "missing_key":
-        return f"Set {key_env} to enable {name}."
-    return f"{name} is not configured yet."
-
-
-def _age_minutes(value: object) -> int | None:
-    parsed = _aware_datetime_value(value)
-    if parsed is None:
-        return None
-    return max(0, int((utc_now().astimezone(UTC) - parsed).total_seconds() / 60))
-
-
-def _provider_status_key(name: object) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_") or "unknown"
-    return f"provider_fetch_status:{slug}"
-
-
-def _sleeper_health_row() -> dict:
-    status = sleeper.public_api_status()
-    player_cache = status["player_cache"]
-    cache_label = "fresh" if player_cache["fresh"] else "not warmed"
-    if player_cache["cached"] and not player_cache["fresh"]:
-        cache_label = "stale"
-    return {
-        "name": "Sleeper",
-        "purpose": "public NFL player metadata/trends; optional prop-feed import",
-        "status": "available",
-        "configured": True,
-        "key_env": "",
-        "has_key": False,
-        "auth_required": False,
-        "read_only": True,
-        "props_configured": status["props_configured"],
-        "player_cache": player_cache,
-        "message": (
-            f"No API key needed. Public read-only trends are available; "
-            f"player cache is {cache_label}. "
-            f"{'Prop feed configured.' if status['props_configured'] else 'Configure a Sleeper prop feed only if you want Sleeper lines.'}"
-        ),
-    }
 
 
 def _refresh_schedule_payload() -> dict:
@@ -10517,58 +10034,7 @@ def _player_availability_payload(player: str, sport: str, team: str = "", game: 
 
 
 def _accuracy_lab_payload() -> dict:
-    entries = EntryRepository.all()
-    settled = [entry for entry in entries if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss", "Push"}]
-    audits = [_safe_json_loads(entry.get("audit_snapshot", "")) for entry in entries if entry.get("audit_snapshot")]
-    confidence_rows = _accuracy_confidence_rows(settled)
-    return {
-        "summary": {
-            "settled_entries": len(settled),
-            "audit_snapshots": len(audits),
-            "recommended_settled": sum(1 for entry in settled if entry.get("recommended_by_app")),
-        },
-        "by_grade": EntryRepository._group_by_key(settled, lambda entry: entry.get("grade") or "Ungraded"),
-        "by_sport": EntryRepository._group_by_key(settled, EntryRepository._primary_sport),
-        "by_platform": EntryRepository._group_by_key(settled, lambda entry: entry.get("platform") or "Unknown"),
-        "confidence_buckets": confidence_rows,
-        "audit_trail": [
-            {
-                "entry_id": entry["id"],
-                "placed_at": iso_utc(entry.get("placed_at")),
-                "result": entry.get("result", ""),
-                "grade": entry.get("grade", ""),
-                "line_snapshot_count": len(_safe_json_loads(entry.get("audit_snapshot", "")).get("props", [])),
-                "recommendation": _safe_json_loads(entry.get("audit_snapshot", "")).get("recommendation", {}),
-            }
-            for entry in entries[:20]
-            if entry.get("audit_snapshot")
-        ],
-    }
-
-
-def _accuracy_confidence_rows(entries: list[dict]) -> list[dict]:
-    buckets = [
-        ("0-49", 0, 49.999),
-        ("50-59", 50, 59.999),
-        ("60-69", 60, 69.999),
-        ("70-100", 70, 100),
-    ]
-    rows = []
-    for label, low, high in buckets:
-        bucket = [
-            entry for entry in entries
-            if low <= float(entry.get("average_confidence") or 0) <= high and entry.get("result") in {"Win", "Loss"}
-        ]
-        wins = sum(1 for entry in bucket if entry.get("result") == "Win")
-        rows.append({
-            "label": label,
-            "entries": len(bucket),
-            "wins": wins,
-            "losses": len(bucket) - wins,
-            "win_pct": round((wins / len(bucket) * 100) if bucket else 0.0, 1),
-            "avg_confidence": round(sum(float(entry.get("average_confidence") or 0) for entry in bucket) / len(bucket), 1) if bucket else 0.0,
-        })
-    return rows
+    return build_accuracy_lab_payload()
 
 
 def _serialize_entry(entry: Entry) -> dict:
@@ -10799,3 +10265,131 @@ configure_market_router(
     )
 )
 app.include_router(market_router)
+
+configure_provider_router(
+    ProviderDependencies(
+        data_health=lambda: _data_health_payload(),
+        sleeper_status=lambda: sleeper.public_api_status(),
+    )
+)
+app.include_router(provider_router)
+
+configure_results_router(
+    ResultsDependencies(
+        performance=lambda: _performance_payload(),
+        create_backup=lambda: backup_database(),
+        create_export=lambda: export_database(),
+        backtest=lambda: _backtest_payload(),
+        refresh_calibration=lambda: _refresh_calibration_data_payload(),
+        model_health=lambda: _model_health_payload(),
+        accuracy_lab=lambda: _accuracy_lab_payload(),
+    )
+)
+app.include_router(results_router)
+
+configure_entry_router(
+    EntryDependencies(
+        analyze=lambda payload: build_analyze_entry_payload(
+            payload,
+            lambda props: _reject_combined_player_props(props),
+            lambda value: _entry_from_payload(value),
+            lambda entry, value: _entry_analysis(entry, value),
+        ),
+        payout_analysis=lambda payload: build_entry_payout_analysis_payload(
+            payload,
+            lambda props: _reject_combined_player_props(props),
+            lambda direction: _normalize_direction(direction),
+        ),
+        placement_check=lambda payload: validated_call(
+            payload.props,
+            lambda props: _reject_combined_player_props(props),
+            lambda: _placement_check(payload),
+        ),
+        platform_value_check=lambda payload: validated_call(
+            payload.props,
+            lambda props: _reject_combined_player_props(props),
+            lambda: _platform_value_check(payload),
+        ),
+        handoff=lambda payload: validated_call(
+            payload.props,
+            lambda props: _reject_combined_player_props(props),
+            lambda: _entry_handoff_payload(payload),
+        ),
+        share=lambda payload: validated_call(
+            payload.props,
+            lambda props: _reject_combined_player_props(props),
+            lambda: _share_entry_payload(payload),
+        ),
+        shared_entry=lambda share_id: _shared_entry_payload(share_id),
+        shared_entry_html=lambda share_id: _shared_entry_html(share_id),
+        place=lambda payload: build_place_entry_payload(
+            payload,
+            reject_combined_props=lambda props: _reject_combined_player_props(props),
+            loss_protection=lambda: _loss_protection_payload(),
+            settlement_blocks=lambda value: _end_to_end_placement_blocks(value),
+            requires_verified_settlement=lambda value: _requires_verified_settlement(value),
+            entry_from_payload=lambda value: _entry_from_payload(value),
+            analyze_entry=lambda entry, value: _entry_analysis(entry, value),
+            audit_snapshot=lambda entry, value, analysis, blocks: _entry_audit_snapshot(
+                entry,
+                value,
+                analysis,
+                blocks,
+            ),
+            dashboard=lambda: get_dashboard(),
+        ),
+    )
+)
+app.include_router(entry_router)
+
+configure_settlement_router(
+    SettlementDependencies(
+        grading_report=lambda compact: _grading_report_payload(compact=compact),
+        settlement_audit=lambda limit: SettlementAuditRepository.queue(limit),
+        pending_entries=lambda: build_pending_entries_payload(_serialize_pending),
+        entry_progress=lambda auto_check, refresh_providers, market_detail: build_entry_progress_payload(
+            auto_check=auto_check,
+            refresh_providers=refresh_providers,
+            market_detail=market_detail,
+            auto_check_pending=lambda **kwargs: _auto_check_pending_entries(**kwargs),
+            refresh_live_stats=lambda entries: _refresh_live_stats(entries),
+            backfill_game_times=lambda entries: _backfill_missing_game_times(entries),
+            serialize_progress=lambda entry, **kwargs: _entry_progress_payload(entry, **kwargs),
+            entry_has_stat_data=lambda entry: _entry_has_stat_data(entry),
+            settlement_status_key=SETTLEMENT_REFRESH_STATUS_KEY,
+            safe_json_loads=lambda value: _safe_json_loads(value),
+        ),
+        settle_entry=lambda entry_id, payload: build_settle_entry_payload(
+            entry_id,
+            payload.result,
+            payload.dnp_legs,
+            _dnp_mode(),
+            lambda: get_dashboard(),
+        ),
+        auto_check=lambda allow_estimates, refresh_providers: _auto_check_pending_entries(
+            allow_estimates,
+            refresh_providers=refresh_providers,
+        ),
+        backfill_final_stats=lambda allow_estimates: build_backfill_final_stats_payload(
+            allow_estimates,
+            lambda entry, **kwargs: _entry_leg_final_snapshots(entry, **kwargs),
+        ),
+        recheck_final_stats=lambda allow_estimates: build_recheck_final_stats_payload(
+            allow_estimates=allow_estimates,
+            unknown_leg_count=lambda entries: _unknown_entry_leg_count(entries),
+            entries_needing_refresh=lambda entries: _entries_needing_final_stat_refresh(entries),
+            refresh_final_stats=lambda entries: _refresh_final_stats(entries),
+            backfill_settled_results=lambda entries: _backfill_settled_entry_leg_results(entries),
+            auto_check_pending=lambda **kwargs: _auto_check_pending_entries(**kwargs),
+            recheck_results=lambda entries, **kwargs: _recheck_entry_results(entries, **kwargs),
+        ),
+        classify_default_wagers=lambda: build_classify_default_wagers_payload(
+            lambda: get_dashboard()
+        ),
+        import_final_stats=lambda payload: {
+            "imported": import_final_stats(payload.payload, payload.source),
+            "source": payload.source,
+        },
+    )
+)
+app.include_router(settlement_router)
