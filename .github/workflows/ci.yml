@@ -20,7 +20,17 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
-      - run: mypy analytics/release_validation.py services/data_management.py utils/entity_normalization.py
+      - run: >-
+          mypy
+          analytics/release_validation.py
+          services/data_management.py
+          services/odds.py
+          utils/entity_normalization.py
+          web/application
+          web/routers
+          web/schemas
       - name: Reject tracked local databases
         run: test -z "$(git ls-files '*.db' '*.db-wal' '*.db-shm')"
+      - name: Verify formal database migration
+        run: DATABASE_URL=sqlite:////tmp/edgeiq-ci.db alembic upgrade head
       - run: pytest
