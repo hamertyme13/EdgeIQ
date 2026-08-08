@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from repository.database import SessionLocal, initialize_database
+from repository.models.entry_model import EntryModel
+from repository.models.entry_prop_model import EntryPropModel
+from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.models.settlement_audit_model import SettlementAuditModel
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.time import utc_now
 
 
@@ -60,25 +66,116 @@ class SettlementAuditRepository:
             rows = (
                 session.query(SettlementAuditModel)
                 .order_by(SettlementAuditModel.attempted_at.desc(), SettlementAuditModel.id.desc())
-                .limit(max(1, min(limit, 500)))
                 .all()
             )
             latest: dict[int, SettlementAuditModel] = {}
             for row in rows:
                 latest.setdefault(row.entry_prop_id, row)
-            items = [_serialize(row) for row in latest.values()]
+            entry_ids = {row.entry_id for row in latest.values()}
+            entry_statuses = {
+                row.id: row.status
+                for row in session.query(EntryModel.id, EntryModel.status)
+                .filter(EntryModel.id.in_(entry_ids))
+                .all()
+            }
+            all_items = []
+            for row in latest.values():
+                item = _serialize(row)
+                entry_status = str(entry_statuses.get(row.entry_id) or "")
+                item["entry_status"] = entry_status
+                item["scope"] = "current" if entry_status in {"", "Pending"} else "historical"
+                all_items.append(item)
+            all_items.sort(
+                key=lambda item: (
+                    item["scope"] != "current",
+                    item["status"] == "verified",
+                )
+            )
+            items = all_items[:max(1, min(limit, 500))]
         counts: dict[str, int] = {}
-        for item in items:
+        current_items = [item for item in all_items if item["scope"] == "current"]
+        for item in current_items:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
+        historical_review = sum(
+            1
+            for item in all_items
+            if item["scope"] == "historical" and item["status"] in {"blocked", "waiting"}
+        )
         return {
             "items": items,
             "count": len(items),
-            "verified": counts.get("verified", 0),
+            "verified": sum(1 for item in all_items if item["status"] == "verified"),
             "scheduled": counts.get("scheduled", 0),
             "waiting": counts.get("waiting", 0),
             "blocked": counts.get("blocked", 0),
+            "historical_review": historical_review,
             "statuses": counts,
         }
+
+    @staticmethod
+    def game_date_mismatches(max_day_delta: int = 1) -> list[dict]:
+        """Find verified legs whose stored start date conflicts with matched evidence."""
+        initialize_database()
+        with SessionLocal() as session:
+            audits = (
+                session.query(SettlementAuditModel)
+                .filter(SettlementAuditModel.status == "verified")
+                .order_by(SettlementAuditModel.attempted_at.desc(), SettlementAuditModel.id.desc())
+                .all()
+            )
+            latest: dict[int, SettlementAuditModel] = {}
+            for audit in audits:
+                latest.setdefault(audit.entry_prop_id, audit)
+            props = {
+                row.id: row
+                for row in session.query(EntryPropModel)
+                .filter(EntryPropModel.id.in_(latest))
+                .all()
+            }
+            stat_dates: dict[tuple, set[str]] = {}
+            for row in session.query(
+                FinalPlayerStatModel.player,
+                FinalPlayerStatModel.game,
+                FinalPlayerStatModel.source,
+                FinalPlayerStatModel.actual,
+                FinalPlayerStatModel.game_date,
+            ).all():
+                key = _final_evidence_key(row.player, row.game, row.source, row.actual)
+                stat_dates.setdefault(key, set()).add(str(row.game_date or ""))
+
+        mismatches = []
+        for prop_id, audit in latest.items():
+            prop = props.get(prop_id)
+            stored_date = _game_time_date(getattr(prop, "game_time", ""))
+            if stored_date is None:
+                continue
+            key = _final_evidence_key(
+                audit.matched_player,
+                audit.matched_game,
+                audit.provider,
+                audit.actual,
+            )
+            evidence_dates = {
+                parsed
+                for parsed in (_date_value(value) for value in stat_dates.get(key, set()))
+                if parsed is not None
+            }
+            if not evidence_dates or any(
+                abs((stored_date - evidence_date).days) <= max_day_delta
+                for evidence_date in evidence_dates
+            ):
+                continue
+            mismatches.append({
+                "entry_id": audit.entry_id,
+                "entry_prop_id": prop_id,
+                "player": audit.requested_player,
+                "requested_game": audit.requested_game,
+                "matched_game": audit.matched_game,
+                "stored_game_date": stored_date.isoformat(),
+                "evidence_game_dates": sorted(value.isoformat() for value in evidence_dates),
+                "provider": audit.provider,
+            })
+        return mismatches
 
 
 def _serialize(row: SettlementAuditModel) -> dict:
@@ -105,3 +202,39 @@ def _serialize(row: SettlementAuditModel) -> dict:
         "attempted_at": row.attempted_at.isoformat() if row.attempted_at else "",
         "details": details,
     }
+
+
+def _final_evidence_key(player: object, game: object, provider: object, actual: object) -> tuple:
+    try:
+        actual_key = round(float(actual), 6)
+    except (TypeError, ValueError):
+        actual_key = None
+    return (
+        canonical_person_key(player),
+        canonical_matchup_key(game),
+        str(provider or "").strip().lower(),
+        actual_key,
+    )
+
+
+def _date_value(value: object) -> date | None:
+    text = str(value or "").strip()[:10]
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _game_time_date(value: object) -> date | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return _date_value(text)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo("America/New_York"))
+    return parsed.date()

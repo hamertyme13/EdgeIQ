@@ -39,6 +39,37 @@ _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
         "hits runs rbis",
         "hits + runs + rbis",
     ),
+    StatType.PASSING_YARDS: ("pass yards", "passing yds", "pass yds"),
+    StatType.PASSING_TDS: ("pass tds", "pass touchdowns", "passing touchdowns"),
+    StatType.PASSING_ATTEMPTS: ("pass attempts", "passing attempts"),
+    StatType.COMPLETIONS: ("pass completions", "passing completions"),
+    StatType.INTERCEPTIONS: ("int", "ints", "ints thrown", "interceptions thrown"),
+    StatType.RUSHING_YARDS: ("rush yards", "rushing yds", "rush yds"),
+    StatType.RUSH_ATTEMPTS: ("carries", "rush attempts", "rushing attempts"),
+    StatType.RUSHING_TDS: ("rush tds", "rushing touchdowns"),
+    StatType.RECEIVING_YARDS: ("rec yards", "receiving yds", "rec yds"),
+    StatType.RECEPTIONS: ("recs",),
+    StatType.RECEIVING_TDS: ("rec tds", "receiving touchdowns"),
+    StatType.RUSH_RECEIVING_YARDS: (
+        "rush+rec yards",
+        "rush rec yards",
+        "rushing + receiving yards",
+        "rushing receiving yards",
+    ),
+    StatType.RUSH_RECEIVING_TDS: (
+        "rush+rec tds",
+        "rush rec tds",
+        "rushing + receiving touchdowns",
+        "rushing receiving touchdowns",
+    ),
+    StatType.SACKS: ("defensive sacks",),
+    StatType.TACKLES: (
+        "tackles + assists",
+        "tackles assists",
+        "total tackles",
+        "combined tackles",
+    ),
+    StatType.EXTRA_POINTS_MADE: ("xp made", "extra points made"),
 }
 
 
@@ -72,8 +103,17 @@ def _matched_stat_type(value: object) -> StatType | None:
     if not text:
         return None
 
-    for stat, aliases in _STAT_ALIASES.items():
-        if any(alias in text for alias in aliases):
+    alias_candidates = sorted(
+        (
+            (_stat_text(alias), stat)
+            for stat, aliases in _STAT_ALIASES.items()
+            for alias in aliases
+        ),
+        key=lambda candidate: len(candidate[0]),
+        reverse=True,
+    )
+    for alias_text, stat in alias_candidates:
+        if _alias_matches(text, alias_text):
             return stat
 
     if "+" in str(value or ""):
@@ -118,6 +158,13 @@ def _matched_stat_type(value: object) -> StatType | None:
     return None
 
 
+def _alias_matches(text: str, alias: str) -> bool:
+    alias_text = _stat_text(alias)
+    if len(alias_text) <= 4:
+        return text == alias_text
+    return alias_text in text
+
+
 def _stat_text(value: object) -> str:
     return (
         str(value or "")
@@ -125,4 +172,5 @@ def _stat_text(value: object) -> str:
         .lower()
         .replace("-", " ")
         .replace("_", " ")
+        .replace(" + ", "+")
     )

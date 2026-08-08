@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+from analytics.outcome_learning import verified_prop
 from analytics.prediction_evidence import deduplicate_outcomes
 from repository.repositories.entry_repository import EntryRepository
 from utils.stat_normalization import stat_key
 
 
 def settled_feedback_entries() -> list[dict]:
-    return [
-        entry for entry in EntryRepository.all()
-        if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss"}
-    ]
+    rows = []
+    for entry in EntryRepository.all():
+        if entry.get("status") != "Settled":
+            continue
+        props = [prop for prop in entry.get("props") or [] if verified_prop(prop)]
+        if props:
+            rows.append({**entry, "props": props})
+    return rows
 
 
 def feedback_adjustment(
@@ -18,9 +23,6 @@ def feedback_adjustment(
     entries: list[dict] | None = None,
 ) -> float:
     entries = entries if entries is not None else settled_feedback_entries()
-    if len(entries) < 20:
-        return 0.0
-
     band_floor = int(confidence // 10) * 10
     sample = _segment_prop_sample(entries, prop, band_floor)
     if len(sample) < 20:
@@ -41,7 +43,11 @@ def _segment_prop_sample(entries: list[dict], prop: object | None, band_floor: i
         for row in entry.get("props") or []:
             result = row.get("final_result") or row.get("result") or ""
             confidence = row.get("confidence")
-            if result not in {"Win", "Loss"} or confidence in (None, ""):
+            if (
+                result not in {"Win", "Loss"}
+                or confidence in (None, "")
+                or not verified_prop(row)
+            ):
                 continue
             if int(float(confidence) // 10) * 10 != band_floor:
                 continue

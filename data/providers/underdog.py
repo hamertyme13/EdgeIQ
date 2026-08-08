@@ -71,6 +71,12 @@ def _season_type(raw_sport: str, game: dict, app_stat: dict) -> str:
         return "season_long"
     if "summer league" in text or raw_sport.upper() in {"NBASL", "NBA_SUMMER_LEAGUE"}:
         return "summer_league"
+    if raw_sport.upper() == "NFL":
+        start_time = _game_time(game, app_stat)
+        if any(token in text for token in ("preseason", "hall of fame")) or (
+            len(start_time) >= 7 and start_time[4:7] == "-08"
+        ):
+            return "preseason"
     return "regular"
 
 
@@ -130,8 +136,13 @@ def _offer_metadata(line: dict, value: float | None, standard_line: float | None
     line_type = str(line.get("line_type") or "balanced").strip().lower()
     option = _active_option(line)
     choice = str(option.get("choice") or "").strip().lower()
-    direction = "Over" if choice in {"higher", "over"} else "Under" if choice in {"lower", "under"} else ""
     adjusted = line_type not in {"balanced", "standard"}
+    # Balanced markets offer both sides. An active option is not a forced pick.
+    direction = (
+        "Over" if choice in {"higher", "over"}
+        else "Under" if choice in {"lower", "under"}
+        else ""
+    ) if adjusted else ""
     offer_type = "standard"
     if adjusted:
         if value is not None and standard_line is not None and direction == "Under":

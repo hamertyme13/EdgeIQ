@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class PropPayload(BaseModel):
@@ -43,8 +43,48 @@ class EntryPayload(BaseModel):
     payout_type: Literal["standard", "flex"] = "standard"
     payout_schedule: dict[str, float] = Field(default_factory=dict)
     recommended_by_app: bool = False
+    tracking_override: bool = False
     entry_mode: Literal["real", "paper"] = "real"
     props: list[PropPayload]
+
+    @model_validator(mode="after")
+    def detect_source_platform(self):
+        aliases = {
+            "prizepicks": "PrizePicks",
+            "prize picks": "PrizePicks",
+            "underdog": "Underdog",
+            "underdog fantasy": "Underdog",
+            "sleeper": "Sleeper",
+            "ball don't lie": "Ball Don't Lie",
+            "balldontlie": "Ball Don't Lie",
+        }
+
+        def canonical(value: str) -> str:
+            text = str(value or "").strip()
+            return aliases.get(text.lower(), text)
+
+        explicit_sources = {
+            canonical(prop.platform)
+            for prop in self.props
+            if "platform" in prop.model_fields_set and str(prop.platform or "").strip()
+        }
+        if len(explicit_sources) > 1:
+            sources = ", ".join(sorted(explicit_sources))
+            raise ValueError(
+                f"This entry contains props from multiple sportsbooks ({sources}). "
+                "Build one entry per sportsbook."
+            )
+        detected = next(iter(explicit_sources), canonical(self.platform) or "PrizePicks")
+        maximum_legs = 8 if detected == "Underdog" else 6 if detected == "PrizePicks" else 5
+        if len(self.props) > maximum_legs:
+            raise ValueError(
+                f"{detected} entries support at most {maximum_legs} legs."
+            )
+        self.platform = detected
+        for prop in self.props:
+            if "platform" not in prop.model_fields_set or not str(prop.platform or "").strip():
+                prop.platform = detected
+        return self
 
 
 class ShareSlipPayload(EntryPayload):

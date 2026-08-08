@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260729-market-v6" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260808-reliability-audit-v5" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -209,10 +209,39 @@
                 <div id="sportsbook-sync-list" class="suggestion-list"></div>
                 <button id="refresh-sportsbook-sync" class="secondary" type="button">Refresh Sync Status</button>
               </div>
-              <div class="mini-tool stack">
-                <h3>Ranked Props</h3>
-                <p>There is one ranked list so recommendations do not conflict across pages.</p>
-                <button class="secondary" type="button" data-focus-opportunity-board>Open Opportunity Board</button>
+              <div class="mini-tool stack trending-props-tool">
+                <div class="panel-header compact-panel-header">
+                  <div>
+                    <h3>Trending Props</h3>
+                    <p>The 15 strongest trackable props for the selected sport, ranked by model and data strength.</p>
+                  </div>
+                  <span id="trending-props-count" class="status-pill">Not loaded</span>
+                </div>
+                <div class="form-grid compact-controls trending-props-controls">
+                  <label>Platform
+                    <select id="trending-props-platform">
+                      <option>PrizePicks</option>
+                      <option>Underdog</option>
+                      <option>Both</option>
+                    </select>
+                  </label>
+                  <label>Sport
+                    <select id="trending-props-sport">
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>MLB</option>
+                      <option>NFL</option>
+                      <option>All Sports</option>
+                    </select>
+                  </label>
+                  <button id="refresh-trending-props" class="secondary" type="button">Load Trending</button>
+                </div>
+                <div class="toolbar trending-selection-actions">
+                  <button id="send-selected-trending" type="button" disabled>Send selected (0)</button>
+                  <button id="clear-selected-trending" class="secondary" type="button" disabled>Clear selection</button>
+                </div>
+                <p id="trending-props-status" class="subtle">Choose a sport to rank its strongest trackable props.</p>
+                <div id="trending-props-list" class="trending-props-list"></div>
               </div>
               <form id="watchlist-form" class="mini-tool stack">
                 <h3>Prop Watchlist</h3>
@@ -464,12 +493,14 @@
                         <option value="3">3 Legs</option>
                         <option value="2-3">2-3 Legs</option>
                         <option value="2-5">2-5 Legs</option>
+                        <option value="2-6">2-6 Legs</option>
+                        <option value="2-8">2-8 Legs (Underdog)</option>
                       </select>
                     </label>
                     <label class="field-label">Max Wager
                       <input id="pref-max-wager-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max wager % bankroll" />
                     </label>
-                    <label class="check-row"><input id="pref-high-risk" type="checkbox" /> Allow 4/5-leg</label>
+                    <label class="check-row"><input id="pref-high-risk" type="checkbox" /> Allow 4+ legs</label>
                     <label class="check-row"><input id="pref-avoid-same-game" type="checkbox" /> Avoid same game</label>
                     <label class="check-row"><input id="pref-sound-effects" type="checkbox" /> Sound Effects</label>
                     <label class="field-label">Sound Volume
@@ -711,40 +742,46 @@
 
               <details class="panel tool-group" open data-workspace-pane="best">
                 <summary>
-                  <span>Suggested Entries</span>
-                  <small>Verified entries plus a high-variance six-leg card</small>
+                  <span>Sportsbook Entry Generators</span>
+                  <small>Provider-specific rules, lines, and leg limits</small>
                 </summary>
                 <div class="tool-group-body">
-                  <div class="toolbar">
-                    <select id="suggest-sport">
-                      <option>All Sports</option>
-                      <option>WNBA</option>
-                      <option>NBA</option>
-                      <option>NFL</option>
-                      <option>MLB</option>
-                      <option>NHL</option>
-                      <option>NCAAF</option>
-                      <option>NCAAM</option>
-                      <option>NCAAW</option>
-                      <option>MLS</option>
-                      <option>EPL</option>
-                      <option>UCL</option>
-                      <option>TENNIS</option>
-                      <option>PGA</option>
-                      <option>MMA</option>
-                      <option>NASCAR</option>
-                    </select>
-                    <select id="suggest-platform">
-                      <option>PrizePicks</option>
-                      <option>Underdog</option>
-                      <option>Sleeper</option>
-                      <option>Ball Don't Lie</option>
-                      <option>Both</option>
-                    </select>
-                    <button id="generate-suggestions">Generate Top 5</button>
-                    <button id="generate-crazy-six" class="secondary">Crazy 6-Leg</button>
+                  <div class="provider-generator-grid">
+                    <section class="provider-generator" aria-labelledby="prizepicks-generator-title">
+                      <div>
+                        <span class="pill">PrizePicks</span>
+                        <h3 id="prizepicks-generator-title">PrizePicks Generator</h3>
+                        <p>Build one PrizePicks card with its own current lines and payout rules.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="prizepicks-generator-sport" aria-label="PrizePicks sport">
+                          <option>All Sports</option><option>WNBA</option><option>NBA</option><option>NFL</option><option>MLB</option><option>NHL</option><option>NCAAF</option><option>NCAAM</option><option>NCAAW</option><option>MLS</option><option>EPL</option><option>UCL</option><option>TENNIS</option><option>PGA</option><option>MMA</option><option>NASCAR</option>
+                        </select>
+                        <select id="prizepicks-generator-legs" aria-label="PrizePicks legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option>
+                        </select>
+                        <button id="generate-prizepicks">Generate PrizePicks</button>
+                      </div>
+                      <div id="prizepicks-suggestions-list" class="suggestion-list"></div>
+                    </section>
+                    <section class="provider-generator" aria-labelledby="underdog-generator-title">
+                      <div>
+                        <span class="pill">Underdog</span>
+                        <h3 id="underdog-generator-title">Underdog Generator</h3>
+                        <p>Build one Underdog card with supported entries from two through eight legs.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="underdog-generator-sport" aria-label="Underdog sport">
+                          <option>All Sports</option><option>WNBA</option><option>NBA</option><option>NFL</option><option>MLB</option><option>NHL</option><option>NCAAF</option><option>NCAAM</option><option>NCAAW</option><option>MLS</option><option>EPL</option><option>UCL</option><option>TENNIS</option><option>PGA</option><option>MMA</option><option>NASCAR</option>
+                        </select>
+                        <select id="underdog-generator-legs" aria-label="Underdog legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option><option value="7">7 Legs</option><option value="8">8 Legs</option>
+                        </select>
+                        <button id="generate-underdog">Generate Underdog</button>
+                      </div>
+                      <div id="underdog-suggestions-list" class="suggestion-list"></div>
+                    </section>
                   </div>
-                  <div id="suggestions-list" class="suggestion-list"></div>
                 </div>
               </details>
 
@@ -755,14 +792,14 @@
                 </summary>
                 <div class="tool-group-body">
                   <div class="toolbar">
-                    <select id="optimizer-platform">
+                    <select id="optimizer-platform" aria-label="Optimizer platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
                       <option>Both</option>
                     </select>
-                    <select id="optimizer-sport">
+                    <select id="optimizer-sport" aria-label="Optimizer sport">
                       <option>All Sports</option>
                       <option>WNBA</option>
                       <option>NBA</option>
@@ -780,17 +817,21 @@
                       <option>MMA</option>
                       <option>NASCAR</option>
                     </select>
-                    <select id="optimizer-legs">
+                    <select id="optimizer-legs" aria-label="Optimizer leg range">
                       <option value="2-3">2-3 Legs</option>
                       <option value="3-3">3 Legs</option>
                       <option value="2-5">2-5 Legs</option>
+                      <option value="2-6">2-6 Legs</option>
+                      <option value="6-6">6 Legs</option>
+                      <option value="7-7">7 Legs (Underdog)</option>
+                      <option value="8-8">8 Legs (Underdog)</option>
                     </select>
                     <button id="run-optimizer">Optimize</button>
                   </div>
                   <div class="form-grid compact-controls">
-                    <input id="optimizer-min-confidence" type="number" step="1" value="62" placeholder="Min confidence" />
-                    <input id="optimizer-min-edge" type="number" step="0.1" value="0" placeholder="Min edge" />
-                    <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" />
+                    <input id="optimizer-min-confidence" type="number" step="1" value="62" placeholder="Min confidence" aria-label="Minimum confidence" />
+                    <input id="optimizer-min-edge" type="number" step="0.1" value="0" placeholder="Min edge" aria-label="Minimum edge" />
+                    <input id="optimizer-max-same-team" type="number" step="1" value="1" placeholder="Max same team" aria-label="Maximum legs from one team" />
                     <label class="check-row"><input id="optimizer-exclude-correlated" type="checkbox" checked /> No correlated legs</label>
                     <label class="check-row"><input id="optimizer-apply-feedback" type="checkbox" checked /> Feedback adjusted</label>
                   </div>
@@ -811,7 +852,7 @@
                     <button id="refresh-pending" class="secondary">Refresh</button>
                   </div>
                   <div class="form-grid compact-controls dnp-controls">
-                    <select id="dnp-handling">
+                    <select id="dnp-handling" aria-label="DNP handling rule">
                       <option value="reduce">DNP reduces legs</option>
                       <option value="refund">Any DNP refunds entry</option>
                       <option value="ignore">Ignore DNP adjustment</option>
@@ -847,7 +888,7 @@
             <div class="form-grid compact-controls">
               <input id="research-context-player" placeholder="Player" />
               <input id="research-context-stat" placeholder="Stat" />
-              <select id="research-context-sport">
+              <select id="research-context-sport" aria-label="Research sport">
                 <option>WNBA</option>
                 <option>NBA</option>
                 <option>NFL</option>
@@ -864,14 +905,14 @@
                 <option>MMA</option>
                 <option>NASCAR</option>
               </select>
-              <select id="research-context-platform">
+              <select id="research-context-platform" aria-label="Research platform">
                 <option>Both</option>
                 <option>PrizePicks</option>
                 <option>Underdog</option>
                 <option>Sleeper</option>
                 <option>Ball Don't Lie</option>
               </select>
-              <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" />
+              <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Research line" />
               <button type="submit">Run Full Research</button>
             </div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
@@ -888,7 +929,7 @@
                   <form id="projection-assist-form" class="form-grid">
                     <input id="assist-player" placeholder="Player" />
                     <input id="assist-stat" placeholder="Stat" />
-                    <select id="assist-sport">
+                    <select id="assist-sport" aria-label="Projection assist sport">
                       <option>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
@@ -905,9 +946,9 @@
                       <option>MMA</option>
                       <option>NASCAR</option>
                     </select>
-                    <input id="assist-line" type="number" step="0.1" placeholder="Line" />
-                    <input id="assist-projection" type="number" step="0.1" placeholder="Projection (optional)" />
-                    <input id="assist-trending" type="number" step="1" placeholder="Trending count" />
+                    <input id="assist-line" type="number" step="0.1" placeholder="Line" aria-label="Projection assist line" />
+                    <input id="assist-projection" type="number" step="0.1" placeholder="Projection (optional)" aria-label="Optional projection" />
+                    <input id="assist-trending" type="number" step="1" placeholder="Trending count" aria-label="Trending count" />
                     <button type="submit">Assist Projection</button>
                   </form>
                   <div id="projection-assist-result" class="analysis-card muted-card">No projection assist yet.</div>
@@ -917,8 +958,8 @@
                   <form id="hit-rate-form" class="form-grid">
                     <input id="hit-player" placeholder="Player" />
                     <input id="hit-stat" placeholder="Stat" />
-                    <input id="hit-line" type="number" step="0.1" placeholder="Line" />
-                    <input id="hit-projection" type="number" step="0.1" placeholder="Projection (optional)" />
+                    <input id="hit-line" type="number" step="0.1" placeholder="Line" aria-label="Hit rate line" />
+                    <input id="hit-projection" type="number" step="0.1" placeholder="Projection (optional)" aria-label="Optional hit rate projection" />
                     <button type="submit">Estimate Hit Rate</button>
                   </form>
                   <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
@@ -928,7 +969,7 @@
                   <form id="player-research-form" class="form-grid">
                     <input id="research-player" placeholder="Player" />
                     <input id="research-stat" placeholder="Stat" />
-                    <select id="research-sport">
+                    <select id="research-sport" aria-label="Player research sport">
                       <option>All Sports</option>
                       <option>WNBA</option>
                       <option>NBA</option>
@@ -946,14 +987,14 @@
                       <option>MMA</option>
                       <option>NASCAR</option>
                     </select>
-                    <select id="research-platform">
+                    <select id="research-platform" aria-label="Player research platform">
                       <option>Both</option>
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
                     </select>
-                    <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" />
+                    <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Player research line" />
                     <button type="submit">Research Prop</button>
                   </form>
                   <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
@@ -1168,8 +1209,8 @@
                   <h2>Screenshot + File Analyzer</h2>
                   <p class="helper-copy">Upload phone screenshots of previous bets, entry slips, or settled results. Choose “Past bet history screenshot” to add those bets to Performance and calibration.</p>
                   <form id="upload-analyzer-form" class="stack">
-                    <input id="upload-file" type="file" accept=".csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,image/*" />
-                    <select id="upload-target">
+                    <input id="upload-file" type="file" accept=".csv,.tsv,.txt,.json,.png,.jpg,.jpeg,.webp,image/*" aria-label="Screenshot or data file" />
+                    <select id="upload-target" aria-label="Import type">
                       <option value="bet_history">Past bet history screenshot</option>
                       <option value="entry">Entry / prop screenshot</option>
                       <option value="props">Prop file</option>
@@ -1282,8 +1323,8 @@
             <div class="panel">
               <div class="panel-header">
                 <div>
-                  <h2>Loss Review</h2>
-                  <p id="loss-review-status">Classifying losing entries into fixable causes.</p>
+                  <h2>Win vs Loss Review</h2>
+                  <p id="loss-review-status">Comparing verified outcomes and model learning.</p>
                 </div>
                 <button id="refresh-loss-review" class="secondary">Refresh</button>
               </div>
@@ -1315,7 +1356,7 @@
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2>Results</h2>
+                <h2>Performance Overview</h2>
                 <p>Profit, calibration, accuracy, and bet ledger access.</p>
               </div>
               <div class="panel-action">
@@ -1483,7 +1524,7 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260728-circuit-audio-v2"></script>
+    <script src="/static/ui-shell.js?v=20260808-reliability-audit-v5"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
@@ -1501,7 +1542,7 @@
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260730-modules-v1"></script>
+    <script src="/static/js/state.js?v=20260808-reliability-audit-v5"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
@@ -1513,7 +1554,7 @@
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260729-market-v6"></script>
+    <script src="/static/app.js?v=20260808-reliability-audit-v5"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

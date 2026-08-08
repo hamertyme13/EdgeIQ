@@ -72,11 +72,11 @@ def place_entry_payload(
     reject_combined_props: Callable[[list], None],
     loss_protection: Callable[[], dict],
     settlement_blocks: Callable[[EntryPayload], list[str]],
+    generation_day_blocks: Callable[[EntryPayload], list[str]],
     requires_verified_settlement: Callable[[EntryPayload], bool],
     entry_from_payload: Callable[[EntryPayload], Any],
     analyze_entry: Callable[[Any, EntryPayload], dict],
     audit_snapshot: Callable[[Any, EntryPayload, dict, list[str]], dict],
-    dashboard: Callable[[], dict],
 ) -> dict:
     reject_combined_props(payload.props)
     if payload.entry_mode == "real" and payload.wager <= 0:
@@ -84,12 +84,10 @@ def place_entry_payload(
             400,
             "Enter an amount wagered before placing the entry.",
         )
-    if payload.entry_mode == "real" and loss_protection()["active"]:
-        raise EntryCreationError(
-            409,
-            "Loss Protection is active. Real-money entries are not allowed in this mode. "
-            "Save this as a paper entry and wait for tracked performance to recover.",
-        )
+    protection = loss_protection()
+    day_blocks = generation_day_blocks(payload)
+    if day_blocks:
+        raise EntryCreationError(409, day_blocks[0])
     verification_warnings = settlement_blocks(payload)
     if verification_warnings and requires_verified_settlement(payload):
         raise EntryCreationError(
@@ -99,7 +97,11 @@ def place_entry_payload(
     entry = entry_from_payload(payload)
     analysis = analyze_entry(entry, payload)
     release = analysis.get("release_verdict") or {}
-    if payload.entry_mode == "real" and not release.get("paid_allowed"):
+    if (
+        payload.entry_mode == "real"
+        and not payload.tracking_override
+        and not release.get("paid_allowed")
+    ):
         reason = (
             release.get("reasons")
             or ["This entry did not clear the paid-entry release checks."]
@@ -110,7 +112,7 @@ def place_entry_payload(
         for guard in analysis.get("risk_guardrails", [])
         if guard.get("severity") == "danger"
     ]
-    if hard_blocks:
+    if hard_blocks and not payload.tracking_override:
         raise EntryCreationError(
             400,
             "Placement blocked: " + hard_blocks[0]["message"],
@@ -131,6 +133,8 @@ def place_entry_payload(
         "id": entry_id,
         "status": "Pending",
         "entry_mode": payload.entry_mode,
+        "tracking_override": bool(payload.tracking_override),
+        "loss_protection_active": bool(protection.get("active")),
         "settlement_tracking": (
             "verified"
             if not verification_warnings
@@ -138,5 +142,4 @@ def place_entry_payload(
         ),
         "verification_warnings": verification_warnings,
         "analysis": analysis,
-        "dashboard": dashboard(),
     }

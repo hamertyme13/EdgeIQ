@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from data.providers.cache import get_json
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from utils.entity_normalization import canonical_person_key
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports"
 _SPORT_PATHS = {
@@ -22,6 +24,7 @@ _HEADERS = {
                   "Chrome/125.0.0.0 Safari/537.36",
     "Accept": "application/json",
 }
+_SLATE_TIME_ZONE = ZoneInfo("America/New_York")
 
 
 def refresh_final_stats_for_entries(entries: list[dict], lookback_days: int = 2) -> dict:
@@ -41,7 +44,9 @@ def refresh_final_stats_for_entries(entries: list[dict], lookback_days: int = 2)
         requested_dates.update(sport_dates)
         for game_date in sport_dates:
             try:
-                rows.extend(fetch_final_stats(sport, game_date))
+                final_rows = fetch_final_stats(sport, game_date)
+                rows.extend(final_rows)
+                rows.extend(fetch_missing_entry_dnp_stats(sport_entries, sport, game_date, final_rows))
                 rows.extend(fetch_unplayed_entry_stats(sport_entries, sport, game_date))
             except RuntimeError as exc:
                 errors.append(f"{sport} {game_date.isoformat()}: {exc}")
@@ -195,6 +200,52 @@ def fetch_unplayed_entry_stats(entries: list[dict], sport: str, game_date: date)
     return rows
 
 
+def fetch_missing_entry_dnp_stats(
+    entries: list[dict],
+    sport: str,
+    game_date: date,
+    final_rows: list[dict],
+) -> list[dict]:
+    """Mark a tracked player DNP only after their exact game has a final box score."""
+    games = {str(row.get("game") or "") for row in final_rows if row.get("game")}
+    players_by_game = {
+        game: {
+            canonical_person_key(row.get("player"))
+            for row in final_rows
+            if row.get("game") == game and row.get("player")
+        }
+        for game in games
+    }
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in entries:
+        for prop in entry.get("props", []):
+            if str(prop.get("sport") or "").upper() != sport.upper():
+                continue
+            matching_game = next((game for game in games if _prop_matches_event(prop, game, game_date)), "")
+            if not matching_game:
+                continue
+            player_key = canonical_person_key(prop.get("player"))
+            if not player_key or player_key in players_by_game.get(matching_game, set()):
+                continue
+            stat = str(prop.get("stat") or "").strip()
+            key = (player_key, stat.lower(), matching_game)
+            if not stat or key in seen:
+                continue
+            seen.add(key)
+            rows.append(_row(
+                str(prop.get("player") or ""),
+                str(prop.get("team") or ""),
+                sport.upper(),
+                stat,
+                matching_game,
+                game_date,
+                0.0,
+                "dnp",
+            ))
+    return rows
+
+
 def _prop_matches_event(prop: dict, matchup: str, game_date: date) -> bool:
     matchup_key = "".join(character for character in matchup.upper() if character.isalnum())
     team_key = "".join(character for character in str(prop.get("team") or "").upper() if character.isalnum())
@@ -238,7 +289,16 @@ def fetch_live_stats(sport: str, game_date: date) -> list[dict]:
 def _scoreboard(path: str, game_date: date, ttl_seconds: int = 900) -> dict:
     dates = game_date.strftime("%Y%m%d")
     url = f"{_BASE}/{path}/scoreboard?dates={dates}"
-    return get_json(url, headers=_HEADERS, timeout=12, ttl_seconds=ttl_seconds).data
+    response = get_json(
+        url,
+        headers=_HEADERS,
+        timeout=12,
+        ttl_seconds=ttl_seconds,
+        browser_fallback=True,
+    )
+    if getattr(response, "stale", False):
+        raise RuntimeError("Official scoreboard refresh failed; the saved schedule is stale and cannot settle entries.")
+    return response.data
 
 
 def _summary(
@@ -255,6 +315,7 @@ def _summary(
         headers=_HEADERS,
         timeout=12,
         ttl_seconds=ttl_seconds,
+        browser_fallback=True,
     ).data
 
 
@@ -263,7 +324,165 @@ def _parse_summary(summary: dict, sport: str, game_date: date, row_status: str =
         return _parse_basketball_summary(summary, sport, game_date, row_status=row_status)
     if sport == "MLB":
         return _parse_baseball_summary(summary, game_date, row_status=row_status)
+    if sport == "NFL":
+        return _parse_football_summary(summary, game_date, row_status=row_status)
     return []
+
+
+def _parse_football_summary(summary: dict, game_date: date, row_status: str = "played") -> list[dict]:
+    matchup = _matchup(summary)
+    players: dict[tuple[str, str], dict] = {}
+    for team_group in summary.get("boxscore", {}).get("players", []):
+        team_abbr = team_group.get("team", {}).get("abbreviation", "")
+        for stat_group in team_group.get("statistics", []):
+            category = str(stat_group.get("name") or stat_group.get("displayName") or "").lower()
+            labels = stat_group.get("names") or stat_group.get("labels") or []
+            for athlete_row in stat_group.get("athletes", []):
+                athlete = athlete_row.get("athlete", {})
+                player = str(athlete.get("displayName") or "").strip()
+                if not player:
+                    continue
+                provider_id = str(athlete.get("id") or athlete.get("uid") or "").strip()
+                key = (provider_id or canonical_person_key(player), team_abbr)
+                record = players.setdefault(key, {
+                    "player": player,
+                    "team": team_abbr,
+                    "athlete": athlete,
+                    "did_not_play": False,
+                    "categories": {},
+                })
+                record["did_not_play"] = bool(record["did_not_play"] or athlete_row.get("didNotPlay"))
+                if not athlete_row.get("didNotPlay"):
+                    record["categories"][category] = {
+                        "stats": _stats_by_label(labels, athlete_row.get("stats", [])),
+                        "raw": {str(label).upper(): value for label, value in zip(labels, athlete_row.get("stats", []), strict=False)},
+                    }
+
+    rows: list[dict] = []
+    for record in players.values():
+        player = record["player"]
+        team = record["team"]
+        if record["did_not_play"] and not record["categories"]:
+            player_rows = _football_dnp_rows(player, team, matchup, game_date)
+        else:
+            player_rows = _football_stat_rows(
+                player,
+                team,
+                matchup,
+                game_date,
+                record["categories"],
+                row_status,
+            )
+        rows.extend(_with_athlete_identity(player_rows, record["athlete"]))
+    return rows
+
+
+def _football_stat_rows(
+    player: str,
+    team: str,
+    game: str,
+    game_date: date,
+    categories: dict[str, dict],
+    status: str,
+) -> list[dict]:
+    passing = (categories.get("passing") or {}).get("stats", {})
+    passing_raw = (categories.get("passing") or {}).get("raw", {})
+    rushing = (categories.get("rushing") or {}).get("stats", {})
+    receiving = (categories.get("receiving") or {}).get("stats", {})
+    defensive = (categories.get("defensive") or {}).get("stats", {})
+    interceptions = (categories.get("interceptions") or {}).get("stats", {})
+    kicking = (categories.get("kicking") or {}).get("stats", {})
+    kicking_raw = (categories.get("kicking") or {}).get("raw", {})
+
+    values: dict[str, float] = {}
+    if passing:
+        completions, attempts = _made_attempted(passing_raw.get("C/ATT", "0/0"))
+        values.update({
+            "Pass Yards": passing.get("YDS", 0.0),
+            "Passing Yards": passing.get("YDS", 0.0),
+            "Pass TDs": passing.get("TD", 0.0),
+            "Passing TDs": passing.get("TD", 0.0),
+            "INT": passing.get("INT", 0.0),
+            "INTs Thrown": passing.get("INT", 0.0),
+            "Interceptions": passing.get("INT", 0.0),
+            "Interceptions Thrown": passing.get("INT", 0.0),
+            "Completions": completions,
+            "Pass Completions": completions,
+            "Passing Attempts": attempts,
+            "Pass Attempts": attempts,
+        })
+    if rushing:
+        values.update({
+            "Rush Yards": rushing.get("YDS", 0.0),
+            "Rushing Yards": rushing.get("YDS", 0.0),
+            "Rush Attempts": rushing.get("CAR", 0.0),
+            "Carries": rushing.get("CAR", 0.0),
+            "Rush TDs": rushing.get("TD", 0.0),
+            "Rushing TDs": rushing.get("TD", 0.0),
+        })
+    if receiving:
+        values.update({
+            "Rec Yards": receiving.get("YDS", 0.0),
+            "Receiving Yards": receiving.get("YDS", 0.0),
+            "Receptions": receiving.get("REC", 0.0),
+            "Targets": receiving.get("TGTS", 0.0),
+            "Rec TDs": receiving.get("TD", 0.0),
+            "Receiving TDs": receiving.get("TD", 0.0),
+        })
+    if rushing or receiving:
+        rush_yards = rushing.get("YDS", 0.0)
+        rec_yards = receiving.get("YDS", 0.0)
+        rush_tds = rushing.get("TD", 0.0)
+        rec_tds = receiving.get("TD", 0.0)
+        values.update({
+            "Rush + Rec Yards": rush_yards + rec_yards,
+            "Rush+Rec Yards": rush_yards + rec_yards,
+            "Rush + Rec TDs": rush_tds + rec_tds,
+            "Rush+Rec TDs": rush_tds + rec_tds,
+        })
+    if defensive:
+        total_tackles = defensive.get("TOT", 0.0)
+        values.update({
+            "Sacks": defensive.get("SACKS", 0.0),
+            "Tackles": total_tackles,
+            "Tackles + Assists": total_tackles,
+        })
+    if interceptions:
+        values.update({
+            "Defensive Interceptions": interceptions.get("INT", 0.0),
+            "Interceptions": interceptions.get("INT", 0.0),
+        })
+    if kicking:
+        xp_made, _ = _made_attempted(kicking_raw.get("XP", "0/0"))
+        values.update({
+            "XP Made": xp_made,
+            "Extra Points Made": xp_made,
+            "Kicking Points": kicking.get("PTS", 0.0),
+        })
+
+    return [_row(player, team, "NFL", stat, game, game_date, actual, status) for stat, actual in values.items()]
+
+
+def _football_dnp_rows(player: str, team: str, game: str, game_date: date) -> list[dict]:
+    stats = [
+        "Pass Yards", "Passing Yards", "Pass TDs", "Passing TDs", "INT", "INTs Thrown",
+        "Interceptions", "Completions", "Pass Completions", "Passing Attempts", "Pass Attempts",
+        "Rush Yards", "Rushing Yards", "Rush Attempts", "Carries", "Rush TDs", "Rushing TDs",
+        "Rec Yards", "Receiving Yards", "Receptions", "Targets", "Rec TDs", "Receiving TDs",
+        "Rush + Rec Yards", "Rush+Rec Yards", "Rush + Rec TDs", "Rush+Rec TDs", "Sacks",
+        "Tackles", "Tackles + Assists",
+        "Defensive Interceptions",
+        "XP Made", "Extra Points Made", "Kicking Points",
+    ]
+    return [_row(player, team, "NFL", stat, game, game_date, 0.0, "dnp") for stat in stats]
+
+
+def _made_attempted(value: Any) -> tuple[float, float]:
+    text = str(value or "0/0").strip().replace("-", "/")
+    parts = text.split("/", 1)
+    if len(parts) != 2:
+        return _numeric(text), 0.0
+    return _numeric(parts[0]), _numeric(parts[1])
 
 
 def _parse_baseball_summary(summary: dict, game_date: date, row_status: str = "played") -> list[dict]:
@@ -547,13 +766,15 @@ def _event_matchup(event: dict) -> str:
 
 def _entry_date(entry: dict) -> date:
     placed_at = entry.get("placed_at")
-    if isinstance(placed_at, datetime):
-        return placed_at.date()
     if isinstance(placed_at, str) and placed_at:
         try:
-            return datetime.fromisoformat(placed_at).date()
+            placed_at = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
         except ValueError:
             pass
+    if isinstance(placed_at, datetime):
+        if placed_at.tzinfo is None:
+            placed_at = placed_at.replace(tzinfo=UTC)
+        return placed_at.astimezone(_SLATE_TIME_ZONE).date()
     return date.today()
 
 
@@ -566,7 +787,10 @@ def _entry_dates(entries: list[dict]) -> list[date]:
             if not game_time:
                 continue
             try:
-                prop_dates.add(datetime.fromisoformat(game_time.replace("Z", "+00:00")).date())
+                parsed = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                prop_dates.add(parsed.astimezone(_SLATE_TIME_ZONE).date())
             except ValueError:
                 continue
         dates.update(prop_dates or {_entry_date(entry)})

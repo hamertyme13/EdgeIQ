@@ -9,6 +9,7 @@ dependencies = [
     "PyQt6-Charts==6.11.0",
     "python-dotenv==1.2.2",
     "requests==2.34.2",
+    "curl-cffi==0.13.0",
     "rich==15.0.0",
     "SQLAlchemy==2.0.51",
     "uvicorn>=0.30.0,<1.0.0",

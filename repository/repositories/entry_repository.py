@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from analytics.correlation import estimate_correlation_matrix
 from analytics.entry_recommendation import recommendation as entry_recommendation
-from analytics.pickem_payouts import payout_analysis, settlement_return_multiplier
+from analytics.pickem_payouts import payout_analysis, payout_schedule, settlement_return_multiplier
 from models.entry import Entry
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
@@ -469,6 +469,14 @@ class EntryRepository:
             session.commit()
 
     @staticmethod
+    def store_partial_leg_results(entry_id: int, leg_results: list[dict]) -> None:
+        """Persist confirmed legs without treating unresolved legs as outcomes."""
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            EntryRepository._store_leg_results(session, entry_id, leg_results, resolved_only=True)
+            session.commit()
+
+    @staticmethod
     def backfill_game_times(
         game_times: list[dict],
         pending_only: bool = False,
@@ -481,6 +489,7 @@ class EntryRepository:
             return {"updated": 0, "candidates": 0}
 
         updated = 0
+        repairs = []
         with SessionLocal() as session:
             query = session.query(EntryPropModel, EntryModel).join(
                 EntryModel,
@@ -495,12 +504,25 @@ class EntryRepository:
                 game_time = EntryRepository._matching_game_time(prop, indexed, getattr(entry, "placed_at", None))
                 if not game_time or prop.game_time == game_time:
                     continue
+                previous_game_time = prop.game_time or ""
                 prop.game_time = game_time
                 updated += 1
+                repairs.append({
+                    "entry_id": entry.id,
+                    "prop_id": prop.id,
+                    "player": prop.player,
+                    "game": prop.game,
+                    "previous_game_time": previous_game_time,
+                    "game_time": game_time,
+                })
 
             session.commit()
 
-        return {"updated": updated, "candidates": len(indexed)}
+        return {
+            "updated": updated,
+            "candidates": len(indexed.get("records", [])),
+            "repairs": repairs,
+        }
 
     @staticmethod
     def classify_missing_economics(default_wager: float = DEFAULT_WAGER) -> dict:
@@ -530,7 +552,7 @@ class EntryRepository:
                 )
                 entry.wager = round(float(default_wager), 2) if missing_wager else entry.wager
                 entry.multiplier = (
-                    EntryRepository._default_multiplier_for_legs(leg_count)
+                    EntryRepository._default_multiplier_for_legs(leg_count, entry.platform)
                     if missing_multiplier
                     else entry.multiplier
                 )
@@ -770,8 +792,9 @@ class EntryRepository:
                 for candidate in candidates
                 if candidate.get("starts_at") is not None and candidate["starts_at"] >= placed
             ]
-            if future:
-                candidates = future
+            if not future:
+                return ""
+            candidates = future
         if require_unique and len(candidates) != 1:
             return ""
         candidates.sort(key=lambda candidate: candidate.get("starts_at") or datetime.max.replace(tzinfo=UTC))
@@ -797,7 +820,12 @@ class EntryRepository:
         return value.astimezone(UTC)
 
     @staticmethod
-    def _store_leg_results(session: Session, entry_id: int, leg_results: list[dict]) -> None:
+    def _store_leg_results(
+        session: Session,
+        entry_id: int,
+        leg_results: list[dict],
+        resolved_only: bool = False,
+    ) -> None:
         props = (
             session.query(EntryPropModel)
             .filter(EntryPropModel.entry_id == entry_id)
@@ -805,9 +833,26 @@ class EntryRepository:
             .all()
         )
         for prop_model, result in zip(props, leg_results, strict=False):
-            actual = result.get("actual")
-            prop_model.actual = float(actual) if actual is not None else None
-            prop_model.final_result = str(result.get("result") or "")
+            incoming_result = str(result.get("result") or "")
+            incoming_actual = result.get("actual")
+            incoming_status = str(result.get("final_status") or result.get("status") or "").lower()
+            incoming_resolved = (
+                incoming_result in {"Win", "Loss", "Push", "DNP"}
+                and (incoming_actual is not None or incoming_status == "dnp")
+            )
+            if resolved_only and not incoming_resolved:
+                continue
+            existing_verified = (
+                getattr(prop_model, "actual", None) is not None
+                and str(getattr(prop_model, "final_status", "") or "").lower() in {"played", "dnp"}
+                and str(getattr(prop_model, "final_source", "") or "") != "projection_estimate"
+            )
+            if existing_verified and not incoming_resolved:
+                continue
+            if incoming_actual is None and getattr(prop_model, "actual", None) is not None:
+                continue
+            prop_model.actual = float(incoming_actual) if incoming_actual is not None else None
+            prop_model.final_result = incoming_result
             prop_model.final_source = str(result.get("source") or "")
             prop_model.final_status = str(result.get("final_status") or result.get("status") or "")
             PredictionLedgerRepository.settle(session, prop_model)
@@ -912,12 +957,13 @@ class EntryRepository:
         remaining_legs = max(0, int(leg_count or 0) - dnp_legs)
         if remaining_legs <= 1:
             return "Push", 0.0
-        adjusted_multiplier = EntryRepository._default_multiplier_for_legs(remaining_legs)
+        adjusted_multiplier = EntryRepository._default_multiplier_for_legs(remaining_legs, platform)
         return result, EntryRepository._profit_for_result(result, wager, adjusted_multiplier)
 
     @staticmethod
-    def _default_multiplier_for_legs(leg_count: int) -> float:
-        return EntryRepository.DEFAULT_MULTIPLIERS.get(leg_count, 3.0)
+    def _default_multiplier_for_legs(leg_count: int, platform: str = "PrizePicks") -> float:
+        schedule = payout_schedule(platform, "standard", leg_count)
+        return float(schedule.get(leg_count) or EntryRepository.DEFAULT_MULTIPLIERS.get(leg_count, 3.0))
 
     @staticmethod
     def _group_by_result(entries: list[dict]) -> dict[str, dict]:

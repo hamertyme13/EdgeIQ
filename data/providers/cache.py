@@ -43,6 +43,7 @@ def get_json(
     timeout: int = 15,
     ttl_seconds: int = 300,
     retries: int = 2,
+    browser_fallback: bool = False,
 ) -> CachedResponse:
     cache_path = _cache_path(cache_key or url)
     cached = _read_cache(cache_path)
@@ -70,6 +71,8 @@ def get_json(
             try:
                 _record_metric(host, "network_requests")
                 response = requests.get(url, headers=request_headers or None, timeout=timeout)
+                if browser_fallback and response.status_code == 403:
+                    response = _browser_compatible_get(url, request_headers, timeout, response)
                 if response.status_code == 304 and cached:
                     _write_cache(
                         cache_path,
@@ -115,6 +118,16 @@ def get_json(
             )
 
         raise RuntimeError(f"Provider fetch failed and no cache is available: {last_error}")
+
+
+def _browser_compatible_get(url: str, headers: dict[str, str], timeout: int, fallback):
+    """Retry hosts that reject Requests' TLS fingerprint with a browser-compatible client."""
+    try:
+        from curl_cffi import requests as browser_requests
+
+        return browser_requests.get(url, headers=headers or None, timeout=timeout, impersonate="chrome")
+    except Exception:
+        return fallback
 
 
 def cache_status(url: str, *, ttl_seconds: int = 300) -> dict[str, Any]:

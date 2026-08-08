@@ -1497,6 +1497,68 @@ p { color: var(--muted); margin: 5px 0 0; }
   padding: 12px;
   background: rgba(5, 6, 13, .22);
 }
+.advantage-tools .trending-props-tool {
+  grid-column: span 2;
+}
+.trending-props-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr)) auto;
+  align-items: end;
+}
+.trending-props-list {
+  display: grid;
+  max-height: 440px;
+  overflow: auto;
+  border-block: 1px solid rgba(255, 255, 255, .08);
+}
+.trending-selection-actions {
+  justify-content: flex-end;
+  margin-block: 2px 8px;
+}
+.trending-prop-row {
+  display: grid;
+  grid-template-columns: 24px 38px 44px minmax(180px, 1.5fr) minmax(110px, .8fr) 90px minmax(105px, auto) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, .07);
+}
+.trending-prop-row .opportunity-select {
+  justify-self: center;
+}
+.trending-rank {
+  color: var(--muted);
+  font-size: .8rem;
+  font-weight: 800;
+  text-align: center;
+}
+.trending-prop-row strong,
+.trending-prop-row small {
+  min-width: 0;
+}
+.grade-chip {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(57, 255, 136, .45);
+  border-radius: 6px;
+  color: var(--primary);
+  font-weight: 900;
+}
+.opportunity-select {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--primary);
+}
+@media (max-width: 900px) {
+  .advantage-tools .trending-props-tool { grid-column: 1 / -1; }
+  .trending-props-controls { grid-template-columns: 1fr; }
+  .trending-prop-row { grid-template-columns: 24px 34px 40px minmax(150px, 1fr) 76px auto; }
+  .trending-prop-row .trending-stat,
+  .trending-prop-row .trending-count { display: none; }
+}
 .advantage-tools .compact-controls {
   grid-template-columns: repeat(2, minmax(150px, 1fr));
 }
@@ -2731,9 +2793,11 @@ tr.sport-group-row:hover td {
 }
 
 .recommendation-drawer[hidden],
-.onboarding-modal[hidden] { display: none; }
+.onboarding-modal[hidden],
+.entry-choice-modal[hidden] { display: none; }
 .recommendation-drawer,
-.onboarding-modal {
+.onboarding-modal,
+.entry-choice-modal {
   position: fixed;
   inset: 0;
   z-index: 50;
@@ -2776,6 +2840,27 @@ tr.sport-group-row:hover td {
     linear-gradient(180deg, rgba(57,255,136,.11), rgba(16,21,34,.97) 92px),
     var(--raised);
   box-shadow: 0 24px 60px rgba(0,0,0,.46), 0 0 38px rgba(57,255,136,.1);
+}
+.entry-choice-panel {
+  position: relative;
+  width: min(560px, 92vw);
+  margin: 18vh auto;
+  padding: 22px;
+  border: 1px solid rgba(255, 188, 67, .42);
+  border-radius: 8px;
+  background: var(--raised);
+  box-shadow: 0 24px 60px rgba(0,0,0,.5);
+}
+.entry-choice-panel h2 { margin: 4px 0 10px; }
+.entry-choice-panel > p:not(.eyebrow) { color: var(--muted); line-height: 1.55; }
+.entry-choice-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 10px;
+  margin-top: 18px;
+}
+@media (max-width: 620px) {
+  .entry-choice-actions { grid-template-columns: 1fr; }
 }
 .mobile-slip {
   position: fixed;
@@ -3578,6 +3663,51 @@ tr:hover td {
   color: var(--primary);
 }
 
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.provider-generator-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.provider-generator {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(7, 11, 20, .42);
+}
+
+.provider-generator h3 {
+  margin: 8px 0 4px;
+  font-size: 1.05rem;
+}
+
+.provider-generator p {
+  margin-top: 0;
+}
+
+.provider-generator .toolbar > * {
+  min-width: 0;
+}
+
+.comparison-grid .suggestion {
+  color: var(--text);
+}
+
+@media (max-width: 760px) {
+  .comparison-grid,
+  .provider-generator-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .negative {
   color: var(--danger);
 }
@@ -4010,4 +4140,503 @@ tr:hover td {
   color: var(--warn, #f6c85f);
   font-size: 0.82rem;
   line-height: 1.35;
+}
+
+/* Readability pass: keep dense analytics legible without forcing horizontal overflow. */
+body {
+  font-size: 16px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+}
+
+p,
+.subtle,
+.muted-card,
+.analysis-card,
+.suggestion,
+.game-card {
+  line-height: 1.5;
+}
+
+small {
+  line-height: 1.4;
+}
+
+.main small {
+  font-size: 12px !important;
+}
+
+button {
+  min-width: 0;
+  padding-inline: 16px;
+  font-size: 14px;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+input,
+select,
+textarea {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #8794a8;
+  opacity: 1;
+}
+
+.panel-header {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+
+.panel-header > div:first-child {
+  flex: 1 1 300px;
+}
+
+.panel-header h2,
+.panel-header h3 {
+  line-height: 1.25;
+}
+
+.panel-header p {
+  max-width: 74ch;
+  line-height: 1.45;
+}
+
+.panel-header .toolbar,
+.panel-header .panel-action {
+  margin-left: auto;
+}
+
+.tool-group summary {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) minmax(140px, 1fr) 28px;
+  align-items: center;
+  line-height: 1.3;
+}
+
+.tool-group summary span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-group summary small {
+  min-width: 0;
+  margin-left: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tool-group summary::after {
+  grid-column: 3;
+}
+
+.field-label,
+.panel-action span,
+.briefing-terminal-kicker,
+.briefing-section-title,
+.metric-strip small,
+.accuracy-grid span,
+.entry-leg-row span,
+th {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.metric-strip small,
+.metric-strip strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.stat-label {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.stat-value {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.status-pill,
+.score-pill {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.opportunity-board-list .opportunity-row {
+  grid-template-columns: 38px 82px minmax(220px, 1fr) minmax(220px, .9fr) auto;
+  gap: 12px;
+  min-height: 76px;
+}
+
+.opportunity-row strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.opportunity-row strong small,
+.opportunity-proof span {
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: normal;
+}
+
+.opportunity-actions button {
+  min-height: 38px;
+  font-size: 13px;
+}
+
+.risk-ev-grid span,
+.slate-tile small,
+.briefing-terminal-side small {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.game-metric span,
+.line-shop-metric span {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.game-metric strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+th,
+td {
+  padding-block: 12px;
+  line-height: 1.4;
+}
+
+td {
+  font-size: 14px;
+}
+
+.checklist-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.checklist-item,
+.checklist-item strong,
+.checklist-item p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.checklist-item p {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.scan-step,
+.scan-run-row span,
+.checklist-item > span {
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.quick-prompts .micro-button {
+  width: auto;
+  min-width: 0;
+  min-height: 36px;
+  padding-inline: 12px;
+}
+
+@media (max-width: 1350px) {
+  .tool-group summary {
+    grid-template-columns: minmax(0, 1fr) 28px;
+    row-gap: 4px;
+  }
+
+  .tool-group summary small {
+    grid-column: 1;
+    text-align: left;
+  }
+
+  .tool-group summary::after {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .opportunity-board-list .opportunity-row {
+    grid-template-columns: 34px 76px minmax(210px, 1fr) minmax(190px, .8fr) auto;
+  }
+
+  .monthly-profit-layout .metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pie-layout {
+    grid-template-columns: 1fr;
+    justify-items: center;
+  }
+
+  .pie-legend {
+    width: 100%;
+  }
+}
+
+@media (max-width: 1050px) {
+  .nav {
+    flex: 1 1 auto;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .nav-item {
+    flex: 0 1 112px;
+    min-width: 82px;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tool-group summary small {
+    display: block;
+  }
+
+  .opportunity-board-list .opportunity-row {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+
+  .form-grid.compact-controls {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  }
+
+  .panel-header .toolbar,
+  .panel-header .panel-action {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 680px) {
+  body {
+    font-size: 15px;
+  }
+
+  .main {
+    padding-inline: 14px;
+  }
+
+  .form-grid,
+  .form-grid.compact-controls,
+  .preferences-controls,
+  .scorecard-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    grid-template-columns: minmax(0, 1fr) 30px;
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .stat-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .stat-value {
+    font-size: 21px;
+    overflow-wrap: anywhere;
+  }
+
+  .workspace-tab,
+  .mobile-bottom-nav .nav-item {
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  .panel,
+  .workspace-hub,
+  .research-context-bar {
+    padding-inline: 14px;
+  }
+}
+
+/* Visibility assurance: all labels and states must remain readable on the dark shell. */
+:root {
+  --muted: #b3bfd0;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  -webkit-font-smoothing: antialiased;
+}
+
+p,
+.subtle,
+.muted-card,
+small,
+.panel-action span,
+.stat-label,
+.field-label,
+.check-row,
+.tool-group summary small,
+.status-pill,
+.score-pill,
+th {
+  color: #b3bfd0;
+}
+
+.field-label,
+label:not(.toggle-control):not(.check-row) {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.field-label > input,
+.field-label > select,
+.field-label > textarea {
+  margin-top: 5px;
+}
+
+.subtle,
+.main small,
+.panel-action span,
+.status-pill,
+.score-pill,
+.timeline-chip,
+.leg-time-chip {
+  font-size: 13px !important;
+  line-height: 1.4;
+}
+
+button:disabled,
+.tab-button:disabled,
+.workspace-tab:disabled {
+  opacity: .72;
+  color: #c3ccda;
+  -webkit-text-fill-color: #c3ccda;
+}
+
+button:not(:disabled),
+.tab-button:not(:disabled),
+.workspace-tab:not(:disabled) {
+  opacity: 1;
+}
+
+button,
+.status-pill,
+.score-pill,
+.pill,
+.direction-badge,
+.timeline-chip,
+.leg-time-chip {
+  max-width: 100%;
+  text-overflow: clip;
+}
+
+button {
+  overflow: visible;
+}
+
+.status-pill,
+.score-pill,
+.timeline-chip,
+.leg-time-chip {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+input,
+select,
+textarea {
+  color: #f4f7fb;
+  -webkit-text-fill-color: #f4f7fb;
+}
+
+select option {
+  color: #f4f7fb;
+  background: #121a28;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #9daabd;
+  opacity: 1;
+}
+
+th {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+td,
+.suggestion,
+.analysis-card,
+.checklist-item,
+.game-card,
+.command-card,
+.entry-protection-card {
+  overflow-wrap: anywhere;
+}
+
+.table-wrap,
+.responsive-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.workspace-tab-strip,
+.tab-strip,
+.toolbar,
+.button-row {
+  align-items: stretch;
+}
+
+.workspace-tab,
+.tab-button,
+.toolbar button,
+.button-row button {
+  min-height: 40px;
+}
+
+@media (min-width: 1051px) {
+  #entries .two-col > .stack[data-workspace="entry-generator"] {
+    position: sticky;
+    top: 88px;
+    max-height: calc(100vh - 112px);
+    overflow-y: auto;
+    padding-right: 4px;
+    scrollbar-color: rgba(59, 130, 246, .55) rgba(18, 26, 40, .55);
+  }
+}
+
+@media (max-width: 680px) {
+  .subtle,
+  .main small,
+  .panel-action span,
+  .status-pill,
+  .score-pill,
+  .timeline-chip,
+  .leg-time-chip {
+    font-size: 12px !important;
+  }
+
+  .panel-header h2,
+  .panel-header h3,
+  .suggestion strong,
+  .analysis-card strong {
+    overflow-wrap: anywhere;
+  }
 }

@@ -1,6 +1,22 @@
 {
   "included": [
     {
+      "type": "game",
+      "id": "game-1",
+      "attributes": {
+        "external_game_id": "WNBA_game_123",
+        "start_time": "2026-07-25T19:00:00Z",
+        "metadata": {
+          "game_info": {
+            "teams": {
+              "away": {"abbreviation": "LAS"},
+              "home": {"abbreviation": "NYL"}
+            }
+          }
+        }
+      }
+    },
+    {
       "type": "new_player",
       "id": "p1",
       "attributes": {
@@ -27,6 +43,11 @@
         "rank": 4
       },
       "relationships": {
+        "game": {
+          "data": {
+            "id": "game-1"
+          }
+        },
         "new_player": {
           "data": {
             "id": "p1"

@@ -157,6 +157,7 @@ def recheck_final_stats_payload(
     backfill_settled_results: Callable[[list[dict]], dict],
     auto_check_pending: Callable[..., dict],
     recheck_results: Callable[..., dict],
+    quarantine_mismatched_evidence: Callable[[], dict],
 ) -> dict:
     before_entries = EntryRepository.all()
     unknown_before = unknown_leg_count(before_entries)
@@ -173,6 +174,7 @@ def recheck_final_stats_payload(
         after_entries,
         allow_estimates=allow_estimates,
     )
+    evidence_quarantine = quarantine_mismatched_evidence()
     after_entries = EntryRepository.all()
     unknown_after = unknown_leg_count(after_entries)
     return {
@@ -185,6 +187,7 @@ def recheck_final_stats_payload(
         "backfill": backfill,
         "auto_check": auto_check,
         "result_review": result_review,
+        "evidence_quarantine": evidence_quarantine,
     }
 
 

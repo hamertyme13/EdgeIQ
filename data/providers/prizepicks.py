@@ -55,16 +55,41 @@ def _normalize_league(raw_league: str) -> str | None:
     return _LEAGUE_MAP.get(raw_league.upper())
 
 
-def _season_type(raw_league: str, attrs: dict) -> str:
+def _season_type(raw_league: str, attrs: dict, game_attrs: dict | None = None) -> str:
+    game_attrs = game_attrs or {}
     text = " ".join([
         raw_league or "",
         str(attrs.get("league", "") or ""),
         str(attrs.get("description", "") or ""),
         str(attrs.get("game_type", "") or ""),
+        str(game_attrs.get("description", "") or ""),
     ]).lower()
     if raw_league.upper() == "NBASL" or "summer league" in text:
         return "summer_league"
+    if raw_league.upper() == "NFL":
+        start_time = str(
+            game_attrs.get("start_time")
+            or attrs.get("start_time")
+            or attrs.get("scheduled_at")
+            or ""
+        )
+        if any(token in text for token in ("preseason", "hall of fame")) or _is_august_date(start_time):
+            return "preseason"
     return "regular"
+
+
+def _is_august_date(value: object) -> bool:
+    text = str(value or "").strip()
+    return len(text) >= 7 and text[4:7] == "-08"
+
+
+def _merge_player_attrs(current: dict, incoming: dict) -> dict:
+    """Keep populated player fields when sideloaded duplicates are incomplete."""
+    merged = dict(current)
+    for key, value in incoming.items():
+        if value not in (None, "", [], {}):
+            merged[key] = value
+    return merged
 
 
 def fetch_projections(limit: int = 500) -> list[dict]:
@@ -82,9 +107,16 @@ def fetch_projections(limit: int = 500) -> list[dict]:
 
     # Build player lookup from included sideloaded data
     players: dict[str, dict] = {}
+    games: dict[str, dict] = {}
     for item in data.get("included", []):
         if item.get("type") == "new_player":
-            players[item["id"]] = item.get("attributes", {})
+            player_id = item["id"]
+            players[player_id] = _merge_player_attrs(
+                players.get(player_id, {}),
+                item.get("attributes", {}),
+            )
+        elif item.get("type") == "game":
+            games[item["id"]] = item.get("attributes", {})
 
     results: list[dict] = []
 
@@ -100,6 +132,8 @@ def fetch_projections(limit: int = 500) -> list[dict]:
         rel = proj.get("relationships", {})
         player_id = rel.get("new_player", {}).get("data", {}).get("id")
         player_attrs = players.get(player_id, {})
+        game_id = rel.get("game", {}).get("data", {}).get("id")
+        game_attrs = games.get(game_id, {})
 
         raw_league = player_attrs.get("league", "")
         league = _normalize_league(raw_league)
@@ -120,9 +154,10 @@ def fetch_projections(limit: int = 500) -> list[dict]:
             "odds_type":      str(attrs.get("odds_type", "standard") or "standard").lower(),
             "adjusted_odds":  bool(attrs.get("adjusted_odds")),
             "is_promo":      bool(attrs.get("is_promo")),
-            "game":          attrs.get("description", ""),
-            "game_time":      attrs.get("start_time") or attrs.get("scheduled_at") or attrs.get("game_time") or attrs.get("commence_time") or "",
-            "season_type":    _season_type(raw_league, attrs),
+            "game":          _game_matchup(game_attrs) or attrs.get("description", ""),
+            "game_time":      game_attrs.get("start_time") or attrs.get("start_time") or attrs.get("scheduled_at") or attrs.get("game_time") or attrs.get("commence_time") or "",
+            "provider_game_id": str(game_attrs.get("external_game_id") or attrs.get("game_id") or game_id or ""),
+            "season_type":    _season_type(raw_league, attrs, game_attrs),
             "status":        attrs.get("status", ""),
             "trending_count": attrs.get("trending_count", 0),
             "rank":          attrs.get("rank", 999),
@@ -132,6 +167,13 @@ def fetch_projections(limit: int = 500) -> list[dict]:
         })
 
     return results
+
+
+def _game_matchup(game_attrs: dict) -> str:
+    teams = (game_attrs.get("metadata") or {}).get("game_info", {}).get("teams", {})
+    away = str((teams.get("away") or {}).get("abbreviation") or "").strip()
+    home = str((teams.get("home") or {}).get("abbreviation") or "").strip()
+    return f"{away} @ {home}" if away and home else ""
 
 
 def top_props(n: int = 25, sport: str | None = None) -> list[dict]:

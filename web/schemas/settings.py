@@ -9,7 +9,7 @@ class DnpSettingPayload(BaseModel):
 
 class UserPreferencePayload(BaseModel):
     risk_style: Literal["conservative", "balanced", "aggressive"] = "balanced"
-    preferred_legs: Literal["2", "3", "2-3", "2-5"] = "2-3"
+    preferred_legs: Literal["2", "3", "2-3", "2-5", "2-6", "2-8"] = "2-3"
     allow_high_risk: bool = True
     avoid_same_game: bool = True
     max_wager_pct: float = Field(default=5.0, ge=0.1, le=100)

@@ -42,9 +42,10 @@ def suggest_entries(
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
 
+    recommendation_props = [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)]
     candidates = [
         candidate
-        for prop in raw_props
+        for prop in recommendation_props
         if prop.get("line") is not None
         and (sport.upper() == "ALL SPORTS" or prop.get("league", "").upper() == sport.upper())
         for candidate in _props_from_feed(prop, platform)
@@ -99,6 +100,14 @@ def suggest_entries(
         )
 
     return suggestions
+
+
+def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:
+    """Exclude premium lines that manufacture confidence without standard payout value."""
+    if platform != Platform.PRIZEPICKS:
+        return True
+    offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "standard").strip().lower()
+    return not raw.get("is_premium_line") and offer_type != "demon"
 
 
 def _score_entry(entry: Entry, warnings: list[str]) -> float:

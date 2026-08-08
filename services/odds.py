@@ -1,6 +1,9 @@
 import os
 import re
+import threading
+import time
 from statistics import median
+from typing import Any
 from urllib.parse import urlencode
 
 from rich.console import Console
@@ -86,6 +89,32 @@ PROP_MARKETS = {
 }
 
 console = Console()
+_INTERACTIVE_CACHE_SECONDS = 30
+_INTERACTIVE_RESPONSE_CACHE: dict[tuple[int, str], tuple[float, Any]] = {}
+_INTERACTIVE_RESPONSE_LOCK = threading.Lock()
+
+
+def _interactive_timeout() -> int:
+    return max(1, min(10, int(os.getenv("EDGEIQ_ODDS_INTERACTIVE_TIMEOUT_SECONDS", "3"))))
+
+
+def _interactive_json(url: str, *, cache_key: str, ttl_seconds: int):
+    key = (id(get_json), cache_key)
+    now = time.monotonic()
+    with _INTERACTIVE_RESPONSE_LOCK:
+        cached = _INTERACTIVE_RESPONSE_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    response = get_json(
+        url,
+        cache_key=cache_key,
+        timeout=_interactive_timeout(),
+        ttl_seconds=ttl_seconds,
+        retries=0,
+    )
+    with _INTERACTIVE_RESPONSE_LOCK:
+        _INTERACTIVE_RESPONSE_CACHE[key] = (now + _INTERACTIVE_CACHE_SECONDS, response)
+    return response
 
 
 def get_games(sport: str | None = None) -> list[dict]:
@@ -124,7 +153,7 @@ def get_events(sport: str) -> list[dict]:
     url = f"{BASE_URL}/{sport_key}/events?{query}"
     cache_key = f"{BASE_URL}/{sport_key}/events?dateFormat=iso"
     try:
-        response = get_json(url, cache_key=cache_key, timeout=10, ttl_seconds=120)
+        response = _interactive_json(url, cache_key=cache_key, ttl_seconds=120)
     except RuntimeError:
         return []
     return response.data if isinstance(response.data, list) else []
@@ -205,10 +234,9 @@ def get_player_prop_consensus(
     })
     cache_key = f"{BASE_URL}/{sport_key}/events/{event_id}/odds?{cache_query}"
     try:
-        response = get_json(
+        response = _interactive_json(
             url,
             cache_key=cache_key,
-            timeout=12,
             ttl_seconds=max(60, int(os.getenv("EDGEIQ_ODDS_CACHE_SECONDS", "180"))),
         )
     except RuntimeError:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from difflib import SequenceMatcher
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -112,7 +113,14 @@ class FinalStatsRepository:
                 target_date = _prop_game_date(prop)
                 placed_date = _prop_placed_date(prop)
                 rows = query.order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc()).limit(50).all()
-                row = _best_matching_row(rows, game, prop.get("team", ""), target_date=target_date, placed_date=placed_date)
+                row = _best_matching_row(
+                    rows,
+                    game,
+                    prop.get("team", ""),
+                    target_date=target_date,
+                    placed_date=placed_date,
+                    allow_unique_date_fallback=bool(identity_id),
+                )
                 if row is None:
                     row = _best_fuzzy_player_row(session, prop)
                 if row is None:
@@ -217,6 +225,7 @@ def _best_matching_row(
     team: object = "",
     target_date: str | None = None,
     placed_date: str | None = None,
+    allow_unique_date_fallback: bool = False,
 ) -> FinalPlayerStatModel | None:
     if not rows:
         return None
@@ -229,12 +238,11 @@ def _best_matching_row(
         ),
         reverse=True,
     )
-    if target_date:
-        dated = [row for row in rows if str(row.game_date or "") == target_date]
-        if dated:
-            rows = dated
     requested_game = str(game or "").strip()
     if not requested_game:
+        rows = _rows_near_target_date(rows, target_date)
+        if not rows:
+            return None
         if placed_date:
             dated = [row for row in rows if str(row.game_date or "") >= placed_date]
             if dated:
@@ -245,22 +253,78 @@ def _best_matching_row(
     if not requested_key:
         return rows[0] if len(rows) == 1 else None
 
-    for row in rows:
-        if _game_key(row.game) == requested_key:
-            return row
+    matched = [row for row in rows if _game_key(row.game) == requested_key]
 
     team_key = _game_key(team)
-    if team_key:
-        for row in rows:
-            row_key = _game_key(row.game)
-            if requested_key in row_key and team_key in row_key:
-                return row
+    if not matched and team_key:
+        matched = [
+            row
+            for row in rows
+            if requested_key in _game_key(row.game) and team_key in _game_key(row.game)
+        ]
 
-    if len(requested_key) <= 4:
-        for row in rows:
-            if requested_key in _game_key(row.game):
-                return row
-    return rows[0] if len(rows) == 1 else None
+    if not matched and len(requested_key) <= 4:
+        matched = [row for row in rows if requested_key in _game_key(row.game)]
+
+    if not matched and allow_unique_date_fallback:
+        matched = _unique_team_row_on_target_date(rows, team, target_date)
+    if not matched:
+        return None
+
+    matched = _rows_near_target_date(matched, target_date)
+    if not matched and allow_unique_date_fallback:
+        matched = _unique_team_row_on_target_date(rows, team, target_date)
+    if not matched:
+        return None
+    if placed_date:
+        placed_rows = [row for row in matched if str(row.game_date or "") >= placed_date]
+        if placed_rows:
+            matched = placed_rows
+    return matched[0]
+
+
+def _unique_team_row_on_target_date(
+    rows: list[FinalPlayerStatModel],
+    team: object,
+    target_date: str | None,
+) -> list[FinalPlayerStatModel]:
+    """Recover from a bad opponent code only when date and team prove one game."""
+    if not target_date:
+        return []
+    dated = [row for row in rows if str(row.game_date or "") == target_date]
+    team_key = _game_key(team)
+    if team_key:
+        dated = [row for row in dated if team_key in _game_key(row.game)]
+    game_keys = {_game_key(row.game) for row in dated if _game_key(row.game)}
+    return dated if len(game_keys) == 1 else []
+
+
+def _rows_near_target_date(
+    rows: list[FinalPlayerStatModel],
+    target_date: str | None,
+) -> list[FinalPlayerStatModel]:
+    if not target_date:
+        return rows
+    exact = [row for row in rows if str(row.game_date or "") == target_date]
+    if exact:
+        return exact
+    try:
+        requested = date.fromisoformat(target_date)
+    except ValueError:
+        return []
+    return [
+        row
+        for row in rows
+        if _date_distance(row.game_date, requested) <= 1
+    ]
+
+
+def _date_distance(value: object, target: date) -> int:
+    try:
+        parsed = date.fromisoformat(str(value or ""))
+    except ValueError:
+        return 9999
+    return abs((parsed - target).days)
 
 
 def _best_fuzzy_player_row(session, prop: dict) -> FinalPlayerStatModel | None:
@@ -296,7 +360,7 @@ def _best_fuzzy_player_row(session, prop: dict) -> FinalPlayerStatModel | None:
         team,
         target_date=_prop_game_date(prop),
         placed_date=_prop_placed_date(prop),
-    ) or (candidates[0] if len(candidates) == 1 else None)
+    )
 
 
 def _prop_game_date(prop: dict) -> str | None:
@@ -304,9 +368,12 @@ def _prop_game_date(prop: dict) -> str | None:
     if not game_time:
         return None
     try:
-        return datetime.fromisoformat(game_time.replace("Z", "+00:00")).date().isoformat()
+        parsed = datetime.fromisoformat(game_time.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(ZoneInfo("America/New_York"))
+    return parsed.date().isoformat()
 
 
 def _prop_placed_date(prop: dict) -> str | None:
@@ -349,6 +416,8 @@ _TEAM_ALIASES = {
     "WAS": "WSH",
     "GSV": "GS",
     "PDX": "POR",
+    "AZ": "ARI",
+    "CWS": "CHW",
 }
 
 
