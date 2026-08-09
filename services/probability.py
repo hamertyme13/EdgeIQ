@@ -72,6 +72,30 @@ def advanced_probability() -> float:
 
             console.print("Please enter a valid percentage.")
 
+
+def guided_probability() -> float:
+    """Build a conservative estimate from line edge and verified history."""
+    console.print("\nGuided Analysis\n")
+    while True:
+        try:
+            line = float(input("Provider line: "))
+            projection = float(input("Your or EdgeIQ projection: "))
+            sample = max(0, int(input("Verified historical games: ")))
+            hit_rate = float(input("Historical hit rate (%): "))
+            if not 0 <= hit_rate <= 100:
+                raise ValueError
+            relative_edge = (projection - line) / max(1.0, abs(line))
+            edge_probability = 50.0 + max(-15.0, min(15.0, relative_edge * 100.0))
+            history_weight = min(0.65, sample / 30.0)
+            probability = edge_probability * (1.0 - history_weight) + hit_rate * history_weight
+            probability = round(max(35.0, min(69.0, probability)), 1)
+            console.print(f"\nConservative estimated probability: {probability:.1f}%")
+            if sample < 10:
+                console.print("Limited verified history: keep this selection in paper mode.")
+            return probability
+        except ValueError:
+            console.print("Enter numeric values and a hit rate between 0 and 100.")
+
 def choose_probability() -> float:
 
     console.print()
@@ -79,7 +103,7 @@ def choose_probability() -> float:
     console.print("Choose Probability Method\n")
 
     console.print("1. ⭐ Quick Confidence")
-    console.print("2. 📊 Guided Analysis [dim](coming soon)[/dim]")
+    console.print("2. 📊 Guided Analysis")
     console.print("3. 🎯 Advanced")
 
     while True:
@@ -90,7 +114,7 @@ def choose_probability() -> float:
             return quick_probability()
 
         elif choice == "2":
-            console.print("\n[dim]Guided Analysis coming in v2.5...[/dim]\n")
+            return guided_probability()
 
         elif choice == "3":
             return advanced_probability()

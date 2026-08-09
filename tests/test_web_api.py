@@ -3684,7 +3684,7 @@ def test_alert_delivery_settings_round_trip(monkeypatch):
     body = update_alert_delivery_settings(AlertDeliveryPayload(email_enabled=True, email_address="josh@example.com"))
 
     assert body["settings"]["channels"] == ["browser", "email"]
-    assert body["delivery_hooks"]["email"] == "configured"
+    assert body["delivery_hooks"]["email"] == "needs SMTP credentials"
 
 
 def test_alert_delivery_posts_configured_webhook(monkeypatch):

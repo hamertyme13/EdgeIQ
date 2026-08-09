@@ -23,6 +23,10 @@ jobs:
       - run: >-
           mypy
           analytics/release_validation.py
+          analytics/entry_recommendation.py
+          analytics/probabilistic_forecast.py
+          repository/repositories/model_rehabilitation_repository.py
+          services/probability.py
           services/data_management.py
           services/odds.py
           utils/entity_normalization.py

@@ -91,6 +91,8 @@ from utils.stat_normalization import stat_key as canonical_stat_key
 from utils.time import iso_utc, utc_now
 from web.application.advantage_service import advantage_center_payload as build_advantage_center_payload
 from web.application.advantage_service import advantage_game_contexts as build_advantage_game_contexts
+from web.application.alert_delivery_service import deliver_alert as deliver_configured_alert
+from web.application.alert_delivery_service import delivery_hooks as configured_delivery_hooks
 from web.application.bankroll_service import (
     bankroll_transactions_payload as build_bankroll_transactions_payload,
 )
@@ -450,7 +452,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260809-evidence-repair-v1"
+STATIC_ASSET_VERSION = "20260809-remaining-improvements-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -601,7 +603,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.2.1", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.2.2", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -3231,7 +3233,7 @@ def _command_center_payload(
         prop for prop in ranked_props
         if prop["confidence"] < 50 or prop["edge"] < 0
     ][:3]
-    return {
+    payload = {
         "platform": platform,
         "sport": sport_filter or "All Sports",
         "as_of": iso_utc(utc_now()),
@@ -3246,6 +3248,8 @@ def _command_center_payload(
             "recommendation_accuracy": dashboard_stats.get("recommendation_accuracy", {}),
         },
     }
+    _stamp_current_recommendation_lineage(payload, groups=("cards", "ranked_props", "avoid"))
+    return payload
 
 
 def _new_daily_scan(platform: str, sport_filter: str | None, trigger: str = "manual") -> dict:
@@ -5740,12 +5744,7 @@ def _alert_delivery_settings() -> dict:
     settings["channels"] = _alert_channels(settings)
     return {
         "settings": settings,
-        "delivery_hooks": {
-            "browser": "available",
-            "email": "configured" if settings.get("email_enabled") and settings.get("email_address") else "needs email provider",
-            "sms": "configured" if settings.get("sms_enabled") and settings.get("sms_number") else "needs SMS provider",
-            "webhook": "configured" if settings.get("webhook_enabled") and settings.get("webhook_url") else "optional",
-        },
+        "delivery_hooks": configured_delivery_hooks(settings),
     }
 
 
@@ -5774,46 +5773,9 @@ def _alert_channels(settings: dict) -> list[str]:
 
 def _deliver_alert(alert: dict) -> dict:
     settings = _alert_delivery_settings().get("settings", {})
-    priority = float(alert.get("priority") or 0.0)
-    if priority < float(settings.get("min_priority") or 0.0):
-        return {
-            "delivered": False,
-            "skipped": True,
-            "reason": f"Priority {priority:.0f} is below alert threshold.",
-            "channels": [],
-        }
-    channels = _alert_channels(settings)
-    deliveries = []
-    if "browser" in channels:
-        deliveries.append({"channel": "browser", "status": "queued", "detail": "Browser notifications are delivered by the client."})
-    if "email" in channels:
-        deliveries.append({"channel": "email", "status": "ready", "detail": "Email destination saved; connect provider credentials to send."})
-    if "sms" in channels:
-        deliveries.append({"channel": "sms", "status": "ready", "detail": "SMS destination saved; connect provider credentials to send."})
-    if "webhook" in channels:
-        deliveries.append(_deliver_webhook_alert(settings["webhook_url"], alert))
-    result = {
-        "delivered": any(row["status"] in {"queued", "sent", "ready"} for row in deliveries),
-        "skipped": False,
-        "channels": deliveries,
-        "alert": alert,
-        "sent_at": iso_utc(utc_now()),
-    }
+    result = deliver_configured_alert(alert, settings, sent_at=iso_utc(utc_now()), post=requests.post)
     SettingsRepository.set("last_alert_delivery", json.dumps(result))
     return result
-
-
-def _deliver_webhook_alert(url: str, alert: dict) -> dict:
-    try:
-        response = requests.post(url, json={"source": "EdgeIQ", "alert": alert}, timeout=6)
-        ok = 200 <= response.status_code < 300
-        return {
-            "channel": "webhook",
-            "status": "sent" if ok else "error",
-            "detail": "Webhook delivered." if ok else "Webhook returned an error. Check the URL and try again.",
-        }
-    except requests.RequestException as exc:
-        return {"channel": "webhook", "status": "error", "detail": "Webhook delivery failed. Check the URL and try again."}
 
 
 def _deploy_readiness_payload() -> dict:
@@ -10021,6 +9983,7 @@ def _data_health_payload() -> dict:
         _endpoint_timing_snapshot(),
         operational_health={
             "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+            "schedule": _refresh_schedule_payload(),
             "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
             "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
         },
@@ -10058,11 +10021,19 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
     ]
+    now = datetime.now(ENTRY_DAY_TIME_ZONE)
+    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort")
+    for job, key in zip(jobs, job_keys, strict=True):
+        last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
+        job["key"] = key
+        job["last_run"] = last_run
+        job["overdue"] = _scheduled_job_overdue(str(job["time"]), last_run, now)
     return {
         "schedule": schedule,
         "jobs": jobs,
         "last_run": SettingsRepository.get("last_daily_refresh", ""),
         "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+        "overdue_jobs": [job for job in jobs if job.get("overdue")],
     }
 
 
@@ -10120,6 +10091,8 @@ def _run_due_daily_operations() -> dict:
                 }))
         except ValueError:
             pass
+    if _odds_provider_recovery_due(now):
+        due.append(("odds_provider_recovery", _verify_odds_provider))
     completed = []
     failures = []
     for name, callback in due:
@@ -10133,7 +10106,6 @@ def _run_due_daily_operations() -> dict:
         except Exception as exc:
             failures.append({"job": name, "message": str(exc) or "Scheduled job failed."})
     status = {
-        "ok": True,
         "ran_at": iso_utc(utc_now()),
         "jobs_run": [row["job"] for row in completed],
         "failures": failures,
@@ -10154,6 +10126,27 @@ def _elapsed_job_due(last_run: str, now: datetime, interval_minutes: int) -> boo
         return (now - previous.astimezone(now.tzinfo)).total_seconds() >= interval_minutes * 60
     except (TypeError, ValueError):
         return True
+
+
+def _scheduled_job_overdue(rule: str, last_run: str, now: datetime) -> bool:
+    if rule.startswith("*/"):
+        try:
+            return _elapsed_job_due(last_run, now, max(1, int(rule[2:])) * 2)
+        except ValueError:
+            return False
+    if not rule or now.strftime("%H:%M") < rule:
+        return False
+    return not str(last_run).startswith(now.strftime("%Y-%m-%d"))
+
+
+def _odds_provider_recovery_due(now: datetime) -> bool:
+    if not os.getenv("ODDS_API_KEY", "").strip():
+        return False
+    runtime = _safe_json_loads(SettingsRepository.get(_provider_status_key("The Odds API"), ""))
+    age = _age_minutes(runtime.get("last_success_at"))
+    if age is not None and age < 60:
+        return False
+    return _elapsed_job_due(SettingsRepository.get("daily_scheduler_run:odds_provider_recovery", ""), now, 60)
 
 
 def _queue_daily_shadow_cohort() -> dict:
@@ -10384,7 +10377,27 @@ def _serialize_suggestion(suggestion, include_release: bool = True) -> dict:
     }
     if include_release:
         serialized["release_status"] = _card_release_status(card)
+    _stamp_current_recommendation_lineage(serialized, groups=("props",))
+    entry["recommendation_snapshot_id"] = serialized.get("recommendation_snapshot_id", "")
+    for prop in entry["props"]:
+        prop["recommendation_snapshot_id"] = serialized.get("recommendation_snapshot_id", "")
     return serialized
+
+
+def _stamp_current_recommendation_lineage(payload: dict, *, groups: tuple[str, ...] = ()) -> dict:
+    feed = ModelRehabilitationRepository.load_feed()
+    snapshot_id = str(feed.get("snapshot_id") or "")
+    model_version = str(feed.get("model_version") or EDGEIQ_LOCAL_MODEL_VERSION)
+    if not snapshot_id:
+        return payload
+    payload["recommendation_snapshot_id"] = snapshot_id
+    payload["model_version"] = model_version
+    for key in groups:
+        for row in payload.get(key) or []:
+            if isinstance(row, dict):
+                row["recommendation_snapshot_id"] = snapshot_id
+                row["model_version"] = model_version
+    return payload
 
 
 def _serialize_pending(entry: dict) -> dict:

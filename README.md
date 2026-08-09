@@ -52,6 +52,16 @@ BALLDONTLIE_API_KEY=your_balldontlie_api_key
 NEWSAPI_KEY=your_newsapi_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 SPORTSDATAIO_API_KEY=your_sportsdataio_api_key
+# Optional alert delivery. Email uses SMTP; SMS uses Twilio.
+EDGEIQ_SMTP_HOST=smtp.example.com
+EDGEIQ_SMTP_PORT=587
+EDGEIQ_SMTP_FROM=edgeiq@example.com
+EDGEIQ_SMTP_USERNAME=your_smtp_username
+EDGEIQ_SMTP_PASSWORD=your_smtp_password
+EDGEIQ_SMTP_TLS=true
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_FROM_NUMBER=+15555555555
 DATABASE_URL=sqlite:///edgeiq.db
 ```
 

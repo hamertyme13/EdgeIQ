@@ -118,7 +118,7 @@ class ModelRehabilitationRepository:
                     platform=str(row.get("platform") or ""),
                     game=str(row.get("game") or ""),
                     game_time=str(row.get("game_time") or ""),
-                    line=float(row.get("line")),
+                    line=float(str(row["line"])),
                     projection=_float_or_none(row.get("projection")),
                     probability=float(row.get("confidence") or row.get("probability") or 50.0),
                     feature_snapshot=json.dumps(row, default=str, sort_keys=True),

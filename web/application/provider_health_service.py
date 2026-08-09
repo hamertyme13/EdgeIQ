@@ -109,11 +109,16 @@ def build_data_health_payload(
     ]
     operational_health = operational_health or {}
     scheduler = operational_health.get("scheduler") or {}
+    schedule = operational_health.get("schedule") or {}
     shadow = operational_health.get("shadow_evaluation") or {}
     settlement = operational_health.get("shadow_settlement") or {}
     operational_warnings = []
     if scheduler.get("failures"):
         operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
+    overdue_jobs = schedule.get("overdue_jobs") or []
+    if overdue_jobs:
+        labels = ", ".join(str(job.get("name") or job.get("key") or "scheduled job") for job in overdue_jobs[:3])
+        operational_warnings.append(f"Scheduled maintenance is overdue: {labels}.")
     if int(shadow.get("settlement_failures") or 0) > 0:
         operational_warnings.append("Some shadow predictions could not be matched to verified final stats after repeated attempts.")
     if shadow.get("queued") and not shadow.get("settled") and settlement.get("ran_at"):
@@ -130,6 +135,7 @@ def build_data_health_payload(
         },
         "operations": {
             "scheduler": scheduler,
+            "schedule": schedule,
             "shadow_settlement": settlement,
             "shadow_evaluation": shadow,
             "warnings": operational_warnings,
