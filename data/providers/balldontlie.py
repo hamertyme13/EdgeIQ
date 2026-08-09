@@ -6,11 +6,9 @@ import os
 from datetime import date
 from typing import Any, cast
 
-from utils.entity_normalization import canonical_person_key
-
 from data.providers.cache import get_json
 from data.providers.generic_props import normalize_props
-
+from utils.entity_normalization import canonical_person_key
 
 _BASE = "https://api.balldontlie.io"
 _SPORT_PREFIX = {

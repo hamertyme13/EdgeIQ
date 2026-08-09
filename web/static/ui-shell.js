@@ -39,20 +39,20 @@
       </div>
     </section>
 
-    <section id="onboarding-modal" class="onboarding-modal" hidden>
+    <section id="onboarding-modal" class="onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title" hidden>
       <div class="drawer-backdrop"></div>
       <div class="onboarding-panel">
         <p class="eyebrow">Welcome To EdgeIQ</p>
-        <h2>Build your betting operating system</h2>
+        <h2 id="onboarding-title">Build your betting operating system</h2>
         <p>Pick the sports, platforms, and risk posture EdgeIQ should use when it wakes up and builds your daily briefing.</p>
         <form id="onboarding-form" class="form-grid">
-          <input id="onboarding-bankroll" type="number" min="1" step="0.01" placeholder="Starting bankroll" />
-          <select id="onboarding-platform">
+          <input id="onboarding-bankroll" type="number" min="1" step="0.01" placeholder="Starting bankroll" aria-label="Starting bankroll" />
+          <select id="onboarding-platform" aria-label="Preferred platform">
             <option>PrizePicks</option>
             <option>Underdog</option>
             <option>Sleeper</option>
           </select>
-          <select id="onboarding-sport">
+          <select id="onboarding-sport" aria-label="Preferred sport">
             <option>WNBA</option>
             <option>NBA</option>
             <option>NFL</option>
@@ -60,18 +60,32 @@
             <option>NHL</option>
             <option>All Sports</option>
           </select>
-          <select id="onboarding-risk">
+          <select id="onboarding-risk" aria-label="Risk posture">
             <option value="paper_first">Paper-first</option>
             <option value="conservative">Loss protection</option>
             <option value="balanced">Balanced</option>
             <option value="aggressive">Aggressive</option>
           </select>
-          <input id="onboarding-default-wager" type="number" min="0" step="0.01" placeholder="Default wager" />
+          <input id="onboarding-default-wager" type="number" min="0" step="0.01" placeholder="Default wager" aria-label="Default wager" />
           <button type="submit">Save Setup</button>
         </form>
         <div class="button-row">
           <button id="onboarding-upload-history" class="secondary">Import Past Results</button>
           <button id="onboarding-skip" class="secondary">Skip</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="entry-mode-choice" class="entry-choice-modal" role="dialog" aria-modal="true" aria-labelledby="entry-choice-title" hidden>
+      <div class="drawer-backdrop"></div>
+      <div class="entry-choice-panel">
+        <p class="eyebrow">Entry Warning</p>
+        <h2 id="entry-choice-title">How do you want to save this entry?</h2>
+        <p id="entry-choice-message">EdgeIQ recommends paper mode for this entry.</p>
+        <div class="entry-choice-actions">
+          <button id="entry-choice-paper" type="button">Switch to Paper</button>
+          <button id="entry-choice-paid" class="secondary" type="button">Continue Paid</button>
+          <button id="entry-choice-cancel" class="secondary" type="button">Cancel</button>
         </div>
       </div>
     </section>

@@ -1,5 +1,6 @@
 from rich.console import Console
 from rich.table import Table
+
 from models.bet import Bet
 from repository.bet_repository import BetRepository
 

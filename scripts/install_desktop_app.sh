@@ -48,9 +48,9 @@ LAUNCHER_SCRIPT
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.1.0</string>
+  <string>2.2.2</string>
   <key>CFBundleVersion</key>
-  <string>20260728.1</string>
+  <string>20260809.4</string>
   <key>CFBundleIconFile</key>
   <string>EdgeIQ</string>
   <key>CFBundleIconName</key>
@@ -69,4 +69,5 @@ PLIST_XML
 /usr/bin/touch "$APP_BUNDLE"
 
 echo "Installed EdgeIQ desktop app at $APP_BUNDLE"
+"$APP_DIR/scripts/install_background_scheduler.sh"
 echo "Launch it by double-clicking the app. EdgeIQ will open in your browser."

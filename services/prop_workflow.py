@@ -2,9 +2,8 @@ from rich.console import Console
 
 from services.prop_builder import build_prop, choose_platform
 from services.save_prop import save_prop
-
-from ui.review import review_prop
 from ui.prop_analysis import display_prop_analysis
+from ui.review import review_prop
 
 console = Console()
 

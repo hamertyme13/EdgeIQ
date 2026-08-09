@@ -1,10 +1,9 @@
+from analytics.confidence import confidence
+from analytics.edge import edge
 from models.entry import Entry
 from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
-
-from analytics.edge import edge
-from analytics.confidence import confidence
 
 
 class EntryService:

@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class Sport(Enum):
 
     NBA = "NBA"

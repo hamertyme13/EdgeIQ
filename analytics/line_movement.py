@@ -6,6 +6,7 @@ sharp money signals and line direction.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 

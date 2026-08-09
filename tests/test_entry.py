@@ -1,11 +1,11 @@
+from analytics.correlation import detect_correlations
+from analytics.entry_recommendation import recommendation
+from analytics.prop_metrics import calculate_confidence
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
-from analytics.entry_recommendation import recommendation
-from analytics.correlation import detect_correlations
-from analytics.prop_metrics import calculate_confidence
 
 
 def test_entry_defaults_to_empty_props():
@@ -60,6 +60,15 @@ def test_entry_recommendation_blends_confidence_edge_and_sources():
     assert result["grade"] == "B"
     assert result["score"] >= 66
     assert result["components"]["average_source_score"] == 3.0
+
+
+def test_entry_recommendation_uses_provider_specific_break_even():
+    entry = Entry(platform=Platform.UNDERDOG)
+    for name in ("A", "B"):
+        entry.add_prop(Prop(player=Player(name=name, team="AAA", sport="WNBA"), stat=StatType.POINTS, line=20.5, projection=22, edge=1.5, confidence=65, platform=Platform.UNDERDOG))
+    result = recommendation(entry, {"break_even_probability": 28.57, "source": "exact_offer_snapshot"})
+    assert result["components"]["break_even_probability"] == 28.57
+    assert result["components"]["payout_verified"] is True
 
 
 def test_correlation_engine_flags_same_game_and_football_stack():

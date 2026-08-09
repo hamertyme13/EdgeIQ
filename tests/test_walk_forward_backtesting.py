@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from analytics.backtesting import _walk_forward_validation
 
 
 def test_walk_forward_excludes_results_that_were_not_known_yet():
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
     entries = []
     for index in range(22):
         placed = start + timedelta(days=index)

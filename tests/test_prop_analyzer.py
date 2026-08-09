@@ -2,7 +2,6 @@ from analytics.analyzers.prop_analyzer import PropAnalyzer
 from analytics.defense_vs_position import MatchupAnalysis
 from models.player import Player
 from models.prop import Prop
-
 from models.stat_type import StatType
 
 

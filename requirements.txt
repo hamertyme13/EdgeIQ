@@ -12,6 +12,7 @@ PyQt6-Qt6==6.11.1
 PyQt6-sip==13.11.1
 python-dotenv==1.2.2
 requests==2.34.2
+curl-cffi==0.13.0
 rich==15.0.0
 SQLAlchemy==2.0.51
 typing_extensions==4.16.0

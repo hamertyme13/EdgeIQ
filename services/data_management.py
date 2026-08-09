@@ -3,14 +3,13 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy.engine import make_url
 
 from repository.database import DATABASE_URL
-
 
 EXPORT_SCHEMA_VERSION = 1
 
@@ -23,7 +22,7 @@ def backup_database(
     source_path = _sqlite_path(database_url or DATABASE_URL)
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    created_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC)
     backup_path = destination / f"edgeiq-{created_at.strftime('%Y%m%dT%H%M%SZ')}.db"
 
     with sqlite3.connect(source_path) as source, sqlite3.connect(backup_path) as target:
@@ -45,7 +44,7 @@ def export_database(
     source_path = _sqlite_path(database_url or DATABASE_URL)
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    created_at = datetime.now(timezone.utc)
+    created_at = datetime.now(UTC)
     export_path = destination / f"edgeiq-export-{created_at.strftime('%Y%m%dT%H%M%SZ')}.json"
 
     with sqlite3.connect(source_path) as connection:

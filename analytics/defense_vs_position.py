@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from models.stat_type import StatType
 
 from data.wnba.models import DefenseProfile
+from models.stat_type import StatType
 from services.defense_service import DefenseService
+
 
 def get_defense_profile(team: str) -> DefenseProfile | None:
     return DefenseService.get_profile(team)

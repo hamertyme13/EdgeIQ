@@ -5,7 +5,6 @@ import shutil
 import tempfile
 from pathlib import Path
 
-
 _TEST_DATABASE_DIR = Path(tempfile.mkdtemp(prefix="edgeiq-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DATABASE_DIR / 'edgeiq-test.db'}"
 

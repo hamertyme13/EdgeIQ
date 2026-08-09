@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import math
+from datetime import UTC
 
 from analytics.calibration import calibrate
+from analytics.prediction_evidence import deduplicate_outcomes
 from analytics.release_validation import validation_readiness
 from models.bet import Bet
+from utils.prop_plausibility import prop_line_plausibility
 
 
-def backtest_summary(bets: list[Bet], entries: list[dict]) -> dict:
+def backtest_summary(bets: list[Bet], entries: list[dict], prediction_rows: list[dict] | None = None) -> dict:
     settled_entries = [
         entry for entry in entries
         if entry.get("status") == "Settled" and entry.get("result") in {"Win", "Loss", "Push"}
@@ -27,9 +30,27 @@ def backtest_summary(bets: list[Bet], entries: list[dict]) -> dict:
         "by_result": _group_entries_by_result(settled_entries),
         "confidence": confidence,
     }
-    calibration_rows = _calibration_rows(bets, settled_entries)
+    calibration_rows = (
+        _versioned_calibration_rows(prediction_rows)
+        if prediction_rows is not None
+        else _calibration_rows(bets, settled_entries)
+    )
     entry_calibration_rows = _entry_calibration_rows(settled_entries)
-    calibration_sources = _calibration_source_summary(bets, settled_entries)
+    calibration_sources = (
+        {
+            "bet_rows": 0,
+            "entry_rows": 0,
+            "prop_rows": sum(row["bets"] for row in calibration_rows),
+            "total_rows": sum(row["bets"] for row in calibration_rows),
+            "entry_calibration_rows": 0,
+            "provider_rows": sum(row["bets"] for row in calibration_rows),
+            "estimated_rows": 0,
+            "sources": {"versioned_independent_verified": sum(row["bets"] for row in calibration_rows)},
+            "basis": "versioned_independent_verified",
+        }
+        if prediction_rows is not None
+        else _calibration_source_summary(bets, settled_entries)
+    )
     records = _tracked_records(bets, settled_entries)
     calibration_summary = _calibration_summary(calibration_rows)
     segment_rankings = _segment_rankings(records)
@@ -163,6 +184,22 @@ def _calibration_rows(bets: list[Bet], entries: list[dict]) -> list[dict]:
     ]
     rows.extend(_prop_calibration_rows(entries))
     return _calibrated_buckets(rows)
+
+
+def _versioned_calibration_rows(prediction_rows: list[dict]) -> list[dict]:
+    eligible = deduplicate_outcomes([
+        row for row in prediction_rows
+        if not row.get("legacy_quarantined")
+        and row.get("result") in {"Win", "Loss", "Push"}
+        and str(row.get("outcome_source") or "").strip().lower()
+        not in {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
+        and prop_line_plausibility(row).valid
+    ])
+    return _calibrated_buckets([
+        {"win_probability": float(row.get("probability") or 0.0), "result": row["result"]}
+        for row in eligible
+        if row.get("probability") not in (None, "")
+    ])
 
 
 def _entry_calibration_rows(entries: list[dict]) -> list[dict]:
@@ -454,14 +491,14 @@ def _datetime_value(value):
         except ValueError:
             return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _minimum_datetime():
     from datetime import datetime, timezone
 
-    return datetime.min.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=UTC)
 
 
 def _entry_time_key(entry: dict) -> str:

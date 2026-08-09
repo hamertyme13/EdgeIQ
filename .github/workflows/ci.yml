@@ -20,7 +20,39 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[dev]"
       - run: ruff check .
-      - run: mypy analytics/release_validation.py services/data_management.py utils/entity_normalization.py
+      - run: >-
+          mypy
+          analytics/release_validation.py
+          analytics/entry_recommendation.py
+          analytics/probabilistic_forecast.py
+          repository/repositories/model_rehabilitation_repository.py
+          services/probability.py
+          services/data_management.py
+          services/odds.py
+          utils/entity_normalization.py
+          web/application
+          web/routers
+          web/schemas
       - name: Reject tracked local databases
         run: test -z "$(git ls-files '*.db' '*.db-wal' '*.db-shm')"
+      - name: Verify formal database migration
+        run: DATABASE_URL=sqlite:////tmp/edgeiq-ci.db alembic upgrade head
       - run: pytest
+
+  visual-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m playwright install --with-deps chromium
+      - run: python scripts/visual_regression.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: edgeiq-visual-regression
+          path: artifacts/visual-regression/

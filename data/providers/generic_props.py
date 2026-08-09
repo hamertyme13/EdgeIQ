@@ -14,7 +14,6 @@ import requests
 from data.providers.cache import get_json
 from data.providers.prop_filters import is_combined_player_prop
 
-
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                   "AppleWebKit/537.36 (KHTML, like Gecko) "

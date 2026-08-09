@@ -1,5 +1,5 @@
 import analytics.entry_suggestions as suggestions_module
-from analytics.entry_suggestions import suggest_entries
+from analytics.entry_suggestions import prop_exposure_key, suggest_entries
 from models.platform import Platform
 
 
@@ -67,6 +67,66 @@ def test_suggest_entries_can_build_three_leg_parlays():
 
     assert [suggestion.rank for suggestion in suggestions] == [1, 2]
     assert all(len(suggestion.entry.props) == 3 for suggestion in suggestions)
+
+
+def test_diversified_suggestions_avoid_repeating_props_when_quality_is_comparable():
+    raw_props = [
+        {
+            "player": f"Player {index}",
+            "team": f"T{index}",
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 10.5,
+            "projection": 12.5,
+        }
+        for index in range(8)
+    ]
+
+    suggestions = suggest_entries(
+        raw_props,
+        "WNBA",
+        Platform.PRIZEPICKS,
+        limit=3,
+        leg_count=2,
+        diversify=True,
+    )
+
+    exposure_keys = [
+        prop_exposure_key(prop)
+        for suggestion in suggestions
+        for prop in suggestion.entry.props
+    ]
+    assert len(suggestions) == 3
+    assert len(exposure_keys) == len(set(exposure_keys)) == 6
+
+
+def test_diversified_suggestions_avoid_recent_generation_props():
+    raw_props = [
+        {
+            "player": f"Player {index}",
+            "team": f"T{index}",
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 10.5,
+            "projection": 12.5,
+        }
+        for index in range(8)
+    ]
+    initial = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=1, leg_count=2)[0]
+    avoid = {prop_exposure_key(prop) for prop in initial.entry.props}
+
+    next_batch = suggest_entries(
+        raw_props,
+        "WNBA",
+        Platform.PRIZEPICKS,
+        limit=1,
+        leg_count=2,
+        diversify=True,
+        avoid_prop_keys=avoid,
+    )
+
+    next_keys = {prop_exposure_key(prop) for prop in next_batch[0].entry.props}
+    assert next_keys.isdisjoint(avoid)
 
 
 def test_provider_backed_projection_scores_above_auto_projected_when_edge_matches():
@@ -147,7 +207,7 @@ def test_adjusted_prizepicks_lines_do_not_create_opposite_side_free_edges():
         if prop.adjusted_line
     }
     assert ("A", "Under") not in adjusted_sides
-    assert ("A", "Over") in adjusted_sides
+    assert all(player != "A" for player, _ in adjusted_sides)
     assert ("B", "Over") in adjusted_sides
 
 
@@ -176,3 +236,14 @@ def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypat
     assert suggestions
     assert calls["history"] == 1
     assert calls["adjustments"] <= 48
+def test_suggest_entries_excludes_prizepicks_demon_lines() -> None:
+    raw_props = [
+        {"player": "Premium Player", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 40.5, "standard_line": 20.5, "odds_type": "demon", "adjusted_odds": True},
+        {"player": "Standard One", "team": "BBB", "league": "WNBA", "stat": "Points", "line": 18.5, "odds_type": "standard"},
+        {"player": "Standard Two", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 7.5, "odds_type": "standard"},
+    ]
+
+    suggestions = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=3, leg_count=2)
+
+    assert suggestions
+    assert all(prop.player.name != "Premium Player" for row in suggestions for prop in row.entry.props)

@@ -28,9 +28,9 @@ import data.providers.prizepicks as _pp
 import data.providers.underdog as _ud
 from analytics.entry_suggestions import suggest_entries
 from data.providers.injury_feed import fetch_all_injuries
+from gui.styles import ACCENT, ACCENT2, BORDER, CYAN, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW
 from models.platform import Platform
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
-from gui.styles import ACCENT, ACCENT2, BORDER, GREEN, MUTED, RED, SURFACE, SURFACE2, TEXT, YELLOW, CYAN
 from utils.logging import get_logger
 
 logger = get_logger(__name__)

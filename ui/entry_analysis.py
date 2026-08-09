@@ -1,11 +1,11 @@
 from rich.console import Console
 from rich.panel import Panel
-from analytics.risk import calculate_entry_risk
-from models.entry import Entry
 
+from analytics.correlation import detect_correlations
 from analytics.entry_analysis import strongest_prop, weakest_prop
 from analytics.entry_recommendation import recommendation
-from analytics.correlation import detect_correlations
+from analytics.risk import calculate_entry_risk
+from models.entry import Entry
 
 console = Console()
 

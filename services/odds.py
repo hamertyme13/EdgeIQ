@@ -1,6 +1,9 @@
 import os
 import re
+import threading
+import time
 from statistics import median
+from typing import Any
 from urllib.parse import urlencode
 
 from rich.console import Console
@@ -86,6 +89,32 @@ PROP_MARKETS = {
 }
 
 console = Console()
+_INTERACTIVE_CACHE_SECONDS = 30
+_INTERACTIVE_RESPONSE_CACHE: dict[tuple[int, str], tuple[float, Any]] = {}
+_INTERACTIVE_RESPONSE_LOCK = threading.Lock()
+
+
+def _interactive_timeout() -> int:
+    return max(1, min(10, int(os.getenv("EDGEIQ_ODDS_INTERACTIVE_TIMEOUT_SECONDS", "3"))))
+
+
+def _interactive_json(url: str, *, cache_key: str, ttl_seconds: int):
+    key = (id(get_json), cache_key)
+    now = time.monotonic()
+    with _INTERACTIVE_RESPONSE_LOCK:
+        cached = _INTERACTIVE_RESPONSE_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    response = get_json(
+        url,
+        cache_key=cache_key,
+        timeout=_interactive_timeout(),
+        ttl_seconds=ttl_seconds,
+        retries=0,
+    )
+    with _INTERACTIVE_RESPONSE_LOCK:
+        _INTERACTIVE_RESPONSE_CACHE[key] = (now + _INTERACTIVE_CACHE_SECONDS, response)
+    return response
 
 
 def get_games(sport: str | None = None) -> list[dict]:
@@ -113,6 +142,36 @@ def get_games(sport: str | None = None) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def verify_connection() -> dict:
+    api_key = os.getenv("ODDS_API_KEY", "").strip()
+    if not api_key:
+        return {"ok": False, "sports": 0, "message": "ODDS_API_KEY is not configured."}
+    url = f"{BASE_URL}/?{urlencode({'apiKey': api_key})}"
+    try:
+        response = get_json(
+            url,
+            cache_key=f"{BASE_URL}/sports-verification",
+            timeout=8,
+            ttl_seconds=900,
+            retries=1,
+        )
+    except RuntimeError as exc:
+        return {"ok": False, "sports": 0, "message": str(exc)}
+    sports = response.data if isinstance(response.data, list) else []
+    supported = sorted({
+        label for label, key in SPORT_KEYS.items()
+        if any(str(row.get("key") or "") == key and bool(row.get("active", True)) for row in sports)
+    })
+    return {
+        "ok": bool(sports),
+        "sports": len(sports),
+        "supported_active_sports": supported,
+        "stale": response.stale,
+        "age_seconds": response.age_seconds,
+        "message": "The Odds API connection is verified." if sports else "The Odds API returned no sports.",
+    }
+
+
 def get_events(sport: str) -> list[dict]:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:
@@ -124,7 +183,7 @@ def get_events(sport: str) -> list[dict]:
     url = f"{BASE_URL}/{sport_key}/events?{query}"
     cache_key = f"{BASE_URL}/{sport_key}/events?dateFormat=iso"
     try:
-        response = get_json(url, cache_key=cache_key, timeout=10, ttl_seconds=120)
+        response = _interactive_json(url, cache_key=cache_key, ttl_seconds=120)
     except RuntimeError:
         return []
     return response.data if isinstance(response.data, list) else []
@@ -205,10 +264,9 @@ def get_player_prop_consensus(
     })
     cache_key = f"{BASE_URL}/{sport_key}/events/{event_id}/odds?{cache_query}"
     try:
-        response = get_json(
+        response = _interactive_json(
             url,
             cache_key=cache_key,
-            timeout=12,
             ttl_seconds=max(60, int(os.getenv("EDGEIQ_ODDS_CACHE_SECONDS", "180"))),
         )
     except RuntimeError:
@@ -280,7 +338,7 @@ def summarize_player_prop_market(
     for bookmaker in event.get("bookmakers") or []:
         book_key = str(bookmaker.get("key") or "")
         title = str(bookmaker.get("title") or book_key)
-        outcomes = []
+        outcomes: list[dict] = []
         for market in bookmaker.get("markets") or []:
             if str(market.get("key") or "") != market_key:
                 continue
@@ -348,7 +406,7 @@ def summarize_player_prop_market(
         "market_key": market_key,
         "line": target_line,
         "direction": selected_direction,
-        "market_probability": round(float(selected_probability), 2) if available else None,
+        "market_probability": round(float(selected_probability), 2) if selected_probability is not None else None,
         "over_probability": round(float(fair_over), 2) if fair_over is not None else None,
         "under_probability": round(float(fair_under), 2) if fair_under is not None else None,
         "book_count": book_count,
@@ -515,7 +573,7 @@ def _prop_bookmakers() -> tuple[str, ...]:
 
 def _same_line(value: object, target: float) -> bool:
     try:
-        return abs(float(value) - float(target)) < 0.001
+        return abs(float(str(value)) - float(target)) < 0.001
     except (TypeError, ValueError):
         return False
 

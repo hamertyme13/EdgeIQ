@@ -1,5 +1,5 @@
-from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from repository.repositories.final_stats_repository import _player_name_matches
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 
 def test_person_key_ignores_accents_and_punctuation():

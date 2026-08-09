@@ -16,13 +16,13 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_NAME, APP_SUBTITLE, APP_VERSION
-from repository.database import initialize_database
 from gui.styles import ACCENT, APP_STYLESHEET, BG, CYAN, MUTED, TEXT
-from gui.tabs.dashboard_tab import DashboardTab
-from gui.tabs.bets_tab import BetsTab
 from gui.tabs.analysis_tab import AnalysisTab
+from gui.tabs.bets_tab import BetsTab
+from gui.tabs.dashboard_tab import DashboardTab
 from gui.tabs.entries_tab import EntriesTab
 from gui.tabs.performance_tab import PerformanceTab
+from repository.database import initialize_database
 
 
 class EdgeIQWindow(QMainWindow):

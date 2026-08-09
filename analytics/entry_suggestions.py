@@ -5,15 +5,15 @@ from dataclasses import dataclass, replace
 from analytics.correlation import detect_correlations
 from analytics.entry_recommendation import recommendation
 from analytics.model_feedback import feedback_adjustment, settled_feedback_entries
-from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
-from analytics.projection import auto_projection
 from analytics.probabilistic_forecast import forecast_prop
+from analytics.projection import auto_projection
+from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
 from models.prop import Prop
-from utils.entity_normalization import canonical_person_key
 from models.stat_type import StatType
+from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import stat_type_from_text
 
 
@@ -38,13 +38,16 @@ def suggest_entries(
     max_same_team: int | None = None,
     exclude_correlated: bool = False,
     apply_feedback: bool = False,
+    diversify: bool = False,
+    avoid_prop_keys: set[str] | None = None,
 ) -> list[SuggestedEntry]:
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
 
+    recommendation_props = [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)]
     candidates = [
         candidate
-        for prop in raw_props
+        for prop in recommendation_props
         if prop.get("line") is not None
         and (sport.upper() == "ALL SPORTS" or prop.get("league", "").upper() == sport.upper())
         for candidate in _props_from_feed(prop, platform)
@@ -83,9 +86,14 @@ def suggest_entries(
         scored.append((score, entry, warnings))
 
     scored.sort(key=lambda item: item[0], reverse=True)
+    selected_rows = (
+        _diversified_scored_entries(scored, limit, avoid_prop_keys or set())
+        if diversify
+        else scored[:limit]
+    )
 
     suggestions: list[SuggestedEntry] = []
-    for rank, (score, entry, warnings) in enumerate(scored[:limit], start=1):
+    for rank, (score, entry, warnings) in enumerate(selected_rows, start=1):
         result = recommendation(entry)
         suggestions.append(
             SuggestedEntry(
@@ -99,6 +107,59 @@ def suggest_entries(
         )
 
     return suggestions
+
+
+def prop_exposure_key(prop: Prop) -> str:
+    player = canonical_person_key(prop.player.name)
+    stat = str(prop.stat.value or "").strip().lower().replace(",", "")
+    direction = str(prop.direction or "Over").strip().lower()
+    return f"{player}|{stat}|{direction}|{float(prop.line):.2f}"
+
+
+def _diversified_scored_entries(
+    scored: list[tuple[float, Entry, list[str]]],
+    limit: int,
+    avoid_prop_keys: set[str],
+    quality_band: float = 12.0,
+) -> list[tuple[float, Entry, list[str]]]:
+    remaining = list(scored)
+    selected: list[tuple[float, Entry, list[str]]] = []
+    used_prop_counts: dict[str, int] = {}
+    used_player_counts: dict[str, int] = {}
+
+    while remaining and len(selected) < limit:
+        best_score = remaining[0][0]
+        comparable = [row for row in remaining if row[0] >= best_score - quality_band]
+
+        def diversity_rank(row: tuple[float, Entry, list[str]]) -> tuple[int, int, int, float]:
+            score, entry, _warnings = row
+            keys = {prop_exposure_key(prop) for prop in entry.props}
+            players = {canonical_person_key(prop.player.name) for prop in entry.props}
+            return (
+                len(keys & avoid_prop_keys),
+                sum(used_prop_counts.get(key, 0) for key in keys),
+                sum(used_player_counts.get(player, 0) for player in players),
+                -score,
+            )
+
+        chosen = min(comparable, key=diversity_rank)
+        selected.append(chosen)
+        remaining.remove(chosen)
+        for prop in chosen[1].props:
+            key = prop_exposure_key(prop)
+            player = canonical_person_key(prop.player.name)
+            used_prop_counts[key] = used_prop_counts.get(key, 0) + 1
+            used_player_counts[player] = used_player_counts.get(player, 0) + 1
+
+    return selected
+
+
+def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:
+    """Exclude premium lines that manufacture confidence without standard payout value."""
+    if platform != Platform.PRIZEPICKS:
+        return True
+    offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "standard").strip().lower()
+    return not raw.get("is_premium_line") and offer_type != "demon"
 
 
 def _score_entry(entry: Entry, warnings: list[str]) -> float:

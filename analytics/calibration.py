@@ -6,6 +6,7 @@ A well-calibrated model: when you say 60%, you should win ~60% of the time.
 """
 
 from __future__ import annotations
+
 from dataclasses import dataclass
 
 

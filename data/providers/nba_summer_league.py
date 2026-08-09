@@ -7,14 +7,13 @@ scores and normalize them into EdgeIQ's final-player-stat shape.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
 from collections.abc import Mapping
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
 from data.providers.cache import get_json
 from repository.repositories.final_stats_repository import FinalStatsRepository
-
 
 _BASE = "https://stats.nba.com/stats"
 _HEADERS = {

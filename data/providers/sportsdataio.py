@@ -12,7 +12,6 @@ from typing import Any
 
 from data.providers.cache import get_json
 
-
 _BASES = {
     "NBA": "https://api.sportsdata.io/v3/nba/stats/json",
     "NFL": "https://api.sportsdata.io/v3/nfl/stats/json",
@@ -35,10 +34,7 @@ def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
 
 def _stats_url(base: str, sport: str, game_date: date, api_key: str) -> str:
     date_token = game_date.strftime("%Y-%b-%d").upper()
-    if sport == "MLB":
-        endpoint = f"PlayerGameStatsByDate/{date_token}"
-    else:
-        endpoint = f"PlayerGameStatsByDate/{date_token}"
+    endpoint = f"PlayerGameStatsByDate/{date_token}"
     return f"{base}/{endpoint}?key={api_key}"
 
 

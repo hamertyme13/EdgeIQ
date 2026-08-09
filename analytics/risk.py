@@ -1,6 +1,6 @@
+from dataclasses import dataclass
 from enum import Enum
 
-from dataclasses import dataclass
 
 class EntryRisk(Enum):
     LOW = "Low"

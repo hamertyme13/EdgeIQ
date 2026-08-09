@@ -1,25 +1,16 @@
-const state = {
-  entryProps: [],
-  lastEntryPayload: null,
-  lastAnalysis: null,
-  recommendationOrigin: false,
-  commandCards: [],
-  dailyBriefing: null,
-  dailyScanPoll: null,
-  dailyScanAutoStartedFor: "",
-  deferredInstallPrompt: null,
-  backgroundLoadPromise: null,
-  deferredSignalsScheduled: false,
-  ledgerLoadScheduled: false,
-  loadedViews: new Set(),
-  loadedWorkspacePanes: new Set(),
-  placementInFlight: false,
-  buttonSoundsBound: false,
-};
-
+const state = window.EdgeIQState;
 window.EdgeIQLoaded = true;
 
-const $ = (id) => document.getElementById(id);
+const {
+  $,
+  api,
+  copyText,
+  deferWork,
+  hideRuntimeNotice,
+  humanizeErrorText,
+  showRuntimeNotice,
+  withButtonBusy,
+} = window.EdgeIQApi;
 const {
   dataStrengthBadges,
   directionBadge,
@@ -33,17 +24,19 @@ const {
   sortNotifications,
   sortProviderHealth,
 } = window.EdgeIQUi;
-const API_BASE = window.location.protocol === "file:" ? "http://127.0.0.1:8007" : "";
-const inflightGetRequests = new Map();
-const deferWork = window.requestIdleCallback
-  ? (task, timeout = 1500) => window.requestIdleCallback(task, { timeout })
-  : (task, timeout = 1500) => window.setTimeout(task, Math.min(timeout, 800));
-
 function registerPwa() {
   if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
-    navigator.serviceWorker.register("/static/sw.js").catch((error) => {
-      console.warn("EdgeIQ service worker registration failed", error);
+    let refreshingForNewShell = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (refreshingForNewShell) return;
+      refreshingForNewShell = true;
+      window.location.reload();
     });
+    navigator.serviceWorker.register("/static/sw.js", { updateViaCache: "none" })
+      .then((registration) => registration.update())
+      .catch((error) => {
+        console.warn("EdgeIQ service worker registration failed", error);
+      });
   }
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
@@ -76,105 +69,6 @@ function applyViewFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const view = params.get("view");
   if (view && document.getElementById(view)) setView(view);
-}
-
-async function api(path, options = {}) {
-  const method = String(options.method || "GET").toUpperCase();
-  const requestKey = method === "GET" ? `${API_BASE}${path}` : "";
-  if (requestKey && inflightGetRequests.has(requestKey)) return inflightGetRequests.get(requestKey);
-  const request = (async () => {
-    const response = await fetch(`${API_BASE}${path}`, {
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-      cache: "no-store",
-      ...options,
-    });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(humanizeApiError(detail, response.status));
-    }
-    return response.json();
-  })();
-  if (requestKey) inflightGetRequests.set(requestKey, request);
-  try {
-    return await request;
-  } finally {
-    if (requestKey) inflightGetRequests.delete(requestKey);
-  }
-}
-
-function humanizeApiError(detail, status) {
-  const fallback = status >= 500
-    ? "Something went wrong on the EdgeIQ server. Please try again after refreshing."
-    : "EdgeIQ could not complete that action. Please check the fields and try again.";
-  if (!detail) return fallback;
-  try {
-    const parsed = JSON.parse(detail);
-    const apiDetail = parsed.detail ?? parsed.message ?? parsed.error;
-    if (Array.isArray(apiDetail)) {
-      const fields = apiDetail
-        .map((item) => Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(" ") : "")
-        .filter(Boolean)
-        .slice(0, 3);
-      return fields.length
-        ? `Please check ${fields.join(", ")} and try again.`
-        : "Please check the form values and try again.";
-    }
-    if (typeof apiDetail === "string") return humanizeErrorText(apiDetail, status);
-  } catch (error) {
-    return humanizeErrorText(detail, status);
-  }
-  return fallback;
-}
-
-function humanizeErrorText(value, status = 0) {
-  const text = String(value || "").trim();
-  if (!text) return status >= 500 ? "EdgeIQ hit a server issue. Please refresh and try again." : "EdgeIQ could not complete that action.";
-  const lowered = text.toLowerCase();
-  if (lowered.includes("failed to fetch") || lowered.includes("networkerror")) return "EdgeIQ could not reach the app server. Make sure the app is running, then try again.";
-  if (lowered.includes("openai_http_401") || lowered.includes("invalid api key")) return "The AI key was not accepted. Check the OpenAI API key in settings.";
-  if (lowered.includes("openai_http_429") || lowered.includes("rate limit")) return "The AI service is busy or rate-limited. Try again in a moment.";
-  if (lowered.includes("openai_request_error") || lowered.includes("timeout")) return "The AI service did not respond in time. EdgeIQ can still use the local review.";
-  if (lowered.includes("traceback") || lowered.includes("exception") || lowered.includes("{\"detail\"")) return status >= 500 ? "EdgeIQ hit a server issue. Please refresh and try again." : "EdgeIQ could not complete that action. Please check the inputs and try again.";
-  return text
-    .replace(/^Risk guardrail blocked placement:\s*/i, "Placement blocked: ")
-    .replace(/_/g, " ");
-}
-
-async function withButtonBusy(buttonOrId, busyLabel, task) {
-  const button = typeof buttonOrId === "string" ? $(buttonOrId) : buttonOrId;
-  if (!button) return task();
-  const originalLabel = button.textContent;
-  button.disabled = true;
-  button.classList.add("is-busy");
-  button.textContent = busyLabel;
-  try {
-    return await task();
-  } finally {
-    button.disabled = false;
-    button.classList.remove("is-busy");
-    button.textContent = originalLabel;
-  }
-}
-
-function showRuntimeNotice(message) {
-  const notice = $("runtime-notice");
-  if (!notice) return;
-  notice.textContent = message;
-  notice.hidden = false;
-}
-
-function hideRuntimeNotice() {
-  const notice = $("runtime-notice");
-  if (!notice) return;
-  notice.hidden = true;
-}
-
-async function copyText(value) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return true;
-  }
-  return false;
 }
 
 function playCircuitSound(kind, options = {}) {
@@ -261,10 +155,8 @@ async function placeEntryFromButton(button) {
       control.textContent = labels.get(control);
     });
     syncEntryActionLabels();
-    const isPaper = ($("entry-mode")?.value || "real") === "paper";
-    const paidAllowed = Boolean(state.lastAnalysis?.release_verdict?.paid_allowed);
-    $("place-entry").disabled = !state.lastEntryPayload || (!isPaper && !paidAllowed);
-    $("mobile-place-entry").disabled = state.entryProps.length < 2 || (!isPaper && !paidAllowed);
+    $("place-entry").disabled = !state.lastEntryPayload;
+    $("mobile-place-entry").disabled = state.entryProps.length < 2 || !state.lastEntryPayload;
     if (!placed) window.setTimeout(() => button?.classList.remove("circuit-shimmer"), 160);
   }
 }
@@ -337,6 +229,7 @@ function optimizerSummaryBlock(data) {
   const obstacles = data.obstacles || [];
   const paidReady = Number(data.paid_ready_count || 0);
   const total = (data.suggestions || []).length;
+  const portfolioReady = Number(data.portfolio_ready_count || 0);
   return `
     <div class="suggestion compact-suggestion ${paidReady ? "grade-b" : "grade-f"}">
       <div class="suggestion-top">
@@ -344,10 +237,45 @@ function optimizerSummaryBlock(data) {
         <strong>${paidReady ? `${paidReady}/${total} paid-ready` : "No paid-ready slip yet"}</strong>
         ${best ? `<span class="subtle">Value score ${Number(best.value_adjusted_score || best.score || 0).toFixed(1)}</span>` : ""}
       </div>
+      <p class="subtle">${portfolioReady}/${total} stay within pending player, game, and market limits.</p>
       ${best?.platform_value ? platformValueBlock(best.platform_value) : ""}
       ${obstacles.length ? `<p class="warning">${obstacles.map(escapeHtml).join(" · ")}</p>` : `<p class="subtle">At least one optimized slip cleared the paid-entry release checks.</p>`}
     </div>
   `;
+}
+
+function portfolioSuggestionBlock(suggestion) {
+  const portfolio = suggestion.portfolio || {};
+  const conflicts = portfolio.conflicts || [];
+  const replacements = portfolio.replacements || [];
+  const tone = portfolio.risk === "High" ? "danger-text" : portfolio.risk === "Medium" ? "warning" : "subtle";
+  return `
+    <div class="portfolio-card-review risk-${String(portfolio.risk || "Low").toLowerCase()}">
+      <div class="suggestion-top">
+        <strong>Portfolio ${escapeHtml(portfolio.risk || "Low")} Risk</strong>
+        <span class="status-pill ${conflicts.length ? "status-warning" : "status-positive"}">Adjusted ${Number(portfolio.adjusted_score ?? suggestion.value_adjusted_score ?? suggestion.score ?? 0).toFixed(1)}</span>
+      </div>
+      <p class="${tone}">${escapeHtml(portfolio.summary || "No portfolio assessment available.")}</p>
+      ${conflicts.slice(0, 3).map((conflict) => `<p class="subtle">${escapeHtml(conflict.message)}</p>`).join("")}
+      ${replacements.map((replacement) => `<p class="portfolio-replacement">${escapeHtml(replacement.message)}</p>`).join("")}
+    </div>
+  `;
+}
+
+function samePortfolioProp(left, right) {
+  return String(left?.player || "").toLocaleLowerCase() === String(right?.player || "").toLocaleLowerCase()
+    && String(left?.stat || "").toLocaleLowerCase() === String(right?.stat || "").toLocaleLowerCase()
+    && String(left?.direction || "Over").toLocaleLowerCase() === String(right?.direction || "Over").toLocaleLowerCase()
+    && Number(left?.line || 0) === Number(right?.line || 0);
+}
+
+function portfolioAdjustedProps(suggestion) {
+  const props = [...(suggestion.entry?.props || [])];
+  (suggestion.portfolio?.replacements || []).forEach((replacement) => {
+    const index = props.findIndex((prop) => samePortfolioProp(prop, replacement.remove_prop));
+    if (index >= 0 && replacement.add) props[index] = replacement.add;
+  });
+  return props;
 }
 
 function confidenceMovementText(prop) {
@@ -442,7 +370,7 @@ function loadWorkspacePaneData(root, paneName) {
   const key = `${workspaceId}:${paneName}`;
   if (state.loadedWorkspacePanes.has(key)) return;
   const loaders = {
-    "decision-desk:value": [loadSportsbookSync],
+    "decision-desk:value": [loadSportsbookSync, loadTrendingProps],
     "decision-desk:alerts": [loadTimingAlerts, loadNotifications],
     "decision-desk:builder": [() => loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }), loadTrendingGames],
     "decision-desk:board": [() => loadProps({ cascade: false })],
@@ -551,8 +479,8 @@ function loadViewData(viewId) {
       loadPerformance,
     ],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
-    entries: [loadLossProtection],
-    analysis: [loadDataHealth, loadNotifications, loadDeployReadiness],
+    entries: [loadLossProtection, loadPending, loadPreferences, loadDnpSetting, loadPortfolioIntelligence],
+    analysis: [loadDataHealth, loadNotifications, loadDeployReadiness, loadRefreshSchedule, loadAlertDeliverySettings],
   }[viewId] || [];
   if (!tasks.length) return;
   Promise.allSettled(tasks.map((task) => task())).then((results) => {
@@ -807,7 +735,7 @@ function renderDailyBriefing(data) {
     <div class="command-welcome">
       <div>
         <p class="eyebrow">Today Command Center</p>
-        <h2>${escapeHtml(data.user?.greeting || "Good Morning Joshua.")}</h2>
+        <h2>Today's Decision Plan</h2>
         <p>${escapeHtml(commandCenterSummary(data, protection))}</p>
       </div>
       <div class="command-mode ${protection.active ? "mode-protect" : "mode-ready"}">
@@ -897,7 +825,10 @@ function renderDailyBriefing(data) {
           <h3 id="opportunity-board-title">Opportunity Board</h3>
           <p>EdgeIQ's ranked props appear only here. Open a row to move that prop into the Entry Builder.</p>
         </div>
-        <span class="status-pill status-connected">${opportunities.length} ranked</span>
+        <div class="button-row compact-button-row">
+          <span class="status-pill status-connected">${opportunities.length} ranked</span>
+          <button id="send-selected-opportunities" class="secondary" type="button" disabled>Send selected (0)</button>
+        </div>
       </div>
       <div class="opportunity-list opportunity-board-list">
         ${opportunities.slice(0, 5).map((prop, index) => {
@@ -907,7 +838,9 @@ function renderDailyBriefing(data) {
           const marketProbability = receipt.market_probability;
           return `
           <div class="opportunity-row">
-            <span class="opportunity-rank">#${index + 1}</span>
+            <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
+              <input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" />
+            </label>
             <span class="stars">${escapeHtml(prop.stars || "★★★☆☆")}</span>
             <strong>
               ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")}
@@ -924,7 +857,6 @@ function renderDailyBriefing(data) {
             </div>
             <div class="opportunity-actions">
               <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
-              <button class="icon-text-button secondary" type="button" data-load-opportunity="${index}">Add</button>
             </div>
           </div>
         `;
@@ -1113,6 +1045,43 @@ function bindDailyBriefingActions() {
 }
 
 function bindDailyBriefingSummaryActions() {
+  state.opportunitySelections.clear();
+  const selectionButton = $("send-selected-opportunities");
+  const updateOpportunitySelection = () => {
+    if (!selectionButton) return;
+    selectionButton.disabled = state.opportunitySelections.size === 0;
+    selectionButton.textContent = `Send selected (${state.opportunitySelections.size})`;
+  };
+  document.querySelectorAll("[data-select-opportunity]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const index = Number(checkbox.dataset.selectOpportunity);
+      const opportunity = state.dailyBriefing?.top_opportunities?.[index];
+      if (!opportunity) return;
+      const selectedPlatforms = [...state.opportunitySelections].map(
+        (selectedIndex) => state.dailyBriefing?.top_opportunities?.[selectedIndex]?.platform
+      ).filter(Boolean);
+      if (checkbox.checked && selectedPlatforms.length && !selectedPlatforms.includes(opportunity.platform)) {
+        checkbox.checked = false;
+        $("daily-briefing-status").textContent = "A single entry must use one app. Send the current selection, then build a separate card for the other app.";
+        return;
+      }
+      if (checkbox.checked) state.opportunitySelections.add(index);
+      else state.opportunitySelections.delete(index);
+      updateOpportunitySelection();
+    });
+  });
+  selectionButton?.addEventListener("click", () => {
+    const selected = [...state.opportunitySelections]
+      .sort((left, right) => left - right)
+      .map((index) => state.dailyBriefing?.top_opportunities?.[index])
+      .filter(Boolean);
+    if (!selected.length) return;
+    renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
+    if ($("entry-platform") && selected[0]?.platform) $("entry-platform").value = selected[0].platform;
+    state.recommendationOrigin = true;
+    setView("entries");
+    $("entry-status").textContent = `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
+  });
   document.querySelectorAll("[data-next-action-view]").forEach((button) => {
     button.addEventListener("click", () => {
       setView(button.dataset.nextActionView || "dashboard");
@@ -1124,51 +1093,6 @@ function bindDailyBriefingSummaryActions() {
     button.addEventListener("click", () => {
       const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.inspectOpportunity)];
       if (opportunity) openExplanationDrawer(opportunityExplanation(opportunity));
-    });
-  });
-  document.querySelectorAll("[data-load-opportunity]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.loadOpportunity)];
-      if (!opportunity) return;
-      renderEntryPropsFromAnalyzed([{
-        player: opportunity.player,
-        player_identity_id: opportunity.player_identity_id ?? null,
-        player_provider: opportunity.player_provider || opportunity.platform || "",
-        provider_player_id: opportunity.provider_player_id || "",
-        team: opportunity.team || "",
-        position: opportunity.position || "",
-        sport: opportunity.sport,
-        stat: opportunity.stat,
-        line: opportunity.line,
-        baseline_line: opportunity.baseline_line ?? null,
-        standard_line: opportunity.standard_line ?? null,
-        line_offer_type: opportunity.line_offer_type || "standard",
-        adjusted_line: Boolean(opportunity.adjusted_line),
-        is_discounted_line: Boolean(opportunity.is_discounted_line),
-        is_premium_line: Boolean(opportunity.is_premium_line),
-        line_discount: Number(opportunity.line_discount || 0),
-        projection: opportunity.projection ?? null,
-        direction: opportunity.direction || "Over",
-        platform: opportunity.platform || state.dailyBriefing.platform,
-        game: opportunity.game || "",
-        game_time: opportunity.game_time || "",
-        season_type: "",
-        trending_count: 0,
-        auto_projected: opportunity.auto_projected,
-        provider_backed: opportunity.provider_backed,
-        projection_source: opportunity.projection_source,
-        model_version: opportunity.model_version || "",
-        feature_as_of: opportunity.feature_as_of || "",
-        forecast_snapshot: opportunity.forecast_snapshot || {},
-        forecast_paid_eligible: Boolean(opportunity.forecast_paid_eligible),
-        data_quality: opportunity.data_quality || {},
-        data_strength: opportunity.data_strength,
-        end_to_end_confirmed: Boolean(opportunity.end_to_end_confirmed),
-        settlement_provider: opportunity.settlement_provider || "",
-      }]);
-      state.recommendationOrigin = true;
-      setView("entries");
-      $("entry-status").textContent = "Loaded top opportunity. Add another prop before analyzing.";
     });
   });
   document.querySelectorAll(".suggested-entry-button[data-ai-prompt]").forEach((button) => {
@@ -1272,6 +1196,7 @@ function bindBriefingTabs() {
 
 function handleDailyBriefingAction(card) {
   if (!card) return;
+  state.recommendationSnapshotId = card.recommendation_snapshot_id || state.dailyBriefing?.recommendation_snapshot_id || "";
   if (card.suggestion?.entry?.props?.length) {
     renderEntryPropsFromAnalyzed(card.suggestion.entry.props);
     state.recommendationOrigin = true;
@@ -1398,14 +1323,30 @@ async function loadDataHealth() {
   const providers = sortProviderHealth(data.providers);
   const usage = data.api_usage || {};
   const totals = usage.totals || {};
+  const endpointPerformance = data.endpoint_performance || {};
+  const endpointRoutes = endpointPerformance.routes || [];
+  const operations = data.operations || {};
+  const scheduler = operations.scheduler || {};
+  const shadow = operations.shadow_evaluation || {};
+  const shadowSettlement = operations.shadow_settlement || {};
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
         <strong>${data.summary.connected}/${data.summary.total} sources available</strong>
         <span class="status-pill ${data.summary.warnings ? "status-warning" : "status-connected"}">${data.summary.warnings} warnings</span>
       </div>
-      <p>${data.summary.last_daily_refresh ? `Last refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled refresh run recorded yet."}</p>
+      <p>${data.summary.last_daily_refresh ? `Last scheduled provider refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled provider refresh recorded yet."}</p>
       <p>${Number(usage.requests_avoided || 0)} provider calls avoided · ${Number(totals.network_requests || 0)} network requests · ${Number(usage.avoidance_pct || 0).toFixed(1)}% cache efficiency · ${Number(totals.stale_fallbacks || 0)} stale fallbacks</p>
+    </div>
+    <div class="suggestion compact-suggestion health-${operations.status === "degraded" ? "degraded" : "fresh"}">
+      <div class="suggestion-top">
+        <strong>Evidence collection</strong>
+        <span class="status-pill ${operations.status === "degraded" ? "status-warning" : "status-connected"}">${operations.status === "degraded" ? "Needs attention" : "Operational"}</span>
+      </div>
+      <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
+      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml((scheduler.jobs_run || []).join(", ") || "none")} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
+      ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
+      ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
     </div>
     ${providers.map((provider) => `
       <div class="suggestion compact-suggestion health-${provider.status}">
@@ -1414,11 +1355,34 @@ async function loadDataHealth() {
           <span class="status-pill status-${provider.status}">${friendlyStatus(provider.status)}</span>
         </div>
         <p>${provider.purpose} · ${provider.message}</p>
+        <p class="subtle">
+          ${escapeHtml(provider.data_role || "Unclassified")} ·
+          ${escapeHtml(provider.settlement_suitability || "Not for settlement")} ·
+          ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
+          Contract ${escapeHtml(provider.contract_version || "unversioned")}
+        </p>
         <p class="subtle">${provider.api_usage?.used_this_session
           ? `${Number(provider.api_usage.requests_avoided || 0)} calls avoided · ${Number(provider.api_usage.network_requests || 0)} network requests this session`
           : "Not requested in this session yet"}</p>
       </div>
     `).join("")}
+    <div class="suggestion compact-suggestion endpoint-performance-card">
+      <div class="suggestion-top">
+        <strong>App response times</strong>
+        <span class="status-pill ${Number(endpointPerformance.slow_requests || 0) ? "status-warning" : "status-connected"}">${Number(endpointPerformance.slow_requests || 0)} slow calls</span>
+      </div>
+      <p>${Number(endpointPerformance.requests || 0)} recent API calls measured · slow threshold ${Number(endpointPerformance.slow_threshold_ms || 1000)} ms</p>
+      <div class="endpoint-timing-list">
+        ${endpointRoutes.slice(0, 8).map((route) => `
+          <div class="endpoint-timing-row ${route.slow ? "endpoint-slow" : ""}">
+            <code>${escapeHtml(route.route)}</code>
+            <span>${Number(route.average_ms || 0).toFixed(0)} ms avg</span>
+            <span>${Number(route.p95_ms || 0).toFixed(0)} ms p95</span>
+            <span>${Number(route.requests || 0)} calls</span>
+          </div>
+        `).join("") || `<p class="subtle">Response timing appears after the first app requests complete.</p>`}
+      </div>
+    </div>
   `;
 }
 
@@ -1428,10 +1392,10 @@ async function loadNotifications() {
   $("notification-list").innerHTML = notifications.map((note) => `
     <div class="suggestion compact-suggestion notification-${note.severity || "neutral"}">
       <div class="suggestion-top">
-        <strong>${note.title}</strong>
+        <strong>${escapeHtml(note.title)}</strong>
         <span class="status-pill status-${note.severity || "neutral"}">${friendlyStatus(note.type)}</span>
       </div>
-      <p>${note.message}</p>
+      <p>${escapeHtml(note.message)}</p>
     </div>
   `).join("") || `
     <div class="suggestion compact-suggestion">
@@ -1591,6 +1555,95 @@ async function loadSportsbookSync() {
   renderSportsbookSync(data);
 }
 
+async function loadTrendingProps() {
+  if (!$("trending-props-list")) return;
+  const platform = $("trending-props-platform").value;
+  const sport = $("trending-props-sport").value;
+  state.trendingSelections.clear();
+  updateTrendingSelectionActions();
+  $("trending-props-status").textContent = `Loading ${sport} market activity...`;
+  $("trending-props-list").innerHTML = Array.from({ length: 5 }, () => `<div class="skeleton-row"></div>`).join("");
+  const data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
+  state.trendingProps = data.props || [];
+  $("trending-props-count").textContent = `Top ${data.count || 0}`;
+  $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
+  $("trending-props-list").innerHTML = state.trendingProps.map((prop, index) => `
+    <div class="trending-prop-row">
+      <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" />
+      <span class="trending-rank">#${Number(prop.rank || index + 1)}</span>
+      <span class="grade-chip" title="Grade combines model confidence and data quality">${escapeHtml(prop.grade || "-")}</span>
+      <strong>${escapeHtml(prop.player || "Player")}<small>${escapeHtml(prop.platform || platform)} · ${escapeHtml(prop.game || "Matchup")}</small></strong>
+      <span class="trending-stat">${escapeHtml(prop.stat || "Stat")} ${prop.line ?? "-"}</span>
+      <span>${directionBadge(prop.direction || "Over")}</span>
+      <span class="trending-count">Score ${Number(prop.grade_score || 0).toFixed(1)}</span>
+      <button class="secondary" type="button" data-add-trending-prop="${index}">Add</button>
+    </div>
+  `).join("") || `<div class="suggestion compact-suggestion">No end-to-end trackable ${escapeHtml(sport)} props are trending right now.</div>`;
+  document.querySelectorAll("[data-select-trending-prop]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => toggleTrendingPropSelection(checkbox));
+  });
+  document.querySelectorAll("[data-add-trending-prop]").forEach((button) => {
+    button.addEventListener("click", () => addFeedProp(state.trendingProps[Number(button.dataset.addTrendingProp)]));
+  });
+}
+
+function updateTrendingSelectionActions() {
+  const count = state.trendingSelections.size;
+  const sendButton = $("send-selected-trending");
+  const clearButton = $("clear-selected-trending");
+  if (sendButton) {
+    sendButton.disabled = count === 0;
+    sendButton.textContent = `Send selected (${count})`;
+  }
+  if (clearButton) clearButton.disabled = count === 0;
+}
+
+function toggleTrendingPropSelection(checkbox) {
+  const index = Number(checkbox.dataset.selectTrendingProp);
+  const prop = state.trendingProps[index];
+  if (!prop) return;
+  if (!checkbox.checked) {
+    state.trendingSelections.delete(index);
+    updateTrendingSelectionActions();
+    return;
+  }
+  const selected = [...state.trendingSelections]
+    .map((selectedIndex) => state.trendingProps[selectedIndex])
+    .filter(Boolean);
+  const selectedPlatform = selected[0]?.platform;
+  if (selectedPlatform && prop.platform !== selectedPlatform) {
+    checkbox.checked = false;
+    $("trending-props-status").textContent = `A single entry cannot mix ${selectedPlatform} and ${prop.platform}. Send one sportsbook at a time.`;
+    return;
+  }
+  const maximumLegs = providerMaximumLegs(prop.platform);
+  if (state.trendingSelections.size >= maximumLegs) {
+    checkbox.checked = false;
+    $("trending-props-status").textContent = `${prop.platform} supports up to ${maximumLegs} legs in one entry.`;
+    return;
+  }
+  state.trendingSelections.add(index);
+  updateTrendingSelectionActions();
+}
+
+function clearTrendingPropSelection() {
+  state.trendingSelections.clear();
+  document.querySelectorAll("[data-select-trending-prop]").forEach((checkbox) => { checkbox.checked = false; });
+  updateTrendingSelectionActions();
+}
+
+function sendSelectedTrendingProps() {
+  const selected = [...state.trendingSelections]
+    .sort((left, right) => left - right)
+    .map((index) => state.trendingProps[index])
+    .filter(Boolean);
+  if (!selected.length) return;
+  renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
+  state.recommendationOrigin = true;
+  setView("entries");
+  $("entry-status").textContent = `${selected.length} top-ranked ${selected[0].platform} ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review and analyze before placing.`;
+}
+
 function renderSportsbookSync(data) {
   if (!$("sportsbook-sync-list") || !data) return;
   const liveMarketData = Boolean(data.market_data_connected);
@@ -1623,8 +1676,12 @@ function loadBankrollStrategyFields(strategy) {
   $("strategy-max-pct").value = strategy.max_wager_pct ?? 5;
   $("strategy-open-exposure-pct").value = strategy.max_open_exposure_pct ?? 15;
   $("strategy-stop-loss-pct").value = strategy.stop_loss_pct ?? 12;
+  $("strategy-max-player-entries").value = strategy.max_player_entries ?? 2;
+  $("strategy-max-game-entries").value = strategy.max_game_entries ?? 3;
+  $("strategy-max-market-entries").value = strategy.max_market_entries ?? 1;
+  $("strategy-max-player-exposure").value = strategy.max_player_exposure_pct ?? 7.5;
   $("strategy-paper-first").checked = Boolean(strategy.paper_first);
-  $("bankroll-strategy-status").textContent = `${strategy.mode || "balanced"} sizing · single ${Number(strategy.max_wager_pct || 0).toFixed(1)}% · exposure ${Number(strategy.max_open_exposure_pct || 0).toFixed(1)}% · stop-loss ${Number(strategy.stop_loss_pct || 0).toFixed(1)}%.`;
+  $("bankroll-strategy-status").textContent = `${strategy.mode || "balanced"} sizing · single ${Number(strategy.max_wager_pct || 0).toFixed(1)}% · exposure ${Number(strategy.max_open_exposure_pct || 0).toFixed(1)}% · player/game/market limits ${Number(strategy.max_player_entries || 2)}/${Number(strategy.max_game_entries || 3)}/${Number(strategy.max_market_entries || 1)}.`;
 }
 
 async function saveBankrollStrategy(event) {
@@ -1635,11 +1692,123 @@ async function saveBankrollStrategy(event) {
     max_wager_pct: Number($("strategy-max-pct").value || 5),
     max_open_exposure_pct: Number($("strategy-open-exposure-pct").value || 15),
     stop_loss_pct: Number($("strategy-stop-loss-pct").value || 12),
+    max_player_entries: Number($("strategy-max-player-entries").value || 2),
+    max_game_entries: Number($("strategy-max-game-entries").value || 3),
+    max_market_entries: Number($("strategy-max-market-entries").value || 1),
+    max_player_exposure_pct: Number($("strategy-max-player-exposure").value || 7.5),
     paper_first: $("strategy-paper-first").checked,
   };
   const data = await api("/api/settings/bankroll-strategy", { method: "POST", body: JSON.stringify(payload) });
   loadBankrollStrategyFields(data.strategy);
+  await loadPortfolioIntelligence();
   await loadAdvantageCenter();
+}
+
+async function loadPortfolioIntelligence(payload = null) {
+  const target = $("portfolio-intelligence-summary");
+  if (!target) return;
+  const data = payload || await api("/api/portfolio/intelligence");
+  const concentrations = data.concentrations || [];
+  const sharedRisk = data.shared_leg_failure_risk || {};
+  const exposureRows = (data.top_players || []).slice(0, 4).map((row) => `
+    <span><strong>${escapeHtml(row.label)}</strong><small>${Number(row.entries)} entries · ${money(row.wager)}</small></span>
+  `).join("");
+  target.classList.remove("muted-card");
+  target.innerHTML = `
+    <div class="suggestion-top">
+      <div><p class="eyebrow">Pending Portfolio</p><h3>${escapeHtml(data.status || "Balanced")}</h3></div>
+      <span class="status-pill ${concentrations.length ? "status-warning" : "status-positive"}">${Number(data.score || 0)}/100</span>
+    </div>
+    <div class="metric-strip portfolio-metrics">
+      <span><strong>${Number(data.pending_real_entries || 0)}</strong><small>Paid Entries</small></span>
+      <span><strong>${money(data.open_wager || 0)}</strong><small>Open Wager</small></span>
+      <span><strong>${Number(data.bankroll_exposure_pct || 0).toFixed(1)}%</strong><small>Bankroll Exposure</small></span>
+      <span><strong>${Number(concentrations.length)}</strong><small>Limit Breaches</small></span>
+      <span><strong>${Number(data.correlation_score || 0)}</strong><small>Correlation Risk</small></span>
+    </div>
+    ${exposureRows ? `<div class="metric-strip portfolio-exposure-strip">${exposureRows}</div>` : `<p class="subtle">No paid entries are currently pending.</p>`}
+    <p class="subtle">${escapeHtml(sharedRisk.message || "No shared-leg risk detected.")}</p>
+    ${(data.top_teams || []).slice(0, 3).length ? `<p class="subtle">Team exposure: ${(data.top_teams || []).slice(0, 3).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" · ")}</p>` : ""}
+    ${(data.top_stats || []).length ? `<p class="subtle">Stat exposure: ${(data.top_stats || []).slice(0, 3).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" · ")} · Direction ${(data.directions || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" / ")}</p>` : ""}
+    ${concentrations.slice(0, 4).map((row) => `<p class="${row.severity === "danger" ? "danger-text" : "warning"}">${escapeHtml(row.message)}</p>`).join("")}
+  `;
+  renderActivePortfolioMonitor(data.monitor || {});
+}
+
+async function refreshPortfolioLines() {
+  const status = $("portfolio-monitor-refresh-status");
+  if (status) status.textContent = "Refreshing current lines for pending paid entries...";
+  const data = await api("/api/portfolio/refresh-market-data", { method: "POST" });
+  await loadPortfolioIntelligence(data.intelligence);
+  if (status) {
+    const providers = (data.providers || []).map((row) => `${row.platform}: ${friendlyStatus(row.status)}`).join(" · ");
+    status.textContent = `${data.message}${providers ? ` ${providers}` : ""}`;
+  }
+}
+
+function renderActivePortfolioMonitor(monitor) {
+  const target = $("portfolio-monitor-list");
+  const count = $("portfolio-monitor-count");
+  if (!target || !count) return;
+  const entries = monitor.entries || [];
+  count.textContent = `${entries.length} pending`;
+  count.className = `status-pill ${Number(monitor.action_count || 0) ? "status-warning" : "status-positive"}`;
+  if (!entries.length) {
+    target.innerHTML = `<div class="empty-state compact-empty"><strong>Nothing needs monitoring</strong><p>${escapeHtml(monitor.headline || "No paid entries are currently pending.")}</p></div>`;
+    return;
+  }
+  target.innerHTML = `
+    <p class="portfolio-monitor-headline">${escapeHtml(monitor.headline || "Pending entry monitoring is current.")}</p>
+    ${entries.map((entry) => activePortfolioEntryCard(entry)).join("")}
+  `;
+}
+
+function activePortfolioEntryCard(entry) {
+  const status = String(entry.status || "Needs Refresh");
+  const alerting = ["Review", "Watch", "Needs Refresh"].includes(status);
+  const legs = entry.legs || [];
+  return `
+    <article class="suggestion compact-suggestion portfolio-monitor-card monitor-${status.toLowerCase().replaceAll(" ", "-")}">
+      <div class="suggestion-top">
+        <div>
+          <strong>${escapeHtml(entry.platform || "Paid entry")} #${Number(entry.id || 0)}</strong>
+          <span class="subtle">${money(entry.wager || 0)} · ${formatDateTime(entry.placed_at)}</span>
+        </div>
+        <span class="status-pill ${alerting ? "status-warning" : "status-positive"}">${escapeHtml(status)}</span>
+      </div>
+      <div class="portfolio-monitor-legs">
+        ${legs.map((leg) => activePortfolioLegRow(leg)).join("")}
+      </div>
+      <p class="${status === "Review" ? "danger-text" : alerting ? "warning" : "subtle"}">${escapeHtml(entry.action || "Continue normal monitoring.")}</p>
+    </article>
+  `;
+}
+
+function activePortfolioLegRow(leg) {
+  const value = leg.line_value;
+  const valueLabel = value === null || value === undefined
+    ? "Refresh needed"
+    : `${Number(value) > 0 ? "+" : ""}${Number(value).toFixed(1)} line value`;
+  const current = leg.current_line === null || leg.current_line === undefined
+    ? "Latest line unavailable"
+    : `Latest ${Number(leg.current_line).toFixed(1)}`;
+  const tone = leg.movement_status === "Adverse"
+    ? "movement-adverse"
+    : leg.movement_status === "Favorable"
+      ? "movement-favorable"
+      : "movement-neutral";
+  return `
+    <div class="portfolio-monitor-leg ${tone}">
+      <div>
+        <strong>${escapeHtml(leg.player || "Player")}</strong>
+        <span>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat || "Prop")} ${Number(leg.placed_line || 0).toFixed(1)}</span>
+      </div>
+      <div class="portfolio-leg-state">
+        <strong>${escapeHtml(valueLabel)}</strong>
+        <span>${escapeHtml(current)} · ${escapeHtml(leg.game_state || "Pregame")}</span>
+      </div>
+    </div>
+  `;
 }
 
 async function saveWatchlistItem(event) {
@@ -1837,9 +2006,7 @@ function syncMobileSlip() {
       <small>${prop.line} · ${prop.projection == null ? "Auto" : prop.projection}</small>
     </div>
   `).join("") || `<p class="subtle">Load a recommendation or add props from the board.</p>`;
-  const isPaper = ($("entry-mode")?.value || "real") === "paper";
-  const paidAllowed = Boolean(state.lastAnalysis?.release_verdict?.paid_allowed);
-  $("mobile-place-entry").disabled = count < 2 || state.placementInFlight || (!isPaper && !paidAllowed);
+  $("mobile-place-entry").disabled = count < 2 || state.placementInFlight || !state.lastEntryPayload;
   syncEntryActionLabels();
   if ($("entry-wager").value && !$("mobile-slip-wager").value) $("mobile-slip-wager").value = $("entry-wager").value;
   if ($("entry-multiplier").value && !$("mobile-slip-multiplier").value) $("mobile-slip-multiplier").value = $("entry-multiplier").value;
@@ -2243,11 +2410,46 @@ function entryPropFromFeed(prop) {
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
+    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
   };
 }
 
+function entrySourcePlatforms(props = state.entryProps) {
+  return [...new Set((props || []).map((prop) => String(prop.platform || "").trim()).filter(Boolean))];
+}
+
+function syncEntryPlatformFromProps(props = state.entryProps) {
+  const platforms = entrySourcePlatforms(props);
+  if (platforms.length === 1 && $("entry-platform")) {
+    $("entry-platform").value = platforms[0];
+  }
+  return platforms;
+}
+
+function providerBaseMultiplier(platform, legCount) {
+  const schedules = {
+    PrizePicks: { 2: 3, 3: 6, 4: 10, 5: 20, 6: 37.5 },
+    Underdog: { 2: 3.5, 3: 6.5, 4: 10, 5: 20, 6: 35, 7: 65, 8: 120 },
+  };
+  return schedules[platform]?.[Number(legCount)] || null;
+}
+
+function providerMaximumLegs(platform) {
+  if (platform === "Underdog") return 8;
+  if (platform === "PrizePicks") return 6;
+  return 5;
+}
+
 function addFeedProp(prop) {
-  state.entryProps.push(entryPropFromFeed(prop));
+  const nextProp = entryPropFromFeed(prop);
+  const existingPlatforms = entrySourcePlatforms();
+  if (existingPlatforms.length && nextProp.platform && !existingPlatforms.includes(nextProp.platform)) {
+    $("entry-status").textContent = `This entry already contains ${existingPlatforms[0]} props. Build a separate ${nextProp.platform} entry.`;
+    return;
+  }
+  state.entryProps.push(nextProp);
+  state.recommendationSnapshotId = nextProp.recommendation_snapshot_id || state.recommendationSnapshotId;
+  syncEntryPlatformFromProps();
   renderEntryProps();
   setView("entries");
   $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.`;
@@ -2271,7 +2473,10 @@ async function manageDatabase(action) {
 function renderEntryProps() {
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
     const projection = prop.projection == null ? "Auto" : Number(prop.projection).toFixed(1);
-    const edge = prop.projection == null ? "Auto" : (Number(prop.projection) - Number(prop.line)).toFixed(1);
+    const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
+      ? Number(prop.line) - Number(prop.projection)
+      : Number(prop.projection) - Number(prop.line);
+    const edge = prop.projection == null ? "Auto" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
     return `
       <tr>
         <td>${prop.player}</td>
@@ -2317,7 +2522,8 @@ function propFromForm() {
 
 function entryPayload() {
   const entryMode = $("entry-mode")?.value || "real";
-  const platform = $("entry-platform").value;
+  const sourcePlatforms = syncEntryPlatformFromProps();
+  const platform = sourcePlatforms.length === 1 ? sourcePlatforms[0] : $("entry-platform").value;
   return {
     platform,
     wager: entryMode === "paper" ? 0 : Number($("entry-wager").value || 0),
@@ -2325,8 +2531,10 @@ function entryPayload() {
     payout_type: $("entry-payout-type")?.value || "standard",
     payout_schedule: parsePayoutSchedule($("entry-payout-schedule")?.value || ""),
     entry_mode: entryMode,
-    recommended_by_app: state.recommendationOrigin || Boolean(state.lastAnalysis && state.lastAnalysis.recommendation && state.lastAnalysis.recommendation.grade !== "F"),
-    props: state.entryProps.map((prop) => ({ ...prop, platform })),
+    tracking_override: false,
+    recommended_by_app: Boolean(state.recommendationOrigin),
+    recommendation_snapshot_id: state.recommendationSnapshotId || state.entryProps.find((prop) => prop.recommendation_snapshot_id)?.recommendation_snapshot_id || "",
+    props: state.entryProps.map((prop) => ({ ...prop, platform: prop.platform || platform })),
   };
 }
 
@@ -2355,6 +2563,25 @@ function renderAnalysis(data) {
   const checklist = data.confirmation_checklist || [];
   const payout = data.payout_analysis || {};
   const release = data.release_verdict || {};
+  const corrections = data.corrections || {};
+  const correctionRows = (corrections.legs || []).map((leg) => {
+    const action = String(leg.action || "keep");
+    const actionLabel = action === "flip" ? `Use ${leg.suggested_direction}` : action === "remove" ? "Remove" : "Keep";
+    return `
+      <div class="entry-correction correction-${escapeHtml(action)}">
+        <div class="entry-correction-copy">
+          <div class="suggestion-top">
+            <strong>${escapeHtml(leg.player)} · ${escapeHtml(leg.stat)} ${Number(leg.line).toFixed(1)}</strong>
+            <span class="status-pill status-${action === "keep" ? "positive" : action === "flip" ? "warning" : "danger"}">${escapeHtml(actionLabel)}</span>
+          </div>
+          <p>${escapeHtml(leg.message || "")}</p>
+          <p class="subtle">${escapeHtml(leg.reason || "")} · ${Number(leg.confidence || 0).toFixed(1)}% confidence</p>
+        </div>
+        ${action === "flip" || action === "remove"
+          ? `<button class="secondary compact-action" data-correction-action="${escapeHtml(action)}" data-correction-index="${Number(leg.index)}">${escapeHtml(actionLabel)}</button>`
+          : ""}
+      </div>`;
+  }).join("");
   const espnRows = (data.entry.props || [])
     .filter((prop) => prop.espn && prop.espn.sample_size)
     .map((prop) => `
@@ -2418,6 +2645,14 @@ function renderAnalysis(data) {
       <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
     </div>
     <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
+    <div class="analysis-card correction-plan" style="margin-top:14px">
+      <div class="suggestion-top">
+        <h3>Suggested Corrections</h3>
+        <span class="status-pill ${Number(corrections.change_count || 0) ? "status-warning" : "status-positive"}">${Number(corrections.change_count || 0)} changes</span>
+      </div>
+      <p>${escapeHtml(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}</p>
+      <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
+    </div>
     <div class="analysis-card" style="margin-top:14px">
       <h3>Payout Economics</h3>
       <div class="metric-strip">
@@ -2468,6 +2703,29 @@ function renderAnalysis(data) {
     </div>
     ${warnings.length ? `<p class="warning">${warnings.join(" · ")}</p>` : ""}
   `;
+  document.querySelectorAll("[data-correction-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.correctionIndex);
+      const action = button.dataset.correctionAction;
+      const correction = (corrections.legs || []).find((leg) => Number(leg.index) === index);
+      if (!correction || !state.entryProps[index]) return;
+      if (action === "flip") {
+        state.entryProps[index].direction = correction.suggested_direction;
+        $("entry-status").textContent = `${correction.player} changed to ${correction.suggested_direction}. Analyze again to refresh the verdict.`;
+      } else if (action === "remove") {
+        state.entryProps.splice(index, 1);
+        $("entry-status").textContent = `${correction.player} removed. Analyze again to refresh the verdict.`;
+      }
+      state.lastAnalysis = null;
+      state.lastEntryPayload = null;
+      $("ai-review-entry").disabled = true;
+      $("prepare-handoff").disabled = true;
+      $("place-entry").disabled = true;
+      renderEntryProps();
+      $("entry-analysis").classList.add("muted-card");
+      $("entry-analysis").innerHTML = "Analyze the revised entry to see its updated score, payout economics, and release checks.";
+    });
+  });
 }
 
 async function analyzeEntry() {
@@ -2475,22 +2733,26 @@ async function analyzeEntry() {
     $("entry-status").textContent = "Add at least two props.";
     return;
   }
+  const sourcePlatforms = entrySourcePlatforms();
+  if (sourcePlatforms.length > 1) {
+    $("entry-status").textContent = `This entry mixes ${sourcePlatforms.join(" and ")}. Build one entry per sportsbook.`;
+    return;
+  }
   const payload = entryPayload();
   const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
   state.lastAnalysis = data;
-  state.recommendationOrigin = data.recommendation && data.recommendation.grade !== "F";
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
   state.lastEntryPayload = entryPayload();
   $("ai-review-entry").disabled = false;
   const isPaper = payload.entry_mode === "paper";
   $("prepare-handoff").disabled = !isPaper && !data.release_verdict?.paid_allowed;
-  $("place-entry").disabled = !isPaper && !data.release_verdict?.paid_allowed;
+  $("place-entry").disabled = false;
   $("entry-status").textContent = isPaper
     ? "Entry analyzed. Save it as a paper entry when ready."
     : data.release_verdict?.paid_allowed
       ? "Paid-entry checks passed. Review before placing."
-      : `${data.release_verdict?.verdict || "Paid entry blocked"}: ${data.release_verdict?.reasons?.[0] || "Release checks did not pass."}`;
+      : `${data.release_verdict?.verdict || "Not recommended"}: ${data.release_verdict?.reasons?.[0] || "Release checks did not pass."} You can still press Place Paid Entry to track your decision after reviewing the warning.`;
   syncEntryActionLabels();
 }
 
@@ -2638,7 +2900,7 @@ function renderPlacementAudit(data) {
 }
 
 function renderEntryPropsFromAnalyzed(props) {
-  state.entryProps = props.map((prop) => ({
+  state.entryProps = uniqueUploadedProps(props).map((prop) => ({
     player: prop.player,
     player_identity_id: prop.player_identity_id ?? null,
     player_provider: prop.player_provider || prop.platform || "",
@@ -2673,58 +2935,144 @@ function renderEntryPropsFromAnalyzed(props) {
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
+    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
   }));
+  syncEntryPlatformFromProps();
   renderEntryProps();
+}
+
+function uniqueUploadedProps(props) {
+  const selected = new Map();
+  (props || []).forEach((prop) => {
+    const player = String(prop.player || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const stat = uploadedStatKey(prop.stat);
+    const direction = String(prop.direction || "").toLowerCase();
+    const key = [player, stat, Number(prop.line || 0).toFixed(4), direction, String(prop.platform || "").toLowerCase()].join("|");
+    if (!selected.has(key)) selected.set(key, prop);
+  });
+  return [...selected.values()];
+}
+
+function uploadedStatKey(value) {
+  const key = String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const aliases = {
+    pra: "pointsreboundsassists",
+    ptsrebsasts: "pointsreboundsassists",
+    pa: "pointsassists",
+    ptsasts: "pointsassists",
+    pr: "pointsrebounds",
+    ptsrebs: "pointsrebounds",
+    ra: "reboundsassists",
+    rebsasts: "reboundsassists",
+  };
+  return aliases[key] || key;
+}
+
+function chooseEntrySaveMode(reasons, paidAllowed = true) {
+  return new Promise((resolve) => {
+    const modal = $("entry-mode-choice");
+    const paperButton = $("entry-choice-paper");
+    const paidButton = $("entry-choice-paid");
+    const cancelButton = $("entry-choice-cancel");
+    const reasonText = (reasons || []).slice(0, 4).join(" ");
+    $("entry-choice-message").textContent = paidAllowed
+      ? `EdgeIQ considers this a weak paid entry. ${reasonText} Do you want to continue with a paid entry or switch to paper?`
+      : `This entry cannot be tracked safely as paid. ${reasonText} You can still save it as a paper entry.`;
+    paidButton.disabled = !paidAllowed;
+    modal.hidden = false;
+    const finish = (choice) => {
+      modal.hidden = true;
+      paperButton.onclick = null;
+      paidButton.onclick = null;
+      cancelButton.onclick = null;
+      resolve(choice);
+    };
+    paperButton.onclick = () => finish("paper");
+    paidButton.onclick = () => finish("paid");
+    cancelButton.onclick = () => finish("cancel");
+    paperButton.focus();
+  });
 }
 
 async function placeEntry(triggerButton = $("place-entry")) {
   if (!state.lastEntryPayload) return false;
+  const sourcePlatforms = syncEntryPlatformFromProps();
+  if (sourcePlatforms.length > 1) {
+    $("entry-status").textContent = `This entry mixes ${sourcePlatforms.join(" and ")}. Build one entry per sportsbook.`;
+    finishCircuitFeedback(triggerButton, "warning");
+    return false;
+  }
   state.lastEntryPayload.entry_mode = $("entry-mode")?.value || state.lastEntryPayload.entry_mode || "real";
   state.lastEntryPayload.wager = state.lastEntryPayload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
   state.lastEntryPayload.multiplier = Number($("entry-multiplier").value || state.lastEntryPayload.multiplier || 1);
   state.lastEntryPayload.payout_type = $("entry-payout-type")?.value || state.lastEntryPayload.payout_type || "standard";
   state.lastEntryPayload.payout_schedule = parsePayoutSchedule($("entry-payout-schedule")?.value || "");
-  state.lastEntryPayload.platform = $("entry-platform").value || state.lastEntryPayload.platform || "PrizePicks";
+  state.lastEntryPayload.platform = sourcePlatforms[0] || $("entry-platform").value || state.lastEntryPayload.platform || "PrizePicks";
   state.lastEntryPayload.props = state.entryProps;
+  state.lastEntryPayload.tracking_override = false;
   if (state.lastEntryPayload.entry_mode !== "paper" && state.lastEntryPayload.wager <= 0) {
     $("entry-status").textContent = "Enter the amount wagered before placing.";
     playCircuitSound("warning");
     finishCircuitFeedback(triggerButton, "warning");
     return false;
   }
-  let placementCheck;
-  try {
-    placementCheck = await api("/api/entries/placement-check", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
-  } catch (error) {
-    $("entry-status").textContent = `Provider check needs review: ${humanizeErrorText(error.message)}`;
-    playCircuitSound("warning");
-    finishCircuitFeedback(triggerButton, "warning");
-    return false;
-  }
-  renderPlacementAudit(placementCheck);
-  if (!placementCheck.ok) {
-    const blockMessage = placementCheck.blocks?.[0] || "Provider check blocked this entry.";
-    $("entry-status").textContent = blockMessage;
-    if (state.lastEntryPayload.entry_mode === "real" && placementCheck.loss_protection?.active) {
-      window.alert(`Real entry blocked\n\n${blockMessage}`);
+  let isPaper = state.lastEntryPayload.entry_mode === "paper";
+  let placementCheck = { ok: true, blocks: [], warnings: [] };
+  let modeChoiceConfirmed = false;
+  if (!isPaper) {
+    try {
+      placementCheck = await api("/api/entries/placement-check", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
+    } catch (error) {
+      $("entry-status").textContent = `Provider check needs review: ${humanizeErrorText(error.message)}`;
+      playCircuitSound("warning");
+      finishCircuitFeedback(triggerButton, "warning");
+      return false;
     }
-    playCircuitSound("warning");
-    finishCircuitFeedback(triggerButton, "warning");
-    return false;
+    renderPlacementAudit(placementCheck);
+    if (!placementCheck.ok) {
+      const blockMessage = placementCheck.blocks?.[0] || "Provider check blocked this entry.";
+      const choiceReasons = placementCheck.tracking_override_allowed
+        ? placementCheck.blocks || [blockMessage]
+        : placementCheck.tracking_blocks || [blockMessage];
+      const choice = await chooseEntrySaveMode(choiceReasons, Boolean(placementCheck.tracking_override_allowed));
+      if (choice === "cancel") {
+        $("entry-status").textContent = "Entry save canceled. No wager or paper result was recorded.";
+        playCircuitSound("warning");
+        finishCircuitFeedback(triggerButton, "warning");
+        return false;
+      }
+      if (choice === "paper") {
+        state.lastEntryPayload.entry_mode = "paper";
+        state.lastEntryPayload.wager = 0;
+        state.lastEntryPayload.tracking_override = false;
+        $("entry-mode").value = "paper";
+        isPaper = true;
+        syncEntryActionLabels();
+      } else {
+        state.lastEntryPayload.tracking_override = true;
+      }
+      modeChoiceConfirmed = true;
+    }
   }
   const checkWarnings = [...(placementCheck.blocks || []), ...(placementCheck.warnings || [])];
   const valueText = placementCheck.platform_value?.recommendation
     ? `\n\nBest app value:\n- ${placementCheck.platform_value.recommendation}`
     : "";
-  const checkText = checkWarnings.length
+  const checkText = isPaper
+    ? "\n\nPaper entries do not affect bankroll. EdgeIQ will retain the verified game and stat context for settlement."
+    : checkWarnings.length
     ? `\n\nProvider check:\n${checkWarnings.slice(0, 6).map((warning) => `- ${warning}`).join("\n")}${checkWarnings.length > 6 ? "\n- More warnings hidden." : ""}`
     : "\n\nProvider check passed: current lines and available game times were reviewed.";
-  const confirmed = window.confirm(
-    (state.lastEntryPayload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : "Will you place this entry?")
+  const paidPrompt = placementCheck.loss_protection?.active
+    ? "Loss Protection is active and EdgeIQ recommends that you do not place this entry. Did you place it and want EdgeIQ to track it?"
+    : "Will you place this entry?";
+  const confirmed = modeChoiceConfirmed || window.confirm(
+    (state.lastEntryPayload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : paidPrompt)
     + checkText
     + valueText
   );
   if (!confirmed) return false;
+  triggerButton.textContent = "Saving...";
   let data;
   try {
     data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
@@ -2736,30 +3084,49 @@ async function placeEntry(triggerButton = $("place-entry")) {
   }
   $("entry-status").textContent = state.lastEntryPayload.entry_mode === "paper"
     ? `Paper entry #${data.id} saved${data.settlement_tracking === "verified" ? " for verified calibration." : " with manual final-stat verification required."}`
-    : `Entry #${data.id} saved as pending. Bankroll reserved ${money(state.lastEntryPayload.wager)}.${data.settlement_tracking === "verified" ? "" : " Manual final-stat verification is required for at least one leg."}`;
+    : `Entry #${data.id} saved as pending${data.tracking_override ? " by user override" : ""}. Bankroll reserved ${money(state.lastEntryPayload.wager)}.${data.settlement_tracking === "verified" ? "" : " Manual final-stat verification is required for at least one leg."}`;
   playCircuitSound("success");
   finishCircuitFeedback(triggerButton, "success");
   state.entryProps = [];
   state.lastEntryPayload = null;
   state.lastAnalysis = null;
   state.recommendationOrigin = false;
+  state.recommendationSnapshotId = "";
   if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
   $("prepare-handoff").disabled = true;
   $("place-entry").disabled = true;
   renderEntryProps();
-  await Promise.allSettled([loadPending(), loadDashboard(), loadCommandCenter()]);
+  Promise.allSettled([loadPending(), loadDashboard(), loadCommandCenter()]).then((results) => {
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) console.warn("Post-save panel refresh did not finish", failure.reason);
+  });
   return true;
 }
 
-async function loadSuggestions() {
-  $("suggestions-list").innerHTML = `<div class="suggestion">Generating...</div>`;
-  const sport = $("suggest-sport").value;
-  const platform = $("suggest-platform").value;
-  const data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}`);
-  $("suggestions-list").innerHTML = data.suggestions.map((suggestion, index) => `
+async function loadProviderSuggestions(platform, sportId, legsId, listId) {
+  const list = $(listId);
+  const sport = $(sportId).value;
+  const legCount = Number($(legsId).value || 3);
+  const historyKey = `${platform}|${sport}|${legCount}`;
+  const recentPropKeys = state.generatorRecentProps[historyKey] || [];
+  list.innerHTML = `<div class="suggestion">Building ${escapeHtml(platform)} ${legCount}-leg entries...</div>`;
+  const avoidQuery = recentPropKeys.length ? `&avoid=${encodeURIComponent(recentPropKeys.join(","))}` : "";
+  const data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`);
+  const generatedPropKeys = [...new Set(
+    (data.suggestions || []).flatMap((suggestion) => suggestion.diversification?.prop_keys || []),
+  )];
+  if (generatedPropKeys.length) state.generatorRecentProps[historyKey] = generatedPropKeys.slice(0, 32);
+  const diversity = data.diversification || {};
+  const diversityNote = data.suggestions.length
+    ? `<div class="generator-diversity-note">
+        <strong>${Number(diversity.unique_props || 0)} unique props</strong>
+        <span>${Number(diversity.reused_props || 0) ? `${Number(diversity.reused_props)} repeated only where the quality pool required it` : "No exact props repeated across this batch"}</span>
+      </div>`
+    : "";
+  list.innerHTML = diversityNote + data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
-        <span class="pill">#${suggestion.rank} · ${suggestion.leg_count} Legs</span>
+        <span class="pill">${escapeHtml(platform)} #${suggestion.rank} · ${suggestion.leg_count} Legs</span>
         <strong>${suggestion.grade} · ${suggestion.action}</strong>
         <span class="subtle">${suggestion.risk_tier || "Standard"} · Score ${suggestion.score}</span>
       </div>
@@ -2769,71 +3136,28 @@ async function loadSuggestions() {
       ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
-        <button class="secondary" data-load-suggestion="${index}">Load Suggestion</button>
-        <button class="secondary" data-explain-suggestion="${index}">Why?</button>
+        <button class="secondary" data-load-provider-suggestion="${index}">Load ${escapeHtml(platform)}</button>
+        <button class="secondary" data-explain-provider-suggestion="${index}">Why?</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion">${escapeHtml(data.message || "No suggestions available.")}</div>`;
-  document.querySelectorAll("[data-load-suggestion]").forEach((button) => {
+  `).join("") || `<div class="suggestion">No ${escapeHtml(platform)} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.</div>`;
+  list.querySelectorAll("[data-load-provider-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
-      const suggestion = data.suggestions[Number(button.dataset.loadSuggestion)];
+      const suggestion = data.suggestions[Number(button.dataset.loadProviderSuggestion)];
       renderEntryPropsFromAnalyzed(suggestion.entry.props);
+      const baseMultiplier = providerBaseMultiplier(platform, suggestion.leg_count);
+      if (baseMultiplier && $("entry-multiplier")) $("entry-multiplier").value = String(baseMultiplier);
+      if ($("entry-payout-type")) $("entry-payout-type").value = "standard";
       state.recommendationOrigin = true;
-      $("entry-status").textContent = `Loaded ${suggestion.leg_count}-leg ${suggestion.risk_tier || "standard"} suggestion #${suggestion.rank}. Analyze/place when ready.`;
+      setView("entries");
+      $("entry-status").textContent = `Loaded ${suggestion.leg_count}-leg ${platform} entry #${suggestion.rank}. The builder detected ${platform} from its source lines.`;
     });
   });
-  document.querySelectorAll("[data-explain-suggestion]").forEach((button) => {
+  list.querySelectorAll("[data-explain-provider-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
-      const suggestion = data.suggestions[Number(button.dataset.explainSuggestion)];
-      openExplanationDrawer(suggestionExplanation(suggestion, `Suggestion #${suggestion.rank}`));
+      const suggestion = data.suggestions[Number(button.dataset.explainProviderSuggestion)];
+      openExplanationDrawer(suggestionExplanation(suggestion, `${platform} Entry #${suggestion.rank}`));
     });
-  });
-}
-
-async function loadCrazySix() {
-  const sport = $("suggest-sport").value;
-  const platform = $("suggest-platform").value;
-  $("suggestions-list").innerHTML = `<div class="suggestion">Building a verified high-variance six-leg card...</div>`;
-  const data = await api(`/api/entries/crazy-six?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}`);
-  const suggestion = data.suggestion;
-  if (!suggestion) {
-    $("suggestions-list").innerHTML = `<div class="suggestion">The current ${escapeHtml(sport)} slate does not have six unique, end-to-end verified legs on one platform. No card was forced.</div>`;
-    return;
-  }
-  const verification = data.verification || {};
-  $("suggestions-list").innerHTML = `
-    <div class="suggestion ${gradeClass(suggestion.grade)} crazy-six-card">
-      <div class="suggestion-top">
-        <span class="pill">Crazy 6-Leg</span>
-        <strong>${escapeHtml(suggestion.entry.platform)} · ${escapeHtml(suggestion.grade)} · ${escapeHtml(suggestion.action)}</strong>
-        <span class="subtle">Score ${Number(suggestion.score || 0).toFixed(1)}</span>
-      </div>
-      ${suggestionMetaRow(suggestion)}
-      ${dataStrengthBadges(suggestion.entry.props)}
-      <p>${propPickList(suggestion.entry.props)}</p>
-      <div class="metric-strip">
-        <span>${verification.unique_players ? "6 unique players" : "Player overlap"}</span>
-        <span>${verification.current_provider_lines ? "Current lines" : "Line check needed"}</span>
-        <span>${verification.confirmed_game_times ? "Times confirmed" : "Time check needed"}</span>
-        <span>${escapeHtml(verification.settlement_provider || "Final stats")}</span>
-      </div>
-      <p class="subtle">Sports used: ${(data.sports_used || []).map(escapeHtml).join(", ") || "Current slate"}</p>
-      <p class="warning">${escapeHtml(data.warning || "Six-leg cards are high variance.")}</p>
-      ${suggestion.correlation_relaxed ? `<p class="warning">The slate required a correlation warning; review the linked games before using this card.</p>` : ""}
-      ${releaseStatusBlock(suggestion.release_status)}
-      <div class="button-row">
-        <button class="secondary" id="load-crazy-six">Load Crazy 6-Leg</button>
-        <button class="secondary" id="explain-crazy-six">Why?</button>
-      </div>
-    </div>
-  `;
-  $("load-crazy-six").addEventListener("click", () => {
-    renderEntryPropsFromAnalyzed(suggestion.entry.props);
-    state.recommendationOrigin = true;
-    $("entry-status").textContent = "Loaded a verified six-leg high-variance card. Analyze it before deciding whether to save it as paper.";
-  });
-  $("explain-crazy-six").addEventListener("click", () => {
-    openExplanationDrawer(suggestionExplanation(suggestion, "Crazy 6-Leg"));
   });
 }
 
@@ -2877,8 +3201,9 @@ async function loadConfirmedEntries() {
   });
 }
 
-async function runOptimizer() {
-  $("optimizer-list").innerHTML = `<div class="suggestion">Optimizing slips...</div>`;
+async function runOptimizer(portfolioBatch = false) {
+  $("optimizer-list").innerHTML = `<div class="suggestion">${portfolioBatch ? "Building five diversified cards..." : "Optimizing slips..."}</div>`;
+  await loadPortfolioIntelligence();
   const [minLegs, maxLegs] = $("optimizer-legs").value.split("-").map(Number);
   const platform = $("optimizer-platform").value;
   const sport = $("optimizer-sport").value;
@@ -2892,6 +3217,7 @@ async function runOptimizer() {
     max_same_team: $("optimizer-max-same-team").value || "5",
     exclude_correlated: $("optimizer-exclude-correlated").checked ? "true" : "false",
     apply_feedback: $("optimizer-apply-feedback").checked ? "true" : "false",
+    limit: portfolioBatch ? "5" : "5",
   });
   const data = await api(`/api/entries/optimizer?${params.toString()}`);
   const suggestionsHtml = data.suggestions.map((suggestion, index) => `
@@ -2903,12 +3229,14 @@ async function runOptimizer() {
       </div>
       ${suggestionMetaRow(suggestion)}
       ${platformValueBlock(suggestion.platform_value)}
+      ${portfolioSuggestionBlock(suggestion)}
       <p>${propPickList(suggestion.entry.props)}</p>
       ${confidenceMoveNotes(suggestion.entry.props)}
       ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
         <button class="secondary" data-load-optimized="${index}">Load Slip</button>
+        ${(suggestion.portfolio?.replacements || []).length ? `<button class="secondary" data-load-portfolio-adjusted="${index}">Load Lower-Exposure Version</button>` : ""}
         <button class="secondary" data-explain-optimized="${index}">Why?</button>
       </div>
     </div>
@@ -2926,6 +3254,15 @@ async function runOptimizer() {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.explainOptimized)];
       openExplanationDrawer(suggestionExplanation(suggestion, `Optimized Slip #${suggestion.rank}`));
+    });
+  });
+  document.querySelectorAll("[data-load-portfolio-adjusted]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const suggestion = data.suggestions[Number(button.dataset.loadPortfolioAdjusted)];
+      const props = portfolioAdjustedProps(suggestion);
+      renderEntryPropsFromAnalyzed(props);
+      state.recommendationOrigin = true;
+      $("entry-status").textContent = `Loaded a lower-exposure ${props.length}-leg version. Analyze it to confirm current value and release checks.`;
     });
   });
 }
@@ -2946,7 +3283,7 @@ async function loadPending() {
       <p>${propPickList(entry.props)}</p>
       <p>${isPaper ? "Paper calibration entry · no bankroll impact" : `${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout`}</p>
       <div class="form-grid compact-controls">
-        <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" />
+        <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" aria-label="DNP legs for entry ${entry.id}" />
       </div>
       <div class="button-row">
         <button data-settle="${entry.id}:Win">Win</button>
@@ -3102,6 +3439,8 @@ async function loadPlayerResearch(event) {
   const data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
   const split = data.splits || {};
   const trend = data.trend || {};
+  const distribution = data.forecast?.distribution || {};
+  const sensitivity = data.projection_sensitivity || {};
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
   $("player-research-result").innerHTML = `
@@ -3119,10 +3458,31 @@ async function loadPlayerResearch(event) {
       ${researchSplitCard("Season", split.season)}
       ${researchSplitCard("Home", split.home)}
       ${researchSplitCard("Away", split.away)}
+      ${researchSplitCard("Starter", split.starter)}
+      ${researchSplitCard("Bench", split.bench)}
+      ${researchSplitCard(data.opponent ? `vs ${data.opponent}` : "Opponent", split.opponent)}
       <div class="stat-card"><div class="stat-value">${data.line ?? "-"}</div><div class="stat-label">Research Line</div></div>
       <div class="stat-card"><div class="stat-value">${trend.delta > 0 ? "+" : ""}${Number(trend.delta || 0).toFixed(1)}</div><div class="stat-label">Recent Trend</div></div>
       <div class="stat-card"><div class="stat-value">${pct(trend.consistency_score || 0)}</div><div class="stat-label">Consistency</div></div>
     </div>
+    <section class="research-distribution">
+      <div class="section-heading compact-heading">
+        <div><p class="eyebrow">Projection Distribution</p><h3>Range, not just one number</h3></div>
+        <span class="status-pill ${distribution.uncertainty_level === "High" ? "status-warning" : "status-positive"}">${escapeHtml(distribution.uncertainty_level || "Unknown")} uncertainty</span>
+      </div>
+      <div class="metric-strip research-distribution-metrics">
+        <span><strong>${distribution.expected_result ?? "-"}</strong><small>Expected</small></span>
+        <span><strong>${distribution.median ?? "-"}</strong><small>Median</small></span>
+        <span><strong>${distribution.percentile_25 ?? "-"}–${distribution.percentile_75 ?? "-"}</strong><small>Middle 50%</small></span>
+        <span><strong>${distribution.floor ?? "-"}–${distribution.ceiling ?? "-"}</strong><small>Floor–Ceiling</small></span>
+        <span><strong>${pct(distribution.probability_over_exact_line ?? 50)}</strong><small>Exact-line Over</small></span>
+        <span><strong>${distribution.expected_minutes ?? distribution.expected_opportunities ?? "-"}</strong><small>Minutes / Chances</small></span>
+      </div>
+      <div class="sensitivity-grid">
+        ${(sensitivity.scenarios || []).map((scenario) => `<span><strong>${scenario.line}</strong><small>${pct(scenario.probability)} ${escapeHtml(data.recommendation?.direction || "Over")}</small></span>`).join("")}
+      </div>
+      ${(sensitivity.drivers || []).map((driver) => `<p class="subtle">What changes this: ${escapeHtml(driver)}</p>`).join("")}
+    </section>
     <div class="player-research-bars">
       ${(data.chart || []).map((row) => `
         <div class="research-bar-row">
@@ -3142,6 +3502,8 @@ async function loadPlayerResearch(event) {
         </span>
       `).join("") || `<p class="subtle">No active market lines found.</p>`}
     </div>
+    ${(data.closing_lines || []).length ? `<p class="subtle">Recent recorded lines: ${(data.closing_lines || []).slice(0, 6).map((row) => Number(row.line).toFixed(1)).join(" → ")}</p>` : `<p class="subtle">Historical closing lines are not available for this exact market yet.</p>`}
+    ${(data.teammate_splits || []).map((row) => `<p class="subtle">With ${escapeHtml(row.teammate)}: ${pct(row.with.hit_rate || 0)} · Without: ${pct(row.without.hit_rate || 0)}</p>`).join("") || `<p class="subtle">With/without teammate splits will appear when lineup participation history is available.</p>`}
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
     ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(note)}</p>`).join("")}
   `;
@@ -3328,13 +3690,14 @@ async function loadGradingReport() {
 async function loadSettlementAudit() {
   if (!$("settlement-audit-list")) return;
   const data = await api("/api/entries/settlement-audit?limit=150");
-  $("settlement-audit-status").textContent = `${data.verified || 0} verified · ${data.scheduled || 0} scheduled · ${data.waiting || 0} waiting · ${data.blocked || 0} blocked`;
+  $("settlement-audit-status").textContent = `${data.verified || 0} verified · ${data.scheduled || 0} scheduled · ${data.waiting || 0} waiting · ${data.blocked || 0} currently blocked · ${data.historical_review || 0} historical review`;
   $("settlement-audit-list").innerHTML = `
     <div class="stats-grid">
       <div class="stat-card"><div class="stat-value">${data.verified || 0}</div><div class="stat-label">Verified</div></div>
       <div class="stat-card"><div class="stat-value">${data.scheduled || 0}</div><div class="stat-label">Scheduled</div></div>
       <div class="stat-card"><div class="stat-value">${data.waiting || 0}</div><div class="stat-label">Automatic Retry</div></div>
-      <div class="stat-card"><div class="stat-value">${data.blocked || 0}</div><div class="stat-label">Verification Blocked</div></div>
+      <div class="stat-card"><div class="stat-value">${data.blocked || 0}</div><div class="stat-label">Currently Blocked</div></div>
+      <div class="stat-card"><div class="stat-value">${data.historical_review || 0}</div><div class="stat-label">Historical Review</div></div>
     </div>
     ${(data.items || []).slice(0, 30).map((item) => `
       <div class="suggestion compact-suggestion insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
@@ -3342,6 +3705,7 @@ async function loadSettlementAudit() {
           <strong>Entry #${item.entry_id} · ${escapeHtml(item.requested_player || "Unknown player")}</strong>
           <span class="pill">${escapeHtml(item.status || "waiting")}</span>
         </div>
+        ${item.scope === "historical" ? `<p class="subtle">Historical record · entry ${escapeHtml(item.entry_status || "archived")}</p>` : ""}
         <p>${escapeHtml(item.details?.stat || "Stat")} ${item.details?.line ?? ""} · ${escapeHtml(item.result || "Pending")} ${item.actual == null ? "" : `· Final ${item.actual}`}</p>
         <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · ${item.attempt_count || 1} attempt${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
         ${item.matched_player ? `<p class="subtle">Matched ${escapeHtml(item.matched_player)} · ${escapeHtml(item.matched_game || "game unavailable")}</p>` : ""}
@@ -3356,6 +3720,7 @@ async function loadLossProtection() {
   const metrics = data.metrics || {};
   const active = Boolean(data.active);
   const enabled = data.enabled !== false;
+  const toggleLabel = data.forced && active && !enabled ? "Auto warning" : enabled ? "On" : "Off";
   $("entry-loss-protection").classList.remove("muted-card");
   $("entry-loss-protection").classList.toggle("protection-active", active);
   $("entry-loss-protection").classList.toggle("protection-clear", !active);
@@ -3368,7 +3733,7 @@ async function loadLossProtection() {
       <label class="toggle-control" title="Turn Loss Protection enforcement on or off">
         <input id="loss-protection-toggle" type="checkbox" ${enabled ? "checked" : ""} />
         <span class="toggle-track" aria-hidden="true"></span>
-        <span>${enabled ? "On" : "Off"}</span>
+        <span>${toggleLabel}</span>
       </label>
     </div>
     <p>${escapeHtml((data.reasons || [])[0] || "Recovery checks are clear.")}</p>
@@ -3391,7 +3756,7 @@ async function loadLossProtection() {
         body: JSON.stringify({ enabled: nextEnabled }),
       });
       $("entry-status").textContent = updated.active
-        ? "Loss Protection is active. Real-money entries are blocked; paper entries remain available."
+        ? "Loss Protection is active. EdgeIQ will warn against paid entries, but user-selected paid entries can still be tracked after confirmation."
         : updated.enabled
           ? "Loss Protection is on and monitoring performance."
           : "Loss Protection is off. Standard bankroll and provider checks still apply.";
@@ -3408,43 +3773,71 @@ async function loadLossReview() {
   if (!$("loss-review-list")) return;
   const data = await api("/api/analytics/loss-review");
   const summary = data.summary || {};
-  $("loss-review-status").textContent = `${summary.losses_reviewed || 0} losses reviewed · Top cause: ${summary.top_reason || "None yet"}`;
+  const profiles = data.profiles || {};
+  const wins = profiles.wins || {};
+  const losses = profiles.losses || {};
+  $("loss-review-status").textContent = `${summary.wins_reviewed || 0} wins vs ${summary.losses_reviewed || 0} losses · verified finals only`;
   $("loss-review-list").innerHTML = `
     <div class="coaching-card">
       <div>
-        <span class="pill">Coach Mode</span>
-        <strong>${escapeHtml(lossCoachHeadline(summary, data.buckets || []))}</strong>
-        <p>${escapeHtml(lossCoachBody(data.buckets || []))}</p>
+        <span class="pill">Outcome Learning</span>
+        <strong>${data.model_feedback?.active ? "Verified segments are informing confidence" : "Building a trustworthy learning sample"}</strong>
+        <p>${escapeHtml(data.model_feedback?.message || "Only verified final stats influence recommendation confidence.")}</p>
       </div>
       <button class="secondary" type="button" data-view-shortcut="entries">Build Safer Entry</button>
     </div>
-    <div class="stats-grid">
-      <div class="stat-card"><div class="stat-value">${summary.losses_reviewed || 0}</div><div class="stat-label">Losses Reviewed</div></div>
-      <div class="stat-card"><div class="stat-value">${summary.shown || 0}</div><div class="stat-label">Shown</div></div>
-      <div class="stat-card wide-stat"><div class="stat-value">${escapeHtml(summary.top_reason || "None")}</div><div class="stat-label">Top Cause</div></div>
+    <div class="comparison-grid">
+      ${outcomeProfileCard("Winning Entries", wins, "positive")}
+      ${outcomeProfileCard("Losing Entries", losses, "danger")}
     </div>
-    <div class="pill-row">
-      ${(data.buckets || []).slice(0, 6).map((bucket) => `<span class="pill">${escapeHtml(bucket.reason)} · ${bucket.count}</span>`).join("") || `<span class="pill">No settled loss pattern yet</span>`}
+    <div class="analysis-card">
+      <strong>What separates them</strong>
+      ${(data.insights || []).map((insight) => `<p>${escapeHtml(insight)}</p>`).join("")}
+      ${summary.excluded_unverified ? `<p class="subtle">${summary.excluded_unverified} unverified settled entries were excluded from learning.</p>` : ""}
     </div>
-    ${(data.next_actions || []).map((action) => `<p class="subtle">${escapeHtml(action)}</p>`).join("")}
+    <div class="suggestion-list">
+      ${(data.learning_segments || []).slice(0, 8).map((segment) => `
+        <div class="suggestion compact-suggestion">
+          <div class="suggestion-top">
+            <strong>${escapeHtml(segment.dimension)} · ${escapeHtml(segment.name)}</strong>
+            <span class="pill ${segment.model_eligible ? "status-verified" : ""}">${segment.model_eligible ? "Learning active" : "Tracking"}</span>
+          </div>
+          <p>${segment.wins}-${segment.losses} verified legs · ${pct(segment.hit_rate)} hit rate · ${pct(segment.avg_confidence)} expected · ${Number(segment.calibration_gap || 0).toFixed(1)} pt gap</p>
+        </div>
+      `).join("") || `<div class="suggestion">No segment has five verified decisions yet.</div>`}
+    </div>
     ${(data.entries || []).map((entry) => `
-      <div class="suggestion compact-suggestion danger">
+      <div class="suggestion compact-suggestion ${entry.result === "Win" ? "positive" : "danger"}">
         <div class="suggestion-top">
-          <strong>Loss #${entry.id} · ${entry.leg_count} legs</strong>
+          <strong>${escapeHtml(entry.result)} #${entry.id} · ${entry.leg_count} legs</strong>
           <span class="subtle">${escapeHtml(entry.platform || "")} · ${formatDateTime(entry.placed_at)}</span>
         </div>
-        <div class="pill-row">${(entry.reasons || []).map((reason) => `<span class="pill danger-pill">${escapeHtml(reason)}</span>`).join("")}</div>
+        <div class="pill-row">${(entry.reasons || []).map((reason) => `<span class="pill">${escapeHtml(reason)}</span>`).join("")}</div>
         <div class="mini-leg-list">
           ${(entry.legs || []).map((leg) => `
-            <span>${escapeHtml(leg.player)} ${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat || "")} ${escapeHtml(leg.line ?? "")} · ${escapeHtml(leg.result || "Unknown")} · CLV ${leg.clv === null || leg.clv === undefined ? "N/A" : Number(leg.clv).toFixed(2)}</span>
+            <span>${escapeHtml(leg.player)} ${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat || "")} ${escapeHtml(leg.line ?? "")} · ${escapeHtml(leg.result || "Unknown")} · ${escapeHtml(leg.source || "")}</span>
           `).join("")}
         </div>
       </div>
-    `).join("") || `<div class="suggestion">No settled losing entries to review yet.</div>`}
+    `).join("") || `<div class="suggestion">No fully verified winning or losing entries to compare yet.</div>`}
   `;
   document.querySelectorAll("#loss-review-list [data-view-shortcut]").forEach((button) => {
     button.addEventListener("click", () => setView(button.dataset.viewShortcut));
   });
+}
+
+function outcomeProfileCard(title, profile, tone) {
+  return `
+    <div class="suggestion ${tone}">
+      <div class="suggestion-top"><strong>${escapeHtml(title)}</strong><span class="subtle">${profile.entries || 0} entries</span></div>
+      <div class="metric-strip">
+        <span><strong>${Number(profile.avg_legs || 0).toFixed(1)}</strong><small>Avg Legs</small></span>
+        <span><strong>${pct(profile.avg_confidence || 0)}</strong><small>Confidence</small></span>
+        <span><strong>${pct(profile.provider_backed_pct || 0)}</strong><small>Provider Backed</small></span>
+        <span><strong>${pct(profile.positive_clv_pct || 0)}</strong><small>Positive CLV</small></span>
+      </div>
+    </div>
+  `;
 }
 
 function lossCoachHeadline(summary, buckets) {
@@ -3681,37 +4074,47 @@ async function analyzeUpload(event) {
 
 function renderUploadResult(data) {
   const props = data.props || [];
-  const rows = props.map((prop) => `
+  const rows = props.map((prop, index) => `
     <tr>
-      <td>${prop.player}</td>
-      <td>${prop.sport}</td>
-      <td>${directionBadge(prop.direction || "Over")} ${prop.stat}</td>
-      <td>${prop.line}</td>
-      <td>${prop.platform || ""}</td>
+      <td><input type="checkbox" data-upload-prop-index="${index}" checked aria-label="Load ${escapeHtml(prop.player)}"></td>
+      <td>${escapeHtml(prop.player)}</td>
+      <td>${escapeHtml(prop.sport)}</td>
+      <td>${directionBadge(prop.direction)} ${escapeHtml(prop.stat)}</td>
+      <td>${escapeHtml(prop.line)}</td>
+      <td>${escapeHtml(prop.platform || "")}</td>
     </tr>
   `).join("");
   $("upload-result").classList.remove("muted-card");
   $("upload-result").innerHTML = `
     <h2>${data.prop_count ?? data.imported ?? 0}</h2>
     <p>${data.message}</p>
+    ${Number(data.duplicates_removed || 0) ? `<p class="subtle">${Number(data.duplicates_removed)} duplicate ${Number(data.duplicates_removed) === 1 ? "pick was" : "picks were"} removed.</p>` : ""}
+    ${Number(data.rejected_unverified || 0) ? `<p class="warning">${Number(data.rejected_unverified)} ${Number(data.rejected_unverified) === 1 ? "row was" : "rows were"} not loaded because the pick could not be verified against the live provider board.</p>` : ""}
     ${data.local_ocr ? `<p class="positive">Processed privately on this Mac with on-device text recognition.</p>` : ""}
     ${data.ai_enabled === false && !data.local_ocr ? `<p class="warning">A clearer crop may work locally. OpenAI is optional and can improve difficult screenshots.</p>` : ""}
     ${data.ocr_text && !props.length ? `<details class="ocr-preview"><summary>Recognized text</summary><pre>${escapeHtml(data.ocr_text)}</pre></details>` : ""}
     ${props.length ? `
       <div class="table-wrap compact">
         <table>
-          <thead><tr><th>Player</th><th>Sport</th><th>Stat</th><th>Line</th><th>Platform</th></tr></thead>
+          <thead><tr><th>Load</th><th>Player</th><th>Sport</th><th>Stat</th><th>Line</th><th>Platform</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
-      <button class="secondary" id="load-upload-props">Load Props Into Entry</button>
+      <button class="secondary" id="load-upload-props">Load Selected Picks</button>
     ` : ""}
   `;
   if (props.length) {
     $("load-upload-props").addEventListener("click", () => {
-      renderEntryPropsFromAnalyzed(props);
+      const selected = [...document.querySelectorAll("[data-upload-prop-index]:checked")]
+        .map((input) => props[Number(input.dataset.uploadPropIndex)])
+        .filter(Boolean);
+      if (!selected.length) {
+        $("upload-result").querySelector("p").textContent = "Select at least one verified pick to load.";
+        return;
+      }
+      renderEntryPropsFromAnalyzed(selected);
       setView("entries");
-      $("entry-status").textContent = `Loaded ${props.length} uploaded props. Analyze before placing.`;
+      $("entry-status").textContent = `Loaded ${selected.length} verified uploaded picks. Analyze before placing.`;
     });
   }
 }
@@ -3833,8 +4236,33 @@ function renderCompletedEntryLeg(prop) {
         <span>CLV</span>
         <strong class="${prop.clv?.clv < 0 ? "danger-text" : ""}">${prop.clv && prop.clv.clv !== null ? Number(prop.clv.clv).toFixed(1) : "-"}</strong>
       </div>
+      ${renderSettlementEvidence(prop.settlement_evidence || {})}
       ${needsDetail ? `<p class="subtle entry-leg-detail">${escapeHtml(prop.match_detail || "No matching final stat row found.")}</p>` : ""}
     </div>
+  `;
+}
+
+function renderSettlementEvidence(evidence) {
+  const matchedPlayer = evidence.matched_player || "No confirmed player match";
+  const matchedGame = evidence.matched_game || "No confirmed matchup";
+  const matchedDate = evidence.matched_game_date || "No confirmed final date";
+  return `
+    <details class="settlement-evidence-drawer">
+      <summary>Settlement Evidence</summary>
+      <div class="settlement-evidence-grid">
+        <span><small>Status</small><strong>${escapeHtml(friendlyStatus(evidence.verification_status || "unknown"))}</strong></span>
+        <span><small>Final-stat source</small><strong>${escapeHtml(friendlyStatus(evidence.provider || "unmatched"))}</strong></span>
+        <span><small>Requested player</small><strong>${escapeHtml(evidence.requested_player || "Unknown")}</strong></span>
+        <span><small>Matched player</small><strong>${escapeHtml(matchedPlayer)}</strong></span>
+        <span><small>Requested matchup</small><strong>${escapeHtml(evidence.requested_game || "Unavailable")}</strong></span>
+        <span><small>Matched matchup</small><strong>${escapeHtml(matchedGame)}</strong></span>
+        <span><small>Requested start</small><strong>${escapeHtml(evidence.requested_game_time ? formatDateTime(evidence.requested_game_time) : "Unavailable")}</strong></span>
+        <span><small>Matched final date</small><strong>${escapeHtml(matchedDate)}</strong></span>
+        <span><small>Player identity</small><strong>${escapeHtml(evidence.player_identity_id || "Not linked")}</strong></span>
+        <span><small>Last checked</small><strong>${escapeHtml(evidence.last_checked_at ? formatDateTime(evidence.last_checked_at) : "No audit attempt")}</strong></span>
+      </div>
+      <p>${escapeHtml(evidence.message || "No settlement audit explanation is available.")}</p>
+    </details>
   `;
 }
 
@@ -3943,6 +4371,7 @@ function showOnboardingIfNeeded() {
   syncDefaultInputs();
   if (!stored) {
     $("onboarding-modal").hidden = false;
+    $("onboarding-bankroll").focus();
   }
 }
 
@@ -4099,6 +4528,8 @@ async function loadBacktest() {
   const walkForward = data.walk_forward_validation || {};
   const grouped = data.grouped_validation || {};
   const ledger = data.prediction_ledger || {};
+  const shadow = data.shadow_evaluation || {};
+  const projectionAccuracy = ledger.projection_accuracy || {};
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
     <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
@@ -4121,6 +4552,12 @@ async function loadBacktest() {
           </div>
         `).join("")}
       </div>
+      ${(readiness.next_actions || []).length ? `
+        <div class="scorecard-next-actions">
+          <strong>How to reach v2.2</strong>
+          ${(readiness.next_actions || []).map((action) => `<p>${escapeHtml(action)}</p>`).join("")}
+        </div>
+      ` : ""}
     </div>
     <div class="suggestion ${grouped.passed ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
@@ -4135,6 +4572,31 @@ async function loadBacktest() {
       </div>
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
+    </div>
+    <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
+      <div class="suggestion-top">
+        <strong>v2.2 Shadow Evaluation</strong>
+        <span class="status-pill ${shadow.release_ready ? "status-connected" : "status-degraded"}">${shadow.release_ready ? "Release Review" : "Shadow Mode"}</span>
+      </div>
+      <div class="metric-strip">
+        <span><strong>${Number(shadow.queued || 0)}</strong><small>Queued</small></span>
+        <span><strong>${Number(shadow.settled || 0)}</strong><small>Verified Finals</small></span>
+        <span><strong>${pct(shadow.accuracy || 0)}</strong><small>Accuracy</small></span>
+      </div>
+      <p class="subtle">Shadow predictions cannot affect paid recommendations until 100 verified decisions settle at 55% accuracy or better.</p>
+    </div>
+    <div class="suggestion">
+      <div class="suggestion-top">
+        <strong>Projection Accuracy</strong>
+        <span class="status-pill ${Number(projectionAccuracy.verified_predictions || 0) >= 100 ? "status-connected" : "status-degraded"}">${projectionAccuracy.verified_predictions || 0} verified</span>
+      </div>
+      <div class="metric-strip">
+        <span><strong>${projectionAccuracy.mae == null ? "-" : Number(projectionAccuracy.mae).toFixed(2)}</strong><small>Historical MAE</small></span>
+        <span><strong>${projectionAccuracy.market_line_mae == null ? "-" : Number(projectionAccuracy.market_line_mae).toFixed(2)}</strong><small>Market MAE</small></span>
+        <span><strong>${projectionAccuracy.regularized_mae == null ? "-" : Number(projectionAccuracy.regularized_mae).toFixed(2)}</strong><small>Blended MAE</small></span>
+        <span><strong>${projectionAccuracy.regularization_improvement_pct == null ? "-" : pct(projectionAccuracy.regularization_improvement_pct)}</strong><small>Improvement</small></span>
+      </div>
+      <p class="subtle">EdgeIQ v2.2 blends verified player history with the provider's standard market line and tracks its error only after official finals arrive.</p>
     </div>
     <div class="suggestion accuracy-scorecard">
       <div>
@@ -4256,13 +4718,77 @@ async function loadBacktest() {
 }
 
 async function refreshCalibrationData() {
-  $("entry-status").textContent = "Refreshing provider stats for calibration...";
+  $("entry-status").textContent = "Checking unresolved final stats for calibration...";
   const data = await api("/api/analytics/refresh-calibration-data", { method: "POST" });
-  $("entry-status").textContent = `Calibration refreshed: ${data.provider_refresh.imported || 0} stat rows saved, ${data.backfill.provider_rows || 0} provider leg results linked.`;
+  $("entry-status").textContent = `Calibration refresh checked ${data.entries_targeted || 0} relevant entries: ${data.provider_refresh.imported || 0} stat rows saved, ${data.backfill.provider_rows || 0} provider leg results linked.`;
   await Promise.allSettled([loadBacktest(), loadPerformance(), loadAccuracyLab(), loadDataHealth(), loadNotifications()]);
 }
 
+async function repairDataIntegrity() {
+  const status = $("data-integrity-repair-status");
+  status.textContent = "Scanning historical entries without changing records...";
+  const preview = await api("/api/analytics/data-integrity-repair?dry_run=true", { method: "POST" });
+  if (!preview.candidate_entries) {
+    status.textContent = "Integrity scan complete. No unquarantined invalid markets were found.";
+    return;
+  }
+  const confirmed = window.confirm(
+    `EdgeIQ found ${preview.candidate_entries} entries containing ${preview.invalid_props} implausible markets. `
+    + "A database backup will be created, affected cards will be excluded from results, and calibration will be rebuilt. Continue?",
+  );
+  if (!confirmed) {
+    status.textContent = `Preview complete: ${preview.candidate_entries} entries need repair. No records changed.`;
+    return;
+  }
+  status.textContent = "Backing up data and repairing invalid markets...";
+  const result = await api("/api/analytics/data-integrity-repair?dry_run=false", { method: "POST" });
+  status.textContent = `${result.message} Backup: ${result.backup?.path || "created"}.`;
+  await Promise.allSettled([loadBacktest(), loadPerformance(), loadAccuracyLab(), loadDataHealth(), loadPending()]);
+}
+
+async function previewFinalStatsRepair() {
+  const preview = await api("/api/entries/recheck-final-stats/preview");
+  const target = $("settlement-repair-preview");
+  if (target) {
+    target.hidden = false;
+    target.innerHTML = `
+      <div class="suggestion compact-suggestion ${preview.local_changes ? "insight-positive" : "insight-neutral"}">
+        <div class="suggestion-top">
+          <strong>Read-only repair preview</strong>
+          <span class="pill">No records changed</span>
+        </div>
+        <p>${escapeHtml(preview.message || "Repair preview complete.")}</p>
+        <div class="metric-strip">
+          <span><strong>${Number(preview.entries_reviewed || 0)}</strong><small>Entries Reviewed</small></span>
+          <span><strong>${Number(preview.local_changes || 0)}</strong><small>Local Updates</small></span>
+          <span><strong>${Number(preview.provider_refresh_needed || 0)}</strong><small>Provider Checks</small></span>
+        </div>
+      </div>
+      ${(preview.items || []).filter((item) => item.will_change).slice(0, 12).map((item) => `
+        <div class="suggestion compact-suggestion">
+          <div class="suggestion-top">
+            <strong>Entry #${Number(item.entry_id || 0)} · ${escapeHtml(item.player || "Unknown player")}</strong>
+            <span class="status-pill status-connected">Update available</span>
+          </div>
+          <p>${escapeHtml(item.direction || "Over")} ${escapeHtml(item.line)} ${escapeHtml(item.stat || "Stat")} · ${escapeHtml(item.current?.result || "Pending")} to ${escapeHtml(item.proposed?.result || "Pending")}</p>
+          <p class="subtle">${escapeHtml(item.reason || "Confirmed local evidence matched.")}</p>
+        </div>
+      `).join("")}
+    `;
+  }
+  return preview;
+}
+
 async function recheckFinalStats() {
+  $("entry-history-status").textContent = "Preparing a read-only final stat preview...";
+  const preview = await previewFinalStatsRepair();
+  const confirmed = window.confirm(
+    `${preview.message || "Preview complete."}\n\nContinue with the provider refresh and apply verified settlement updates?`,
+  );
+  if (!confirmed) {
+    $("entry-history-status").textContent = "Final stat recheck canceled. No records were changed.";
+    return;
+  }
   $("entry-history-status").textContent = "Checking previous entries against final stat providers...";
   const data = await api("/api/entries/recheck-final-stats", { method: "POST" });
   const imported = data.provider_refresh?.imported || 0;
@@ -4277,26 +4803,27 @@ async function recheckFinalStats() {
 async function createAutoPaperCalibrationEntries() {
   const sport = $("auto-paper-sport")?.value || "All Sports";
   const platform = $("auto-paper-platform")?.value || "PrizePicks";
-  const legCount = Number($("auto-paper-leg-count")?.value || 2);
-  const maxEntries = Math.max(1, Math.min(10, Number($("auto-paper-max-entries")?.value || 3)));
-  $("auto-paper-calibration-status").textContent = `Creating ${sport} paper-only calibration samples...`;
+  $("auto-paper-calibration-status").textContent = `Building five ${sport} calibration cards from weak confidence buckets...`;
   const data = await api("/api/entries/auto-paper-calibration", {
     method: "POST",
     body: JSON.stringify({
       platform,
       sport,
-      leg_count: legCount,
-      max_entries: maxEntries,
+      leg_count: 2,
+      max_entries: 5,
+      standard_batch: true,
       prefer_confirmed: true,
       dry_run: false,
     }),
   });
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
+  const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
   $("auto-paper-calibration-status").innerHTML = `
-    Created ${data.created_count} ${escapeHtml(sport)} paper calibration entr${data.created_count === 1 ? "y" : "ies"}.
-    ${(data.created || []).slice(0, 3).map((row) => `
-      <span class="status-pill status-paper">${escapeHtml(row.target?.type || "Target")}: ${escapeHtml(row.target?.name || "")}</span>
+    Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
+    ${(data.created || []).map((row) => `
+      <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
     `).join("") || (skippedText ? `<span class="subtle">${skippedText}</span>` : "")}
+    ${data.shortfall ? `<span class="subtle">${Number(data.shortfall)} card${Number(data.shortfall) === 1 ? "" : "s"} could not be built from unique, verified props on today's board.</span>` : ""}
   `;
   $("entry-status").textContent = data.created_count
     ? `Created ${data.created_count} pending paper calibration entries.`
@@ -4442,6 +4969,12 @@ function bindEvents() {
     event.preventDefault();
     const prop = propFromForm();
     if (!prop.player || !prop.line) return;
+    const maximumLegs = providerMaximumLegs(prop.platform);
+    if (state.entryProps.length >= maximumLegs) {
+      $("entry-status").textContent = `${prop.platform} entries support at most ${maximumLegs} legs.`;
+      playCircuitSound("warning");
+      return;
+    }
     const entryDefaults = {
       platform: $("entry-platform").value,
       mode: $("entry-mode").value,
@@ -4460,17 +4993,22 @@ function bindEvents() {
   });
   $("entry-platform").addEventListener("change", () => {
     const platform = $("entry-platform").value;
-    state.entryProps = state.entryProps.map((prop) => ({ ...prop, platform }));
+    const sourcePlatforms = entrySourcePlatforms();
+    if (sourcePlatforms.length === 1 && sourcePlatforms[0] !== platform) {
+      $("entry-platform").value = sourcePlatforms[0];
+      $("entry-status").textContent = `These legs came from ${sourcePlatforms[0]}. Clear them before building a ${platform} entry.`;
+      playCircuitSound("warning");
+      return;
+    }
     state.lastEntryPayload = null;
     state.lastAnalysis = null;
     state.recommendationOrigin = false;
+    state.recommendationSnapshotId = "";
     $("ai-review-entry").disabled = true;
     $("prepare-handoff").disabled = true;
     $("place-entry").disabled = true;
     renderEntryProps();
-    $("entry-status").textContent = state.entryProps.length
-      ? `Platform changed to ${platform}. Analyze again so every leg can be matched to a live ${platform} market.`
-      : `New props will be validated against ${platform}.`;
+    $("entry-status").textContent = `New props will be validated against ${platform}.`;
   });
   $("entry-mode").addEventListener("change", () => {
     state.lastEntryPayload = null;
@@ -4501,10 +5039,23 @@ function bindEvents() {
     renderEntryProps();
   });
   $("generate-confirmed-entries").addEventListener("click", () => withButtonBusy("generate-confirmed-entries", "Building...", loadConfirmedEntries));
-  $("generate-suggestions").addEventListener("click", () => withButtonBusy("generate-suggestions", "Building...", loadSuggestions));
-  $("generate-crazy-six").addEventListener("click", () => withButtonBusy("generate-crazy-six", "Building...", loadCrazySix));
-  $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", runOptimizer));
+  $("generate-prizepicks").addEventListener("click", () => withButtonBusy(
+    "generate-prizepicks",
+    "Building...",
+    () => loadProviderSuggestions("PrizePicks", "prizepicks-generator-sport", "prizepicks-generator-legs", "prizepicks-suggestions-list"),
+  ));
+  $("generate-underdog").addEventListener("click", () => withButtonBusy(
+    "generate-underdog",
+    "Building...",
+    () => loadProviderSuggestions("Underdog", "underdog-generator-sport", "underdog-generator-legs", "underdog-suggestions-list"),
+  ));
+  $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", () => runOptimizer(false)));
+  $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));
+  $("refresh-portfolio-lines").addEventListener("click", () => withButtonBusy("refresh-portfolio-lines", "Refreshing...", refreshPortfolioLines));
   $("refresh-sportsbook-sync").addEventListener("click", () => withButtonBusy("refresh-sportsbook-sync", "Checking...", loadSportsbookSync));
+  $("refresh-trending-props").addEventListener("click", () => withButtonBusy("refresh-trending-props", "Loading...", loadTrendingProps));
+  $("send-selected-trending").addEventListener("click", sendSelectedTrendingProps);
+  $("clear-selected-trending").addEventListener("click", clearTrendingPropSelection);
   $("refresh-pending").addEventListener("click", () => withButtonBusy("refresh-pending", "Checking...", loadPending));
   $("classify-default-wagers").addEventListener("click", () => withButtonBusy("classify-default-wagers", "Classifying...", classifyDefaultWagers));
   $("save-dnp-handling").addEventListener("click", saveDnpSetting);
@@ -4530,6 +5081,7 @@ function bindEvents() {
   $("bet-history-form").addEventListener("submit", importBetHistory);
   $("refresh-grading-report").addEventListener("click", () => withButtonBusy("refresh-grading-report", "Checking...", loadGradingReport));
   $("refresh-settlement-audit").addEventListener("click", () => withButtonBusy("refresh-settlement-audit", "Refreshing...", loadSettlementAudit));
+  $("preview-settlement-repair").addEventListener("click", () => withButtonBusy("preview-settlement-repair", "Previewing...", previewFinalStatsRepair));
   $("refresh-loss-review").addEventListener("click", () => withButtonBusy("refresh-loss-review", "Reviewing...", loadLossReview));
   $("open-screenshot-import").addEventListener("click", openScreenshotImport);
   $("bet-form").addEventListener("submit", saveBet);
@@ -4540,6 +5092,7 @@ function bindEvents() {
   });
   $("refresh-backtest").addEventListener("click", () => withButtonBusy("refresh-backtest", "Refreshing...", loadBacktest));
   $("refresh-calibration-data").addEventListener("click", () => withButtonBusy("refresh-calibration-data", "Refreshing...", refreshCalibrationData));
+  $("repair-data-integrity").addEventListener("click", () => withButtonBusy("repair-data-integrity", "Scanning...", repairDataIntegrity));
   $("auto-paper-calibration").addEventListener("click", () => withButtonBusy("auto-paper-calibration", "Creating...", createAutoPaperCalibrationEntries));
   $("refresh-accuracy-lab").addEventListener("click", () => withButtonBusy("refresh-accuracy-lab", "Checking...", loadAccuracyLab));
   $("preferences-form").addEventListener("submit", savePreferences);
@@ -4588,11 +5141,7 @@ async function loadAll(options = {}) {
   syncDefaultInputs();
   const essentials = await Promise.allSettled([
     loadDashboard(),
-    loadRefreshSchedule(),
-    loadPreferences(),
     loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }),
-    loadDnpSetting(),
-    loadPending(),
   ]);
   const failure = essentials.find((result) => result.status === "rejected");
   if (failure) {
@@ -4606,7 +5155,6 @@ async function loadAll(options = {}) {
       ? [loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
       : [
           loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(),
-          loadDeployReadiness(), loadAlertDeliverySettings(), loadLossProtection(), loadLossReview(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");

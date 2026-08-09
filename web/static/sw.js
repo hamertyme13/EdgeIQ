@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260729-market-v6";
+const CACHE_NAME = "edgeiq-shell-20260809-remaining-improvements-v1";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -13,7 +13,9 @@ const SHELL_ASSETS = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_ASSETS)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(SHELL_ASSETS.map((asset) => new Request(asset, { cache: "reload" }))))
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -28,6 +30,13 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.pathname.startsWith("/api/")) return;
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(new Request(event.request, { cache: "no-store" }))
+        .catch(() => caches.match("/static/index.html"))
+    );
+    return;
+  }
   event.respondWith(
     fetch(event.request).catch(() => caches.match(event.request).then((cached) => cached || caches.match("/")))
   );

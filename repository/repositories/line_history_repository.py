@@ -2,11 +2,57 @@ from __future__ import annotations
 
 from repository.database import SessionLocal
 from repository.models.prop_line_history_model import PropLineHistoryModel
-from utils.entity_normalization import canonical_person_key
-from utils.entity_normalization import canonical_matchup_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 
 class LineHistoryRepository:
+
+    @staticmethod
+    def get_histories(requests: list[dict]) -> dict[tuple[str, str, str, str, str], list[dict]]:
+        """Load line histories for many props with one database checkout."""
+        if not requests:
+            return {}
+        stats = {str(row.get("stat", "")).strip() for row in requests if row.get("stat")}
+        platforms = {str(row.get("platform", "")).strip() for row in requests if row.get("platform")}
+        requested_keys = {
+            (
+                canonical_person_key(row.get("player")),
+                str(row.get("stat", "")).strip(),
+                str(row.get("platform", "")).strip(),
+                canonical_matchup_key(row.get("game")),
+                str(row.get("line_offer_type") or "standard").strip().lower(),
+            )
+            for row in requests
+        }
+        histories = {key: [] for key in requested_keys}
+        with SessionLocal() as session:
+            rows = (
+                session.query(PropLineHistoryModel)
+                .filter(
+                    PropLineHistoryModel.stat.in_(stats),
+                    PropLineHistoryModel.platform.in_(platforms),
+                )
+                .order_by(PropLineHistoryModel.recorded_at.asc(), PropLineHistoryModel.id.asc())
+                .all()
+            )
+            for row in rows:
+                key = (
+                    canonical_person_key(row.player),
+                    row.stat,
+                    row.platform,
+                    canonical_matchup_key(getattr(row, "game", "")),
+                    str(getattr(row, "line_offer_type", "standard") or "standard").lower(),
+                )
+                if key not in histories:
+                    continue
+                histories[key].append({
+                    "line": row.line,
+                    "recorded_at": row.recorded_at,
+                    "game": getattr(row, "game", "") or "",
+                    "game_time": getattr(row, "game_time", "") or "",
+                    "line_offer_type": getattr(row, "line_offer_type", "standard") or "standard",
+                })
+        return histories
 
     @staticmethod
     def record(player: str, stat: str, platform: str, line: float) -> None:
@@ -30,7 +76,7 @@ class LineHistoryRepository:
                 session.commit()
 
     @staticmethod
-    def record_many(lines: list[dict]) -> int:
+    def record_many(lines: list[dict], *, force_snapshot: bool = False) -> int:
         """Save changed line snapshots in one transaction."""
         if not lines:
             return 0
@@ -74,7 +120,7 @@ class LineHistoryRepository:
                 key = (player_key, stat, platform, game_key, offer_type)
                 last = latest.get(key)
                 line_value = float(line)
-                if last is None or last.line != line_value:
+                if force_snapshot or last is None or last.line != line_value:
                     snapshot = PropLineHistoryModel(
                         player=player, stat=stat, platform=platform, line=line_value,
                         game=game, game_time=game_time, line_offer_type=offer_type,

@@ -47,12 +47,42 @@ def test_validation_readiness_passes_complete_evidence() -> None:
             for index in range(500)
         ],
         grouped_validation={"ready": True, "passed": True, "message": "Passed."},
+        prediction_summary={
+            "projection_accuracy": {
+                "distribution_predictions": 100,
+                "middle_50_coverage": 50.0,
+                "floor_ceiling_coverage": 80.0,
+            },
+        },
     )
 
     assert result["status"] == "validated"
     assert result["passed_gates"] == result["total_gates"]
     assert result["counts"]["settled_paper_entries"] == 100
     assert result["counts"]["settled_props"] == 500
+    assert result["release"].startswith("EdgeIQ v2.2")
+
+
+def test_validation_readiness_explains_remaining_v22_distribution_work() -> None:
+    result = validation_readiness(
+        [],
+        [],
+        {"total": 0, "average_abs_error": 0},
+        {},
+        {},
+        prediction_summary={
+            "projection_accuracy": {
+                "distribution_predictions": 24,
+                "middle_50_coverage": 62.5,
+                "floor_ceiling_coverage": 91.7,
+            },
+        },
+    )
+
+    distribution_gate = next(gate for gate in result["gates"] if gate["label"] == "Projection distributions")
+    assert distribution_gate["passed"] is False
+    assert "24/100" in distribution_gate["detail"]
+    assert any("distribution forecasts" in action for action in result["next_actions"])
 
 
 def test_validation_readiness_excludes_unverified_props() -> None:

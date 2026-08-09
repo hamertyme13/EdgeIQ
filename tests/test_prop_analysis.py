@@ -1,9 +1,8 @@
-from models.player import Player
+from analytics.prop_recommendation import recommendation
 from models.platform import Platform
+from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
-
-from analytics.prop_recommendation import recommendation
 from ui.prop_analysis import display_prop_analysis
 
 
