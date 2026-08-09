@@ -7,10 +7,13 @@ from models.entry import Entry
 _STANDARD_MULTIPLIERS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 37.5, 7: 70.0, 8: 100.0}
 
 
-def recommendation(entry: Entry) -> dict:
+def recommendation(entry: Entry, payout: dict | None = None) -> dict:
     confidence = entry.average_confidence
     card_probability = _card_probability(entry)
-    break_even = 100.0 / _STANDARD_MULTIPLIERS.get(entry.prop_count, max(1.0, float(entry.prop_count)))
+    payout = payout or {}
+    break_even = float(payout.get("break_even_probability") or 0.0)
+    if break_even <= 0:
+        break_even = 100.0 / _STANDARD_MULTIPLIERS.get(entry.prop_count, max(1.0, float(entry.prop_count)))
     probability_margin = card_probability - break_even
     edge = entry.average_edge
     source_score = _average_source_score(entry)
@@ -25,7 +28,7 @@ def recommendation(entry: Entry) -> dict:
             "reason": _reason("Excellent blended score.", confidence, edge, source_score),
             "color": "green",
             "score": score,
-            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even),
+            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even, payout),
         }
 
     elif score >= 66:
@@ -36,7 +39,7 @@ def recommendation(entry: Entry) -> dict:
             "reason": _reason("Solid blended score.", confidence, edge, source_score),
             "color": "yellow",
             "score": score,
-            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even),
+            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even, payout),
         }
 
     elif score >= 55:
@@ -47,7 +50,7 @@ def recommendation(entry: Entry) -> dict:
             "reason": _reason("Borderline blended score.", confidence, edge, source_score),
             "color": "cyan",
             "score": score,
-            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even),
+            "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even, payout),
         }
 
     return {
@@ -56,7 +59,7 @@ def recommendation(entry: Entry) -> dict:
         "reason": _reason("Entry score is too low.", confidence, edge, source_score),
         "color": "red",
         "score": score,
-        "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even),
+        "components": _components(confidence, edge, source_score, prop_count, card_probability, break_even, payout),
     }
 
 
@@ -79,7 +82,7 @@ def _average_source_score(entry: Entry) -> float:
     return sum(float(getattr(prop, "source_score", 0.0) or 0.0) for prop in entry.props) / len(entry.props)
 
 
-def _components(confidence: float, edge: float, source_score: float, prop_count: int, card_probability: float, break_even: float) -> dict:
+def _components(confidence: float, edge: float, source_score: float, prop_count: int, card_probability: float, break_even: float, payout: dict) -> dict:
     return {
         "average_confidence": round(confidence, 2),
         "average_edge": round(edge, 2),
@@ -88,6 +91,8 @@ def _components(confidence: float, edge: float, source_score: float, prop_count:
         "calibrated_card_probability": round(card_probability, 2),
         "break_even_probability": round(break_even, 2),
         "probability_margin": round(card_probability - break_even, 2),
+        "payout_source": str(payout.get("source") or "generic_fallback"),
+        "payout_verified": str(payout.get("source") or "") == "exact_offer_snapshot",
     }
 
 

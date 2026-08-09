@@ -34,6 +34,7 @@ class PropPayload(BaseModel):
     feature_as_of: str = ""
     forecast_snapshot: dict = Field(default_factory=dict)
     forecast_paid_eligible: bool = False
+    recommendation_snapshot_id: str = ""
 
 
 class EntryPayload(BaseModel):
@@ -43,6 +44,7 @@ class EntryPayload(BaseModel):
     payout_type: Literal["standard", "flex"] = "standard"
     payout_schedule: dict[str, float] = Field(default_factory=dict)
     recommended_by_app: bool = False
+    recommendation_snapshot_id: str = ""
     tracking_override: bool = False
     entry_mode: Literal["real", "paper"] = "real"
     props: list[PropPayload]

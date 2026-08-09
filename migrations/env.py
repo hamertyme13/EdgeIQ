@@ -13,8 +13,10 @@ from repository.models.final_player_stat_model import FinalPlayerStatModel  # no
 from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel  # noqa: F401
 from repository.models.prediction_record_model import PredictionRecordModel  # noqa: F401
 from repository.models.prop_line_history_model import PropLineHistoryModel  # noqa: F401
+from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel  # noqa: F401
 from repository.models.settings_model import SettingsModel  # noqa: F401
 from repository.models.settlement_audit_model import SettlementAuditModel  # noqa: F401
+from repository.models.shadow_prediction_model import ShadowPredictionModel  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

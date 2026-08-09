@@ -66,7 +66,6 @@ class EntryRepository:
             if invalid_props:
                 _, validation = invalid_props[0]
                 raise ValueError(f"Entry contains an invalid market: {validation.reason}")
-            analysis = entry_recommendation(entry)
             wager = round(float(wager or 0), 2)
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
@@ -90,6 +89,7 @@ class EntryRepository:
                 correlation_matrix=estimate_correlation_matrix(entry.props),
                 exact_schedule=exact_schedule,
             )
+            analysis = entry_recommendation(entry, payout)
             identities = [
                 PlayerIdentityRepository.resolve(
                     prop.player.name,

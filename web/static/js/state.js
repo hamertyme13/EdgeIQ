@@ -4,6 +4,7 @@
     lastEntryPayload: null,
     lastAnalysis: null,
     recommendationOrigin: false,
+    recommendationSnapshotId: "",
     commandCards: [],
     dailyBriefing: null,
     opportunitySelections: new Set(),

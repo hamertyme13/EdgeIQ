@@ -66,7 +66,13 @@ def backtest_payload(clv: dict) -> dict:
         prediction_summary=prediction_summary,
     )
     payload["prediction_ledger"] = prediction_summary
-    payload["shadow_evaluation"] = ModelRehabilitationRepository.shadow_status(prediction_rows)
+    payload["shadow_evaluation"] = ModelRehabilitationRepository.shadow_status(
+        prediction_rows,
+        validation={
+            "closing_line_value": clv,
+            "holdout": payload.get("holdout_validation") or {},
+        },
+    )
     return payload
 
 

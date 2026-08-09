@@ -1196,6 +1196,7 @@ function bindBriefingTabs() {
 
 function handleDailyBriefingAction(card) {
   if (!card) return;
+  state.recommendationSnapshotId = card.recommendation_snapshot_id || state.dailyBriefing?.recommendation_snapshot_id || "";
   if (card.suggestion?.entry?.props?.length) {
     renderEntryPropsFromAnalyzed(card.suggestion.entry.props);
     state.recommendationOrigin = true;
@@ -1324,6 +1325,10 @@ async function loadDataHealth() {
   const totals = usage.totals || {};
   const endpointPerformance = data.endpoint_performance || {};
   const endpointRoutes = endpointPerformance.routes || [];
+  const operations = data.operations || {};
+  const scheduler = operations.scheduler || {};
+  const shadow = operations.shadow_evaluation || {};
+  const shadowSettlement = operations.shadow_settlement || {};
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
@@ -1332,6 +1337,16 @@ async function loadDataHealth() {
       </div>
       <p>${data.summary.last_daily_refresh ? `Last scheduled provider refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled provider refresh recorded yet."}</p>
       <p>${Number(usage.requests_avoided || 0)} provider calls avoided · ${Number(totals.network_requests || 0)} network requests · ${Number(usage.avoidance_pct || 0).toFixed(1)}% cache efficiency · ${Number(totals.stale_fallbacks || 0)} stale fallbacks</p>
+    </div>
+    <div class="suggestion compact-suggestion health-${operations.status === "degraded" ? "degraded" : "fresh"}">
+      <div class="suggestion-top">
+        <strong>Evidence collection</strong>
+        <span class="status-pill ${operations.status === "degraded" ? "status-warning" : "status-connected"}">${operations.status === "degraded" ? "Needs attention" : "Operational"}</span>
+      </div>
+      <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
+      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml((scheduler.jobs_run || []).join(", ") || "none")} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
+      ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
+      ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
     </div>
     ${providers.map((provider) => `
       <div class="suggestion compact-suggestion health-${provider.status}">
@@ -2395,6 +2410,7 @@ function entryPropFromFeed(prop) {
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
+    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
   };
 }
 
@@ -2432,6 +2448,7 @@ function addFeedProp(prop) {
     return;
   }
   state.entryProps.push(nextProp);
+  state.recommendationSnapshotId = nextProp.recommendation_snapshot_id || state.recommendationSnapshotId;
   syncEntryPlatformFromProps();
   renderEntryProps();
   setView("entries");
@@ -2516,6 +2533,7 @@ function entryPayload() {
     entry_mode: entryMode,
     tracking_override: false,
     recommended_by_app: Boolean(state.recommendationOrigin),
+    recommendation_snapshot_id: state.recommendationSnapshotId || state.entryProps.find((prop) => prop.recommendation_snapshot_id)?.recommendation_snapshot_id || "",
     props: state.entryProps.map((prop) => ({ ...prop, platform: prop.platform || platform })),
   };
 }
@@ -2917,6 +2935,7 @@ function renderEntryPropsFromAnalyzed(props) {
     data_strength: prop.data_strength,
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
+    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
   }));
   syncEntryPlatformFromProps();
   renderEntryProps();
@@ -3072,6 +3091,7 @@ async function placeEntry(triggerButton = $("place-entry")) {
   state.lastEntryPayload = null;
   state.lastAnalysis = null;
   state.recommendationOrigin = false;
+  state.recommendationSnapshotId = "";
   if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
   $("prepare-handoff").disabled = true;
   $("place-entry").disabled = true;
@@ -4983,6 +5003,7 @@ function bindEvents() {
     state.lastEntryPayload = null;
     state.lastAnalysis = null;
     state.recommendationOrigin = false;
+    state.recommendationSnapshotId = "";
     $("ai-review-entry").disabled = true;
     $("prepare-handoff").disabled = true;
     $("place-entry").disabled = true;

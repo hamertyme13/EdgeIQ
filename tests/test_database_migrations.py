@@ -2,6 +2,8 @@ from sqlalchemy import create_engine, inspect, text
 
 import repository.database as database
 from repository.models.prediction_record_model import PredictionRecordModel
+from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
+from repository.models.shadow_prediction_model import ShadowPredictionModel
 
 
 def test_lightweight_migrations_upgrade_legacy_entries_table(tmp_path, monkeypatch) -> None:
@@ -30,3 +32,11 @@ def test_prediction_ledger_schema_has_immutable_prediction_and_outcome_fields() 
         "outcome",
         "outcome_source",
     } <= columns
+
+
+def test_evidence_collection_schema_has_dedicated_ledgers() -> None:
+    shadow_columns = set(ShadowPredictionModel.__table__.columns.keys())
+    snapshot_columns = set(RecommendationSnapshotModel.__table__.columns.keys())
+
+    assert {"cohort_date", "model_version", "settlement_attempts", "outcome_source", "settled_at"} <= shadow_columns
+    assert {"snapshot_id", "model_version", "platform", "sport", "purpose", "payload"} <= snapshot_columns

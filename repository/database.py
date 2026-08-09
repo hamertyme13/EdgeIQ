@@ -45,8 +45,10 @@ def initialize_database():
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel
     from repository.models.prediction_record_model import PredictionRecordModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
+    from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
     from repository.models.settings_model import SettingsModel
     from repository.models.settlement_audit_model import SettlementAuditModel
+    from repository.models.shadow_prediction_model import ShadowPredictionModel
 
     Base.metadata.create_all(bind=engine)
     _run_lightweight_migrations()

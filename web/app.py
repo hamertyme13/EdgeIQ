@@ -450,7 +450,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260809-model-rehabilitation-v1"
+STATIC_ASSET_VERSION = "20260809-evidence-repair-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -601,7 +601,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.2.1", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -3521,7 +3521,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
     top_opportunities = _daily_top_opportunities(command, confirmed)
     risk_summary = _daily_risk_summary(bet_cards, watch_cards, paper_cards)
     games_today = _daily_games_today(platform, sport_filter, confirmed)
-    return {
+    payload = {
         "as_of": iso_utc(utc_now()),
         "platform": platform,
         "sport": sport_filter or "All Sports",
@@ -3560,6 +3560,36 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
             "Recheck injuries, game time, and line movement before placing.",
         ],
     }
+    snapshot = ModelRehabilitationRepository.save_feed(
+        {
+            "feed": {
+                "id": "edgeiq-daily-briefing-v2.2.1",
+                "canonical": True,
+                "purpose": "Actionable recommendations for Today and Entry Builder.",
+                "platform": platform,
+                "sport": sport_filter or "All Sports",
+            },
+            "daily_briefing": payload,
+        },
+        model_version=EDGEIQ_LOCAL_MODEL_VERSION,
+    )
+    _stamp_actionable_snapshot(payload, str(snapshot["snapshot_id"]), EDGEIQ_LOCAL_MODEL_VERSION)
+    return payload
+
+
+def _stamp_actionable_snapshot(payload: dict, snapshot_id: str, model_version: str) -> None:
+    payload["recommendation_snapshot_id"] = snapshot_id
+    payload["model_version"] = model_version
+    groups = [
+        payload.get("top_opportunities") or [],
+        payload.get("suggested_entries") or [],
+        *[(payload.get("sections") or {}).get(key) or [] for key in ("bet", "paper", "watch", "avoid")],
+    ]
+    for group in groups:
+        for row in group:
+            if isinstance(row, dict):
+                row["recommendation_snapshot_id"] = snapshot_id
+                row["model_version"] = model_version
 
 
 def _daily_bet_cards(cards: list[dict]) -> list[dict]:
@@ -4829,7 +4859,24 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
             "watchlist_hits": len(watch_rows),
         },
     }
-    ModelRehabilitationRepository.save_feed({"opportunity_feed": payload})
+    snapshot = ModelRehabilitationRepository.save_feed(
+        {
+            "feed": {
+                "id": "edgeiq-opportunity-feed-v2.2.1",
+                "canonical": True,
+                "purpose": "Shared actionable recommendation feed.",
+                "platform": platform,
+                "sport": sport_filter or "All Sports",
+            },
+            "opportunity_feed": payload,
+        },
+        model_version=EDGEIQ_LOCAL_MODEL_VERSION,
+    )
+    payload["recommendation_snapshot_id"] = snapshot["snapshot_id"]
+    payload["model_version"] = EDGEIQ_LOCAL_MODEL_VERSION
+    for opportunity in payload["opportunities"]:
+        opportunity["recommendation_snapshot_id"] = snapshot["snapshot_id"]
+        opportunity["model_version"] = EDGEIQ_LOCAL_MODEL_VERSION
     ModelRehabilitationRepository.queue_shadow(
         payload["opportunities"],
         model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2",
@@ -9173,7 +9220,7 @@ def _signal(
 
 
 def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
-    model_result = entry_recommendation(entry)
+    model_payout = _entry_payout_analysis(entry, payload)
     risk = calculate_entry_risk(entry.props)
     warnings = detect_correlations(entry)
     espn_notes = _entry_espn_notes(entry.props)
@@ -9185,8 +9232,8 @@ def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
     risk_guardrails = _risk_guardrails(entry, payload, platform_value)
     confirmation = _confirmation_checklist(entry, payload, warnings + espn_notes)
     loss_protection = _loss_protection_payload()
-    model_payout = _entry_payout_analysis(entry, payload)
     payout = (platform_value or {}).get("authoritative_economics") or model_payout
+    model_result = entry_recommendation(entry, payout)
     release_verdict = _entry_release_verdict(payload, model_result, risk_guardrails, platform_value)
     corrections = _entry_correction_plan(entry, payload)
     result = {
@@ -9780,6 +9827,7 @@ def _entry_audit_snapshot(
         "payout_analysis": analysis.get("payout_analysis", {}),
         "entry_mode": payload.entry_mode,
         "recommended_by_app": payload.recommended_by_app,
+        "recommendation_snapshot_id": payload.recommendation_snapshot_id,
         "tracking_override": bool(payload.tracking_override),
         "settlement_tracking": "manual_verification_required" if settlement_warnings else "verified",
         "settlement_warnings": settlement_warnings,
@@ -9971,6 +10019,11 @@ def _data_health_payload() -> dict:
         platform_memory,
         SETTLEMENT_REFRESH_STATUS_KEY,
         _endpoint_timing_snapshot(),
+        operational_health={
+            "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+            "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
+            "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
+        },
     )
 
 
@@ -9993,6 +10046,7 @@ def _refresh_schedule_payload() -> dict:
         "line_snapshots": "*/30",
         "result_check": "23:30",
         "nightly_calibration": "02:00",
+        "shadow_cohort": "08:15",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -10002,6 +10056,7 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Line movement snapshots", "time": schedule["line_snapshots"], "action": "Record prop lines for CLV and timing alerts."},
         {"name": "Post-game result check", "time": schedule["result_check"], "action": "Auto-check pending entries against final stats."},
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
+        {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
     ]
     return {
         "schedule": schedule,
@@ -10040,8 +10095,12 @@ def _run_due_daily_operations() -> dict:
     timed_jobs = {
         "morning_scan": _run_daily_refresh_now,
         "injury_refresh": _run_daily_refresh_now,
-        "result_check": lambda: _auto_check_pending_entries(False, True),
+        "result_check": lambda: {
+            "entries": _auto_check_pending_entries(False, True),
+            "shadow": ModelRehabilitationRepository.settle_pending(),
+        },
         "nightly_calibration": lambda: _backtest_payload(),
+        "shadow_cohort": _queue_daily_shadow_cohort,
     }
     for name, callback in timed_jobs.items():
         scheduled_time = str(schedule.get(name) or "")
@@ -10053,7 +10112,8 @@ def _run_due_daily_operations() -> dict:
     if snapshot_rule.startswith("*/"):
         try:
             interval = max(1, int(snapshot_rule[2:]))
-            if now.minute % interval == 0:
+            last_snapshot = SettingsRepository.get("daily_scheduler_run:line_snapshots", "")
+            if _elapsed_job_due(last_snapshot, now, interval):
                 due.append(("line_snapshots", lambda: {
                     platform: len(_fetch_platform_props(platform, force_refresh=True))
                     for platform in ENTRY_PLATFORMS
@@ -10061,21 +10121,51 @@ def _run_due_daily_operations() -> dict:
         except ValueError:
             pass
     completed = []
+    failures = []
     for name, callback in due:
         run_key = f"daily_scheduler_run:{name}"
         if name == "line_snapshots" and SettingsRepository.get(run_key, "") == minute_key:
             continue
-        result = callback()
-        SettingsRepository.set(run_key, minute_key)
-        completed.append({"job": name, "result": result})
+        try:
+            result = callback()
+            SettingsRepository.set(run_key, minute_key)
+            completed.append({"job": name, "result": result})
+        except Exception as exc:
+            failures.append({"job": name, "message": str(exc) or "Scheduled job failed."})
     status = {
         "ok": True,
         "ran_at": iso_utc(utc_now()),
         "jobs_run": [row["job"] for row in completed],
-        "message": "Scheduled maintenance is active.",
+        "failures": failures,
+        "ok": not failures,
+        "message": "Scheduled maintenance completed." if not failures else "Some scheduled maintenance needs attention.",
     }
     SettingsRepository.set("daily_scheduler_status", json.dumps(status))
     return status
+
+
+def _elapsed_job_due(last_run: str, now: datetime, interval_minutes: int) -> bool:
+    if not last_run:
+        return True
+    try:
+        previous = datetime.fromisoformat(str(last_run).replace("Z", "+00:00"))
+        if previous.tzinfo is None:
+            previous = previous.replace(tzinfo=now.tzinfo)
+        return (now - previous.astimezone(now.tzinfo)).total_seconds() >= interval_minutes * 60
+    except (TypeError, ValueError):
+        return True
+
+
+def _queue_daily_shadow_cohort() -> dict:
+    feed = ModelRehabilitationRepository.load_feed()
+    rows = feed.get("opportunity_feed", {}).get("opportunities") or feed.get("props") or []
+    if not rows:
+        rows = _fetch_props("All Platforms", None)
+    return ModelRehabilitationRepository.queue_shadow(
+        rows,
+        model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2.1",
+        target=227,
+    )
 
 
 def _notification_payload() -> dict:

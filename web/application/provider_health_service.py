@@ -17,6 +17,7 @@ def build_data_health_payload(
     platform_memory: dict[str, dict[str, int]],
     settlement_status_key: str,
     endpoint_timings: dict | None = None,
+    operational_health: dict | None = None,
 ) -> dict:
     providers = [
         provider_health_row("PrizePicks", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
@@ -106,6 +107,17 @@ def build_data_health_payload(
         for provider in providers
         if provider["status"] in {"missing_key", "not_configured", "stale", "degraded"}
     ]
+    operational_health = operational_health or {}
+    scheduler = operational_health.get("scheduler") or {}
+    shadow = operational_health.get("shadow_evaluation") or {}
+    settlement = operational_health.get("shadow_settlement") or {}
+    operational_warnings = []
+    if scheduler.get("failures"):
+        operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
+    if int(shadow.get("settlement_failures") or 0) > 0:
+        operational_warnings.append("Some shadow predictions could not be matched to verified final stats after repeated attempts.")
+    if shadow.get("queued") and not shadow.get("settled") and settlement.get("ran_at"):
+        operational_warnings.append("Shadow settlement is running, but no verified outcomes have settled yet.")
     return {
         "providers": providers,
         "provider_weights": provider_weights,
@@ -116,10 +128,17 @@ def build_data_health_payload(
             "slow_threshold_ms": 1000,
             "routes": [],
         },
+        "operations": {
+            "scheduler": scheduler,
+            "shadow_settlement": settlement,
+            "shadow_evaluation": shadow,
+            "warnings": operational_warnings,
+            "status": "degraded" if operational_warnings else "healthy",
+        },
         "summary": {
             "connected": connected,
             "total": len(providers),
-            "warnings": len(warnings),
+            "warnings": len(warnings) + len(operational_warnings),
             "last_daily_refresh": SettingsRepository.get("last_daily_refresh", ""),
         },
     }
