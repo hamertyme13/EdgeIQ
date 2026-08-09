@@ -24,6 +24,10 @@ _LOCKS_GUARD = threading.Lock()
 _CACHE_LOCKS: dict[str, threading.Lock] = {}
 _METRICS_LOCK = threading.Lock()
 _METRICS: dict[str, dict[str, int]] = {}
+_CIRCUITS_LOCK = threading.Lock()
+_CIRCUITS: dict[str, dict[str, float | int]] = {}
+_FAILURE_THRESHOLD = 3
+_COOLDOWN_SECONDS = 120
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,12 @@ def get_json(
     cache_path = _cache_path(cache_key or url)
     cached = _read_cache(cache_path)
     host = urlparse(url).netloc.lower() or "unknown"
+
+    if _circuit_open(host):
+        _record_metric(host, "circuit_rejections")
+        if cached:
+            return CachedResponse(cached.data, True, cached.age_seconds, cached.etag, cached.last_modified)
+        raise RuntimeError("Provider is temporarily paused after repeated failures; EdgeIQ will retry automatically.")
 
     if cached and cached.age_seconds <= ttl_seconds:
         _record_metric(host, "cache_hits")
@@ -94,6 +104,7 @@ def get_json(
                 last_modified = str(response.headers.get("Last-Modified") or "")
                 _write_cache(cache_path, data, etag=etag, last_modified=last_modified)
                 _record_metric(host, "network_successes")
+                _record_success(host)
                 return CachedResponse(
                     data=data,
                     stale=False,
@@ -104,6 +115,7 @@ def get_json(
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 _record_metric(host, "network_failures")
+                _record_failure(host)
                 if attempt < retries:
                     time.sleep(_retry_delay(attempt, getattr(exc, "response", None)))
 
@@ -156,12 +168,34 @@ def cache_metrics() -> dict[str, Any]:
             totals[key] = totals.get(key, 0) + int(value)
     avoided = totals.get("cache_hits", 0) + totals.get("coalesced_hits", 0) + totals.get("not_modified", 0)
     considered = avoided + totals.get("network_requests", 0)
+    with _CIRCUITS_LOCK:
+        circuits = {host: dict(value) for host, value in _CIRCUITS.items()}
     return {
         "totals": totals,
         "hosts": hosts,
         "requests_avoided": avoided,
         "avoidance_pct": round((avoided / considered) * 100.0, 1) if considered else 0.0,
+        "circuits": circuits,
     }
+
+
+def _circuit_open(host: str) -> bool:
+    with _CIRCUITS_LOCK:
+        state = _CIRCUITS.get(host) or {}
+        return float(state.get("open_until") or 0.0) > time.monotonic()
+
+
+def _record_success(host: str) -> None:
+    with _CIRCUITS_LOCK:
+        _CIRCUITS.pop(host, None)
+
+
+def _record_failure(host: str) -> None:
+    with _CIRCUITS_LOCK:
+        state = _CIRCUITS.setdefault(host, {"failures": 0, "open_until": 0.0})
+        state["failures"] = int(state.get("failures") or 0) + 1
+        if int(state["failures"]) >= _FAILURE_THRESHOLD:
+            state["open_until"] = time.monotonic() + _COOLDOWN_SECONDS
 
 
 def _cache_path(url: str) -> Path:

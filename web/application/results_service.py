@@ -27,10 +27,25 @@ def performance_payload() -> dict:
 
 def backtest_payload(clv: dict) -> dict:
     entries = EntryRepository.all()
-    payload = backtest_summary(BetRepository().get_all(), entries)
-    readiness = payload.get("validation_readiness") or {}
     PredictionLedgerRepository.backfill_legacy_quarantine()
     prediction_rows = PredictionLedgerRepository.evidence_rows(include_legacy=False)
+    entry_ids = {int(entry.get("id") or 0) for entry in entries}
+    prediction_rows = [
+        row for row in prediction_rows
+        if int(row.get("entry_id") or 0) in entry_ids
+    ]
+    if not all(
+        prop.get("entry_prop_id")
+        for entry in entries
+        for prop in (entry.get("props") or [])
+    ):
+        prediction_rows = []
+    payload = backtest_summary(
+        BetRepository().get_all(),
+        entries,
+        prediction_rows=prediction_rows or None,
+    )
+    readiness = payload.get("validation_readiness") or {}
     prediction_summary = PredictionLedgerRepository.summary()
     grouped_validation = grouped_rolling_validation(prediction_rows)
     payload["grouped_validation"] = grouped_validation
@@ -54,12 +69,16 @@ def backtest_payload(clv: dict) -> dict:
 
 
 def model_health_payload(ai: dict) -> dict:
-    backtest_data = backtest_summary(BetRepository().get_all(), EntryRepository.all())
+    versioned_predictions = PredictionLedgerRepository.evidence_rows(include_legacy=False)
+    backtest_data = backtest_summary(
+        BetRepository().get_all(),
+        EntryRepository.all(),
+        prediction_rows=versioned_predictions,
+    )
     entry_confidence = backtest_data.get("entries", {}).get("confidence", {})
     calibration = backtest_data.get("calibration", [])
     scorecard = backtest_data.get("scorecard", {})
     holdout = backtest_data.get("holdout_validation", {})
-    versioned_predictions = PredictionLedgerRepository.evidence_rows(include_legacy=False)
     grouped_validation = grouped_rolling_validation(versioned_predictions)
     calibrated_rows = sum(bucket.get("bets", 0) for bucket in calibration)
     avg_error = (

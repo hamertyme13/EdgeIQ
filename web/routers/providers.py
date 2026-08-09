@@ -12,6 +12,7 @@ router = APIRouter(tags=["providers"])
 class ProviderDependencies:
     data_health: Callable[[], dict]
     sleeper_status: Callable[[], dict]
+    verify_odds: Callable[[], dict]
 
 
 _dependencies: ProviderDependencies | None = None
@@ -36,3 +37,8 @@ def data_health() -> dict:
 @router.get("/api/providers/sleeper/status")
 def sleeper_status() -> dict:
     return _deps().sleeper_status()
+
+
+@router.post("/api/providers/odds/verify")
+def verify_odds() -> dict:
+    return _deps().verify_odds()

@@ -449,7 +449,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260809-provider-refresh-v1"
+STATIC_ASSET_VERSION = "20260809-runtime-reliability-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -600,7 +600,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.0.0-alpha", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.1.1", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -4783,6 +4783,11 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
         deduped.append(item)
     deduped.sort(key=lambda row: (row["priority_score"], row.get("expected_value", 0.0), row.get("confidence", 0.0)), reverse=True)
     return {
+        "feed": {
+            "id": "edgeiq-opportunity-feed-v1",
+            "canonical": True,
+            "purpose": "Shared recommendation source for Today, Value Tools, generators, and portfolio review.",
+        },
         "as_of": iso_utc(utc_now()),
         "platform": platform,
         "sport": sport_filter or "All Sports",
@@ -5170,9 +5175,7 @@ def _props_by_platform_from_props(platform: str, props: list[dict]) -> list[tupl
     selected = {_canonical_platform(platform_name) for platform_name in _selected_entry_platforms(platform)}
     grouped: dict[str, list[dict]] = {}
     for prop in props:
-        if not _is_prop_on_entry_day(prop) or not _is_actionable_provider_prop(prop):
-            continue
-        if not _end_to_end_prop_eligibility(prop)["eligible"]:
+        if not _is_prop_on_entry_day(prop):
             continue
         platform_name = _canonical_platform(prop.get("platform", platform))
         if platform_name not in selected:
@@ -9916,6 +9919,18 @@ def _data_health_payload() -> dict:
     )
 
 
+def _verify_odds_provider() -> dict:
+    attempted_at = iso_utc(utc_now())
+    result = sportsbook_odds.verify_connection()
+    _record_provider_fetch_status(
+        "The Odds API",
+        attempted_at,
+        row_count=int(result.get("sports") or 0),
+        error="" if result.get("ok") else str(result.get("message") or "Verification failed."),
+    )
+    return result
+
+
 def _refresh_schedule_payload() -> dict:
     defaults = {
         "morning_scan": "08:00",
@@ -10885,6 +10900,7 @@ configure_provider_router(
     ProviderDependencies(
         data_health=lambda: _data_health_payload(),
         sleeper_status=lambda: sleeper.public_api_status(),
+        verify_odds=lambda: _verify_odds_provider(),
     )
 )
 app.include_router(provider_router)

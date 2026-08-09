@@ -71,6 +71,11 @@ finds a Python runtime with `uvicorn`, skips stale local servers, and opens the
 browser app on the first available EdgeIQ port. Keep the Terminal window open
 while using the app.
 
+Installation also registers the `com.edgeiq.runtime-reliability` macOS
+LaunchAgent. It checks scheduled provider refresh, settlement, line snapshot,
+and calibration jobs every 15 minutes, even when the browser is closed. Logs
+are stored in `~/Library/Logs/EdgeIQ/`.
+
 Python desktop app:
 
 ```bash

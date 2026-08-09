@@ -142,6 +142,36 @@ def get_games(sport: str | None = None) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def verify_connection() -> dict:
+    api_key = os.getenv("ODDS_API_KEY", "").strip()
+    if not api_key:
+        return {"ok": False, "sports": 0, "message": "ODDS_API_KEY is not configured."}
+    url = f"{BASE_URL}/?{urlencode({'apiKey': api_key})}"
+    try:
+        response = get_json(
+            url,
+            cache_key=f"{BASE_URL}/sports-verification",
+            timeout=8,
+            ttl_seconds=900,
+            retries=1,
+        )
+    except RuntimeError as exc:
+        return {"ok": False, "sports": 0, "message": str(exc)}
+    sports = response.data if isinstance(response.data, list) else []
+    supported = sorted({
+        label for label, key in SPORT_KEYS.items()
+        if any(str(row.get("key") or "") == key and bool(row.get("active", True)) for row in sports)
+    })
+    return {
+        "ok": bool(sports),
+        "sports": len(sports),
+        "supported_active_sports": supported,
+        "stale": response.stale,
+        "age_seconds": response.age_seconds,
+        "message": "The Odds API connection is verified." if sports else "The Odds API returned no sports.",
+    }
+
+
 def get_events(sport: str) -> list[dict]:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:

@@ -240,7 +240,10 @@ def age_minutes(value: object) -> int | None:
             return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return max(0, int((utc_now().astimezone(UTC) - parsed.astimezone(UTC)).total_seconds() / 60))
+    current = utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return max(0, int((current.astimezone(UTC) - parsed.astimezone(UTC)).total_seconds() / 60))
 
 
 def provider_status_key(name: object) -> str:
