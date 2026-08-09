@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,8 +45,8 @@ from analytics.ev import decimal_odds, expected_value, sportsbook_probability
 from analytics.hierarchical_calibration import calibrate_probability
 from analytics.hit_rate import estimate_hit_rate
 from analytics.kelly import breakeven_probability, half_kelly, kelly_fraction, suggested_wager
-from analytics.pickem_payouts import payout_analysis
 from analytics.outcome_learning import outcome_comparison
+from analytics.pickem_payouts import payout_analysis
 from analytics.prediction_evidence import deduplicate_outcomes
 from analytics.probabilistic_forecast import forecast_prop
 from analytics.projection import auto_projection
@@ -84,8 +84,9 @@ from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
-from utils.stat_normalization import stat_key as canonical_stat_key
+from utils.prop_plausibility import prop_line_plausibility
 from utils.stat_normalization import canonical_stat_label, stat_type_from_text
+from utils.stat_normalization import stat_key as canonical_stat_key
 from utils.time import iso_utc, utc_now
 from web.application.advantage_service import advantage_center_payload as build_advantage_center_payload
 from web.application.advantage_service import advantage_game_contexts as build_advantage_game_contexts
@@ -167,8 +168,12 @@ from web.application.player_service import player_detail_payload as build_player
 from web.application.player_service import player_hit_rate_payload as build_player_hit_rate_payload
 from web.application.player_service import player_identity_payload as build_player_identity_payload
 from web.application.player_service import player_line_movement_payload as build_player_line_movement_payload
+from web.application.portfolio_service import active_portfolio_monitor_payload as build_active_portfolio_monitor_payload
 from web.application.portfolio_service import bets_payload as build_bets_payload
 from web.application.portfolio_service import personal_profile_payload as build_personal_profile_payload
+from web.application.portfolio_service import portfolio_intelligence_payload as build_portfolio_intelligence_payload
+from web.application.portfolio_service import portfolio_ranked_suggestions as build_portfolio_ranked_suggestions
+from web.application.portfolio_service import refresh_portfolio_market_payload as build_refresh_portfolio_market_payload
 from web.application.portfolio_service import save_bet_payload as build_save_bet_payload
 from web.application.provider_health_service import (
     age_minutes as _age_minutes,
@@ -223,6 +228,9 @@ from web.application.settlement_service import (
 )
 from web.application.settlement_service import (
     recheck_final_stats_payload as build_recheck_final_stats_payload,
+)
+from web.application.settlement_service import (
+    recheck_final_stats_preview_payload as build_recheck_final_stats_preview_payload,
 )
 from web.application.settlement_service import (
     settle_entry_payload as build_settle_entry_payload,
@@ -340,6 +348,8 @@ from web.routers.portfolio import (
     configure_portfolio_router,
     dashboard,
     personal_profile,
+    portfolio_intelligence,
+    refresh_portfolio_market_data,
     save_bet,
 )
 from web.routers.portfolio import router as portfolio_router
@@ -439,7 +449,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260808-reliability-audit-v5"
+STATIC_ASSET_VERSION = "20260809-provider-refresh-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -465,6 +475,9 @@ _TRENDING_PROPS_CACHE: dict[tuple, tuple[float, dict]] = {}
 _TRENDING_PROPS_LOCK = threading.RLock()
 _PREDICTION_EVIDENCE_CACHE: tuple[float, list[dict]] = (0.0, [])
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
+_ENDPOINT_TIMINGS: dict[str, list[dict]] = {}
+_ENDPOINT_TIMING_LOCK = threading.RLock()
+ENDPOINT_SLOW_THRESHOLD_MS = 1000.0
 SUPPORTED_SPORTS = (
     "WNBA",
     "NBA",
@@ -525,12 +538,16 @@ async def lifespan(_: FastAPI):
     initialize_database()
     _recover_interrupted_daily_scan()
     settlement_task = asyncio.create_task(_settlement_refresh_loop())
+    scheduler_task = asyncio.create_task(_daily_operations_scheduler_loop())
     try:
         yield
     finally:
         settlement_task.cancel()
+        scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await settlement_task
+        with suppress(asyncio.CancelledError):
+            await scheduler_task
 
 
 async def _settlement_refresh_loop() -> None:
@@ -568,6 +585,21 @@ async def _settlement_refresh_loop() -> None:
         await asyncio.sleep(SETTLEMENT_REFRESH_SECONDS)
 
 
+async def _daily_operations_scheduler_loop() -> None:
+    """Run configured maintenance jobs once per local schedule window."""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await asyncio.to_thread(_run_due_daily_operations)
+        except Exception:
+            SettingsRepository.set("daily_scheduler_status", json.dumps({
+                "ok": False,
+                "ran_at": iso_utc(utc_now()),
+                "message": "Scheduled maintenance could not finish. EdgeIQ will retry automatically.",
+            }))
+        await asyncio.sleep(60)
+
+
 app = FastAPI(title="EdgeIQ Web", version="2.0.0-alpha", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
@@ -581,6 +613,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _normalized_endpoint_path(path: str) -> str:
+    normalized = re.sub(r"/(?P<id>\d+)(?=/|$)", "/{id}", path)
+    return re.sub(r"(/api/entries/shared/)[^/]+", r"\1{share_id}", normalized)
+
+
+def _record_endpoint_timing(method: str, path: str, duration_ms: float, status_code: int) -> None:
+    if not path.startswith("/api/"):
+        return
+    key = f"{method.upper()} {_normalized_endpoint_path(path)}"
+    sample = {
+        "duration_ms": round(max(0.0, float(duration_ms)), 2),
+        "status_code": int(status_code),
+        "recorded_at": iso_utc(utc_now()),
+    }
+    with _ENDPOINT_TIMING_LOCK:
+        samples = _ENDPOINT_TIMINGS.setdefault(key, [])
+        samples.append(sample)
+        del samples[:-50]
+
+
+def _endpoint_timing_snapshot() -> dict:
+    with _ENDPOINT_TIMING_LOCK:
+        captured = {route: [dict(sample) for sample in samples] for route, samples in _ENDPOINT_TIMINGS.items()}
+    routes = []
+    for route, samples in captured.items():
+        durations = sorted(float(sample["duration_ms"]) for sample in samples)
+        if not durations:
+            continue
+        p95_index = min(len(durations) - 1, max(0, int(round(len(durations) * 0.95)) - 1))
+        routes.append({
+            "route": route,
+            "requests": len(samples),
+            "average_ms": round(sum(durations) / len(durations), 1),
+            "p95_ms": round(durations[p95_index], 1),
+            "max_ms": round(max(durations), 1),
+            "failures": sum(1 for sample in samples if int(sample["status_code"]) >= 500),
+            "last_status": int(samples[-1]["status_code"]),
+            "last_recorded_at": samples[-1]["recorded_at"],
+            "slow": max(durations) >= ENDPOINT_SLOW_THRESHOLD_MS,
+        })
+    routes.sort(key=lambda row: (row["slow"], row["p95_ms"], row["max_ms"]), reverse=True)
+    return {
+        "requests": sum(row["requests"] for row in routes),
+        "slow_requests": sum(
+            1
+            for samples in captured.values()
+            for sample in samples
+            if float(sample["duration_ms"]) >= ENDPOINT_SLOW_THRESHOLD_MS
+        ),
+        "slow_threshold_ms": int(ENDPOINT_SLOW_THRESHOLD_MS),
+        "routes": routes[:20],
+    }
+
+
+@app.middleware("http")
+async def record_endpoint_performance(request: Request, call_next):
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000.0
+        _record_endpoint_timing(request.method, request.url.path, duration_ms, status_code)
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -633,6 +734,35 @@ def _clv_report_payload() -> dict:
         "quarantined_legs": len(quarantined),
         "quarantine_reasons": _count_values(leg.get("reliability_reason", "unverified") for leg in quarantined),
     }
+
+
+def _portfolio_intelligence_payload() -> dict:
+    pending = EntryRepository.pending()
+    histories = LineHistoryRepository.get_histories([
+        prop
+        for entry in pending
+        for prop in entry.get("props", [])
+        if prop.get("player") and prop.get("stat") and prop.get("platform")
+    ])
+    market_entries = [_entry_clv_payload(entry, histories) for entry in pending]
+    intelligence = build_portfolio_intelligence_payload(
+        pending_entries=pending,
+        bankroll=float(get_dashboard().get("bankroll") or get_starting_bankroll() or 0.0),
+        strategy=_bankroll_strategy(),
+    )
+    intelligence["monitor"] = build_active_portfolio_monitor_payload(
+        pending_entries=pending,
+        market_entries=market_entries,
+    )
+    return intelligence
+
+
+def _refresh_portfolio_market_data_payload() -> dict:
+    return build_refresh_portfolio_market_payload(
+        pending_entries=EntryRepository.pending(),
+        fetch_platform_props=lambda platform, **kwargs: _fetch_platform_props(platform, **kwargs),
+        intelligence=lambda: _portfolio_intelligence_payload(),
+    )
 
 
 def _unknown_entry_leg_count(entries: list[dict]) -> int:
@@ -1014,11 +1144,58 @@ def _backtest_payload() -> dict:
     return build_backtest_payload(clv_report())
 
 
+def _data_integrity_repair_payload(dry_run: bool = True) -> dict:
+    before = _backtest_payload()
+    backup = None
+    if not dry_run:
+        backup = backup_database()
+    repair = EntryRepository.quarantine_implausible_markets(dry_run=dry_run)
+    after = _backtest_payload() if not dry_run else before
+    return {
+        **repair,
+        "backup": backup,
+        "metrics_before": {
+            "scorecard": before.get("scorecard", {}),
+            "tracked": before.get("tracked", {}),
+            "calibration": before.get("calibration", []),
+        },
+        "metrics_after": {
+            "scorecard": after.get("scorecard", {}),
+            "tracked": after.get("tracked", {}),
+            "calibration": after.get("calibration", []),
+        },
+        "message": (
+            f"Preview found {repair['candidate_entries']} entries with invalid markets. No records changed."
+            if dry_run
+            else f"Quarantined {repair['quarantined_entries']} entries and rebuilt model metrics from validated records."
+        ),
+    }
+
+
 def _refresh_calibration_data_payload() -> dict:
     entries = EntryRepository.all()
-    provider_refresh = _refresh_final_stats(entries)
-    backfill = _backfill_settled_entry_leg_results(entries)
+    refresh_entries = [
+        {**entry, "props": [prop for prop in entry.get("props", []) if not _game_has_not_started(prop)]}
+        for entry in _entries_needing_final_stat_refresh(entries)
+    ]
+    refresh_entries = [entry for entry in refresh_entries if entry["props"]]
+    provider_refresh = _refresh_final_stats(refresh_entries)
+    refreshed_ids = {int(entry.get("id") or 0) for entry in refresh_entries}
+    unresolved_settled_ids = {
+        int(entry.get("id") or 0)
+        for entry in entries
+        if entry.get("status") == "Settled"
+        and any(
+            prop.get("actual") is None
+            or prop.get("final_result") not in {"Win", "Loss", "Push", "DNP"}
+            for prop in entry.get("props", [])
+        )
+    }
+    backfill_ids = refreshed_ids | unresolved_settled_ids
+    latest_targets = [entry for entry in EntryRepository.all() if int(entry.get("id") or 0) in backfill_ids]
+    backfill = _backfill_settled_entry_leg_results(latest_targets)
     return {
+        "entries_targeted": len(refresh_entries),
         "provider_refresh": provider_refresh,
         "backfill": backfill,
         "backtest": backtest_summary(BetRepository().get_all(), EntryRepository.all()),
@@ -1218,7 +1395,11 @@ def _is_actionable_provider_prop(prop: dict) -> bool:
     line = prop.get("line")
     if not player or player.lower() == "unknown" or line is None:
         return False
-    return not is_combined_player_prop(prop) and not _is_season_long_prop(prop)
+    return (
+        not is_combined_player_prop(prop)
+        and not _is_season_long_prop(prop)
+        and prop_line_plausibility(prop).valid
+    )
 
 
 def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: bool = True) -> dict:
@@ -1232,6 +1413,7 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
     game = str(_prop_value(prop, "game") or "").strip()
     game_time = str(_prop_value(prop, "game_time") or "").strip()
     reasons: list[str] = []
+    plausibility = prop_line_plausibility(prop)
 
     basketball_stats = {
         "points", "rebounds", "assists", "steals", "blocks", "turnovers",
@@ -1271,6 +1453,8 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
 
     if not player or player.lower() == "unknown":
         reasons.append("named player is required")
+    if _prop_value(prop, "line") is not None and not plausibility.valid:
+        reasons.append(plausibility.reason)
     if not market_supported:
         reasons.append(f"official final-stat coverage is unavailable for {sport or 'this sport'} {str(_prop_value(prop, 'stat') or 'market')}")
     if require_context:
@@ -1290,6 +1474,7 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
         "stat": stat,
         "provider": "ESPN official box score" if market_supported else "",
         "reasons": reasons,
+        "plausibility": plausibility.as_dict(),
     }
 
 
@@ -1545,52 +1730,149 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
     prop_pool_cache: dict[tuple[str, str], list[dict]] = {}
     analyzed_cache: dict[tuple, dict] = {}
 
-    for target in targets:
-        if len(created) >= payload.max_entries:
-            break
-        suggestions = _paper_calibration_suggestions(payload, target, prop_pool_cache, analyzed_cache)
-        if not suggestions:
-            skipped.append({**target, "reason": "No current props matched this calibration target."})
-            continue
-
-        for suggestion in suggestions:
+    if payload.standard_batch:
+        _create_standard_calibration_batch(
+            payload,
+            targets,
+            backtest_data,
+            existing_signatures,
+            created,
+            skipped,
+            prop_pool_cache,
+            analyzed_cache,
+        )
+    else:
+        for target in targets:
             if len(created) >= payload.max_entries:
                 break
-            serialized = _serialize_suggestion(suggestion)
-            signature = _entry_signature(serialized["entry"])
-            if signature in existing_signatures:
-                skipped.append({**target, "reason": "A matching pending paper entry already exists."})
+            suggestions = _paper_calibration_suggestions(payload, target, prop_pool_cache, analyzed_cache)
+            if not suggestions:
+                skipped.append({**target, "reason": "No current props matched this calibration target."})
                 continue
-            audit = _paper_calibration_audit(serialized, target, backtest_data, payload)
-            entry_id = None
-            if not payload.dry_run:
-                entry_id = EntryRepository.save(
-                    suggestion.entry,
-                    status="Pending",
-                    wager=0.0,
-                    multiplier=1.0,
-                    recommended_by_app=True,
-                    audit_snapshot=json.dumps(audit),
-                    entry_mode="paper",
-                )
-                existing_signatures.add(signature)
-            created.append({
-                "id": entry_id,
-                "target": target,
-                "suggestion": serialized,
-                "audit": audit,
-                "status": "preview" if payload.dry_run else "Pending",
-                "entry_mode": "paper",
-            })
+
+            for suggestion in suggestions:
+                if len(created) >= payload.max_entries:
+                    break
+                if _append_calibration_entry(
+                    suggestion,
+                    target,
+                    payload,
+                    backtest_data,
+                    existing_signatures,
+                    created,
+                    skipped,
+                ):
+                    continue
+
+    requested_plan = [2, 2, 3, 4, 5] if payload.standard_batch else [payload.leg_count] * payload.max_entries
 
     return {
         "created": created,
         "created_count": len(created),
+        "requested_count": len(requested_plan),
+        "requested_plan": requested_plan,
+        "created_plan": [int(row["suggestion"].get("leg_count") or 0) for row in created],
+        "shortfall": max(0, len(requested_plan) - len(created)),
         "dry_run": payload.dry_run,
         "targets": targets,
         "skipped": skipped,
         "dashboard": get_dashboard() if not payload.dry_run else None,
     }
+
+
+def _create_standard_calibration_batch(
+    payload: AutoPaperCalibrationPayload,
+    targets: list[dict],
+    backtest_data: dict,
+    existing_signatures: set[tuple],
+    created: list[dict],
+    skipped: list[dict],
+    prop_pool_cache: dict[tuple[str, str], list[dict]],
+    analyzed_cache: dict[tuple, dict],
+) -> None:
+    plan = [2, 2, 3, 4, 5]
+    confidence_targets = [target for target in targets if target.get("type") == "Confidence"]
+    other_targets = [target for target in targets if target.get("type") != "Confidence"]
+    ordered_targets = confidence_targets + other_targets
+    used_targets: set[tuple[str, str, str]] = set()
+
+    for leg_count in plan:
+        slot_payload = payload.model_copy(update={"leg_count": leg_count, "max_entries": 1})
+        fresh_targets = [target for target in ordered_targets if _calibration_target_key(target) not in used_targets]
+        candidate_targets = fresh_targets + [target for target in ordered_targets if target not in fresh_targets]
+        created_for_slot = False
+        for target in candidate_targets:
+            suggestions = _paper_calibration_suggestions(slot_payload, target, prop_pool_cache, analyzed_cache)
+            for suggestion in suggestions:
+                if _append_calibration_entry(
+                    suggestion,
+                    target,
+                    slot_payload,
+                    backtest_data,
+                    existing_signatures,
+                    created,
+                    skipped,
+                ):
+                    used_targets.add(_calibration_target_key(target))
+                    created_for_slot = True
+                    break
+            if created_for_slot:
+                break
+        if not created_for_slot:
+            skipped.append({
+                "type": "BatchSlot",
+                "name": f"{leg_count}-leg",
+                "reason": (
+                    f"The current verified board did not contain a unique {leg_count}-leg card "
+                    "for an available calibration target."
+                ),
+            })
+
+
+def _calibration_target_key(target: dict) -> tuple[str, str, str]:
+    return (
+        str(target.get("type") or ""),
+        str(target.get("name") or ""),
+        str(target.get("sport") or ""),
+    )
+
+
+def _append_calibration_entry(
+    suggestion,
+    target: dict,
+    payload: AutoPaperCalibrationPayload,
+    backtest_data: dict,
+    existing_signatures: set[tuple],
+    created: list[dict],
+    skipped: list[dict],
+) -> bool:
+    serialized = _serialize_suggestion(suggestion)
+    signature = _entry_signature(serialized["entry"])
+    if signature in existing_signatures:
+        skipped.append({**target, "reason": "A matching pending paper entry already exists."})
+        return False
+    audit = _paper_calibration_audit(serialized, target, backtest_data, payload)
+    entry_id = None
+    if not payload.dry_run:
+        entry_id = EntryRepository.save(
+            suggestion.entry,
+            status="Pending",
+            wager=0.0,
+            multiplier=1.0,
+            recommended_by_app=True,
+            audit_snapshot=json.dumps(audit),
+            entry_mode="paper",
+        )
+    existing_signatures.add(signature)
+    created.append({
+        "id": entry_id,
+        "target": target,
+        "suggestion": serialized,
+        "audit": audit,
+        "status": "preview" if payload.dry_run else "Pending",
+        "entry_mode": "paper",
+    })
+    return True
 
 
 def _calibration_learning_targets(
@@ -4791,6 +5073,12 @@ def _optimizer_obstacles(serialized: list[dict]) -> list[str]:
     value = first.get("platform_value") or {}
     if value.get("recommended_platform") and not value.get("complete_on_recommended_platform"):
         obstacles.append("The best-value platform did not match every leg in the entry.")
+    portfolio = first.get("portfolio") or {}
+    if portfolio.get("conflicts"):
+        obstacles.append(
+            f"The leading slip exceeds {len(portfolio['conflicts'])} pending portfolio concentration limit"
+            f"{'s' if len(portfolio['conflicts']) != 1 else ''}; use its lower-exposure replacement when available."
+        )
     return list(dict.fromkeys(obstacles))[:5]
 
 
@@ -4882,7 +5170,9 @@ def _props_by_platform_from_props(platform: str, props: list[dict]) -> list[tupl
     selected = {_canonical_platform(platform_name) for platform_name in _selected_entry_platforms(platform)}
     grouped: dict[str, list[dict]] = {}
     for prop in props:
-        if not _is_prop_on_entry_day(prop):
+        if not _is_prop_on_entry_day(prop) or not _is_actionable_provider_prop(prop):
+            continue
+        if not _end_to_end_prop_eligibility(prop)["eligible"]:
             continue
         platform_name = _canonical_platform(prop.get("platform", platform))
         if platform_name not in selected:
@@ -4920,22 +5210,18 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     trending_count = int(raw.get("trending_count") or 0)
     raw_projection = raw.get("projection")
     auto_projected = raw_projection in (None, "")
-    forecast = None
-    if auto_projected:
-        initial_direction = _normalize_direction(raw.get("direction") or "Over")
-        forecast = forecast_prop(
-            raw.get("player", ""),
-            raw.get("league", ""),
-            raw.get("stat", ""),
-            baseline_line,
-            initial_direction,
-            game_time=raw.get("game_time", ""),
-            team=raw.get("team", ""),
-            game=raw.get("game", ""),
-        )
-        projection = forecast.projection
-    else:
-        projection = float(str(raw_projection))
+    initial_direction = _normalize_direction(raw.get("direction") or "Over")
+    forecast = forecast_prop(
+        raw.get("player", ""),
+        raw.get("league", ""),
+        raw.get("stat", ""),
+        baseline_line,
+        initial_direction,
+        game_time=raw.get("game_time", ""),
+        team=raw.get("team", ""),
+        game=raw.get("game", ""),
+    )
+    projection = forecast.projection if auto_projected else float(str(raw_projection))
     direction = _prop_direction(line, projection, raw.get("direction"))
     edge = calculate_directional_edge(line, projection, direction)
     probability = calculate_confidence(edge, raw.get("stat", ""), raw.get("league", ""))
@@ -4958,7 +5244,8 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         rows=_versioned_calibration_rows(),
     )
     probability = float(calibration["probability"])
-    forecast_snapshot = forecast.snapshot() if forecast is not None else {}
+    forecast_snapshot = forecast.snapshot()
+    forecast_snapshot["provider_projection"] = None if auto_projected else projection
     forecast_snapshot["calibration"] = calibration
     movement = _line_movement_payload(
         raw.get("player", ""),
@@ -5557,6 +5844,26 @@ def _player_research_payload(
         key=lambda prop: (float(prop.get("confidence") or 0), float(prop.get("data_quality", {}).get("score") or 0), int(prop.get("trending_count") or 0)),
         default=None,
     )
+    direction = str((recommendation or {}).get("direction") or "Over")
+    forecast = (
+        forecast_prop(
+            player,
+            sport_filter or str((recommendation or {}).get("sport") or ""),
+            stat,
+            float(target_line),
+            direction,
+            history=history,
+            game_time=(recommendation or {}).get("game_time"),
+            team=str((recommendation or {}).get("team") or ""),
+            game=str((recommendation or {}).get("game") or ""),
+        )
+        if target_line is not None
+        else None
+    )
+    current_opponent = _research_opponent(
+        str((recommendation or {}).get("game") or ""),
+        str((recommendation or {}).get("team") or ""),
+    )
     splits = {
         "last_5": _history_split(history[:5], target_line),
         "last_10": _history_split(history[:10], target_line),
@@ -5564,6 +5871,12 @@ def _player_research_payload(
         "season": _history_split(history, target_line),
         "home": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "home"], target_line),
         "away": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "away"], target_line),
+        "starter": _history_split([row for row in history if row.get("starter") is True], target_line),
+        "bench": _history_split([row for row in history if row.get("starter") is False], target_line),
+        "opponent": _history_split([
+            row for row in history
+            if current_opponent and _research_opponent(str(row.get("game") or ""), str(row.get("team") or "")) == current_opponent
+        ], target_line),
         "provider_lines": len(active_props),
     }
     market_lines = [
@@ -5590,8 +5903,99 @@ def _player_research_payload(
         "market_lines": market_lines,
         "active_props": active_props[:8],
         "recommendation": recommendation,
+        "forecast": forecast.snapshot() if forecast else {},
+        "projection_sensitivity": _projection_sensitivity(
+            player, stat, sport_filter, direction, target_line, history, recommendation or {},
+        ),
+        "closing_lines": _research_closing_lines(active_props),
+        "teammate_splits": _research_teammate_splits(history, target_line),
+        "opponent": current_opponent,
         "notes": _research_notes(active_props, history, target_line),
     }
+
+
+def _research_opponent(game: str, team: str) -> str:
+    text = str(game or "").replace(" ", "").upper()
+    team_key = str(team or "").replace(" ", "").upper()
+    if "@" not in text or not team_key:
+        return ""
+    away, home = text.split("@", 1)
+    return home if team_key == away else away if team_key == home else ""
+
+
+def _projection_sensitivity(
+    player: str,
+    stat: str,
+    sport: str | None,
+    direction: str,
+    line: float | None,
+    history: list[dict],
+    recommendation: dict,
+) -> dict:
+    if line is None:
+        return {"scenarios": [], "drivers": ["Enter an exact line to calculate sensitivity."]}
+    scenarios = []
+    for adjustment in (-1.0, 0.0, 1.0):
+        scenario_line = round(float(line) + adjustment, 2)
+        scenario = forecast_prop(
+            player,
+            sport or str(recommendation.get("sport") or ""),
+            stat,
+            scenario_line,
+            direction,
+            history=history,
+            game_time=recommendation.get("game_time"),
+            team=str(recommendation.get("team") or ""),
+            game=str(recommendation.get("game") or ""),
+        )
+        scenarios.append({"line": scenario_line, "probability": scenario.probability})
+    distribution = forecast_prop(
+        player,
+        sport or str(recommendation.get("sport") or ""),
+        stat,
+        float(line),
+        direction,
+        history=history,
+        game_time=recommendation.get("game_time"),
+        team=str(recommendation.get("team") or ""),
+        game=str(recommendation.get("game") or ""),
+    ).distribution
+    return {
+        "scenarios": scenarios,
+        "drivers": distribution.get("uncertainty_drivers", []),
+        "injury_status": recommendation.get("injury_status") or "No verified injury adjustment loaded",
+    }
+
+
+def _research_closing_lines(active_props: list[dict]) -> list[dict]:
+    histories = LineHistoryRepository.get_histories(active_props)
+    rows = [snapshot for history in histories.values() for snapshot in history]
+    rows.sort(key=lambda row: str(row.get("recorded_at") or ""), reverse=True)
+    return [
+        {"line": row.get("line"), "recorded_at": iso_utc(row.get("recorded_at")), "game": row.get("game", "")}
+        for row in rows[:12]
+    ]
+
+
+def _research_teammate_splits(history: list[dict], line: float | None) -> list[dict]:
+    teammates = sorted({
+        str(teammate)
+        for row in history
+        for teammate in (row.get("teammates") or [])
+        if str(teammate).strip()
+    })
+    rows = []
+    for teammate in teammates:
+        with_rows = [row for row in history if teammate in (row.get("teammates") or [])]
+        without_rows = [row for row in history if teammate not in (row.get("teammates") or [])]
+        if len(with_rows) < 2 or len(without_rows) < 2:
+            continue
+        rows.append({
+            "teammate": teammate,
+            "with": _history_split(with_rows, line),
+            "without": _history_split(without_rows, line),
+        })
+    return rows[:4]
 
 
 def _sharp_consensus_payload(
@@ -6538,7 +6942,23 @@ def _grading_report_payload(compact: bool = False) -> dict:
     pending_rows = [_entry_progress_payload(entry, include_market_detail=False) for entry in pending[:12]]
     if compact:
         pending_rows = [_compact_grading_pending(row) for row in pending_rows]
-    completed_rows = [_serialize_bet_history_entry(entry) for entry in completed[:12]]
+    displayed_completed = completed[:12]
+    completed_histories = LineHistoryRepository.get_histories([
+        prop
+        for entry in displayed_completed
+        for prop in entry.get("props", [])
+    ])
+    completed_evidence = SettlementAuditRepository.latest_by_entry_ids([
+        int(entry["id"]) for entry in displayed_completed if entry.get("id")
+    ])
+    completed_rows = [
+        _serialize_bet_history_entry(
+            entry,
+            completed_evidence.get(int(entry.get("id") or 0), {}),
+            completed_histories,
+        )
+        for entry in displayed_completed
+    ]
     unknown_legs = [
         prop
         for entry in completed
@@ -7176,6 +7596,80 @@ def _confirmed_final_stat_for_entry(prop: dict, entry: dict) -> dict | None:
     if str(final_stat.get("status") or "").strip().lower() not in {"played", "dnp"}:
         return None
     return final_stat
+
+
+def _preview_entry_leg_repair(entry: dict, prop: dict) -> dict:
+    final_stat = _confirmed_final_stat_for_entry(prop, entry)
+    current_actual = prop.get("actual")
+    current_result = str(prop.get("final_result") or prop.get("result") or "Pending")
+    current_source = str(prop.get("final_source") or "unmatched")
+    current_status = str(prop.get("final_status") or "unknown")
+    if final_stat is not None:
+        proposed_status = str(final_stat.get("status") or "played").lower()
+        proposed_actual = final_stat.get("actual")
+        proposed_result = (
+            "DNP"
+            if proposed_status == "dnp"
+            else _leg_result(proposed_actual, prop["line"], prop.get("direction", "Over"))
+            if proposed_actual is not None
+            else "Unknown"
+        )
+        proposed_source = str(final_stat.get("source") or "verified provider")
+        will_change = any((
+            current_actual != proposed_actual,
+            current_result != proposed_result,
+            current_source != proposed_source,
+            current_status.lower() != proposed_status,
+        ))
+        action = "update_from_local_final" if will_change else "already_verified"
+        reason = (
+            "A confirmed final-stat row is already available locally and can update this leg."
+            if will_change
+            else "Stored settlement data already matches the confirmed final-stat row."
+        )
+    else:
+        proposed_actual = None
+        proposed_result = current_result
+        proposed_source = current_source
+        proposed_status = current_status
+        will_change = False
+        if _game_has_not_started(prop):
+            action = "wait_for_final"
+            reason = "The game has not started, so no settlement change is available."
+        elif _automatic_final_retry_expired(prop):
+            action = "refresh_provider"
+            reason = "No confirmed local result matched; a provider refresh is required for another attempt."
+        else:
+            action = "wait_for_final"
+            reason = "The final box score is not available locally yet."
+    return {
+        "entry_prop_id": prop.get("entry_prop_id"),
+        "player": prop.get("player", ""),
+        "sport": prop.get("sport", ""),
+        "stat": prop.get("stat", ""),
+        "line": prop.get("line"),
+        "direction": prop.get("direction", "Over"),
+        "game": prop.get("game", ""),
+        "game_time": prop.get("game_time", ""),
+        "action": action,
+        "will_change": will_change,
+        "reason": reason,
+        "current": {
+            "actual": current_actual,
+            "result": current_result,
+            "source": current_source,
+            "status": current_status,
+        },
+        "proposed": {
+            "actual": proposed_actual,
+            "result": proposed_result,
+            "source": proposed_source,
+            "status": proposed_status,
+            "matched_player": (final_stat or {}).get("player", ""),
+            "matched_game": (final_stat or {}).get("game", ""),
+            "matched_game_date": (final_stat or {}).get("game_date", ""),
+        },
+    }
 
 
 def _entry_placed_date(entry: dict) -> date | None:
@@ -8645,6 +9139,7 @@ def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
     model_payout = _entry_payout_analysis(entry, payload)
     payout = (platform_value or {}).get("authoritative_economics") or model_payout
     release_verdict = _entry_release_verdict(payload, model_result, risk_guardrails, platform_value)
+    corrections = _entry_correction_plan(entry, payload)
     result = {
         **model_result,
         "action": release_verdict["verdict"],
@@ -8676,6 +9171,101 @@ def _entry_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
         "payout_analysis": payout,
         "model_payout_analysis": model_payout,
         "release_verdict": release_verdict,
+        "corrections": corrections,
+    }
+
+
+def _entry_correction_plan(entry: Entry, payload: EntryPayload | None = None) -> dict:
+    legs = [_prop_correction(prop, index) for index, prop in enumerate(entry.props)]
+    counts = {
+        action: sum(1 for leg in legs if leg["action"] == action)
+        for action in ("keep", "flip", "remove")
+    }
+    change_count = counts["flip"] + counts["remove"]
+    if not legs:
+        summary = "No props are available to review."
+    elif change_count:
+        summary = (
+            f"EdgeIQ suggests {counts['flip']} direction change"
+            f"{'s' if counts['flip'] != 1 else ''} and {counts['remove']} removal"
+            f"{'s' if counts['remove'] != 1 else ''} before saving this entry."
+        )
+    else:
+        summary = "Every leg is aligned with the current model direction and minimum evidence checks."
+    return {
+        "manual_entry": not bool(payload and payload.recommended_by_app),
+        "summary": summary,
+        "change_count": change_count,
+        "counts": counts,
+        "legs": legs,
+    }
+
+
+def _prop_correction(prop: Prop, index: int) -> dict:
+    current_direction = _normalize_direction(prop.direction)
+    raw_edge = float(prop.projection) - float(prop.line)
+    model_direction = "Under" if raw_edge < 0 else "Over"
+    edge_size = abs(raw_edge)
+    quality = _prop_data_quality(prop)
+    serialized = _serialize_prop(prop)
+    eligibility = _end_to_end_prop_eligibility(serialized)
+    alternative_confidence = calculate_confidence(edge_size, prop.stat.value, prop.player.sport)
+    calibrated = calibrate_probability(
+        alternative_confidence / 100.0,
+        sport=prop.player.sport,
+        stat=prop.stat.value,
+        provider=prop.platform.value,
+        direction=model_direction,
+        projection_source=prop.projection_source,
+        rows=_versioned_calibration_rows(),
+    )
+    suggested_confidence = round(float(calibrated["probability"]), 1)
+
+    if not eligibility["eligible"]:
+        action = "remove"
+        reason = f"Automatic final-stat verification is unavailable: {eligibility['reasons'][0]}."
+    elif quality["score"] < 42:
+        action = "remove"
+        reason = f"The data strength is only {quality['score']:.0f}/100 ({quality['label']})."
+    elif edge_size < 0.5:
+        action = "remove"
+        reason = f"The projection is only {edge_size:.2f} away from the line, leaving too little model edge."
+    elif model_direction != current_direction:
+        action = "flip"
+        reason = (
+            f"The {prop.projection:.1f} projection is on the {model_direction.lower()} side of "
+            f"the {prop.line:g} line."
+        )
+    elif float(prop.confidence) < 52:
+        action = "remove"
+        reason = f"Calibrated confidence is {prop.confidence:.1f}%, below the 52% review floor."
+    else:
+        action = "keep"
+        reason = (
+            f"The {prop.projection:.1f} projection supports {current_direction.lower()} "
+            f"with {prop.confidence:.1f}% calibrated confidence."
+        )
+
+    if action == "flip":
+        message = f"EdgeIQ suggests {model_direction} on this prop."
+    elif action == "remove":
+        message = "EdgeIQ suggests removing this prop."
+    else:
+        message = f"Keep {current_direction} on this prop."
+    return {
+        "index": index,
+        "player": prop.player.name,
+        "stat": prop.stat.value,
+        "line": prop.line,
+        "projection": prop.projection,
+        "current_direction": current_direction,
+        "suggested_direction": model_direction if action == "flip" else current_direction,
+        "action": action,
+        "message": message,
+        "reason": reason,
+        "confidence": suggested_confidence if action == "flip" else round(float(prop.confidence), 1),
+        "data_quality": quality,
+        "final_stats_verifiable": eligibility["eligible"],
     }
 
 
@@ -9174,6 +9764,10 @@ def _bankroll_strategy() -> dict:
         "max_wager_pct": 5.0,
         "max_open_exposure_pct": 15.0,
         "stop_loss_pct": 12.0,
+        "max_player_entries": 2,
+        "max_game_entries": 3,
+        "max_market_entries": 1,
+        "max_player_exposure_pct": 7.5,
         "paper_first": False,
     }
     stored = _safe_json_loads(SettingsRepository.get("bankroll_strategy", ""))
@@ -9183,6 +9777,10 @@ def _bankroll_strategy() -> dict:
     strategy["max_wager_pct"] = max(0.1, min(100.0, float(str(strategy.get("max_wager_pct") or defaults["max_wager_pct"]))))
     strategy["max_open_exposure_pct"] = max(0.1, min(100.0, float(str(strategy.get("max_open_exposure_pct") or defaults["max_open_exposure_pct"]))))
     strategy["stop_loss_pct"] = max(0.1, min(100.0, float(str(strategy.get("stop_loss_pct") or defaults["stop_loss_pct"]))))
+    strategy["max_player_entries"] = max(1, min(20, int(strategy.get("max_player_entries") or defaults["max_player_entries"])))
+    strategy["max_game_entries"] = max(1, min(20, int(strategy.get("max_game_entries") or defaults["max_game_entries"])))
+    strategy["max_market_entries"] = max(1, min(10, int(strategy.get("max_market_entries") or defaults["max_market_entries"])))
+    strategy["max_player_exposure_pct"] = max(0.1, min(100.0, float(str(strategy.get("max_player_exposure_pct") or defaults["max_player_exposure_pct"]))))
     strategy["paper_first"] = bool(strategy.get("paper_first"))
     return strategy
 
@@ -9314,6 +9912,7 @@ def _data_health_payload() -> dict:
         _provider_weights(),
         platform_memory,
         SETTLEMENT_REFRESH_STATUS_KEY,
+        _endpoint_timing_snapshot(),
     )
 
 
@@ -9334,7 +9933,79 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Post-game result check", "time": schedule["result_check"], "action": "Auto-check pending entries against final stats."},
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
     ]
-    return {"schedule": schedule, "jobs": jobs, "last_run": SettingsRepository.get("last_daily_refresh", "")}
+    return {
+        "schedule": schedule,
+        "jobs": jobs,
+        "last_run": SettingsRepository.get("last_daily_refresh", ""),
+        "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+    }
+
+
+def _run_daily_refresh_now() -> dict:
+    return build_run_daily_refresh_payload(
+        run_sync=lambda: run_sync(),
+        now=lambda: utc_now(),
+        iso_time=lambda value: iso_utc(value),
+        save_setting=lambda key, value: SettingsRepository.set(key, value),
+        user_preferences=lambda: _user_preferences(),
+        run_scan=lambda platform, sport_filter, sync_result: _run_daily_briefing_scan(
+            platform,
+            sport_filter,
+            trigger="daily_refresh",
+            sync_result=sync_result,
+        ),
+        refresh_schedule=lambda: _refresh_schedule_payload(),
+    )
+
+
+def _run_due_daily_operations() -> dict:
+    schedule_payload = _refresh_schedule_payload()
+    schedule = schedule_payload["schedule"]
+    if not schedule.get("enabled", True):
+        return {"ok": True, "message": "Daily scheduler is disabled."}
+    now = datetime.now(ENTRY_DAY_TIME_ZONE)
+    minute_key = now.strftime("%Y-%m-%dT%H:%M")
+    day_key = now.strftime("%Y-%m-%d")
+    due: list[tuple[str, object]] = []
+    timed_jobs = {
+        "morning_scan": _run_daily_refresh_now,
+        "injury_refresh": _run_daily_refresh_now,
+        "result_check": lambda: _auto_check_pending_entries(False, True),
+        "nightly_calibration": lambda: _backtest_payload(),
+    }
+    for name, callback in timed_jobs.items():
+        scheduled_time = str(schedule.get(name) or "")
+        run_key = f"daily_scheduler_run:{name}"
+        last_run = SettingsRepository.get(run_key, "")
+        if scheduled_time and now.strftime("%H:%M") >= scheduled_time and not str(last_run).startswith(day_key):
+            due.append((name, callback))
+    snapshot_rule = str(schedule.get("line_snapshots") or "")
+    if snapshot_rule.startswith("*/"):
+        try:
+            interval = max(1, int(snapshot_rule[2:]))
+            if now.minute % interval == 0:
+                due.append(("line_snapshots", lambda: {
+                    platform: len(_fetch_platform_props(platform, force_refresh=True))
+                    for platform in ENTRY_PLATFORMS
+                }))
+        except ValueError:
+            pass
+    completed = []
+    for name, callback in due:
+        run_key = f"daily_scheduler_run:{name}"
+        if name == "line_snapshots" and SettingsRepository.get(run_key, "") == minute_key:
+            continue
+        result = callback()
+        SettingsRepository.set(run_key, minute_key)
+        completed.append({"job": name, "result": result})
+    status = {
+        "ok": True,
+        "ran_at": iso_utc(utc_now()),
+        "jobs_run": [row["job"] for row in completed],
+        "message": "Scheduled maintenance is active.",
+    }
+    SettingsRepository.set("daily_scheduler_status", json.dumps(status))
+    return status
 
 
 def _notification_payload() -> dict:
@@ -9595,8 +10266,13 @@ def _serialize_bet(bet: Bet) -> dict:
     }
 
 
-def _serialize_bet_history_entry(entry: dict) -> dict:
+def _serialize_bet_history_entry(
+    entry: dict,
+    settlement_evidence: dict[int, dict] | None = None,
+    line_histories: dict[tuple[str, str, str, str, str], list[dict]] | None = None,
+) -> dict:
     props = entry.get("props") or []
+    evidence_by_prop = settlement_evidence or {}
     calibration_legs = [
         prop for prop in props
         if prop.get("final_result") in {"Win", "Loss"} and prop.get("final_source") != "projection_estimate"
@@ -9634,11 +10310,42 @@ def _serialize_bet_history_entry(entry: dict) -> dict:
                 "game": prop.get("game", ""),
                 "game_time": prop.get("game_time", ""),
                 "match_detail": _entry_leg_match_detail(prop),
+                "settlement_evidence": _settlement_evidence_payload(
+                    prop,
+                    evidence_by_prop.get(int(prop.get("entry_prop_id") or 0)),
+                ),
                 "confidence": prop.get("confidence"),
-                "clv": _clv_for_prop(prop),
+                "clv": _clv_for_prop(
+                    prop,
+                    entry,
+                    history=line_histories.get(_clv_history_key(prop), []) if line_histories is not None else None,
+                    history_loaded=line_histories is not None,
+                ),
             }
             for prop in props
         ],
+    }
+
+
+def _settlement_evidence_payload(prop: dict, audit: dict | None) -> dict:
+    audit = audit or {}
+    matched_dates = audit.get("matched_game_dates") or []
+    return {
+        "verification_status": audit.get("status") or prop.get("final_status") or "unknown",
+        "provider": audit.get("provider") or prop.get("final_source") or "unmatched",
+        "requested_player": audit.get("requested_player") or prop.get("player") or "",
+        "matched_player": audit.get("matched_player") or "",
+        "player_identity_id": audit.get("matched_identity_id") or prop.get("player_identity_id"),
+        "requested_game": audit.get("requested_game") or prop.get("game") or "",
+        "matched_game": audit.get("matched_game") or "",
+        "requested_game_time": prop.get("game_time") or "",
+        "matched_game_date": matched_dates[-1] if matched_dates else "",
+        "actual": audit.get("actual") if audit.get("actual") is not None else prop.get("actual"),
+        "result": audit.get("result") or prop.get("final_result") or "Pending",
+        "reason_code": audit.get("reason_code") or "no_audit_record",
+        "message": audit.get("message") or _entry_leg_match_detail(prop),
+        "attempt_count": int(audit.get("attempt_count") or 0),
+        "last_checked_at": audit.get("attempted_at") or "",
     }
 
 
@@ -9791,7 +10498,9 @@ configure_portfolio_router(
             load_bets=lambda: BetRepository().get_all(),
             load_entries=lambda: EntryRepository.all(),
             serialize_bet=lambda bet: _serialize_bet(bet),
-            serialize_entry=lambda entry: _serialize_bet_history_entry(entry),
+            serialize_entry=lambda entry, evidence, histories: _serialize_bet_history_entry(entry, evidence, histories),
+            load_settlement_evidence=lambda entry_ids: SettlementAuditRepository.latest_by_entry_ids(entry_ids),
+            load_line_histories=lambda props: LineHistoryRepository.get_histories(props),
         ),
         save_bet=lambda payload: build_save_bet_payload(
             payload,
@@ -9812,6 +10521,8 @@ configure_portfolio_router(
             serialize_bet=lambda bet: _serialize_bet(bet),
             dashboard=lambda: get_dashboard(),
         ),
+        intelligence=lambda: _portfolio_intelligence_payload(),
+        refresh_market=lambda: _refresh_portfolio_market_data_payload(),
     )
 )
 app.include_router(portfolio_router)
@@ -9892,20 +10603,7 @@ configure_operations_router(
             save_setting=lambda key, value: SettingsRepository.set(key, value),
             serialize=lambda value: json.dumps(value),
         ),
-        run_daily_refresh=lambda: build_run_daily_refresh_payload(
-            run_sync=lambda: run_sync(),
-            now=lambda: utc_now(),
-            iso_time=lambda value: iso_utc(value),
-            save_setting=lambda key, value: SettingsRepository.set(key, value),
-            user_preferences=lambda: _user_preferences(),
-            run_scan=lambda platform, sport_filter, sync_result: _run_daily_briefing_scan(
-                platform,
-                sport_filter,
-                trigger="daily_refresh",
-                sync_result=sync_result,
-            ),
-            refresh_schedule=lambda: _refresh_schedule_payload(),
-        ),
+        run_daily_refresh=lambda: _run_daily_refresh_now(),
         alert_delivery=lambda: _alert_delivery_settings(),
         update_alert_delivery=lambda payload: _update_alert_delivery_settings(payload),
         test_alert_delivery=lambda payload: _deliver_alert(payload.model_dump()),
@@ -10084,7 +10782,7 @@ configure_recommendation_router(
             odds,
         ),
         auto_paper=lambda payload: _auto_paper_calibration(payload),
-        entry_suggestions=lambda sport, platform, leg_count: build_entry_suggestions_payload(
+        entry_suggestions=lambda sport, platform, leg_count, avoid_prop_keys: build_entry_suggestions_payload(
             sport,
             platform,
             leg_count,
@@ -10110,6 +10808,7 @@ configure_recommendation_router(
             ),
             suggest=lambda *args, **kwargs: suggest_entries(*args, **kwargs),
             serialize_suggestion=lambda suggestion: _serialize_suggestion(suggestion),
+            avoid_prop_keys=avoid_prop_keys,
         ),
         confirmed_suggestions=lambda sport, platform: build_confirmed_entry_suggestions_payload(
             sport,
@@ -10155,9 +10854,11 @@ configure_recommendation_router(
             exclude_correlated,
             apply_feedback,
             optimize=lambda *args: _optimized_entries(*args),
-            value_rank=lambda suggestions, selected_platform: _value_ranked_suggestions(
-                suggestions,
-                selected_platform,
+            value_rank=lambda suggestions, selected_platform: build_portfolio_ranked_suggestions(
+                _value_ranked_suggestions(suggestions, selected_platform),
+                pending_entries=EntryRepository.pending(),
+                strategy=_bankroll_strategy(),
+                limit=limit,
             ),
             obstacles=lambda suggestions: _optimizer_obstacles(suggestions),
         ),
@@ -10197,6 +10898,7 @@ configure_results_router(
         refresh_calibration=lambda: _refresh_calibration_data_payload(),
         model_health=lambda: _model_health_payload(),
         accuracy_lab=lambda: _accuracy_lab_payload(),
+        data_integrity_repair=lambda dry_run: _data_integrity_repair_payload(dry_run),
     )
 )
 app.include_router(results_router)
@@ -10287,6 +10989,10 @@ configure_settlement_router(
         backfill_final_stats=lambda allow_estimates: build_backfill_final_stats_payload(
             allow_estimates,
             lambda entry, **kwargs: _entry_leg_final_snapshots(entry, **kwargs),
+        ),
+        recheck_final_stats_preview=lambda: build_recheck_final_stats_preview_payload(
+            entries_needing_refresh=lambda entries: _entries_needing_final_stat_refresh(entries),
+            preview_leg=lambda entry, prop: _preview_entry_leg_repair(entry, prop),
         ),
         recheck_final_stats=lambda allow_estimates: build_recheck_final_stats_payload(
             allow_estimates=allow_estimates,

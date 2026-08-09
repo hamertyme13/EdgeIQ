@@ -19,6 +19,7 @@ class SettlementDependencies:
     settle_entry: Callable[[int, SettlePayload], dict]
     auto_check: Callable[[bool, bool], dict]
     backfill_final_stats: Callable[[bool], dict]
+    recheck_final_stats_preview: Callable[[], dict]
     recheck_final_stats: Callable[[bool], dict]
     classify_default_wagers: Callable[[], dict]
     import_final_stats: Callable[[FinalStatsPayload], dict]
@@ -78,6 +79,11 @@ def auto_check_entries(
 @router.post("/api/entries/backfill-final-stats")
 def backfill_entry_final_stats(allow_estimates: bool = True) -> dict:
     return _deps().backfill_final_stats(allow_estimates)
+
+
+@router.get("/api/entries/recheck-final-stats/preview")
+def preview_entry_final_stats_recheck() -> dict:
+    return _deps().recheck_final_stats_preview()
 
 
 @router.post("/api/entries/recheck-final-stats")

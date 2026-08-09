@@ -321,7 +321,7 @@ p { color: var(--muted); margin: 5px 0 0; }
 }
 .scorecard-filters {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-items: end;
 }
@@ -2039,6 +2039,178 @@ tr.sport-group-row:hover td {
   box-shadow: 0 16px 30px rgba(0,0,0,.28);
   transition: transform var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
+.correction-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.entry-correction {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(74, 91, 119, .5);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .52);
+}
+.entry-correction p { margin: 5px 0 0; }
+.entry-correction-copy { min-width: 0; }
+.correction-keep { border-left-color: var(--primary); }
+.correction-flip { border-left-color: var(--warn); }
+.correction-remove { border-left-color: var(--danger); }
+.compact-action {
+  width: auto;
+  min-width: 104px;
+  min-height: 42px;
+  padding: 8px 14px;
+}
+.calibration-batch-summary {
+  display: grid;
+  align-content: center;
+  min-height: 70px;
+  padding: 8px 12px;
+  border: 1px solid rgba(74, 91, 119, .5);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .52);
+}
+.calibration-batch-summary strong { color: var(--text); }
+.calibration-batch-summary span { color: var(--muted); font-size: 13px; }
+.generator-diversity-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  background: rgba(57, 255, 136, .07);
+}
+.generator-diversity-note strong { color: var(--text); }
+.generator-diversity-note span { color: var(--muted); text-align: right; }
+.portfolio-metrics,
+.portfolio-exposure-strip { margin-top: 12px; }
+.portfolio-exposure-strip {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+.portfolio-card-review {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(74, 91, 119, .5);
+  border-left: 3px solid var(--primary);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .52);
+}
+.portfolio-card-review.risk-medium { border-left-color: var(--warn); }
+.portfolio-card-review.risk-high { border-left-color: var(--danger); }
+.portfolio-card-review p { margin: 6px 0 0; }
+.portfolio-replacement {
+  color: var(--primary);
+  font-weight: 700;
+}
+.portfolio-monitor {
+  margin: 14px 0;
+  padding-top: 14px;
+  border-top: 1px solid rgba(74, 91, 119, .45);
+}
+.compact-heading {
+  align-items: center;
+  margin-bottom: 10px;
+}
+.compact-heading h3 { margin: 2px 0 0; }
+.portfolio-monitor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.portfolio-monitor-actions .compact-action { width: auto; }
+#portfolio-monitor-refresh-status:empty { display: none; }
+.portfolio-monitor-headline {
+  margin: 0 0 10px;
+  color: var(--muted);
+}
+.portfolio-monitor-card {
+  border-left: 3px solid var(--primary);
+}
+.portfolio-monitor-card.monitor-review { border-left-color: var(--danger); }
+.portfolio-monitor-card.monitor-watch,
+.portfolio-monitor-card.monitor-needs-refresh { border-left-color: var(--warn); }
+.portfolio-monitor-legs {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+.portfolio-monitor-leg {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto);
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(74, 91, 119, .42);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .45);
+}
+.portfolio-monitor-leg > div,
+.portfolio-leg-state {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.portfolio-monitor-leg span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.portfolio-leg-state { text-align: right; }
+.movement-favorable .portfolio-leg-state strong { color: var(--primary); }
+.movement-adverse .portfolio-leg-state strong { color: var(--danger); }
+.movement-neutral .portfolio-leg-state strong { color: var(--muted); }
+.research-distribution {
+  margin: 16px 0;
+  padding: 14px 0;
+  border-top: 1px solid rgba(74, 91, 119, .45);
+  border-bottom: 1px solid rgba(74, 91, 119, .45);
+}
+.research-distribution-metrics {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+.sensitivity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.sensitivity-grid > span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(74, 91, 119, .42);
+  border-radius: 6px;
+}
+.sensitivity-grid small { color: var(--muted); }
+.scorecard-next-actions {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: rgba(25, 230, 255, .06);
+}
+.scorecard-next-actions p {
+  margin: 5px 0 0;
+  color: var(--muted);
+}
+@media (max-width: 620px) {
+  .entry-correction { grid-template-columns: 1fr; }
+  .compact-action { width: 100%; }
+  .generator-diversity-note { align-items: flex-start; flex-direction: column; }
+  .generator-diversity-note span { text-align: left; }
+  .portfolio-monitor-leg { grid-template-columns: 1fr; }
+  .portfolio-leg-state { text-align: left; }
+  .portfolio-monitor-actions { justify-content: flex-start; }
+  .sensitivity-grid { grid-template-columns: 1fr; }
+}
 .parlay-card {
   position: relative;
   overflow: hidden;
@@ -2321,7 +2493,7 @@ tr.sport-group-row:hover td {
 }
 .entry-leg-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) repeat(4, minmax(92px, 1fr));
+  grid-template-columns: minmax(150px, 1.2fr) repeat(5, minmax(92px, 1fr));
   gap: 10px;
   align-items: center;
   border: 1px solid rgba(25, 230, 255, .14);
@@ -2348,6 +2520,68 @@ tr.sport-group-row:hover td {
 .entry-leg-detail {
   grid-column: 1 / -1;
   margin: 0;
+}
+.settlement-evidence-drawer {
+  grid-column: 1 / -1;
+  border-top: 1px solid rgba(154, 167, 186, .2);
+  padding-top: 8px;
+}
+.settlement-evidence-drawer summary {
+  width: fit-content;
+  color: var(--secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+}
+.settlement-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.settlement-evidence-grid span {
+  display: grid;
+  gap: 3px;
+  border: 1px solid rgba(59, 130, 246, .2);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(18, 26, 40, .72);
+}
+.settlement-evidence-grid small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.settlement-evidence-drawer p {
+  margin: 8px 0 0;
+}
+.endpoint-timing-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+.endpoint-timing-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(72px, auto));
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(59, 130, 246, .16);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.endpoint-timing-row code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.endpoint-timing-row span {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+.endpoint-timing-row.endpoint-slow {
+  border-color: rgba(245, 158, 11, .5);
+  background: rgba(245, 158, 11, .06);
 }
 .card-action,
 .rule-action {
@@ -3531,6 +3765,13 @@ tr:hover td {
   }
   .entry-leg-row {
     grid-template-columns: 1fr 1fr;
+  }
+  .settlement-evidence-grid,
+  .endpoint-timing-row {
+    grid-template-columns: 1fr;
+  }
+  .endpoint-timing-row span {
+    text-align: left;
   }
   .form-grid.compact-controls { grid-template-columns: 1fr; }
   .tool-group summary { align-items: flex-start; }

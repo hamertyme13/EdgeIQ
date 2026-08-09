@@ -200,6 +200,7 @@ def entry_suggestions_payload(
     mixed_risk: Callable[[list[dict], str, object], list],
     suggest: Callable[..., list],
     serialize_suggestion: Callable[[object], dict],
+    avoid_prop_keys: set[str] | None = None,
 ) -> dict:
     sport_filter = _sport_filter(sport)
     entry_platform = canonical_platform(platform)
@@ -231,15 +232,44 @@ def entry_suggestions_payload(
                 limit=5,
                 leg_count=leg_count,
                 apply_feedback=True,
+                diversify=True,
+                avoid_prop_keys=avoid_prop_keys or set(),
             )
         )
+    serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
+    seen_keys: set[str] = set()
+    reused_count = 0
+    for suggestion in serialized:
+        keys = [_serialized_prop_key(prop) for prop in suggestion.get("entry", {}).get("props", [])]
+        reused_count += sum(1 for key in keys if key in seen_keys)
+        seen_keys.update(keys)
+        suggestion["diversification"] = {
+            "prop_keys": keys,
+            "reused_from_recent_batch": sum(1 for key in keys if key in (avoid_prop_keys or set())),
+        }
     return {
-        "suggestions": [serialize_suggestion(suggestion) for suggestion in suggestions],
+        "suggestions": serialized,
         "mode": f"{entry_platform.lower()}_{leg_count}_leg",
         "platform": entry_platform,
         "leg_count": leg_count,
         "maximum_legs": maximum_legs,
+        "diversification": {
+            "enabled": True,
+            "unique_props": len(seen_keys),
+            "reused_props": reused_count,
+            "recent_props_avoided": len(avoid_prop_keys or set()),
+            "message": (
+                "Cards favor different props when comparably strong verified alternatives are available."
+            ),
+        },
     }
+
+
+def _serialized_prop_key(prop: dict) -> str:
+    player = canonical_person_key(prop.get("player"))
+    stat = str(prop.get("stat") or "").strip().lower().replace(",", "")
+    direction = str(prop.get("direction") or "Over").strip().lower()
+    return f"{player}|{stat}|{direction}|{float(prop.get('line') or 0.0):.2f}"
 
 
 def confirmed_entry_suggestions_payload(
@@ -401,9 +431,17 @@ def optimized_entries_payload(
         apply_feedback,
     )
     serialized = value_rank(suggestions, platform)
+    portfolio_ready = [
+        suggestion for suggestion in serialized
+        if not (suggestion.get("portfolio") or {}).get("conflicts")
+    ]
     return {
         "suggestions": serialized,
-        "paid_ready_count": sum(1 for suggestion in serialized if (suggestion.get("release_status") or {}).get("ok")),
+        "paid_ready_count": sum(
+            1 for suggestion in portfolio_ready
+            if (suggestion.get("release_status") or {}).get("ok")
+        ),
+        "portfolio_ready_count": len(portfolio_ready),
         "best_value_pick": serialized[0] if serialized else None,
         "obstacles": obstacles(serialized),
         "platform": platform,

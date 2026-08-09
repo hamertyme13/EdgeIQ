@@ -11,3 +11,4 @@ edgeiq.db-wal
 .edgeiq_backups/
 .edgeiq_exports/
 assets/*.iconset/
+artifacts/visual-regression/

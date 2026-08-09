@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 import repository.repositories.settlement_audit_repository as audit_module
 from repository.database import Base
 from repository.models.entry_model import EntryModel  # noqa: F401
+from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.repositories.settlement_audit_repository import (
     SettlementAuditRepository,
     _game_time_date,
@@ -74,3 +75,41 @@ def test_settlement_audit_separates_historical_blocks_from_current_queue(monkeyp
     assert queue["historical_review"] == 1
     assert queue["items"][0]["scope"] == "historical"
     assert queue["items"][0]["entry_status"] == "Settled"
+
+
+def test_latest_settlement_evidence_includes_matched_final_date(monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(audit_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(audit_module, "initialize_database", lambda: None)
+    with session_factory() as session:
+        session.add(FinalPlayerStatModel(
+            player="Azurá Stevens",
+            sport="WNBA",
+            stat="Points",
+            game="Aces @ Sparks",
+            game_date="2026-08-07",
+            actual=18,
+            source="ESPN",
+        ))
+        session.commit()
+    SettlementAuditRepository.record({
+        "entry_id": 12,
+        "entry_prop_id": 31,
+        "status": "verified",
+        "provider": "ESPN",
+        "requested_player": "Azura Stevens",
+        "matched_player": "Azurá Stevens",
+        "requested_game": "LVA @ LAS",
+        "matched_game": "Aces @ Sparks",
+        "actual": 18,
+        "result": "Win",
+        "reason_code": "final_stat_matched",
+        "message": "Final result verified from ESPN.",
+    })
+
+    evidence = SettlementAuditRepository.latest_by_entry_ids([12])
+
+    assert evidence[12][31]["matched_player"] == "Azurá Stevens"
+    assert evidence[12][31]["matched_game_dates"] == ["2026-08-07"]

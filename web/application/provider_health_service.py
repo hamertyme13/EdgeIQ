@@ -16,6 +16,7 @@ def build_data_health_payload(
     provider_weights: dict[str, float],
     platform_memory: dict[str, dict[str, int]],
     settlement_status_key: str,
+    endpoint_timings: dict | None = None,
 ) -> dict:
     providers = [
         provider_health_row("PrizePicks", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
@@ -109,6 +110,12 @@ def build_data_health_payload(
         "providers": providers,
         "provider_weights": provider_weights,
         "api_usage": api_usage,
+        "endpoint_performance": endpoint_timings or {
+            "requests": 0,
+            "slow_requests": 0,
+            "slow_threshold_ms": 1000,
+            "routes": [],
+        },
         "summary": {
             "connected": connected,
             "total": len(providers),

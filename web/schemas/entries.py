@@ -96,6 +96,7 @@ class AutoPaperCalibrationPayload(BaseModel):
     sport: str = "All Sports"
     leg_count: int = Field(default=2, ge=2, le=5)
     max_entries: int = Field(default=3, ge=1, le=10)
+    standard_batch: bool = False
     prefer_confirmed: bool = True
     dry_run: bool = False
 

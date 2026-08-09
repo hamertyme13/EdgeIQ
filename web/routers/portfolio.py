@@ -16,6 +16,8 @@ class PortfolioDependencies:
     personal_profile: Callable[[], dict]
     bets: Callable[[int, int], dict]
     save_bet: Callable[[BetPayload], dict]
+    intelligence: Callable[[], dict]
+    refresh_market: Callable[[], dict]
 
 
 _dependencies: PortfolioDependencies | None = None
@@ -50,3 +52,13 @@ def bets(limit: int = 100, entry_limit: int = 50) -> dict:
 @router.post("/api/bets")
 def save_bet(payload: BetPayload) -> dict:
     return _deps().save_bet(payload)
+
+
+@router.get("/api/portfolio/intelligence")
+def portfolio_intelligence() -> dict:
+    return _deps().intelligence()
+
+
+@router.post("/api/portfolio/refresh-market-data")
+def refresh_portfolio_market_data() -> dict:
+    return _deps().refresh_market()

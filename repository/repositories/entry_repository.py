@@ -12,8 +12,10 @@ from models.entry import Entry
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
+from repository.models.prediction_record_model import PredictionRecordModel
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+from utils.prop_plausibility import prop_line_plausibility
 from utils.time import utc_now
 
 
@@ -59,6 +61,11 @@ class EntryRepository:
         session: Session = SessionLocal()
 
         try:
+            checked_props = [(prop, prop_line_plausibility(prop)) for prop in entry.props]
+            invalid_props = [(prop, result) for prop, result in checked_props if not result.valid]
+            if invalid_props:
+                _, validation = invalid_props[0]
+                raise ValueError(f"Entry contains an invalid market: {validation.reason}")
             analysis = entry_recommendation(entry)
             wager = round(float(wager or 0), 2)
             multiplier = round(float(multiplier or 1), 2)
@@ -171,6 +178,94 @@ class EntryRepository:
         finally:
 
             session.close()
+
+    @staticmethod
+    def quarantine_implausible_markets(*, dry_run: bool = True) -> dict:
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(EntryPropModel, EntryModel)
+                .join(EntryModel, EntryModel.id == EntryPropModel.entry_id)
+                .order_by(EntryModel.id.asc(), EntryPropModel.id.asc())
+                .all()
+            )
+            affected: dict[int, dict] = {}
+            for prop, entry in rows:
+                validation = prop_line_plausibility({
+                    "sport": prop.sport,
+                    "stat": prop.stat,
+                    "line": prop.line,
+                })
+                if validation.valid:
+                    continue
+                item = affected.setdefault(entry.id, {
+                    "entry": entry,
+                    "props": [],
+                    "already_quarantined": entry.status == "Excluded",
+                })
+                item["props"].append({
+                    "entry_prop_id": prop.id,
+                    "player": prop.player_name,
+                    **validation.as_dict(),
+                })
+
+            candidates = [item for item in affected.values() if not item["already_quarantined"]]
+            if not dry_run:
+                for item in candidates:
+                    entry = item["entry"]
+                    try:
+                        audit = json.loads(entry.audit_snapshot or "{}")
+                    except (TypeError, ValueError):
+                        audit = {}
+                    audit["integrity_quarantine"] = {
+                        "schema_version": 1,
+                        "quarantined_at": utc_now().isoformat(),
+                        "reason": "One or more market lines failed sport/stat plausibility validation.",
+                        "original": {
+                            "status": entry.status,
+                            "result": entry.result,
+                            "profit": float(entry.profit or 0.0),
+                        },
+                        "props": item["props"],
+                    }
+                    entry.audit_snapshot = json.dumps(audit, sort_keys=True)
+                    entry.status = "Excluded"
+                    entry.result = ""
+                    entry.profit = 0.0
+                    entry.settled_at = utc_now()
+                    prop_ids = [int(row["entry_prop_id"]) for row in item["props"]]
+                    invalid_props = session.query(EntryPropModel).filter(EntryPropModel.id.in_(prop_ids)).all()
+                    for prop in invalid_props:
+                        prop.final_result = ""
+                        prop.final_source = "integrity_quarantine"
+                        prop.final_status = "quarantined"
+                    predictions = (
+                        session.query(PredictionRecordModel)
+                        .filter(PredictionRecordModel.entry_prop_id.in_(prop_ids))
+                        .all()
+                    )
+                    for prediction in predictions:
+                        prediction.legacy_quarantined = True
+                session.commit()
+
+            details = [
+                {
+                    "entry_id": int(item["entry"].id),
+                    "entry_mode": str(item["entry"].entry_mode or "real"),
+                    "status": str(item["entry"].status or ""),
+                    "already_quarantined": bool(item["already_quarantined"]),
+                    "props": item["props"],
+                }
+                for item in affected.values()
+            ]
+            return {
+                "dry_run": dry_run,
+                "affected_entries": len(affected),
+                "candidate_entries": len(candidates),
+                "invalid_props": sum(len(item["props"]) for item in affected.values()),
+                "quarantined_entries": 0 if dry_run else len(candidates),
+                "details": details[:200],
+            }
 
     @staticmethod
     def pending() -> list[dict]:

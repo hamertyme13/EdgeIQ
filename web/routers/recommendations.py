@@ -20,7 +20,7 @@ class RecommendationDependencies:
     command_center: Callable[[str, str, bool], dict]
     opportunity_feed: Callable[[str, str, float, int, int], dict]
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
-    entry_suggestions: Callable[[str, str, int], dict]
+    entry_suggestions: Callable[[str, str, int, set[str]], dict]
     confirmed_suggestions: Callable[[str, str], dict]
     crazy_six: Callable[[str, str], dict]
     optimizer: Callable[..., dict]
@@ -93,8 +93,14 @@ def auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
 
 
 @router.get("/api/entries/suggestions")
-def entry_suggestions(sport: str = "WNBA", platform: str = "PrizePicks", leg_count: int = 2) -> dict:
-    return _request(lambda: _deps().entry_suggestions(sport, platform, leg_count))
+def entry_suggestions(
+    sport: str = "WNBA",
+    platform: str = "PrizePicks",
+    leg_count: int = 2,
+    avoid: str = "",
+) -> dict:
+    avoid_prop_keys = {key for key in avoid.split(",") if key}
+    return _request(lambda: _deps().entry_suggestions(sport, platform, leg_count, avoid_prop_keys))
 
 
 @router.get("/api/entries/confirmed-suggestions")

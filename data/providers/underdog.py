@@ -178,7 +178,7 @@ def fetch_projections() -> list[dict]:
     """
     url = f"{_BASE}/over_under_lines"
 
-    cached = get_json(url, headers=_HEADERS, timeout=15)
+    cached = get_json(url, headers=_HEADERS, timeout=10, retries=1)
     data = cached.data
 
     # Build lookup indexes from sideloaded data

@@ -163,6 +163,7 @@ class PredictionLedgerRepository:
                     "projection_source": row.projection_source,
                     "model_version": row.model_version,
                     "line_offer_type": row.line_offer_type,
+                    "feature_snapshot": _json_dict(row.feature_snapshot),
                     "legacy_quarantined": bool(row.legacy_quarantined),
                     "result": row.outcome,
                     "actual": row.actual,
@@ -212,11 +213,14 @@ def _projection_accuracy(rows: list[dict]) -> dict:
         and str(row.get("outcome_source") or "").strip().lower()
         not in {"", "unknown", "unmatched", "projection_estimate"}
     ])
-    groups: dict[str, list[float]] = {}
+    groups: dict[str, list[tuple[float, float]]] = {}
     errors = []
     market_errors = []
     regularized_errors = []
     signed = []
+    distribution_predictions = 0
+    middle_50_hits = 0
+    floor_ceiling_hits = 0
     for row in eligible:
         error = float(row["projection"]) - float(row["actual"])
         errors.append(abs(error))
@@ -228,6 +232,16 @@ def _projection_accuracy(rows: list[dict]) -> dict:
         market_errors.append(market_error)
         regularized_errors.append(regularized_error)
         signed.append(error)
+        distribution = (row.get("feature_snapshot") or {}).get("distribution") or {}
+        percentile_25 = distribution.get("percentile_25")
+        percentile_75 = distribution.get("percentile_75")
+        floor = distribution.get("floor")
+        ceiling = distribution.get("ceiling")
+        if all(value is not None for value in (percentile_25, percentile_75, floor, ceiling)):
+            distribution_predictions += 1
+            actual = float(row["actual"])
+            middle_50_hits += int(float(str(percentile_25)) <= actual <= float(str(percentile_75)))
+            floor_ceiling_hits += int(float(str(floor)) <= actual <= float(str(ceiling)))
         groups.setdefault(str(row.get("projection_source") or "unknown"), []).append(
             (abs(error), market_error)
         )
@@ -249,6 +263,9 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             else None
         ),
         "bias": round(sum(signed) / len(signed), 3) if signed else None,
+        "distribution_predictions": distribution_predictions,
+        "middle_50_coverage": round(middle_50_hits / distribution_predictions * 100.0, 1) if distribution_predictions else None,
+        "floor_ceiling_coverage": round(floor_ceiling_hits / distribution_predictions * 100.0, 1) if distribution_predictions else None,
         "by_source": {
             source: {
                 "predictions": len(values),
@@ -258,3 +275,13 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             for source, values in sorted(groups.items())
         },
     }
+
+
+def _json_dict(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}

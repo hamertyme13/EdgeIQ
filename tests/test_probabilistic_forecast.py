@@ -24,6 +24,14 @@ def test_forecast_uses_verified_history_distribution_for_both_sides() -> None:
     assert over.probability > 50
     assert round(over.probability + under.probability, 6) == 100
     assert over.paid_eligible is True
+    assert over.distribution["median"] == 23.5
+    assert over.distribution["percentile_25"] <= over.distribution["percentile_75"]
+    assert over.distribution["floor"] <= over.distribution["ceiling"]
+    assert round(
+        over.distribution["probability_over_exact_line"]
+        + over.distribution["probability_under_exact_line"],
+        6,
+    ) == 100
 
 
 def test_forecast_routes_thin_history_to_market_prior_and_paper() -> None:
@@ -33,6 +41,20 @@ def test_forecast_routes_thin_history_to_market_prior_and_paper() -> None:
     assert result.projection == 1.5
     assert result.probability == 50
     assert result.paid_eligible is False
+    assert result.distribution["uncertainty_level"] == "High"
+    assert result.distribution["median"] == 1
+
+
+def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them() -> None:
+    history = _history([20, 21, 22, 23, 24] * 4)
+    for index, row in enumerate(history):
+        row["minutes"] = 30 + (index % 3)
+        row["opportunities"] = 18 + (index % 2)
+
+    result = forecast_prop("Player", "WNBA", "Points", 20.5, history=history)
+
+    assert result.distribution["expected_minutes"] == 31
+    assert result.distribution["expected_opportunities"] == 18.5
 
 
 def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:

@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260808-reliability-audit-v5" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260809-provider-refresh-v1" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -319,6 +319,10 @@
                   <input id="strategy-max-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max % bankroll" />
                   <input id="strategy-open-exposure-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Max open exposure %" />
                   <input id="strategy-stop-loss-pct" type="number" min="0.1" max="100" step="0.1" placeholder="Monthly stop-loss %" />
+                  <input id="strategy-max-player-entries" type="number" min="1" max="20" step="1" placeholder="Max entries per player" />
+                  <input id="strategy-max-game-entries" type="number" min="1" max="20" step="1" placeholder="Max entries per game" />
+                  <input id="strategy-max-market-entries" type="number" min="1" max="10" step="1" placeholder="Max duplicate markets" />
+                  <input id="strategy-max-player-exposure" type="number" min="0.1" max="100" step="0.1" placeholder="Max bankroll % per player" />
                   <label class="check-row"><input id="strategy-paper-first" type="checkbox" /> Paper first</label>
                   <button type="submit">Save Strategy</button>
                 </div>
@@ -787,10 +791,27 @@
 
               <details class="panel tool-group" data-workspace-pane="custom" hidden>
                 <summary>
-                  <span>Bet Slip Organizer</span>
-                  <small>Optimizer filters</small>
+                  <span>Portfolio Intelligence</span>
+                  <small>Exposure-aware optimizer</small>
                 </summary>
                 <div class="tool-group-body">
+                  <div id="portfolio-intelligence-summary" class="analysis-card muted-card">Loading pending portfolio exposure...</div>
+                  <section class="portfolio-monitor" aria-labelledby="portfolio-monitor-title">
+                    <div class="section-heading compact-heading">
+                      <div>
+                        <p class="eyebrow">After Placement</p>
+                        <h3 id="portfolio-monitor-title">Active Entry Monitor</h3>
+                      </div>
+                      <div class="portfolio-monitor-actions">
+                        <span id="portfolio-monitor-count" class="status-pill">0 pending</span>
+                        <button id="refresh-portfolio-lines" class="secondary compact-action">Refresh Live Lines</button>
+                      </div>
+                    </div>
+                    <p id="portfolio-monitor-refresh-status" class="subtle" aria-live="polite"></p>
+                    <div id="portfolio-monitor-list" class="suggestion-list">
+                      <div class="skeleton-block" aria-label="Loading active entry monitoring"></div>
+                    </div>
+                  </section>
                   <div class="toolbar">
                     <select id="optimizer-platform" aria-label="Optimizer platform">
                       <option>PrizePicks</option>
@@ -827,6 +848,7 @@
                       <option value="8-8">8 Legs (Underdog)</option>
                     </select>
                     <button id="run-optimizer">Optimize</button>
+                    <button id="run-portfolio-batch" class="secondary">Generate Five Diversified Cards</button>
                   </div>
                   <div class="form-grid compact-controls">
                     <input id="optimizer-min-confidence" type="number" step="1" value="62" placeholder="Min confidence" aria-label="Minimum confidence" />
@@ -1378,8 +1400,12 @@
                 <h2>Settlement Audit Queue</h2>
                 <p id="settlement-audit-status">Every final-stat match, retry, and blocked legacy leg.</p>
               </div>
-              <button id="refresh-settlement-audit" class="secondary">Refresh Audit</button>
+              <div class="panel-action">
+                <button id="preview-settlement-repair" class="secondary">Preview Recheck</button>
+                <button id="refresh-settlement-audit" class="secondary">Refresh Audit</button>
+              </div>
             </div>
+            <div id="settlement-repair-preview" class="suggestion-list" hidden></div>
             <div id="settlement-audit-list" class="suggestion-list"></div>
           </div>
           <div class="panel" data-workspace-pane="performance">
@@ -1454,26 +1480,21 @@
                           <option>NASCAR</option>
                         </select>
                       </label>
-                      <label class="field-label">Legs
-                        <select id="auto-paper-leg-count">
-                          <option value="2">2 legs</option>
-                          <option value="3">3 legs</option>
-                          <option value="4">4 legs</option>
-                          <option value="5">5 legs</option>
-                        </select>
-                      </label>
-                      <label class="field-label">Max Entries
-                        <input id="auto-paper-max-entries" type="number" min="1" max="10" value="3" />
-                      </label>
+                      <div class="calibration-batch-summary" aria-label="Paper calibration batch">
+                        <strong>5 cards</strong>
+                        <span>2 · 2 · 3 · 4 · 5 legs</span>
+                      </div>
                     </div>
                     <div class="scorecard-actions">
                       <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
-                      <button id="refresh-calibration-data" class="secondary">Refresh Provider Data</button>
+                      <button id="refresh-calibration-data" class="secondary">Refresh Calibration Finals</button>
                       <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
+                      <button id="repair-data-integrity" class="secondary">Repair Invalid Markets</button>
                     </div>
                   </div>
                 </div>
-                <div id="auto-paper-calibration-status" class="subtle">Creates paper-only entries from the weakest confidence buckets using end-to-end verified props.</div>
+                <div id="auto-paper-calibration-status" class="subtle">Ready to sample weak confidence buckets with end-to-end verified props.</div>
+                <div id="data-integrity-repair-status" class="subtle" aria-live="polite"></div>
                 <div id="backtest-summary" class="suggestion-list"></div>
               </div>
               <div class="panel">
@@ -1524,7 +1545,7 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260808-reliability-audit-v5"></script>
+    <script src="/static/ui-shell.js?v=20260808-reliability-audit-v6"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
@@ -1542,7 +1563,7 @@
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260808-reliability-audit-v5"></script>
+    <script src="/static/js/state.js?v=20260808-generator-diversity-v1"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
@@ -1554,7 +1575,7 @@
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260808-reliability-audit-v5"></script>
+    <script src="/static/app.js?v=20260809-data-integrity-v1"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

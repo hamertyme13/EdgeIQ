@@ -31,6 +31,7 @@ def backtest_payload(clv: dict) -> dict:
     readiness = payload.get("validation_readiness") or {}
     PredictionLedgerRepository.backfill_legacy_quarantine()
     prediction_rows = PredictionLedgerRepository.evidence_rows(include_legacy=False)
+    prediction_summary = PredictionLedgerRepository.summary()
     grouped_validation = grouped_rolling_validation(prediction_rows)
     payload["grouped_validation"] = grouped_validation
     payload["validation_readiness"] = validation_readiness(
@@ -46,8 +47,9 @@ def backtest_payload(clv: dict) -> dict:
         clv,
         prediction_rows=prediction_rows,
         grouped_validation=grouped_validation,
+        prediction_summary=prediction_summary,
     )
-    payload["prediction_ledger"] = PredictionLedgerRepository.summary()
+    payload["prediction_ledger"] = prediction_summary
     return payload
 
 
@@ -84,7 +86,8 @@ def model_health_payload(ai: dict) -> dict:
         + (accuracy_score * 0.14),
         1,
     )
-    scorecard_score = float(scorecard.get("score") or raw_trust_score)
+    scorecard_value = scorecard.get("score")
+    scorecard_score = raw_trust_score if scorecard_value is None else float(scorecard_value)
     trust_score = round(min(raw_trust_score, scorecard_score), 1)
     verdict = str(scorecard.get("verdict") or "")
     paid_entry_mode = "enabled"
@@ -131,7 +134,16 @@ def model_health_payload(ai: dict) -> dict:
             "recommendation_accuracy": round(accuracy_score, 1),
             "scorecard": round(scorecard_score, 1),
         },
-        "next_steps": model_health_next_steps(calibrated_rows, settled_entries, ai, avg_error),
+        "next_steps": model_health_next_steps(
+            calibrated_rows,
+            settled_entries,
+            ai,
+            avg_error,
+            scorecard=scorecard,
+            holdout=holdout,
+            grouped_validation=grouped_validation,
+            recommendation_accuracy=recommendation_accuracy,
+        ),
     }
 
 
@@ -140,8 +152,25 @@ def model_health_next_steps(
     settled_entries: int,
     ai: dict,
     avg_error: float,
+    *,
+    scorecard: dict | None = None,
+    holdout: dict | None = None,
+    grouped_validation: dict | None = None,
+    recommendation_accuracy: dict | None = None,
 ) -> list[str]:
+    scorecard = scorecard or {}
+    holdout = holdout or {}
+    grouped_validation = grouped_validation or {}
+    recommendation_accuracy = recommendation_accuracy or {}
     steps = []
+    if float(scorecard.get("score") or 0.0) <= 0:
+        steps.append("Keep paid sizing minimal until the scorecard clears its validation gates.")
+    if not holdout.get("ready") or not holdout.get("passed"):
+        steps.append("Collect enough independent settled predictions to pass holdout validation.")
+    if not grouped_validation.get("ready") or not grouped_validation.get("passed"):
+        steps.append("Continue paper sampling across sport and stat segments for rolling validation.")
+    if recommendation_accuracy.get("tracked") and float(recommendation_accuracy.get("accuracy") or 0.0) < 40:
+        steps.append("Review recommendation misses before releasing additional paid cards.")
     if calibrated_rows < 25:
         steps.append("Upload or import more betting history to strengthen confidence calibration.")
     if settled_entries < 10:

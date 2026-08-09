@@ -17,6 +17,7 @@ class ResultsDependencies:
     refresh_calibration: Callable[[], dict]
     model_health: Callable[[], dict]
     accuracy_lab: Callable[[], dict]
+    data_integrity_repair: Callable[[bool], dict]
 
 
 _dependencies: ResultsDependencies | None = None
@@ -72,3 +73,11 @@ def model_health() -> dict:
 @router.get("/api/analytics/accuracy-lab")
 def accuracy_lab() -> dict:
     return _deps().accuracy_lab()
+
+
+@router.post("/api/analytics/data-integrity-repair")
+def data_integrity_repair(dry_run: bool = True) -> dict:
+    try:
+        return _deps().data_integrity_repair(dry_run)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

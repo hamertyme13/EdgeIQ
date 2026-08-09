@@ -102,7 +102,7 @@ def fetch_projections(limit: int = 500) -> list[dict]:
     """
     url = f"{_BASE}/projections?per_page={limit}&single_stat=true"
 
-    cached = get_json(url, headers=_HEADERS, timeout=15)
+    cached = get_json(url, headers=_HEADERS, timeout=10, retries=1)
     data = cached.data
 
     # Build player lookup from included sideloaded data

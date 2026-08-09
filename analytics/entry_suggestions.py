@@ -38,6 +38,8 @@ def suggest_entries(
     max_same_team: int | None = None,
     exclude_correlated: bool = False,
     apply_feedback: bool = False,
+    diversify: bool = False,
+    avoid_prop_keys: set[str] | None = None,
 ) -> list[SuggestedEntry]:
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
@@ -84,9 +86,14 @@ def suggest_entries(
         scored.append((score, entry, warnings))
 
     scored.sort(key=lambda item: item[0], reverse=True)
+    selected_rows = (
+        _diversified_scored_entries(scored, limit, avoid_prop_keys or set())
+        if diversify
+        else scored[:limit]
+    )
 
     suggestions: list[SuggestedEntry] = []
-    for rank, (score, entry, warnings) in enumerate(scored[:limit], start=1):
+    for rank, (score, entry, warnings) in enumerate(selected_rows, start=1):
         result = recommendation(entry)
         suggestions.append(
             SuggestedEntry(
@@ -100,6 +107,51 @@ def suggest_entries(
         )
 
     return suggestions
+
+
+def prop_exposure_key(prop: Prop) -> str:
+    player = canonical_person_key(prop.player.name)
+    stat = str(prop.stat.value or "").strip().lower().replace(",", "")
+    direction = str(prop.direction or "Over").strip().lower()
+    return f"{player}|{stat}|{direction}|{float(prop.line):.2f}"
+
+
+def _diversified_scored_entries(
+    scored: list[tuple[float, Entry, list[str]]],
+    limit: int,
+    avoid_prop_keys: set[str],
+    quality_band: float = 12.0,
+) -> list[tuple[float, Entry, list[str]]]:
+    remaining = list(scored)
+    selected: list[tuple[float, Entry, list[str]]] = []
+    used_prop_counts: dict[str, int] = {}
+    used_player_counts: dict[str, int] = {}
+
+    while remaining and len(selected) < limit:
+        best_score = remaining[0][0]
+        comparable = [row for row in remaining if row[0] >= best_score - quality_band]
+
+        def diversity_rank(row: tuple[float, Entry, list[str]]) -> tuple[int, int, int, float]:
+            score, entry, _warnings = row
+            keys = {prop_exposure_key(prop) for prop in entry.props}
+            players = {canonical_person_key(prop.player.name) for prop in entry.props}
+            return (
+                len(keys & avoid_prop_keys),
+                sum(used_prop_counts.get(key, 0) for key in keys),
+                sum(used_player_counts.get(player, 0) for player in players),
+                -score,
+            )
+
+        chosen = min(comparable, key=diversity_rank)
+        selected.append(chosen)
+        remaining.remove(chosen)
+        for prop in chosen[1].props:
+            key = prop_exposure_key(prop)
+            player = canonical_person_key(prop.player.name)
+            used_prop_counts[key] = used_prop_counts.get(key, 0) + 1
+            used_player_counts[player] = used_player_counts.get(player, 0) + 1
+
+    return selected
 
 
 def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:

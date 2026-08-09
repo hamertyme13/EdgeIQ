@@ -13,6 +13,9 @@ analytics.
 - PrizePicks and Underdog projection fetching with short-lived local caching
 - Single-prop EV, edge, confidence, Kelly, and line-shopping tools
 - Multi-prop entry builder with correlation warnings
+- Portfolio-aware entry ranking with active paid-entry line monitoring
+- Verified-history projection distributions with exact-line probabilities, ranges, and uncertainty drivers
+- Visual player research with recent, location, role, opponent, market-line, and sensitivity context
 - Bet tracker with sport, platform, stat type, result, and profit tracking
 - CLI workflows for quick calculations and prop/entry building
 - Local SQLite persistence
@@ -100,18 +103,18 @@ Tests use an isolated temporary SQLite database. Provider contracts use saved
 fixtures, and migration tests exercise upgrades from legacy schemas. Live
 provider calls are avoided.
 
-## v2.1 Validation
+## v2.2 Validation
 
 Results contains an evidence-gated release scorecard for settled paper entries,
 verified individual props, segmented accuracy, chronological validation,
-closing-line value, and calibration error. The model remains in
+closing-line value, calibration error, and forecast-distribution coverage. The model remains in
 `collecting_evidence` until every release gate passes.
 
 The primary workflow now begins in Advantage Center: check provider freshness,
 rank opportunities, inspect supporting evidence, add a paper entry, settle it
 from final stats, and review calibration.
 
-See [docs/RELEASE_2_1.md](docs/RELEASE_2_1.md) for the release standard.
+See [docs/RELEASE_2_2.md](docs/RELEASE_2_2.md) for the release standard.
 
 ## Backup And Export
 
@@ -198,6 +201,6 @@ database and set `EDGEIQ_ALLOWED_ORIGINS` to your website origin.
 
 ## Alpha Notes
 
-This is still an alpha. The v2.1 scorecard intentionally separates implemented
+This is still an alpha. The v2.2 scorecard intentionally separates implemented
 validation infrastructure from statistically proven performance; no win-rate or
 profitability claim is made until the evidence gates pass.

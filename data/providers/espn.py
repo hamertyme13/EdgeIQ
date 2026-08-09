@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -767,10 +768,8 @@ def _event_matchup(event: dict) -> str:
 def _entry_date(entry: dict) -> date:
     placed_at = entry.get("placed_at")
     if isinstance(placed_at, str) and placed_at:
-        try:
+        with suppress(ValueError):
             placed_at = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
-        except ValueError:
-            pass
     if isinstance(placed_at, datetime):
         if placed_at.tzinfo is None:
             placed_at = placed_at.replace(tzinfo=UTC)

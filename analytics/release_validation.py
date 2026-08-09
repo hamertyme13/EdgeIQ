@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from analytics.prediction_evidence import deduplicate_outcomes
 
-RELEASE_NAME = "EdgeIQ v2.1 - Validation and Reliability"
+RELEASE_NAME = "EdgeIQ v2.2 - Distribution and Portfolio Validation"
 
 
 def validation_readiness(
@@ -14,6 +14,7 @@ def validation_readiness(
     clv: dict | None = None,
     prediction_rows: list[dict] | None = None,
     grouped_validation: dict | None = None,
+    prediction_summary: dict | None = None,
 ) -> dict:
     settled = [
         entry
@@ -45,6 +46,10 @@ def validation_readiness(
         versioned_rows if has_prediction_ledger else raw_settled_props
     )
     grouped_validation = grouped_validation or {}
+    projection_accuracy = (prediction_summary or {}).get("projection_accuracy") or {}
+    distribution_count = int(projection_accuracy.get("distribution_predictions") or 0)
+    middle_coverage = projection_accuracy.get("middle_50_coverage")
+    range_coverage = projection_accuracy.get("floor_ceiling_coverage")
     dimensions = {
         dimension: [
             row for row in segments
@@ -91,6 +96,19 @@ def validation_readiness(
                 f"{float(calibration_summary.get('average_abs_error') or 0.0):.1f} point mean absolute error."
             ),
         ),
+        _boolean_gate(
+            "Projection distributions",
+            distribution_count >= 100
+            and middle_coverage is not None
+            and 40.0 <= float(middle_coverage) <= 60.0
+            and range_coverage is not None
+            and 70.0 <= float(range_coverage) <= 90.0,
+            (
+                f"{distribution_count}/100 verified distribution forecasts; "
+                f"middle-50 coverage {_coverage_text(middle_coverage)} (target 40-60%); "
+                f"floor-ceiling coverage {_coverage_text(range_coverage)} (target 70-90%)."
+            ),
+        ),
     ]
     required_complete = sum(1 for gate in gates if gate["passed"])
     return {
@@ -116,6 +134,8 @@ def validation_readiness(
         "closing_line_value": clv,
         "calibration_error": calibration_summary,
         "grouped_validation": grouped_validation,
+        "projection_accuracy": projection_accuracy,
+        "next_actions": _next_actions(gates),
     }
 
 
@@ -144,3 +164,32 @@ def _boolean_gate(label: str, passed: bool, detail: str) -> dict:
         "progress_pct": 100.0 if passed else 0.0,
         "detail": detail,
     }
+
+
+def _coverage_text(value: object) -> str:
+    return "not available" if value is None else f"{float(str(value)):.1f}%"
+
+
+def _next_actions(gates: list[dict]) -> list[str]:
+    actions = []
+    priority = {
+        "Projection distributions": 0,
+        "Independent versioned props": 1,
+        "Settled paper entries": 2,
+        "Calibration error": 3,
+        "Closing-line value": 4,
+    }
+    failed = sorted(
+        (gate for gate in gates if not gate["passed"]),
+        key=lambda gate: priority.get(str(gate["label"]), 10),
+    )
+    for gate in failed:
+        if gate["label"] == "Settled paper entries":
+            actions.append(f"Settle {max(0, int(gate['target']) - int(gate['current']))} more verified paper entries.")
+        elif gate["label"] == "Independent versioned props":
+            actions.append(f"Settle {max(0, int(gate['target']) - int(gate['current']))} more independent versioned props.")
+        elif gate["label"] == "Projection distributions":
+            actions.append("Keep generating versioned paper props until 100 distribution forecasts settle, then review interval coverage.")
+        else:
+            actions.append(f"Complete {gate['label'].lower()}: {gate['detail']}")
+    return actions[:5]

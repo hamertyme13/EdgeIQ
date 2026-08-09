@@ -72,6 +72,7 @@ class BetRepository:
             query = session.query(BetEntity)
             if not include_synced_entries:
                 query = query.filter(or_(BetEntity.source.is_(None), BetEntity.source != "edgeiq_entry"))
+            query = query.order_by(BetEntity.created_at.asc(), BetEntity.id.asc())
             entities = query.all()
             return [self._to_model(e) for e in entities]
 

@@ -113,6 +113,55 @@ class SettlementAuditRepository:
         }
 
     @staticmethod
+    def latest_by_entry_ids(entry_ids: list[int]) -> dict[int, dict[int, dict]]:
+        """Return the latest audit evidence for each requested entry leg."""
+        ids = {int(entry_id) for entry_id in entry_ids if int(entry_id or 0) > 0}
+        if not ids:
+            return {}
+        initialize_database()
+        with SessionLocal() as session:
+            rows = (
+                session.query(SettlementAuditModel)
+                .filter(SettlementAuditModel.entry_id.in_(ids))
+                .order_by(SettlementAuditModel.attempted_at.desc(), SettlementAuditModel.id.desc())
+                .all()
+            )
+            latest: dict[int, SettlementAuditModel] = {}
+            for row in rows:
+                latest.setdefault(row.entry_prop_id, row)
+            matched_players = {row.matched_player for row in latest.values() if row.matched_player}
+            matched_games = {row.matched_game for row in latest.values() if row.matched_game}
+            matched_sources = {row.provider for row in latest.values() if row.provider}
+            final_query = session.query(
+                FinalPlayerStatModel.player,
+                FinalPlayerStatModel.game,
+                FinalPlayerStatModel.source,
+                FinalPlayerStatModel.actual,
+                FinalPlayerStatModel.game_date,
+            )
+            if matched_players:
+                final_query = final_query.filter(FinalPlayerStatModel.player.in_(matched_players))
+            if matched_games:
+                final_query = final_query.filter(FinalPlayerStatModel.game.in_(matched_games))
+            if matched_sources:
+                final_query = final_query.filter(FinalPlayerStatModel.source.in_(matched_sources))
+            final_rows = final_query.all() if matched_players and matched_games else []
+
+        dates_by_evidence: dict[tuple, set[str]] = {}
+        for row in final_rows:
+            key = _final_evidence_key(row.player, row.game, row.source, row.actual)
+            if row.game_date:
+                dates_by_evidence.setdefault(key, set()).add(str(row.game_date))
+
+        result: dict[int, dict[int, dict]] = {}
+        for row in latest.values():
+            item = _serialize(row)
+            key = _final_evidence_key(row.matched_player, row.matched_game, row.provider, row.actual)
+            item["matched_game_dates"] = sorted(dates_by_evidence.get(key, set()))
+            result.setdefault(row.entry_id, {})[row.entry_prop_id] = item
+        return result
+
+    @staticmethod
     def game_date_mismatches(max_day_delta: int = 1) -> list[dict]:
         """Find verified legs whose stored start date conflicts with matched evidence."""
         initialize_database()

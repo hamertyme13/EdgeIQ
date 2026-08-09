@@ -191,6 +191,41 @@ def recheck_final_stats_payload(
     }
 
 
+def recheck_final_stats_preview_payload(
+    *,
+    entries_needing_refresh: Callable[[list[dict]], list[dict]],
+    preview_leg: Callable[[dict, dict], dict],
+) -> dict:
+    """Describe a recheck without fetching providers or changing stored records."""
+    entries = EntryRepository.all()
+    targets = entries_needing_refresh(entries)
+    items: list[dict] = []
+    affected_entries: set[int] = set()
+    for entry in targets:
+        entry_id = int(entry.get("id") or 0)
+        for prop in entry.get("props", []):
+            item = preview_leg(entry, prop)
+            if item.get("will_change"):
+                affected_entries.add(entry_id)
+            items.append({"entry_id": entry_id, **item})
+
+    changes = sum(1 for item in items if item.get("will_change"))
+    waiting = sum(1 for item in items if item.get("action") in {"refresh_provider", "wait_for_final"})
+    return {
+        "read_only": True,
+        "entries_reviewed": len(targets),
+        "legs_reviewed": len(items),
+        "entries_with_local_changes": len(affected_entries),
+        "local_changes": changes,
+        "provider_refresh_needed": waiting,
+        "items": items[:200],
+        "message": (
+            f"Preview found {changes} locally verifiable leg update{'s' if changes != 1 else ''}. "
+            f"{waiting} leg{'s still need' if waiting != 1 else ' still needs'} a provider refresh or final box score."
+        ),
+    }
+
+
 def classify_default_wagers_payload(dashboard: Callable[[], dict]) -> dict:
     result = EntryRepository.classify_missing_economics()
     return {**result, "dashboard": dashboard()}

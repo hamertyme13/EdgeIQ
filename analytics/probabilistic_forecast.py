@@ -27,6 +27,7 @@ class PropForecast:
     reason: str
     feature_as_of: str
     features: dict
+    distribution: dict
 
     def snapshot(self) -> dict:
         return asdict(self)
@@ -68,6 +69,20 @@ def forecast_prop(
                 "verified_games": len(actuals),
                 "market_line_used_as_prior": True,
             },
+            distribution={
+                "expected_result": round(float(line), 2),
+                "median": round(_quantile(actuals, 0.50), 2) if actuals else None,
+                "percentile_25": round(_quantile(actuals, 0.25), 2) if actuals else None,
+                "percentile_75": round(_quantile(actuals, 0.75), 2) if actuals else None,
+                "floor": round(_quantile(actuals, 0.10), 2) if actuals else None,
+                "ceiling": round(_quantile(actuals, 0.90), 2) if actuals else None,
+                "probability_over_exact_line": 50.0,
+                "probability_under_exact_line": 50.0,
+                "expected_minutes": None,
+                "expected_opportunities": None,
+                "uncertainty_level": "High",
+                "uncertainty_drivers": ["Limited verified history", "Market line used as the forecast prior"],
+            },
         )
 
     weights = [_recency_weight(index) for index in range(len(actuals))]
@@ -103,6 +118,15 @@ def forecast_prop(
     probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8
     recent = actuals[:5]
+    over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    expected_minutes = _optional_history_median(rows, ("minutes", "min"))
+    expected_opportunities = _optional_history_median(
+        rows,
+        ("opportunities", "attempts", "usage_opportunities", "targets", "carries"),
+    )
+    uncertainty_drivers = _uncertainty_drivers(
+        len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
+    )
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -156,7 +180,78 @@ def forecast_prop(
                 "rest_days": _rest_days(game_time, rows) is None,
             },
         },
+        distribution={
+            "expected_result": round(contextual_mean, 2),
+            "median": round(_quantile(actuals, 0.50), 2),
+            "percentile_25": round(_quantile(actuals, 0.25), 2),
+            "percentile_75": round(_quantile(actuals, 0.75), 2),
+            "floor": round(_quantile(actuals, 0.10), 2),
+            "ceiling": round(_quantile(actuals, 0.90), 2),
+            "probability_over_exact_line": round(over_probability * 100.0, 2),
+            "probability_under_exact_line": round((1.0 - over_probability) * 100.0, 2),
+            "expected_minutes": expected_minutes,
+            "expected_opportunities": expected_opportunities,
+            "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
+            "uncertainty_drivers": uncertainty_drivers,
+        },
     )
+
+
+def _quantile(values: list[float], probability: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    position = (len(ordered) - 1) * probability
+    lower = int(math.floor(position))
+    upper = int(math.ceil(position))
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float | None:
+    values: list[float] = []
+    for row in rows[:20]:
+        value = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        if value is None:
+            continue
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return round(float(median(values)), 2) if values else None
+
+
+def _uncertainty_level(sample_size: int, sigma: float, mean: float) -> str:
+    relative_spread = sigma / max(1.0, abs(mean))
+    if sample_size < MIN_HISTORY_FOR_PAID or relative_spread >= 0.35:
+        return "High"
+    if sample_size < 35 or relative_spread >= 0.22:
+        return "Medium"
+    return "Low"
+
+
+def _uncertainty_drivers(
+    sample_size: int,
+    sigma: float,
+    mean: float,
+    side: str,
+    opponent: str,
+    expected_minutes: float | None,
+    expected_opportunities: float | None,
+) -> list[str]:
+    drivers = []
+    if sample_size < MIN_HISTORY_FOR_PAID:
+        drivers.append("Limited verified history")
+    if sigma / max(1.0, abs(mean)) >= 0.30:
+        drivers.append("Wide game-to-game result range")
+    if not side:
+        drivers.append("Home/away context unavailable")
+    if not opponent:
+        drivers.append("Opponent-specific sample unavailable")
+    if expected_minutes is None and expected_opportunities is None:
+        drivers.append("Minutes or opportunity data unavailable")
+    return drivers or ["Stable role and sufficient verified history"]
 
 
 def _eligible_history(rows: list[dict], game_time: object) -> list[dict]:

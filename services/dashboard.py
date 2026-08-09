@@ -1,4 +1,4 @@
-from datetime import UTC
+from datetime import UTC, datetime
 
 from config import STARTING_BANKROLL
 from repository.bet_repository import BetRepository
@@ -59,6 +59,11 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     )
     stats["by_stat"] = _display_groups(stats["by_stat"])
     stats["entry_platform_profitability"] = entry_stats.get("platform_profitability", [])
+    timeline_stats = _combined_timeline_stats(
+        BetRepository().get_all(),
+        EntryRepository.all(),
+    )
+    stats.update(timeline_stats)
     stats["monthly_profit"] = monthly_profit_log()
     stats["bankroll_transactions"] = bankroll_transactions
     stats["performance_insights"] = _performance_insights(stats)
@@ -77,6 +82,78 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     stats["starting_bankroll"] = starting_bankroll
 
     return stats
+
+
+def _combined_timeline_stats(bets: list, entries: list[dict]) -> dict:
+    decisions = [
+        {
+            "result": bet.result,
+            "profit": float(bet.profit or 0.0),
+            "occurred_at": getattr(bet, "created_at", None),
+            "order": index,
+        }
+        for index, bet in enumerate(bets)
+        if bet.result in {"Win", "Loss", "Push"}
+        and str(getattr(bet, "entry_mode", "real") or "real").lower() != "paper"
+    ]
+    offset = len(decisions)
+    decisions.extend(
+        {
+            "result": entry.get("result"),
+            "profit": float(entry.get("profit") or 0.0),
+            "occurred_at": entry.get("settled_at") or entry.get("placed_at") or entry.get("created_at"),
+            "order": offset + index,
+        }
+        for index, entry in enumerate(entries)
+        if entry.get("status") == "Settled"
+        and entry.get("result") in {"Win", "Loss", "Push"}
+        and str(entry.get("entry_mode") or "real").lower() != "paper"
+    )
+    decisions.sort(key=lambda row: (_dashboard_datetime(row["occurred_at"]), int(row["order"])))
+
+    current = best = worst = 0
+    peak = drawdown = cumulative = 0.0
+    curve = []
+    for decision in decisions:
+        result = decision["result"]
+        if result == "Push":
+            current = 0
+        elif result == "Win":
+            current = current + 1 if current >= 0 else 1
+        else:
+            current = current - 1 if current <= 0 else -1
+        best = max(best, current)
+        worst = min(worst, current)
+
+        cumulative += float(decision["profit"])
+        peak = max(peak, cumulative)
+        drawdown = max(drawdown, peak - cumulative)
+        curve.append(round(cumulative, 2))
+
+    return {
+        "current_streak": current,
+        "best_streak": best,
+        "worst_streak": worst,
+        "max_drawdown": round(drawdown, 2),
+        "bankroll_curve": curve,
+        "performance_timeline_count": len(decisions),
+    }
+
+
+def _dashboard_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return datetime.min.replace(tzinfo=UTC)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.min.replace(tzinfo=UTC)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _display_groups(groups: dict, hidden: set[str] | None = None) -> dict:

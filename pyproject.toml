@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "alembic>=1.14",
     "mypy>=1.14",
+    "playwright>=1.49,<2",
     "pytest>=8.0",
     "ruff>=0.9",
 ]

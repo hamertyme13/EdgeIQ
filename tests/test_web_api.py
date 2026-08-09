@@ -91,6 +91,7 @@ from web.app import (
     projection_assist,
     recheck_entry_final_stats,
     refresh_calibration_data,
+    refresh_portfolio_market_data,
     run_sync,
     save_bankroll_transaction,
     share_entry,
@@ -126,6 +127,43 @@ def _today_game_time(hour: int = 19) -> str:
 
 def test_web_health_endpoint():
     assert health() == {"ok": True}
+
+
+def test_endpoint_timing_snapshot_normalizes_ids_and_flags_slow_routes():
+    with web_app._ENDPOINT_TIMING_LOCK:
+        web_app._ENDPOINT_TIMINGS.clear()
+    web_app._record_endpoint_timing("GET", "/api/entries/42/settle", 1250.0, 200)
+    web_app._record_endpoint_timing("GET", "/api/entries/84/settle", 250.0, 500)
+
+    snapshot = web_app._endpoint_timing_snapshot()
+
+    assert snapshot["requests"] == 2
+    assert snapshot["slow_requests"] == 1
+    assert snapshot["routes"][0]["route"] == "GET /api/entries/{id}/settle"
+    assert snapshot["routes"][0]["failures"] == 1
+
+
+def test_final_stat_recheck_preview_is_read_only(monkeypatch):
+    from web.application.settlement_service import recheck_final_stats_preview_payload
+
+    entries = [{"id": 7, "status": "Pending", "props": [{"entry_prop_id": 9, "player": "A"}]}]
+    monkeypatch.setattr(EntryRepository, "all", lambda: entries)
+    writes = []
+
+    preview = recheck_final_stats_preview_payload(
+        entries_needing_refresh=lambda rows: rows,
+        preview_leg=lambda entry, prop: {
+            "entry_prop_id": prop["entry_prop_id"],
+            "player": prop["player"],
+            "action": "update_from_local_final",
+            "will_change": True,
+        },
+    )
+
+    assert writes == []
+    assert preview["read_only"] is True
+    assert preview["local_changes"] == 1
+    assert preview["entries_with_local_changes"] == 1
 
 
 def test_datetime_serialization_marks_naive_db_values_as_utc():
@@ -1127,13 +1165,20 @@ def test_underdog_generator_supports_eight_legs(monkeypatch):
 
     monkeypatch.setattr(web_app, "suggest_entries", fake_suggest_entries)
 
-    body = entry_suggestions(sport="WNBA", platform="Underdog", leg_count=8)
+    body = entry_suggestions(
+        sport="WNBA",
+        platform="Underdog",
+        leg_count=8,
+        avoid="playera|points|over|20.50",
+    )
 
     assert body["platform"] == "Underdog"
     assert body["leg_count"] == 8
     assert body["maximum_legs"] == 8
     assert calls[0]["leg_count"] == 8
     assert calls[0]["apply_feedback"] is True
+    assert calls[0]["diversify"] is True
+    assert calls[0]["avoid_prop_keys"] == {"playera|points|over|20.50"}
 
 
 def test_nfl_entry_suggestions_explain_when_same_day_lines_are_unavailable(monkeypatch):
@@ -3053,6 +3098,83 @@ def test_entry_analysis_serializes_under_direction(monkeypatch):
     assert body["entry"]["props"][1]["direction"] == "Over"
 
 
+def test_entry_analysis_suggests_direction_changes_and_removals(monkeypatch):
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_end_to_end_prop_eligibility", lambda *args, **kwargs: {"eligible": True, "reasons": []})
+    monkeypatch.setattr(web_app, "_prop_data_quality", lambda prop: {"score": 72.0, "label": "partial data", "flags": []})
+
+    body = analyze_entry(
+        EntryPayload.model_validate(
+            {
+                "platform": "PrizePicks",
+                "props": [
+                    {
+                        "player": "Wrong Side",
+                        "team": "AAA",
+                        "sport": "WNBA",
+                        "stat": "Points",
+                        "line": 20.5,
+                        "projection": 18.0,
+                        "direction": "Over",
+                    },
+                    {
+                        "player": "Thin Edge",
+                        "team": "BBB",
+                        "sport": "WNBA",
+                        "stat": "Assists",
+                        "line": 7.5,
+                        "projection": 7.7,
+                        "direction": "Over",
+                    },
+                ],
+            }
+        )
+    )
+
+    corrections = body["corrections"]
+    assert corrections["manual_entry"] is True
+    assert corrections["change_count"] == 2
+    assert corrections["legs"][0]["action"] == "flip"
+    assert corrections["legs"][0]["suggested_direction"] == "Under"
+    assert corrections["legs"][0]["message"] == "EdgeIQ suggests Under on this prop."
+    assert corrections["legs"][1]["action"] == "remove"
+    assert corrections["legs"][1]["message"] == "EdgeIQ suggests removing this prop."
+
+
+def test_standard_calibration_batch_uses_fixed_leg_plan_and_distinct_targets(monkeypatch):
+    targets = [
+        {"type": "Confidence", "name": "40-50%", "sport": "WNBA"},
+        {"type": "Confidence", "name": "50-60%", "sport": "WNBA"},
+        {"type": "Confidence", "name": "60-70%", "sport": "WNBA"},
+        {"type": "Confidence", "name": "70-80%", "sport": "WNBA"},
+        {"type": "Confidence", "name": "80-90%", "sport": "WNBA"},
+    ]
+    observed: list[tuple[int, str]] = []
+    created: list[dict] = []
+    monkeypatch.setattr(web_app, "_paper_calibration_suggestions", lambda *args, **kwargs: [object()])
+
+    def fake_append(suggestion, target, payload, backtest_data, signatures, rows, skipped):
+        observed.append((payload.leg_count, target["name"]))
+        rows.append({"suggestion": {"leg_count": payload.leg_count}})
+        return True
+
+    monkeypatch.setattr(web_app, "_append_calibration_entry", fake_append)
+    web_app._create_standard_calibration_batch(
+        AutoPaperCalibrationPayload(sport="WNBA", standard_batch=True),
+        targets,
+        {},
+        set(),
+        created,
+        [],
+        {},
+        {},
+    )
+
+    assert [leg_count for leg_count, _target in observed] == [2, 2, 3, 4, 5]
+    assert len({target for _leg_count, target in observed}) == 5
+    assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5]
+
+
 def test_under_leg_result_wins_below_line():
     assert _leg_result(17.0, 20.5, "Under") == "Win"
     assert _leg_result(24.0, 20.5, "Under") == "Loss"
@@ -3515,6 +3637,11 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
     assert body["market_lines"][0]["platform"] == "PrizePicks"
     assert body["active_props"][0]["platform"] == "PrizePicks"
     assert body["recommendation"]["player"] == "A"
+    assert body["forecast"]["distribution"]["median"] is not None
+    assert len(body["projection_sensitivity"]["scenarios"]) == 3
+    assert "starter" in body["splits"]
+    assert "bench" in body["splits"]
+    assert "closing_lines" in body
 
 
 def test_sharp_consensus_returns_fair_line_and_market_width(monkeypatch):
@@ -4322,6 +4449,8 @@ def test_web_optimizer_ranks_multiple_leg_counts(monkeypatch):
     assert "obstacles" in body
     assert all("platform_value" in suggestion for suggestion in body["suggestions"])
     assert all("value_adjusted_score" in suggestion for suggestion in body["suggestions"])
+    assert all("portfolio" in suggestion for suggestion in body["suggestions"])
+    assert "portfolio_ready_count" in body
 
 
 def test_web_optimizer_applies_filters(monkeypatch):
@@ -5575,11 +5704,48 @@ def test_refresh_calibration_data_imports_provider_rows_and_backfills(monkeypatc
     body = refresh_calibration_data()
 
     assert body["provider_refresh"]["imported"] == 3
+    assert body["entries_targeted"] == 1
     assert body["backfill"]["backfilled"] == 1
     assert body["backfill"]["provider_rows"] == 1
     assert calls["entry_id"] == 7
     assert calls["legs"][0]["source"] == "sportsdataio"
     assert body["backtest"]["calibration_sources"]["entry_rows"] == 0
+
+
+def test_portfolio_market_refresh_returns_updated_monitor(monkeypatch):
+    pending = [{
+        "id": 8,
+        "status": "Pending",
+        "entry_mode": "real",
+        "platform": "PrizePicks",
+        "props": [{
+            "player": "A",
+            "sport": "WNBA",
+            "stat": "Points",
+            "line": 20.5,
+            "platform": "PrizePicks",
+            "game": "AAA @ BBB",
+            "game_time": _today_game_time(),
+        }],
+    }]
+    calls = []
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: pending)
+    monkeypatch.setattr(
+        web_app,
+        "_fetch_platform_props",
+        lambda platform, force_refresh=False: calls.append((platform, force_refresh)) or [{"player": "A"}],
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_portfolio_intelligence_payload",
+        lambda: {"monitor": {"status_counts": {}, "entries": []}},
+    )
+
+    body = refresh_portfolio_market_data()
+
+    assert calls == [("PrizePicks", True)]
+    assert body["providers"][0]["status"] == "refreshed"
+    assert body["intelligence"]["monitor"]["entries"] == []
 
 
 def test_recheck_entry_final_stats_refreshes_backfills_and_settles_unknowns(monkeypatch):

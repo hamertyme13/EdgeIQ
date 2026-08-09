@@ -91,10 +91,11 @@ def test_espn_nfl_final_summary_supports_provider_markets() -> None:
 
 def test_prizepicks_fixture_preserves_offer_and_pra(monkeypatch) -> None:
     payload = json.loads((FIXTURE_DIR / "prizepicks_projection.json").read_text(encoding="utf-8"))
+    request = {}
     monkeypatch.setattr(
         prizepicks,
         "get_json",
-        lambda *args, **kwargs: SimpleNamespace(data=payload, stale=False, age_seconds=0),
+        lambda *args, **kwargs: request.update(kwargs) or SimpleNamespace(data=payload, stale=False, age_seconds=0),
     )
 
     row = prizepicks.fetch_projections()[0]
@@ -107,6 +108,8 @@ def test_prizepicks_fixture_preserves_offer_and_pra(monkeypatch) -> None:
     assert row["game"] == "LAS @ NYL"
     assert row["game_time"] == "2026-07-25T19:00:00Z"
     assert row["provider_game_id"] == "WNBA_game_123"
+    assert request["timeout"] == 10
+    assert request["retries"] == 1
 
 
 def test_prizepicks_duplicate_player_metadata_keeps_populated_fields() -> None:
@@ -134,10 +137,11 @@ def test_espn_refresh_dates_use_the_eastern_slate_day() -> None:
 
 def test_underdog_fixture_preserves_line_identity_and_game(monkeypatch) -> None:
     payload = json.loads((FIXTURE_DIR / "underdog_projection.json").read_text(encoding="utf-8"))
+    request = {}
     monkeypatch.setattr(
         underdog,
         "get_json",
-        lambda *args, **kwargs: SimpleNamespace(data=payload, stale=False, age_seconds=0),
+        lambda *args, **kwargs: request.update(kwargs) or SimpleNamespace(data=payload, stale=False, age_seconds=0),
     )
 
     row = underdog.fetch_projections()[0]
@@ -149,6 +153,8 @@ def test_underdog_fixture_preserves_line_identity_and_game(monkeypatch) -> None:
     assert row["game_time"] == "2026-07-25T21:00:00Z"
     assert row["team"] == "LVA"
     assert row["match_id"] == "22"
+    assert request["timeout"] == 10
+    assert request["retries"] == 1
 
 
 def test_underdog_team_uuid_is_normalized_from_matchup() -> None:

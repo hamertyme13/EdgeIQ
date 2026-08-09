@@ -19,5 +19,6 @@
     loadedWorkspacePanes: new Set(),
     placementInFlight: false,
     buttonSoundsBound: false,
+    generatorRecentProps: {},
   };
 })(window);
