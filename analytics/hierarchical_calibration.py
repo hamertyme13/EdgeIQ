@@ -42,22 +42,29 @@ def calibrate_probability(
         prior_strength = max(20.0, minimum / 2)
         posterior = ((raw * prior_strength) + wins) / (prior_strength + len(peers))
         uncertainty = 1.96 * ((posterior * (1.0 - posterior) / (prior_strength + len(peers))) ** 0.5)
+        cap = 0.90 if len(peers) >= 200 and uncertainty <= 0.07 else 0.84 if len(peers) >= 100 else 0.79
+        calibrated = max(0.02, min(cap, posterior))
         return {
-            "probability": round(max(0.02, min(0.98, posterior)) * 100.0, 2),
+            "probability": round(calibrated * 100.0, 2),
             "raw_probability": round(raw * 100.0, 2),
             "tier": tier,
             "sample_size": len(peers),
             "uncertainty_points": round(uncertainty * 100.0, 2),
             "paid_eligible": len(peers) >= minimum and uncertainty <= 0.10,
+            "confidence_cap": round(cap * 100.0, 1),
+            "cap_reason": "Confidence is capped until this segment has enough precise independent outcomes.",
         }
 
+    cap = 0.69
     return {
-        "probability": round(raw * 100.0, 2),
+        "probability": round(min(raw, cap) * 100.0, 2),
         "raw_probability": round(raw * 100.0, 2),
         "tier": "uncalibrated",
         "sample_size": 0,
         "uncertainty_points": 50.0,
         "paid_eligible": False,
+        "confidence_cap": cap * 100.0,
+        "cap_reason": "Uncalibrated predictions cannot exceed 69% confidence.",
     }
 
 

@@ -75,6 +75,7 @@ from repository.repositories.bankroll_transaction_repository import BankrollTran
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
+from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from repository.repositories.settings_repository import SettingsRepository
@@ -449,7 +450,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260809-runtime-reliability-v1"
+STATIC_ASSET_VERSION = "20260809-model-rehabilitation-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -600,7 +601,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.1.1", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.2.0", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -1214,7 +1215,25 @@ def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
 
     if sport_filter:
         props = [prop for prop in props if prop.get("league", "").upper() == sport_filter]
-    return [dict(prop) for prop in props]
+    rows = [dict(prop) for prop in props]
+    snapshot_rows = sorted(
+        rows,
+        key=lambda row: int(row.get("trending_count") or 0),
+        reverse=True,
+    )[:500]
+    ModelRehabilitationRepository.save_feed({
+        "feed": {
+            "id": "edgeiq-recommendation-snapshot-v2.2",
+            "canonical": True,
+            "platform": platform,
+            "sport": sport_filter or "All Sports",
+            "captured_at": iso_utc(utc_now()),
+            "available_count": len(rows),
+            "stored_count": len(snapshot_rows),
+        },
+        "props": snapshot_rows,
+    })
+    return rows
 
 
 def _fetch_platform_props(platform: str, *, force_refresh: bool = False) -> list[dict]:
@@ -1242,7 +1261,7 @@ def _fetch_platform_props(platform: str, *, force_refresh: bool = False) -> list
         with _PROP_FETCH_LOCK:
             _increment_prop_fetch_metric(canonical, "provider_fetches")
             _PROP_FETCH_CACHE[cache_key] = (now + PROP_FETCH_CACHE_SECONDS, [dict(prop) for prop in props])
-        _record_line_snapshots(props)
+        _record_line_snapshots(props, force_snapshot=force_refresh)
         return [dict(prop) for prop in props]
 
 
@@ -2977,8 +2996,8 @@ def _openai_vision_model() -> str:
 
 
 
-def _record_line_snapshots(props: list[dict]) -> None:
-    seen: set[tuple[str, str, str]] = set()
+def _record_line_snapshots(props: list[dict], *, force_snapshot: bool = False) -> None:
+    seen: set[tuple[str, str, str, str, str]] = set()
     rows = []
     ranked_props = sorted(props, key=lambda prop: prop.get("trending_count", 0), reverse=True)
     for prop in ranked_props:
@@ -2992,7 +3011,13 @@ def _record_line_snapshots(props: list[dict]) -> None:
         platform = prop.get("platform", "PrizePicks")
         if not player or not stat:
             continue
-        key = (canonical_person_key(player), stat.strip().lower(), platform.strip().lower())
+        key = (
+            canonical_person_key(player),
+            stat.strip().lower(),
+            platform.strip().lower(),
+            canonical_matchup_key(prop.get("game"), EntryRepository.TEAM_ALIASES),
+            _prizepicks_offer_type(prop),
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -3005,7 +3030,10 @@ def _record_line_snapshots(props: list[dict]) -> None:
             "game_time": prop.get("game_time") or "",
             "line_offer_type": _prizepicks_offer_type(prop),
         })
-    LineHistoryRepository.record_many(rows)
+    if force_snapshot:
+        LineHistoryRepository.record_many(rows, force_snapshot=True)
+    else:
+        LineHistoryRepository.record_many(rows)
 
 
 def _unique_player_props(props: list[dict], limit: int) -> list[dict]:
@@ -4782,7 +4810,7 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
         seen.add(key)
         deduped.append(item)
     deduped.sort(key=lambda row: (row["priority_score"], row.get("expected_value", 0.0), row.get("confidence", 0.0)), reverse=True)
-    return {
+    payload = {
         "feed": {
             "id": "edgeiq-opportunity-feed-v1",
             "canonical": True,
@@ -4801,6 +4829,12 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
             "watchlist_hits": len(watch_rows),
         },
     }
+    ModelRehabilitationRepository.save_feed({"opportunity_feed": payload})
+    ModelRehabilitationRepository.queue_shadow(
+        payload["opportunities"],
+        model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2",
+    )
+    return payload
 
 
 def _opportunity_from_ev_row(row: dict) -> dict:
@@ -6213,10 +6247,12 @@ def _platform_value_check(payload: EntryPayload) -> dict:
             total["platform"],
             payload.payout_type,
             displayed_multiplier=payload.multiplier if total["platform"] == selected_platform else None,
+            exact_schedule=payload.payout_schedule if total["platform"] == selected_platform and payload.payout_schedule else None,
         )
         live_offers = [row for row in total["legs"] if row.get("live_dfs_offer")]
+        exact_payout = bool(total["platform"] == selected_platform and payload.payout_schedule)
         total["payout_evidence"] = {
-            "source": "The Odds API" if live_offers else "official_base_schedule",
+            "source": "exact_offer_snapshot" if exact_payout else "The Odds API" if live_offers else "official_base_schedule",
             "live_offer_legs": len(live_offers),
             "total_legs": len(payload.props),
             "selection_multipliers": [
@@ -6224,9 +6260,12 @@ def _platform_value_check(payload: EntryPayload) -> dict:
                 for row in live_offers
                 if row.get("selection_multiplier") is not None
             ],
-            "indicative": bool(live_offers),
+            "verified": exact_payout,
+            "indicative": not exact_payout,
             "note": (
-                "Live DFS selection multipliers are indicative. The complete card payout must still be confirmed in the provider app."
+                "Exact provider payout table was supplied with this card."
+                if exact_payout
+                else "Live DFS selection multipliers are indicative. The complete card payout must still be confirmed in the provider app."
                 if live_offers
                 else "Expected value uses EdgeIQ's provider-specific base payout schedule."
             ),
@@ -6248,7 +6287,12 @@ def _platform_value_check(payload: EntryPayload) -> dict:
     selected_ev = float((selected_total or {}).get("payout_analysis", {}).get("expected_value") or 0.0)
     best_ev = float((best or {}).get("payout_analysis", {}).get("expected_value") or 0.0)
     ev_delta = round(best_ev - selected_ev, 2)
-    authoritative_economics = dict((best or {}).get("payout_analysis") or {}) if best and best.get("complete_entry") else {}
+    payout_verified = bool(best and (best.get("payout_evidence") or {}).get("verified"))
+    authoritative_economics = (
+        dict((best or {}).get("payout_analysis") or {})
+        if best and best.get("complete_entry") and payout_verified
+        else {}
+    )
     positive_ev = bool(authoritative_economics and float(authoritative_economics.get("expected_value") or 0.0) > 0)
     return {
         "selected_platform": selected_platform,
@@ -6259,6 +6303,8 @@ def _platform_value_check(payload: EntryPayload) -> dict:
         "complete_on_recommended_platform": bool(best and best.get("complete_entry")),
         "authoritative_platform": best.get("platform") if best and best.get("complete_entry") else None,
         "authoritative_economics": authoritative_economics,
+        "payout_verified": payout_verified,
+        "ev_status": "verified" if payout_verified else "unverified",
         "positive_ev": positive_ev,
         "platforms": sorted(
             totals,
@@ -9507,6 +9553,15 @@ def _risk_guardrails(
     if entry.average_edge < 0:
         guards.append({"severity": "warning", "message": "Average projected edge is negative."})
     if payload and payload.entry_mode == "real":
+        shadow = ModelRehabilitationRepository.shadow_status()
+        if payload.recommended_by_app and not shadow.get("release_ready"):
+            guards.append({
+                "severity": "danger",
+                "message": (
+                    "The current model version is still in shadow evaluation. "
+                    f"{shadow.get('settled', 0)}/100 verified shadow decisions have settled."
+                ),
+            })
         unproven = [prop.player.name for prop in entry.props if not prop.forecast_paid_eligible]
         if unproven:
             guards.append({

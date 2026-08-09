@@ -4508,6 +4508,7 @@ async function loadBacktest() {
   const walkForward = data.walk_forward_validation || {};
   const grouped = data.grouped_validation || {};
   const ledger = data.prediction_ledger || {};
+  const shadow = data.shadow_evaluation || {};
   const projectionAccuracy = ledger.projection_accuracy || {};
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
@@ -4551,6 +4552,18 @@ async function loadBacktest() {
       </div>
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
+    </div>
+    <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
+      <div class="suggestion-top">
+        <strong>v2.2 Shadow Evaluation</strong>
+        <span class="status-pill ${shadow.release_ready ? "status-connected" : "status-degraded"}">${shadow.release_ready ? "Release Review" : "Shadow Mode"}</span>
+      </div>
+      <div class="metric-strip">
+        <span><strong>${Number(shadow.queued || 0)}</strong><small>Queued</small></span>
+        <span><strong>${Number(shadow.settled || 0)}</strong><small>Verified Finals</small></span>
+        <span><strong>${pct(shadow.accuracy || 0)}</strong><small>Accuracy</small></span>
+      </div>
+      <p class="subtle">Shadow predictions cannot affect paid recommendations until 100 verified decisions settle at 55% accuracy or better.</p>
     </div>
     <div class="suggestion">
       <div class="suggestion-top">

@@ -76,7 +76,7 @@ class LineHistoryRepository:
                 session.commit()
 
     @staticmethod
-    def record_many(lines: list[dict]) -> int:
+    def record_many(lines: list[dict], *, force_snapshot: bool = False) -> int:
         """Save changed line snapshots in one transaction."""
         if not lines:
             return 0
@@ -120,7 +120,7 @@ class LineHistoryRepository:
                 key = (player_key, stat, platform, game_key, offer_type)
                 last = latest.get(key)
                 line_value = float(line)
-                if last is None or last.line != line_value:
+                if force_snapshot or last is None or last.line != line_value:
                     snapshot = PropLineHistoryModel(
                         player=player, stat=stat, platform=platform, line=line_value,
                         game=game, game_time=game_time, line_offer_type=offer_type,

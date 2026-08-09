@@ -48,9 +48,9 @@ LAUNCHER_SCRIPT
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.1.1</string>
+  <string>2.2.0</string>
   <key>CFBundleVersion</key>
-  <string>20260809.1</string>
+  <string>20260809.2</string>
   <key>CFBundleIconFile</key>
   <string>EdgeIQ</string>
   <key>CFBundleIconName</key>
