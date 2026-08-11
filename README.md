@@ -159,6 +159,32 @@ edge, confidence, data quality, source signals, market trend, correlation
 penalties, and settled-entry feedback. OpenAI remains optional for richer
 language explanations and screenshot extraction.
 
+### Free Local AI With Ollama
+
+Ask EdgeIQ uses Ollama before OpenAI when a local model is available. EdgeIQ
+continues to calculate rankings, projections, confidence, and validation itself;
+Ollama explains only the evidence supplied by the app.
+
+1. Install and open Ollama from <https://ollama.com/download>.
+2. Download the default lightweight model:
+
+```bash
+ollama pull llama3.2:3b
+```
+
+3. Restart EdgeIQ. No API key or usage credits are required.
+
+Optional configuration:
+
+```bash
+OLLAMA_ENABLED=true
+OLLAMA_MODEL=llama3.2:3b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+If Ollama is unavailable, Ask EdgeIQ tries OpenAI when configured and otherwise
+uses the deterministic EdgeIQ Local review.
+
 ## Data Providers
 
 EdgeIQ currently normalizes player prop data from:
@@ -169,7 +195,8 @@ EdgeIQ currently normalizes player prop data from:
 - The Odds API for game odds, exact-line multi-book player-prop consensus,
   no-vig probabilities, and indicative PrizePicks/Underdog DFS offer
   multipliers when `ODDS_API_KEY` is configured
-- OpenAI for AI parlay explanations, entry review, and screenshot extraction
+- Ollama for free local Ask EdgeIQ explanations and entry reviews
+- OpenAI as an optional fallback for AI explanations and screenshot extraction
 - Ball Don't Lie for optional stats/props context when `BALLDONTLIE_API_KEY` or `BALLDONTLIE_PROPS_URL` is configured
 - NewsAPI for recent player/team context when `NEWSAPI_KEY` is configured
 - OpenWeather for outdoor NFL/MLB weather context when `OPENWEATHER_API_KEY` is configured

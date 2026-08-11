@@ -12,11 +12,32 @@ APP_EXECUTABLE="$MACOS_DIR/EdgeIQ"
 
 cd "$APP_DIR"
 
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  for candidate in \
+    "$APP_DIR/venv/bin/python" \
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3" \
+    "/opt/homebrew/bin/python3" \
+    "/usr/local/bin/python3" \
+    "/usr/bin/python3"
+  do
+    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn" >/dev/null 2>&1; then
+      PYTHON_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  echo "No Python runtime with EdgeIQ dependencies was found." >&2
+  exit 1
+fi
+
 if [[ ! -x "$LAUNCHER" ]]; then
   /bin/chmod +x "$LAUNCHER"
 fi
 
-"${PYTHON_BIN:-python3}" "$APP_DIR/scripts/generate_desktop_icon.py" >/dev/null
+"$PYTHON_BIN" "$APP_DIR/scripts/generate_desktop_icon.py" >/dev/null
 
 /bin/rm -rf "$APP_BUNDLE"
 /bin/mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
@@ -48,9 +69,9 @@ LAUNCHER_SCRIPT
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.2.3</string>
+  <string>2.2.4</string>
   <key>CFBundleVersion</key>
-  <string>20260811.1</string>
+  <string>20260811.2</string>
   <key>CFBundleIconFile</key>
   <string>EdgeIQ</string>
   <key>CFBundleIconName</key>
@@ -69,5 +90,5 @@ PLIST_XML
 /usr/bin/touch "$APP_BUNDLE"
 
 echo "Installed EdgeIQ desktop app at $APP_BUNDLE"
-"$APP_DIR/scripts/install_background_scheduler.sh"
+PYTHON_BIN="$PYTHON_BIN" "$APP_DIR/scripts/install_background_scheduler.sh"
 echo "Launch it by double-clicking the app. EdgeIQ will open in your browser."

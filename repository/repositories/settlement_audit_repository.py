@@ -4,6 +4,8 @@ import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from sqlalchemy.exc import IntegrityError
+
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
@@ -57,7 +59,26 @@ class SettlementAuditRepository:
                 for key, value in values.items():
                     setattr(row, key, value)
                 row.attempt_count = int(row.attempt_count or 0) + 1
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # A manual action and scheduler retry can observe the row as
+                # missing simultaneously. Preserve one audit row and count both attempts.
+                session.rollback()
+                row = (
+                    session.query(SettlementAuditModel)
+                    .filter_by(
+                        entry_prop_id=entry_prop_id,
+                        status=status,
+                        provider=provider,
+                        reason_code=reason_code,
+                    )
+                    .one()
+                )
+                for key, value in values.items():
+                    setattr(row, key, value)
+                row.attempt_count = int(row.attempt_count or 0) + 1
+                session.commit()
 
     @staticmethod
     def queue(limit: int = 100) -> dict:

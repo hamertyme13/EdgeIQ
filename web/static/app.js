@@ -2193,8 +2193,8 @@ async function askAiParlay() {
     }),
   });
   $("ai-parlay-status").textContent = data.ai_enabled
-    ? `OpenAI assisted · ${data.model}`
-    : `EdgeIQ Local · ${data.model} · ${data.request?.risk_profile || "balanced"} · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs`;
+    ? `${data.ai_provider || "AI"} assisted · ${data.model}`
+    : `EdgeIQ Local · ${data.model} · ${data.request?.risk_profile || "balanced"} · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`;
   $("ai-parlay-response").classList.remove("muted-card");
   renderAiParlayResponse(data);
 }
@@ -2773,11 +2773,11 @@ async function reviewEntryWithAi() {
   $("entry-analysis").innerHTML += `
     <div class="analysis-card" style="margin-top:14px">
       <h3>AI Entry Review</h3>
-        <p class="subtle">${data.ai_enabled ? `OpenAI assisted · ${data.model}` : `EdgeIQ Local review${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`}</p>
+        <p class="subtle">${data.ai_enabled ? `${escapeHtml(data.ai_provider || "AI")} assisted · ${escapeHtml(data.model)}` : `EdgeIQ Local review${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`}</p>
       <p>${data.review}</p>
     </div>
   `;
-  $("entry-status").textContent = data.ai_enabled ? "AI review complete." : "EdgeIQ Local review complete.";
+  $("entry-status").textContent = data.ai_enabled ? `${data.ai_provider || "AI"} review complete.` : "EdgeIQ Local review complete.";
 }
 
 async function prepareEntryHandoff() {

@@ -26,8 +26,7 @@ def parlay_chat_payload(
     find_suggestions: Callable[..., tuple[list, dict]],
     serialize_suggestion: Callable[[object], dict],
     local_response: Callable[[list[dict], dict], tuple[str, LocalModelPick | None]],
-    openai_response: Callable[[str, list[dict], dict], tuple[str | None, str | None]],
-    openai_model: Callable[[], str],
+    ai_response: Callable[[str, list[dict], dict], tuple[str | None, str | None, str, str]],
     local_model_version: str,
     local_model_card: Callable[[list[dict]], dict],
 ) -> dict:
@@ -41,15 +40,20 @@ def parlay_chat_payload(
         )
     serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
     local_message, local_pick = local_response(serialized, request)
-    ai_text, ai_error = openai_response(payload.message, serialized, request)
     selected = local_pick.suggestion if local_pick else (serialized[0] if serialized else None)
+    ai_text, ai_error, ai_provider, ai_model = ai_response(
+        payload.message,
+        [selected] if selected else [],
+        request,
+    )
     return {
         "message": ai_text or local_message,
         "suggestion": selected,
         "candidates": serialized,
         "alternatives": [candidate for candidate in serialized if candidate is not selected][:3],
         "ai_enabled": ai_text is not None,
-        "model": openai_model() if ai_text else local_model_version,
+        "model": ai_model if ai_text else local_model_version,
+        "ai_provider": ai_provider if ai_text else "EdgeIQ Local",
         "local_model": {
             **local_model_card(serialized),
             "selected_score": local_pick.score if local_pick else 0.0,
@@ -65,25 +69,31 @@ def parlay_chat_payload(
 def ai_status_payload(
     api_key: str,
     *,
+    ollama_status: Callable[[], dict],
     openai_model: Callable[[], str],
     openai_vision_model: Callable[[], str],
     local_model_version: str,
 ) -> dict:
     key = api_key.strip()
+    ollama = ollama_status()
     return {
-        "configured": bool(key),
+        "configured": bool(key) or bool(ollama.get("available")),
         "key_format_ok": key.startswith("sk-"),
+        "active_provider": "Ollama" if ollama.get("available") else "OpenAI" if key.startswith("sk-") else "EdgeIQ Local",
         "model": openai_model(),
         "vision_model": openai_vision_model(),
+        "ollama": ollama,
         "local_model": {
             "available": True,
             "model": local_model_version,
             "purpose": "Offline parlay ranking and recommendation fallback.",
         },
         "note": (
-            "OpenAI key is present and has the expected prefix."
+            f"Ollama is ready with {ollama.get('model')}."
+            if ollama.get("available")
+            else "OpenAI key is present and has the expected prefix."
             if key.startswith("sk-")
-            else "OpenAI key is missing or invalid; EdgeIQ Local remains available for recommendations."
+            else f"{ollama.get('note')} EdgeIQ Local remains available for recommendations."
         ),
     }
 
@@ -94,18 +104,18 @@ def entry_review_payload(
     entry_from_payload: Callable[[AiEntryReviewPayload], object],
     analyze_entry: Callable[[object], dict],
     fallback_review: Callable[[dict], str],
-    openai_review: Callable[[str, dict], tuple[str | None, str | None]],
-    openai_model: Callable[[], str],
+    ai_review: Callable[[str, dict], tuple[str | None, str | None, str, str]],
     local_model_version: str,
 ) -> dict:
     analysis = analyze_entry(entry_from_payload(payload))
     fallback = fallback_review(analysis)
-    ai_text, ai_error = openai_review(payload.question, analysis)
+    ai_text, ai_error, ai_provider, ai_model = ai_review(payload.question, analysis)
     return {
         "review": ai_text or fallback,
         "analysis": analysis,
         "ai_enabled": ai_text is not None,
-        "model": openai_model() if ai_text else local_model_version,
+        "model": ai_model if ai_text else local_model_version,
+        "ai_provider": ai_provider if ai_text else "EdgeIQ Local",
         "ai_error": ai_error,
     }
 

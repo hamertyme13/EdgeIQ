@@ -84,6 +84,8 @@ from services import odds as sportsbook_odds
 from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
+from services.ollama_client import ollama_chat, ollama_model, ollama_status
+from services.operation_lock import named_operation_lock
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.prop_plausibility import prop_line_plausibility
 from utils.stat_normalization import canonical_stat_label, stat_type_from_text
@@ -452,7 +454,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260809-remaining-improvements-v1"
+STATIC_ASSET_VERSION = "20260811-ollama-v1"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -603,7 +605,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.2.3", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.2.4", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -2972,6 +2974,113 @@ def _openai_parlay_response(message: str, suggestions: list[dict], request: dict
     return _response_output_text(data), None
 
 
+def _assistant_parlay_response(
+    message: str,
+    suggestions: list[dict],
+    request: dict | None = None,
+) -> tuple[str | None, str | None, str, str]:
+    if not suggestions:
+        return None, "No verified candidates are available for the AI to review.", "EdgeIQ Local", EDGEIQ_LOCAL_MODEL_VERSION
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are EdgeIQ's local betting research assistant. EdgeIQ has already selected the one supplied card; "
+                "explain that exact card and do not replace, add, or remove legs. "
+                "Never invent players, lines, odds, probabilities, injuries, or guaranteed outcomes. Treat EdgeIQ's "
+                "computed fields as the only available evidence and do not use outside knowledge. Opponent names are "
+                "labels, not defensive evidence. Matchup history always describes the selected player's own results; "
+                "never rephrase it as points allowed, opponent defense, containment, or an opponent weakness. "
+                "Never characterize an opponent or claim that a team struggled. "
+                "If a field is missing, say it is unavailable. Include every leg's Over or Under direction, explain "
+                "opponent-history or data-quality context only when supplied, identify the main risk, "
+                "and remind the user that no entry is guaranteed. Keep the answer under 220 words."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "user_message": message,
+                    "request": request or {},
+                    "candidates": [_llm_candidate_context(row) for row in suggestions[:5]],
+                },
+                default=str,
+            ),
+        },
+    ]
+    text, ollama_error = ollama_chat(messages, timeout=45)
+    if text and _unsupported_ollama_matchup_claim(text):
+        revised_messages = messages + [
+            {"role": "assistant", "content": text},
+            {
+                "role": "user",
+                "content": (
+                    "Revise the answer. You incorrectly characterized an opponent. Matchup values are only the "
+                    "selected player's own historical results. Do not mention defense, points allowed, containment, "
+                    "team strength, or unsupported prior performance."
+                ),
+            },
+        ]
+        text, ollama_error = ollama_chat(revised_messages, timeout=45)
+        if text and _unsupported_ollama_matchup_claim(text):
+            text = None
+            ollama_error = "Ollama added unsupported matchup context, so EdgeIQ used its grounded rules-based answer."
+    if text:
+        return text, None, "Ollama", ollama_model()
+    text, openai_error = _openai_parlay_response(message, suggestions, request)
+    if text:
+        return text, None, "OpenAI", _openai_model()
+    error = openai_error if os.getenv("OPENAI_API_KEY", "").strip() else ollama_error
+    return None, error, "EdgeIQ Local", EDGEIQ_LOCAL_MODEL_VERSION
+
+
+def _unsupported_ollama_matchup_claim(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "points allowed", "rebounds allowed", "assists allowed", "opponent defense",
+            "defensive record", "defensive matchup", "struggled to contain", "weaker defense",
+            "stronger defense", "team weakness", "opponent's performance", "opponent performance",
+        )
+    )
+
+
+def _llm_candidate_context(suggestion: dict) -> dict:
+    props = (suggestion.get("entry") or {}).get("props") or []
+    return {
+        key: suggestion.get(key)
+        for key in ("rank", "grade", "action", "score", "risk_tier", "model_trust", "warnings")
+    } | {
+        "props": [
+            {
+                key: prop.get(key)
+                for key in (
+                    "player", "team", "sport", "stat", "direction", "line", "projection",
+                    "confidence", "edge", "platform", "game", "data_strength", "data_quality",
+                )
+            } | {
+                "player_matchup_history": {
+                    "opponent": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent"),
+                    "verified_player_games": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_sample"),
+                    "player_average_for_this_stat": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_mean"),
+                    "weight_in_projection": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_adjustment_weight"),
+                    "change_to_player_projection": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_projection_delta"),
+                },
+                "distribution": {
+                    key: ((prop.get("forecast_snapshot") or {}).get("distribution") or {}).get(key)
+                    for key in (
+                        "expected_result", "median", "floor", "ceiling",
+                        "probability_over_exact_line", "probability_under_exact_line", "uncertainty_level",
+                    )
+                },
+            }
+            for prop in props
+        ],
+    }
+
+
 def _openai_entry_review(question: str, analysis: dict) -> tuple[str | None, str | None]:
     if not os.getenv("OPENAI_API_KEY", "").strip():
         return None, "missing_key"
@@ -2997,6 +3106,70 @@ def _openai_entry_review(question: str, analysis: dict) -> tuple[str | None, str
     if data is None:
         return None, error
     return _response_output_text(data), None
+
+
+def _assistant_entry_review(question: str, analysis: dict) -> tuple[str | None, str | None, str, str]:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are EdgeIQ's local entry reviewer. Use only the supplied analysis. Never invent stats, lines, "
+                "injuries, or results and never promise a win. Identify the strongest leg, weakest leg, conflicts, "
+                "opponent-history evidence, suggested direction changes or removals, and a concise final action."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps({"question": question, "analysis": _llm_entry_review_context(analysis)}, default=str),
+        },
+    ]
+    text, ollama_error = ollama_chat(messages, timeout=45)
+    if text:
+        return text, None, "Ollama", ollama_model()
+    text, openai_error = _openai_entry_review(question, analysis)
+    if text:
+        return text, None, "OpenAI", _openai_model()
+    error = openai_error if os.getenv("OPENAI_API_KEY", "").strip() else ollama_error
+    return None, error, "EdgeIQ Local", EDGEIQ_LOCAL_MODEL_VERSION
+
+
+def _llm_entry_review_context(analysis: dict) -> dict:
+    return {
+        key: analysis.get(key)
+        for key in (
+            "grade", "action", "score", "risk", "warnings", "corrections",
+            "release_verdict", "data_quality", "model_trust", "payout_analysis",
+        )
+    } | {
+        "entry": {
+            "platform": (analysis.get("entry") or {}).get("platform"),
+            "props": [
+                {
+                    key: prop.get(key)
+                    for key in (
+                        "player", "team", "sport", "stat", "direction", "line", "projection",
+                        "confidence", "edge", "game", "data_strength", "projection_source",
+                    )
+                } | {
+                    "player_matchup_history": {
+                        "opponent": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent"),
+                        "verified_player_games": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_sample"),
+                        "player_average_for_this_stat": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_mean"),
+                        "weight_in_projection": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_adjustment_weight"),
+                        "change_to_player_projection": ((prop.get("forecast_snapshot") or {}).get("features") or {}).get("opponent_projection_delta"),
+                    },
+                    "distribution": {
+                        key: ((prop.get("forecast_snapshot") or {}).get("distribution") or {}).get(key)
+                        for key in (
+                            "expected_result", "median", "floor", "ceiling",
+                            "probability_over_exact_line", "probability_under_exact_line", "uncertainty_level",
+                        )
+                    },
+                }
+                for prop in ((analysis.get("entry") or {}).get("props") or [])
+            ],
+        },
+    }
 
 
 def _openai_response(payload: dict, timeout: int = 20) -> tuple[dict | None, str | None]:
@@ -10115,6 +10288,18 @@ def _run_daily_refresh_now() -> dict:
 
 
 def _run_due_daily_operations() -> dict:
+    with named_operation_lock("daily-maintenance") as acquired:
+        if not acquired:
+            return {
+                "ok": True,
+                "skipped": True,
+                "jobs_run": [],
+                "message": "Another EdgeIQ process is already running scheduled maintenance.",
+            }
+        return _run_due_daily_operations_locked()
+
+
+def _run_due_daily_operations_locked() -> dict:
     schedule_payload = _refresh_schedule_payload()
     schedule = schedule_payload["schedule"]
     if not schedule.get("enabled", True):
@@ -10877,17 +11062,17 @@ configure_intelligence_router(
             find_suggestions=lambda *args, **kwargs: _parlay_chat_suggestions(*args, **kwargs),
             serialize_suggestion=lambda suggestion: _serialize_suggestion(suggestion),
             local_response=lambda suggestions, request: local_parlay_response(suggestions, request),
-            openai_response=lambda message, suggestions, request: _openai_parlay_response(
+            ai_response=lambda message, suggestions, request: _assistant_parlay_response(
                 message,
                 suggestions,
                 request,
             ),
-            openai_model=lambda: _openai_model(),
             local_model_version=EDGEIQ_LOCAL_MODEL_VERSION,
             local_model_card=lambda suggestions: local_model_card(suggestions),
         ),
         ai_status=lambda: build_ai_status_payload(
             os.getenv("OPENAI_API_KEY", ""),
+            ollama_status=lambda: ollama_status(),
             openai_model=lambda: _openai_model(),
             openai_vision_model=lambda: _openai_vision_model(),
             local_model_version=EDGEIQ_LOCAL_MODEL_VERSION,
@@ -10897,8 +11082,7 @@ configure_intelligence_router(
             entry_from_payload=lambda value: _entry_from_payload(value),
             analyze_entry=lambda entry: _entry_analysis(entry),
             fallback_review=lambda analysis: _fallback_entry_review(analysis),
-            openai_review=lambda question, analysis: _openai_entry_review(question, analysis),
-            openai_model=lambda: _openai_model(),
+            ai_review=lambda question, analysis: _assistant_entry_review(question, analysis),
             local_model_version=EDGEIQ_LOCAL_MODEL_VERSION,
         ),
         trending_games=lambda platform, sport, limit: build_trending_games_response(
