@@ -4818,12 +4818,13 @@ async function createAutoPaperCalibrationEntries() {
   });
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
+  const diagnostics = data.board_diagnostics || {};
   $("auto-paper-calibration-status").innerHTML = `
     Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
     ${(data.created || []).map((row) => `
       <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
     `).join("") || (skippedText ? `<span class="subtle">${skippedText}</span>` : "")}
-    ${data.shortfall ? `<span class="subtle">${Number(data.shortfall)} card${Number(data.shortfall) === 1 ? "" : "s"} could not be built from unique, verified props on today's board.</span>` : ""}
+    ${data.shortfall ? `<span class="subtle">${Number(data.shortfall)} card${Number(data.shortfall) === 1 ? "" : "s"} could not be built. EdgeIQ found ${Number(diagnostics.eligible_same_day_props || 0)} unique same-day verified props across ${escapeHtml((diagnostics.sports || []).join(", ") || "no available sports")}; ${Number(diagnostics.pending_paper_cards || 0)} paper cards are already pending.</span>` : ""}
   `;
   $("entry-status").textContent = data.created_count
     ? `Created ${data.created_count} pending paper calibration entries.`

@@ -9,7 +9,7 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-historical-distribution-v2.2"
+MODEL_VERSION = "edgeiq-historical-distribution-v2.2.3"
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -100,15 +100,26 @@ def forecast_prop(
         if side and _game_side(str(row.get("game") or ""), str(row.get("team") or team)) == side
     ]
     opponent = _opponent(game, team)
-    opponent_values = [
-        float(row["actual"]) for row in rows
+    opponent_rows = [
+        row for row in rows
         if opponent and opponent == _opponent(str(row.get("game") or ""), str(row.get("team") or team))
     ]
+    opponent_values = [float(row["actual"]) for row in opponent_rows]
+    opponent_weights = [_recency_weight(index) for index in range(len(opponent_values))]
+    opponent_mean = (
+        sum(value * weight for value, weight in zip(opponent_values, opponent_weights, strict=False))
+        / sum(opponent_weights)
+        if opponent_weights
+        else None
+    )
+    # Head-to-head history matters immediately, but is shrunk heavily until it repeats.
+    # The cap prevents a small matchup sample from overpowering season and recent form.
+    opponent_weight = min(0.30, 0.40 * len(opponent_values) / (len(opponent_values) + 3.0))
     contextual_mean = regularized_center
     if len(side_values) >= 5:
         contextual_mean = contextual_mean * 0.80 + (sum(side_values) / len(side_values)) * 0.20
-    if len(opponent_values) >= 3:
-        contextual_mean = contextual_mean * 0.85 + (sum(opponent_values) / len(opponent_values)) * 0.15
+    if opponent_mean is not None:
+        contextual_mean = contextual_mean * (1.0 - opponent_weight) + opponent_mean * opponent_weight
     variance = sum(
         weight * ((value - contextual_mean) ** 2)
         for value, weight in zip(actuals, weights, strict=False)
@@ -173,6 +184,9 @@ def forecast_prop(
             "home_away_sample": len(side_values),
             "opponent": opponent,
             "opponent_sample": len(opponent_values),
+            "opponent_mean": round(opponent_mean, 3) if opponent_mean is not None else None,
+            "opponent_adjustment_weight": round(opponent_weight, 3),
+            "opponent_projection_delta": round(contextual_mean - regularized_center, 3),
             "rest_days": _rest_days(game_time, rows),
             "missingness": {
                 "home_away": not bool(side),

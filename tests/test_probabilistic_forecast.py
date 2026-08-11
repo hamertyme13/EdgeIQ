@@ -79,4 +79,21 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     assert result.features["projection_method"] == "recency_weighted_mean"
     assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
     assert result.features["market_prior_weight"] == 0.5
-    assert result.model_version.endswith("v2.2")
+    assert result.model_version.endswith("v2.2.3")
+
+
+def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:
+    history = _history([18, 19, 20, 21, 18, 20, 19, 21, 18, 20] * 2)
+    history[0].update({"game": "DAL@MIN", "team": "DAL", "actual": 29})
+    history[1].update({"game": "MIN@DAL", "team": "DAL", "actual": 27})
+
+    result = forecast_prop(
+        "Paige Bueckers", "WNBA", "Points", 19.5, "Over",
+        history=history, team="DAL", game="DAL@MIN",
+    )
+
+    assert result.features["opponent"] == "MIN"
+    assert result.features["opponent_sample"] == 2
+    assert result.features["opponent_mean"] > 27
+    assert 0 < result.features["opponent_adjustment_weight"] < 0.30
+    assert result.features["opponent_projection_delta"] > 0

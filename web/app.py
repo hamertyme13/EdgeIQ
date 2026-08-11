@@ -603,7 +603,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.2.2", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.2.3", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -1746,6 +1746,7 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
         for entry in EntryRepository.pending()
         if str(entry.get("entry_mode", "real")).lower() == "paper"
     }
+    pending_paper_count = len(existing_signatures)
     created: list[dict] = []
     skipped: list[dict] = []
     prop_pool_cache: dict[tuple[str, str], list[dict]] = {}
@@ -1786,6 +1787,7 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
                     continue
 
     requested_plan = [2, 2, 3, 4, 5] if payload.standard_batch else [payload.leg_count] * payload.max_entries
+    board_diagnostics = _auto_paper_board_diagnostics(prop_pool_cache, pending_paper_count)
 
     return {
         "created": created,
@@ -1797,8 +1799,55 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
         "dry_run": payload.dry_run,
         "targets": targets,
         "skipped": skipped,
+        "board_diagnostics": board_diagnostics,
         "dashboard": get_dashboard() if not payload.dry_run else None,
     }
+
+
+def _auto_paper_board_diagnostics(
+    prop_pool_cache: dict[tuple[str, str], list[dict]],
+    pending_paper_count: int,
+) -> dict:
+    pools = [prop for props in prop_pool_cache.values() for prop in props]
+    unique_markets = {
+        (
+            canonical_person_key(prop.get("player")),
+            _settlement_stat_key(prop.get("stat")),
+            _canonical_platform(prop.get("platform") or ""),
+            round(float(prop.get("line") or 0.0), 2),
+        )
+        for prop in pools
+    }
+    return {
+        "eligible_same_day_props": len(unique_markets),
+        "sports": _available_prop_sports(pools),
+        "pending_paper_cards": pending_paper_count,
+        "minimum_props_for_full_batch": 5,
+    }
+
+
+def _run_automatic_paper_samples() -> dict:
+    preferences = _user_preferences()
+    platform = _canonical_platform(preferences.get("default_platform") or "PrizePicks")
+    if platform not in ENTRY_PLATFORMS:
+        platform = "PrizePicks"
+    sport = str(preferences.get("default_sport") or "All Sports")
+    payload = AutoPaperCalibrationPayload(
+        platform=platform,
+        sport=sport,
+        max_entries=5,
+        standard_batch=True,
+        prefer_confirmed=True,
+        dry_run=False,
+    )
+    result = _auto_paper_calibration(payload)
+    result["automatic"] = True
+    result["message"] = (
+        f"Created {result['created_count']} automatic paper calibration cards."
+        if result["created_count"]
+        else "No automatic paper cards were created because today's verified board could not fill a new unique card."
+    )
+    return result
 
 
 def _create_standard_calibration_batch(
@@ -1957,7 +2006,14 @@ def _calibration_learning_targets(
         key = (target.get("type", ""), target.get("name", ""), target.get("sport") or "")
         if key not in unique or int(target.get("priority", 0)) > int(unique[key].get("priority", 0)):
             unique[key] = target
-    return sorted(unique.values(), key=lambda target: int(target.get("priority", 0)), reverse=True)[:8]
+    ordered = sorted(unique.values(), key=lambda target: int(target.get("priority", 0)), reverse=True)
+    # Always retain a verified-board fallback. Historical weak buckets can be
+    # impossible to sample from today's calibrated probability distribution.
+    coverage = next((target for target in ordered if target.get("type") == "Coverage"), None)
+    selected = [target for target in ordered if target.get("type") != "Coverage"][:7]
+    if coverage is not None:
+        selected.append(coverage)
+    return selected
 
 
 def _weak_ledger_segment_targets(rows: list[dict], sport: str | None) -> list[dict]:
@@ -2115,8 +2171,10 @@ def _paper_calibration_suggestions_for_props(
         leg_count=payload.leg_count,
         min_confidence=0,
         min_edge=-999,
-        max_same_team=1,
-        exclude_correlated=True,
+        max_same_team=1 if payload.leg_count <= 3 else 2,
+        # Larger paper cards measure individual weak segments. They may share a
+        # game when today's slate cannot provide four or five independent legs.
+        exclude_correlated=payload.leg_count <= 3,
         apply_feedback=True,
     )
     if target.get("type") == "Confidence":
@@ -10010,6 +10068,7 @@ def _refresh_schedule_payload() -> dict:
         "result_check": "23:30",
         "nightly_calibration": "02:00",
         "shadow_cohort": "08:15",
+        "auto_paper_samples": "08:30",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -10020,9 +10079,10 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Post-game result check", "time": schedule["result_check"], "action": "Auto-check pending entries against final stats."},
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
+        {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort")
+    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -10072,6 +10132,7 @@ def _run_due_daily_operations() -> dict:
         },
         "nightly_calibration": lambda: _backtest_payload(),
         "shadow_cohort": _queue_daily_shadow_cohort,
+        "auto_paper_samples": _run_automatic_paper_samples,
     }
     for name, callback in timed_jobs.items():
         scheduled_time = str(schedule.get(name) or "")

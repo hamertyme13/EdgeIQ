@@ -3051,6 +3051,7 @@ def test_auto_paper_targets_weak_confidence_buckets_before_other_segments():
     assert targets[0]["name"] == "80-90%"
     assert targets[0]["confidence_low"] == 80
     assert targets[0]["calibration_error"] == 38.0
+    assert targets[-1]["type"] == "Coverage"
 
 
 def test_auto_paper_confidence_target_filters_actual_candidate_bucket(monkeypatch):
@@ -3173,6 +3174,30 @@ def test_standard_calibration_batch_uses_fixed_leg_plan_and_distinct_targets(mon
     assert [leg_count for leg_count, _target in observed] == [2, 2, 3, 4, 5]
     assert len({target for _leg_count, target in observed}) == 5
     assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5]
+
+
+def test_automatic_paper_samples_uses_saved_defaults(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        web_app,
+        "_user_preferences",
+        lambda: {"default_platform": "Underdog", "default_sport": "NFL"},
+    )
+
+    def fake_auto_paper(payload):
+        captured["payload"] = payload
+        return {"created_count": 2}
+
+    monkeypatch.setattr(web_app, "_auto_paper_calibration", fake_auto_paper)
+
+    result = web_app._run_automatic_paper_samples()
+
+    assert captured["payload"].platform == "Underdog"
+    assert captured["payload"].sport == "NFL"
+    assert captured["payload"].standard_batch is True
+    assert captured["payload"].max_entries == 5
+    assert result["automatic"] is True
+    assert "Created 2" in result["message"]
 
 
 def test_under_leg_result_wins_below_line():
