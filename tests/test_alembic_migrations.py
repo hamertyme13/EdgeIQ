@@ -38,5 +38,6 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "settlement_audits",
         "player_identities",
         "player_aliases",
+        "research_evidence",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns

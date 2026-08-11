@@ -2446,6 +2446,7 @@ def test_ai_parlay_chat_falls_back_to_best_candidate(monkeypatch):
         {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 80000},
     ]
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OLLAMA_ENABLED", "false")
     monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: _verified_rows(raw_props))
 
     body = ai_parlay_chat(ParlayChatPayload(message="you need a parlay?", platform="PrizePicks", sport="WNBA"))
@@ -2467,6 +2468,7 @@ def test_ai_parlay_chat_uses_message_sport_and_leg_count_without_openai(monkeypa
         {"player": "NFL D", "team": "HHH", "league": "NFL", "stat": "Receptions", "line": 4.5, "trending_count": 999996},
     ]
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OLLAMA_ENABLED", "false")
     monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: _verified_rows(raw_props))
 
     body = ai_parlay_chat(
@@ -2501,6 +2503,7 @@ def test_ai_parlay_chat_falls_back_when_openai_request_errors(monkeypatch):
         {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "trending_count": 80000},
     ]
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OLLAMA_ENABLED", "false")
     monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: _verified_rows(raw_props))
     monkeypatch.setattr(web_app, "_openai_parlay_response", lambda message, suggestions, request=None: (None, "timeout"))
 
@@ -2543,6 +2546,7 @@ def test_ai_status_reports_key_shape(monkeypatch):
 
 def test_ai_entry_review_falls_back_without_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OLLAMA_ENABLED", "false")
     monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: [])
 
     body = ai_entry_review(

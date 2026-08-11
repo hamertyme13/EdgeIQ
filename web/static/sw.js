@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260811-ollama-v1";
+const CACHE_NAME = "edgeiq-shell-20260811-v230-evidence";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

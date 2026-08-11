@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import requests
 
-from services.ollama_client import ollama_chat, ollama_status
+from services.ollama_client import ollama_chat, ollama_model, ollama_status, ollama_structured, ollama_vision_structured
 from web.app import _unsupported_ollama_matchup_claim
 
 
@@ -19,6 +19,12 @@ class Response:
         return self.payload
 
 
+def test_ollama_default_model_is_8b(monkeypatch):
+    monkeypatch.delenv("OLLAMA_MODEL", raising=False)
+
+    assert ollama_model() == "llama3.1:8b"
+
+
 def test_ollama_status_detects_installed_model(monkeypatch):
     monkeypatch.setenv("OLLAMA_MODEL", "llama3.2:3b")
     status = ollama_status(get=lambda *_args, **_kwargs: Response({"models": [{"name": "llama3.2:3b"}]}))
@@ -26,6 +32,15 @@ def test_ollama_status_detects_installed_model(monkeypatch):
     assert status["available"] is True
     assert status["running"] is True
     assert status["model"] == "llama3.2:3b"
+    assert status["vision_available"] is False
+
+
+def test_ollama_status_detects_vision_model(monkeypatch):
+    monkeypatch.setenv("OLLAMA_VISION_MODEL", "llama3.2-vision:11b")
+    status = ollama_status(get=lambda *_args, **_kwargs: Response({"models": [{"name": "llama3.2-vision:11b"}]}))
+
+    assert status["vision_available"] is True
+    assert status["vision_model"] == "llama3.2-vision:11b"
 
 
 def test_ollama_chat_uses_local_non_streaming_endpoint(monkeypatch):
@@ -43,6 +58,36 @@ def test_ollama_chat_uses_local_non_streaming_endpoint(monkeypatch):
     assert calls[0][0].endswith("/api/chat")
     assert calls[0][1]["json"]["stream"] is False
     assert calls[0][1]["json"]["options"]["temperature"] == 0.0
+
+
+def test_ollama_structured_passes_schema_and_parses_json():
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    def post(_url, **kwargs):
+        assert kwargs["json"]["format"] == schema
+        return Response({"message": {"content": '{"answer":"grounded"}'}})
+
+    value, error = ollama_structured([{"role": "user", "content": "Review"}], schema, post=post)
+
+    assert error is None
+    assert value == {"answer": "grounded"}
+
+
+def test_ollama_vision_sends_base64_image():
+    calls = []
+
+    def post(_url, **kwargs):
+        calls.append(kwargs["json"])
+        return Response({"message": {"content": '{"props":[]}'}})
+
+    value, error = ollama_vision_structured(
+        b"image-bytes", "Read it", {"type": "object"}, model="vision-test", post=post,
+    )
+
+    assert error is None
+    assert value == {"props": []}
+    assert calls[0]["model"] == "vision-test"
+    assert calls[0]["messages"][0]["images"]
 
 
 def test_ollama_chat_explains_missing_local_service():

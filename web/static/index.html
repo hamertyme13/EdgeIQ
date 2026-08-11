@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260809-remaining-improvements-v1" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260811-v230-evidence" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -379,6 +379,32 @@
                 <button class="micro-button" data-ai-prompt="Give me an aggressive 4-leg parlay">Aggressive 4-leg</button>
               </div>
               <div id="ai-parlay-response" class="analysis-card muted-card">Ask EdgeIQ for a custom 2-leg, 3-leg, or 5-leg entry.</div>
+              <div class="copilot-workspace">
+                <div class="section-heading compact-heading">
+                  <div><p class="eyebrow">Local Research Copilot</p><h3>Question grounded in EdgeIQ records</h3></div>
+                  <button id="ask-copilot" class="secondary">Research</button>
+                </div>
+                <div class="form-grid copilot-fields">
+                  <input id="copilot-question" value="Summarize today's strongest evidence and biggest risk" aria-label="Copilot question" />
+                  <input id="copilot-player" placeholder="Player (optional)" aria-label="Copilot player" />
+                  <input id="copilot-stat" placeholder="Stat (optional)" aria-label="Copilot stat" />
+                  <input id="copilot-line" type="number" step="0.5" placeholder="Line (optional)" aria-label="Copilot line" />
+                </div>
+                <div class="quick-prompts">
+                  <button class="micro-button" data-copilot-prompt="Compare verified winning and losing entries">Wins vs losses</button>
+                  <button class="micro-button" data-copilot-prompt="Review my portfolio exposure and shared-leg risk">Portfolio risk</button>
+                  <button class="micro-button" data-copilot-prompt="Narrate today's briefing and identify missing evidence">Daily briefing</button>
+                </div>
+                <div class="model-evaluation-row">
+                  <select id="copilot-model" aria-label="Local Ollama model">
+                    <option value="llama3.1:8b" selected>8B Research · llama3.1</option>
+                    <option value="llama3.2:3b">3B Fast · llama3.2</option>
+                  </select>
+                  <button id="evaluate-copilot-model" class="secondary">Qualify Model</button>
+                  <span id="copilot-model-status" class="subtle">Paid explanations require a passing grounding check.</span>
+                </div>
+                <div id="copilot-response" class="analysis-card muted-card">Ask about a player, recommendation, settled results, or portfolio exposure.</div>
+              </div>
             </div>
 
             <div class="dashboard-side">
@@ -1545,37 +1571,37 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260808-reliability-audit-v6"></script>
+    <script src="/static/ui-shell.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260728-circuit-audio-v2"></script>
+    <script src="/static/ui-utils.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260728-circuit-audio-v2"></script>
+    <script src="/static/circuit-audio.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260808-generator-diversity-v1"></script>
+    <script src="/static/js/state.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260730-modules-v1"></script>
+    <script src="/static/js/api.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260811-ollama-v1"></script>
+    <script src="/static/app.js?v=20260811-v230-evidence"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

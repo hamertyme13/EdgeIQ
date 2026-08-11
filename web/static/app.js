@@ -1329,6 +1329,7 @@ async function loadDataHealth() {
   const scheduler = operations.scheduler || {};
   const shadow = operations.shadow_evaluation || {};
   const shadowSettlement = operations.shadow_settlement || {};
+  const researchMemory = operations.research_memory || {};
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
@@ -1344,6 +1345,7 @@ async function loadDataHealth() {
         <span class="status-pill ${operations.status === "degraded" ? "status-warning" : "status-connected"}">${operations.status === "degraded" ? "Needs attention" : "Operational"}</span>
       </div>
       <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
+      <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
       <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml((scheduler.jobs_run || []).join(", ") || "none")} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
       ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
       ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
@@ -2192,6 +2194,7 @@ async function askAiParlay() {
       sport: $("props-sport").value,
     }),
   });
+  state.lastAiRecommendation = data;
   $("ai-parlay-status").textContent = data.ai_enabled
     ? `${data.ai_provider || "AI"} assisted · ${data.model}`
     : `EdgeIQ Local · ${data.model} · ${data.request?.risk_profile || "balanced"} · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`;
@@ -2221,6 +2224,7 @@ function renderAiParlayResponse(data) {
           ${confidenceMoveNotes(props)}
         </div>
         <button class="secondary" data-load-ai-suggestion="0">Load</button>
+        <button class="secondary" data-explain-ai-suggestion>Why?</button>
       </div>
       <div class="ai-leg-list">
         ${props.map((prop) => `
@@ -2265,6 +2269,85 @@ function renderAiParlayResponse(data) {
       $("entry-status").textContent = "Loaded Ask EdgeIQ suggestion. Analyze/place when ready.";
     });
   });
+  document.querySelector("[data-explain-ai-suggestion]")?.addEventListener("click", explainAiSuggestion);
+}
+
+async function explainAiSuggestion() {
+  const current = state.lastAiRecommendation || {};
+  if (!current.suggestion) return;
+  $("copilot-response").classList.add("muted-card");
+  $("copilot-response").textContent = "Checking the recommendation snapshot and alternatives...";
+  const data = await api("/api/ai/explain-recommendation", {
+    method: "POST",
+    body: JSON.stringify({
+      question: "Why is this card preferred, what could make it lose, and is there a stronger replacement leg?",
+      suggestion: current.suggestion,
+      alternatives: current.alternatives || [],
+    }),
+  });
+  renderCopilotResponse(data);
+}
+
+async function askCopilot() {
+  $("copilot-response").classList.add("muted-card");
+  $("copilot-response").textContent = "Collecting verified EdgeIQ evidence...";
+  const line = $("copilot-line").value;
+  const data = await api("/api/ai/copilot", {
+    method: "POST",
+    body: JSON.stringify({
+      question: $("copilot-question").value,
+      player: $("copilot-player").value.trim(),
+      stat: $("copilot-stat").value.trim(),
+      line: line === "" ? null : Number(line),
+      sport: $("props-sport").value,
+      platform: $("props-platform").value,
+    }),
+  });
+  renderCopilotResponse(data);
+}
+
+function renderCopilotResponse(data) {
+  const response = data.response || {};
+  const citationMap = new Map((data.citations || []).map((row) => [row.id, row]));
+  $("copilot-response").classList.remove("muted-card");
+  $("copilot-response").innerHTML = `
+    <div class="ai-answer-header">
+      <span class="status-pill status-connected">${escapeHtml(data.provider || "EdgeIQ Local")}</span>
+      <span class="status-pill status-available">Grounded</span>
+      <span class="subtle">${escapeHtml(data.model || "")}</span>
+    </div>
+    <h3>${escapeHtml(response.recommendation || "Evidence review")}</h3>
+    <p>${escapeHtml(response.answer || "No answer was available.")}</p>
+    <div class="ai-reason-grid">
+      <div><strong>Supporting evidence</strong>${(response.supporting_evidence || []).map((row) => `<p>${escapeHtml(row)}</p>`).join("") || "<p>No verified support was returned.</p>"}</div>
+      <div><strong>Counterargument</strong><p>${escapeHtml(response.counterargument || "No counterargument returned.")}</p></div>
+    </div>
+    <p><strong>Suggested correction:</strong> ${escapeHtml(response.suggested_correction || "No correction suggested.")}</p>
+    ${(response.missing_information || []).map((row) => `<p class="subtle">Missing: ${escapeHtml(row)}</p>`).join("")}
+    <div class="citation-row">
+      ${(response.citations || []).map((id) => {
+        const citation = citationMap.get(id);
+        const label = escapeHtml(citation?.label || id);
+        const timing = citation?.captured_at ? `Captured ${formatDateTime(citation.captured_at)}` : "Current EdgeIQ snapshot";
+        return citation?.source_url
+          ? `<a class="status-pill status-available" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${label} · ${escapeHtml(timing)}">${escapeHtml(id)}</a>`
+          : `<span class="status-pill status-available" title="${label} · ${escapeHtml(timing)}">${escapeHtml(id)}</span>`;
+      }).join("")}
+    </div>
+    ${data.ai_error ? `<p class="subtle">${humanizeErrorText(data.ai_error)}</p>` : ""}
+  `;
+}
+
+async function evaluateCopilotModel() {
+  const data = await api("/api/ai/evaluate-model", {
+    method: "POST",
+    body: JSON.stringify({ model: $("copilot-model").value.trim() }),
+  });
+  const status = $("copilot-model-status");
+  status.textContent = data.passed
+    ? `${data.model} passed structured output and citation checks.`
+    : `${data.model} is not qualified: ${humanizeErrorText(data.error || data.note)}`;
+  status.className = data.passed ? "success-text" : "warning-text";
 }
 
 async function loadTrendingGames(platform = $("props-platform").value, sport = $("props-sport").value) {
@@ -5053,6 +5136,14 @@ function bindEvents() {
   $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", () => runOptimizer(false)));
   $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));
   $("refresh-portfolio-lines").addEventListener("click", () => withButtonBusy("refresh-portfolio-lines", "Refreshing...", refreshPortfolioLines));
+  $("ask-copilot").addEventListener("click", () => withButtonBusy("ask-copilot", "Researching...", askCopilot));
+  $("evaluate-copilot-model").addEventListener("click", () => withButtonBusy("evaluate-copilot-model", "Checking...", evaluateCopilotModel));
+  document.querySelectorAll("[data-copilot-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      $("copilot-question").value = button.dataset.copilotPrompt;
+      askCopilot();
+    });
+  });
   $("refresh-sportsbook-sync").addEventListener("click", () => withButtonBusy("refresh-sportsbook-sync", "Checking...", loadSportsbookSync));
   $("refresh-trending-props").addEventListener("click", () => withButtonBusy("refresh-trending-props", "Loading...", loadTrendingProps));
   $("send-selected-trending").addEventListener("click", sendSelectedTrendingProps);

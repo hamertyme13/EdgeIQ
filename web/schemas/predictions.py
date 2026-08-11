@@ -19,6 +19,25 @@ class ParlayChatPayload(BaseModel):
     sport: str = "All Sports"
 
 
+class CopilotQueryPayload(BaseModel):
+    question: str = "What should I know before placing an entry?"
+    player: str = ""
+    stat: str = ""
+    sport: str = "All Sports"
+    platform: str = "Both"
+    line: float | None = None
+
+
+class RecommendationExplainPayload(BaseModel):
+    question: str = "Why is this recommended and what could make it lose?"
+    suggestion: dict
+    alternatives: list[dict] = Field(default_factory=list)
+
+
+class ModelEvaluationPayload(BaseModel):
+    model: str = ""
+
+
 class WatchlistItemPayload(BaseModel):
     player: str
     sport: str = "All Sports"

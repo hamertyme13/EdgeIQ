@@ -5,7 +5,15 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException
 
-from web.schemas import AiEntryReviewPayload, EvPayload, ParlayChatPayload, ProjectionAssistPayload
+from web.schemas import (
+    AiEntryReviewPayload,
+    CopilotQueryPayload,
+    EvPayload,
+    ModelEvaluationPayload,
+    ParlayChatPayload,
+    ProjectionAssistPayload,
+    RecommendationExplainPayload,
+)
 
 router = APIRouter(tags=["intelligence"])
 
@@ -19,6 +27,9 @@ class IntelligenceDependencies:
     game_context: Callable[[str, str, str], dict]
     ev_analysis: Callable[[EvPayload], dict]
     projection_assist: Callable[[ProjectionAssistPayload], dict]
+    copilot_query: Callable[[CopilotQueryPayload], dict]
+    explain_recommendation: Callable[[RecommendationExplainPayload], dict]
+    evaluate_model: Callable[[ModelEvaluationPayload], dict]
 
 
 _dependencies: IntelligenceDependencies | None = None
@@ -48,6 +59,21 @@ def ai_status() -> dict:
 @router.post("/api/ai/entry-review")
 def ai_entry_review(payload: AiEntryReviewPayload) -> dict:
     return _deps().entry_review(payload)
+
+
+@router.post("/api/ai/copilot")
+def ai_copilot(payload: CopilotQueryPayload) -> dict:
+    return _deps().copilot_query(payload)
+
+
+@router.post("/api/ai/explain-recommendation")
+def explain_recommendation(payload: RecommendationExplainPayload) -> dict:
+    return _deps().explain_recommendation(payload)
+
+
+@router.post("/api/ai/evaluate-model")
+def evaluate_local_model(payload: ModelEvaluationPayload) -> dict:
+    return _deps().evaluate_model(payload)
 
 
 @router.get("/api/games/trending")

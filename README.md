@@ -1,5 +1,17 @@
 # EdgeIQ
 
+## v2.3 Local Research Copilot
+
+EdgeIQ 2.3 turns Ask EdgeIQ into a local, evidence-grounded research workspace. It can research a player and stat from verified EdgeIQ records, narrate the daily briefing, compare settled wins and losses, inspect portfolio exposure, and explain why one recommendation was selected over alternatives. Responses use structured citations tied to the underlying snapshot, and unsupported citations or numeric claims are rejected in favor of a deterministic fallback.
+
+Player research now writes immutable facts to a persistent evidence ledger. Each fact records its player, sport, stat, game, platform, source, source URL, capture time, expiration time, and structured payload. Current provider markets, line movement, injuries/news/weather availability, historical finals, and EdgeIQ forecast distributions are cached independently. Settled outcomes update evidence-level win/loss counters so future validation can measure which evidence sources were useful instead of treating generated language as memory.
+
+Historical starter/bench splits, expected minutes or opportunities, and teammate context are stored as role evidence. Live lineup status is explicitly left unconfirmed unless a connected provider supplies it. Evidence-source reliability is exposed to the model only after settlement and is not eligible for weighting until it has at least 20 independent decisions.
+
+Entry payout analysis uses exact-line forecast probabilities when available, builds a conservative pairwise correlation matrix, and runs deterministic Gaussian-copula Monte Carlo simulation. Results include provider-specific payout evidence, complete-card probability, independent versus correlation-adjusted probability, expected value, shared-outcome pairs, and exposure by player, game, team, stat, and direction.
+
+Ollama is the default local language provider. Set `OLLAMA_MODEL` for text (default `llama3.1:8b`) and optionally install/set `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`) for screenshot extraction. The lighter `llama3.2:3b` model remains available in the UI for faster reviews. Screenshot picks are still deduplicated and matched against live provider markets before they can enter the builder. The **Qualify Model** control checks structured output and citation compliance before a model is trusted for recommendation explanations.
+
 EdgeIQ is a Python desktop, browser, and CLI application for player prop research, entry
 building, bet tracking, and bankroll/performance review.
 
@@ -169,7 +181,7 @@ Ollama explains only the evidence supplied by the app.
 2. Download the default lightweight model:
 
 ```bash
-ollama pull llama3.2:3b
+ollama pull llama3.1:8b
 ```
 
 3. Restart EdgeIQ. No API key or usage credits are required.
@@ -178,7 +190,7 @@ Optional configuration:
 
 ```bash
 OLLAMA_ENABLED=true
-OLLAMA_MODEL=llama3.2:3b
+OLLAMA_MODEL=llama3.1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 ```
 

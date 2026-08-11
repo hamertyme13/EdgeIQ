@@ -112,6 +112,7 @@ def build_data_health_payload(
     schedule = operational_health.get("schedule") or {}
     shadow = operational_health.get("shadow_evaluation") or {}
     settlement = operational_health.get("shadow_settlement") or {}
+    research_memory = operational_health.get("research_memory") or {}
     operational_warnings = []
     if scheduler.get("failures"):
         operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
@@ -138,6 +139,7 @@ def build_data_health_payload(
             "schedule": schedule,
             "shadow_settlement": settlement,
             "shadow_evaluation": shadow,
+            "research_memory": research_memory,
             "warnings": operational_warnings,
             "status": "degraded" if operational_warnings else "healthy",
         },

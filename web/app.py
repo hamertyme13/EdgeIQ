@@ -78,13 +78,19 @@ from repository.repositories.line_history_repository import LineHistoryRepositor
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services import odds as sportsbook_odds
 from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
-from services.ollama_client import ollama_chat, ollama_model, ollama_status
+from services.ollama_client import (
+    ollama_chat,
+    ollama_model,
+    ollama_status,
+    ollama_vision_structured,
+)
 from services.operation_lock import named_operation_lock
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.prop_plausibility import prop_line_plausibility
@@ -131,6 +137,9 @@ from web.application.briefing_service import recover_interrupted_daily_scan as r
 from web.application.briefing_service import run_daily_briefing_scan as run_briefing_scan
 from web.application.briefing_service import save_daily_scan_status as persist_daily_scan_status
 from web.application.briefing_service import update_daily_scan as update_briefing_scan
+from web.application.copilot_service import copilot_query_payload as build_copilot_query_payload
+from web.application.copilot_service import explain_recommendation_payload as build_explain_recommendation_payload
+from web.application.copilot_service import model_evaluation_payload as build_model_evaluation_payload
 from web.application.entry_creation_service import (
     analyze_entry_payload as build_analyze_entry_payload,
 )
@@ -207,6 +216,7 @@ from web.application.recommendation_service import (
 )
 from web.application.recommendation_service import top_props_payload as build_top_props_payload
 from web.application.recommendation_service import trending_props_payload as build_trending_props_payload
+from web.application.research_service import persist_player_research, research_evidence_payload
 from web.application.results_service import (
     accuracy_lab_payload as build_accuracy_lab_payload,
 )
@@ -285,11 +295,14 @@ from web.routers.entries import (
 )
 from web.routers.intelligence import (
     IntelligenceDependencies,
+    ai_copilot,
     ai_entry_review,
     ai_parlay_chat,
     ai_status,
     analyze_ev,
     configure_intelligence_router,
+    evaluate_local_model,
+    explain_recommendation,
     game_context,
     projection_assist,
     trending_games,
@@ -454,7 +467,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260811-ollama-v1"
+STATIC_ASSET_VERSION = "20260811-v230-evidence"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 10
@@ -605,7 +618,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.2.4", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.3.0", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -1608,10 +1621,12 @@ def _backfill_settled_entry_leg_results(entries: list[dict]) -> dict:
         if not resolved:
             if legs and all(prop.get("actual") is None for prop in entry.get("props", [])):
                 EntryRepository.store_settled_leg_results(entry["id"], legs)
+                ResearchEvidenceRepository.record_outcome({**entry, "props": legs})
                 backfilled += 1
                 leg_rows += len(legs)
             continue
         EntryRepository.store_settled_leg_results(entry["id"], legs)
+        ResearchEvidenceRepository.record_outcome({**entry, "props": legs})
         backfilled += 1
         leg_rows += len(legs)
         provider_rows += sum(1 for leg in resolved if leg.get("source") != "projection_estimate")
@@ -2430,7 +2445,11 @@ def _analyze_uploaded_text_file(payload: UploadAnalyzePayload, raw: bytes) -> di
 
 def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
     if payload.target == "bet_history":
-        extracted = _openai_extract_bets_from_image(raw, payload.mime_type or "image/png")
+        extracted = _ollama_extract_bets_from_image(raw)
+        extraction_method = "ollama_vision"
+        if extracted is None:
+            extracted = _openai_extract_bets_from_image(raw, payload.mime_type or "image/png")
+            extraction_method = "openai"
         if extracted is None:
             ocr_text = _local_ocr_image(raw, payload.file_name)
             return {
@@ -2454,12 +2473,16 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
             "file_name": payload.file_name,
             **imported,
             "ai_enabled": True,
+            "extraction_method": extraction_method,
             "raw_ai": extracted,
             "message": f"Imported {imported['imported']} bets from screenshot. Skipped {imported['skipped']}.",
         }
 
-    extracted = _openai_extract_props_from_image(raw, payload.mime_type or "image/png")
-    extraction_method = "openai"
+    extracted = _ollama_extract_props_from_image(raw)
+    extraction_method = "ollama_vision"
+    if extracted is None:
+        extracted = _openai_extract_props_from_image(raw, payload.mime_type or "image/png")
+        extraction_method = "openai"
     if extracted is None:
         extracted = _local_extract_props_from_image(raw, payload.file_name, payload.source)
         extraction_method = "local_ocr"
@@ -2493,14 +2516,15 @@ def _analyze_uploaded_image(payload: UploadAnalyzePayload, raw: bytes) -> dict:
         "duplicates_removed": duplicates_removed,
         "rejected_unverified": rejected,
         "analysis": analysis,
-        "ai_enabled": extraction_method == "openai",
+        "ai_enabled": extraction_method in {"openai", "ollama_vision"},
         "local_ocr": extraction_method == "local_ocr",
+        "extraction_method": extraction_method,
         "ocr_text": extracted.get("ocr_text", "") if extraction_method == "local_ocr" else "",
         "raw_ai": extracted if extraction_method == "openai" else None,
         "message": (
             f"Verified {len(props)} provider-backed picks with on-device OCR."
             if extraction_method == "local_ocr"
-            else f"Verified {len(props)} provider-backed picks from screenshot."
+            else f"Verified {len(props)} provider-backed picks using {extraction_method.replace('_', ' ')}."
         ),
     }
 
@@ -2849,6 +2873,70 @@ def _openai_extract_props_from_image(raw: bytes, mime_type: str) -> dict | None:
         ),
         max_output_tokens=700,
     )
+
+
+_SCREENSHOT_PROP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "platform": {"type": "string"},
+        "props": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "player": {"type": "string"}, "team": {"type": "string"},
+                    "sport": {"type": "string"}, "stat": {"type": "string"},
+                    "line": {"type": "number"}, "direction": {"type": "string"},
+                    "projection": {"type": ["number", "null"]}, "game": {"type": "string"},
+                },
+                "required": ["player", "team", "sport", "stat", "line", "direction", "projection", "game"],
+            },
+        },
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["platform", "props", "notes"],
+}
+
+_SCREENSHOT_BET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "platform": {"type": "string"},
+        "bets": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sport": {"type": "string"}, "game": {"type": "string"},
+                    "description": {"type": "string"}, "odds": {"type": "number"},
+                    "wager": {"type": "number"}, "result": {"type": "string"},
+                    "profit": {"type": ["number", "null"]}, "stat_type": {"type": "string"},
+                    "win_probability": {"type": ["number", "null"]},
+                },
+                "required": ["sport", "game", "description", "odds", "wager", "result", "profit", "stat_type", "win_probability"],
+            },
+        },
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["platform", "bets", "notes"],
+}
+
+
+def _ollama_extract_props_from_image(raw: bytes) -> dict | None:
+    result, _ = ollama_vision_structured(
+        raw,
+        "Extract only visible player props. Do not infer or duplicate picks. Return the requested JSON fields.",
+        _SCREENSHOT_PROP_SCHEMA,
+    )
+    return result
+
+
+def _ollama_extract_bets_from_image(raw: bytes) -> dict | None:
+    result, _ = ollama_vision_structured(
+        raw,
+        "Extract only visible settled bets. Do not infer results or duplicate bets. Return the requested JSON fields.",
+        _SCREENSHOT_BET_SCHEMA,
+    )
+    return result
 
 
 def _openai_extract_bets_from_image(raw: bytes, mime_type: str) -> dict | None:
@@ -6167,7 +6255,7 @@ def _player_research_payload(
         }
         for prop in active_props[:8]
     ]
-    return {
+    research = {
         "player": player,
         "stat": stat,
         "sport": sport_filter or "All Sports",
@@ -6189,6 +6277,13 @@ def _player_research_payload(
         "opponent": current_opponent,
         "notes": _research_notes(active_props, history, target_line),
     }
+    availability = _player_availability_payload(
+        player,
+        sport_filter or str((recommendation or {}).get("sport") or ""),
+        str((recommendation or {}).get("team") or ""),
+        str((recommendation or {}).get("game") or ""),
+    )
+    return persist_player_research(research, availability=availability)
 
 
 def _research_opponent(game: str, team: str) -> str:
@@ -7623,6 +7718,7 @@ def _check_entry_result(entry: dict, allow_estimates: bool) -> dict:
         EntryRepository.store_partial_leg_results(entry["id"], evaluation["legs"])
         return evaluation
     EntryRepository.settle(entry["id"], evaluation["result"], dnp_legs=evaluation["dnp_legs"], dnp_mode=_dnp_mode(), leg_results=evaluation["legs"])
+    ResearchEvidenceRepository.record_outcome({**entry, "props": evaluation["legs"]})
     return evaluation
 
 
@@ -10217,6 +10313,7 @@ def _data_health_payload() -> dict:
             "schedule": _refresh_schedule_payload(),
             "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
             "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
+            "research_memory": ResearchEvidenceRepository.summary(),
         },
     )
 
@@ -10827,6 +10924,9 @@ configure_player_router(
             platform,
             line,
         ),
+        research_evidence=lambda player, stat, sport, platform, game, include_expired: research_evidence_payload(
+            player, stat, sport, platform, game, include_expired,
+        ),
         line_movement=lambda player, stat, platform: build_player_line_movement_payload(
             player,
             stat,
@@ -11119,6 +11219,19 @@ configure_intelligence_router(
             bankroll=lambda: get_starting_bankroll(),
         ),
         projection_assist=lambda payload: build_projection_assist_payload(payload),
+        copilot_query=lambda payload: build_copilot_query_payload(
+            payload,
+            player_research=lambda player, stat, sport, platform, line: _player_research_payload(
+                player, stat, sport, platform, line,
+            ),
+            loss_review=lambda: _loss_review_payload(20),
+            briefing=lambda platform, sport: _cached_daily_briefing_payload(
+                platform, sport, refresh=False, cached_only=True,
+            ),
+            portfolio=lambda: _portfolio_intelligence_payload(),
+        ),
+        explain_recommendation=lambda payload: build_explain_recommendation_payload(payload),
+        evaluate_model=lambda payload: build_model_evaluation_payload(payload),
     )
 )
 app.include_router(intelligence_router)

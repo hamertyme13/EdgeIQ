@@ -14,11 +14,14 @@ from web.schemas.entries import (
 )
 from web.schemas.predictions import (
     BoostAnalysisPayload,
+    CopilotQueryPayload,
     EvPayload,
     HedgeCalculatorPayload,
     MiddleCalculatorPayload,
+    ModelEvaluationPayload,
     ParlayChatPayload,
     ProjectionAssistPayload,
+    RecommendationExplainPayload,
     WatchlistItemPayload,
 )
 from web.schemas.providers import (
@@ -47,6 +50,7 @@ __all__ = [
     "BetPayload",
     "BettingHistoryPayload",
     "BoostAnalysisPayload",
+    "CopilotQueryPayload",
     "DnpSettingPayload",
     "EntryPayload",
     "EvPayload",
@@ -54,8 +58,10 @@ __all__ = [
     "HedgeCalculatorPayload",
     "LossProtectionSettingPayload",
     "MiddleCalculatorPayload",
+    "ModelEvaluationPayload",
     "ParlayChatPayload",
     "ProjectionAssistPayload",
+    "RecommendationExplainPayload",
     "PropPayload",
     "ProviderWeightsPayload",
     "RefreshSchedulePayload",

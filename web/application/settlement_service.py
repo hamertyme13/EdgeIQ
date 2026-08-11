@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from repository.repositories.entry_repository import EntryRepository
+from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
 
 
@@ -108,10 +109,13 @@ def settle_entry_payload(
     dashboard: Callable[[], dict],
 ) -> dict:
     EntryRepository.settle(entry_id, result, dnp_legs, dnp_mode)
+    settled_entry = next((entry for entry in EntryRepository.all() if entry.get("id") == entry_id), None)
+    evidence_updated = ResearchEvidenceRepository.record_outcome(settled_entry or {})
     return {
         "id": entry_id,
         "result": result,
         "status": "Settled",
+        "research_evidence_updated": evidence_updated,
         "dashboard": dashboard(),
     }
 

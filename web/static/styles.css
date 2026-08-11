@@ -4881,3 +4881,34 @@ td,
     overflow-wrap: anywhere;
   }
 }
+.copilot-workspace {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.copilot-fields {
+  grid-template-columns: minmax(240px, 2fr) repeat(3, minmax(120px, 1fr));
+}
+
+.model-evaluation-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) auto minmax(220px, 1.5fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.citation-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+@media (max-width: 900px) {
+  .copilot-fields,
+  .model-evaluation-row {
+    grid-template-columns: 1fr;
+  }
+}
