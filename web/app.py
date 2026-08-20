@@ -292,6 +292,7 @@ from web.routers.entries import (
     shared_entry,
     shared_entry_page,
 )
+from web.routers.experience import router as experience_router
 from web.routers.entries import (
     router as entry_router,
 )
@@ -469,7 +470,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260820-v239-opportunity-risk-lanes"
+STATIC_ASSET_VERSION = "20260820-v244-player-hit-rates"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -5915,6 +5916,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         trending_count,
         raw.get("league", ""),
         direction=direction,
+        team=raw.get("team", ""),
     )
     row = {
         "player": raw.get("player", ""),
@@ -6444,12 +6446,22 @@ def _player_research_payload(
     platform: str,
     line: float | None,
 ) -> dict:
-    active_props = [_analyzed_feed_prop(prop) for prop in _matching_market_props(player, stat, sport_filter, platform)]
+    source_props = _fetch_props(platform, sport_filter)
+    selected_market_props = _matching_market_props(
+        player, stat, sport_filter, platform, source_props=source_props,
+    )
+    active_props = [_analyzed_feed_prop(prop) for prop in selected_market_props]
     active_props.sort(key=lambda prop: (prop.get("platform", ""), float(prop.get("line") or 0)))
     target_line = line
     if target_line is None and active_props:
         target_line = round(sum(float(prop.get("line") or 0) for prop in active_props) / len(active_props), 2)
-    history = _played_history(player, stat, sport=sport_filter, limit=25)
+    history = _played_history(
+        player,
+        stat,
+        sport=sport_filter,
+        limit=120,
+        team=str((active_props[0] if active_props else {}).get("team") or ""),
+    )
     chart_rows = []
     for row in list(reversed(history[-12:])):
         actual = float(row.get("actual") or 0)
@@ -6532,6 +6544,15 @@ def _player_research_payload(
         "closing_lines": _research_closing_lines(active_props),
         "teammate_splits": _research_teammate_splits(history, target_line),
         "opponent": current_opponent,
+        "season_assessment": _season_assessment(forecast, current_opponent),
+        "best_hitting_stats": _player_stat_hit_leaderboard(
+            player,
+            [
+                prop for prop in source_props
+                if canonical_person_key(prop.get("player")) == canonical_person_key(player)
+            ],
+            sport_filter,
+        ),
         "notes": _research_notes(active_props, history, target_line),
     }
     availability = _player_availability_payload(
@@ -6541,6 +6562,115 @@ def _player_research_payload(
         str((recommendation or {}).get("game") or ""),
     )
     return persist_player_research(research, availability=availability)
+
+
+def _player_stat_hit_leaderboard(
+    player: str,
+    player_props: list[dict],
+    sport: str | None,
+) -> list[dict]:
+    preferred = _prefer_standard_provider_offers(player_props)
+    by_stat: dict[str, list[dict]] = {}
+    for prop in preferred:
+        if prop.get("line") is None or not prop.get("stat"):
+            continue
+        by_stat.setdefault(canonical_stat_label(prop.get("stat")), []).append(prop)
+
+    rows = []
+    for stat_label, offers in by_stat.items():
+        offer = max(
+            offers,
+            key=lambda row: (
+                int(str(row.get("line_offer_type") or row.get("odds_type") or "standard").lower() == "standard"),
+                int(row.get("trending_count") or 0),
+            ),
+        )
+        line = float(offer.get("line") or 0.0)
+        team = str(offer.get("team") or "")
+        history = _played_history(player, stat_label, sport=sport, limit=120, team=team)
+        if len(history) < 3:
+            continue
+        over_forecast = forecast_prop(
+            player,
+            sport or str(offer.get("league") or ""),
+            stat_label,
+            line,
+            "Over",
+            history=history,
+            game_time=offer.get("game_time"),
+            team=team,
+            game=str(offer.get("game") or ""),
+        )
+        direction = "Under" if over_forecast.projection < line else "Over"
+        decisions = [float(row.get("actual") or 0.0) for row in history if float(row.get("actual") or 0.0) != line]
+        recent = decisions[:10]
+        if not decisions:
+            continue
+        season_hits = sum(bool(_history_hit(value, line, direction)) for value in decisions)
+        recent_hits = sum(bool(_history_hit(value, line, direction)) for value in recent)
+        rows.append({
+            "stat": stat_label,
+            "direction": direction,
+            "line": line,
+            "platform": str(offer.get("platform") or ""),
+            "projection": over_forecast.projection,
+            "season_hit_rate": round((season_hits / len(decisions)) * 100.0, 1),
+            "recent_10_hit_rate": round((recent_hits / len(recent)) * 100.0, 1),
+            "season_average": round(sum(float(row.get("actual") or 0.0) for row in history) / len(history), 2),
+            "sample_size": len(history),
+            "sample_strength": "Strong" if len(history) >= 25 else "Developing" if len(history) >= 10 else "Thin",
+            "note": (
+                "Strong season sample at the current standard line."
+                if len(history) >= 25
+                else "Useful early signal, but the season sample is still developing."
+                if len(history) >= 10
+                else "Thin sample; use this for research or paper tracking only."
+            ),
+        })
+    rows.sort(
+        key=lambda row: (
+            min(int(row["sample_size"]), 25) / 25.0 * float(row["season_hit_rate"]),
+            float(row["recent_10_hit_rate"]),
+            int(row["sample_size"]),
+        ),
+        reverse=True,
+    )
+    return rows[:8]
+
+
+def _season_assessment(forecast, opponent: str) -> dict:
+    if forecast is None:
+        return {
+            "headline": "Add an exact line to compare this player's season performance.",
+            "summary": "EdgeIQ needs a line before it can calculate a side-specific probability.",
+            "strength": "Not ready",
+        }
+    features = forecast.features
+    games = int(features.get("verified_games") or 0)
+    opponent_games = int(features.get("opponent_sample") or 0)
+    season_average = features.get("season_average")
+    opponent_average = features.get("opponent_mean")
+    if opponent and opponent_games:
+        comparison = (
+            f"Against {opponent}, the player averaged {opponent_average:.1f} in {opponent_games} verified game"
+            f"{'s' if opponent_games != 1 else ''}, compared with {season_average:.1f} across {games} season games."
+        )
+        caution = " This matchup sample is small, so EdgeIQ limits how much it can change the projection." if opponent_games < 4 else " The matchup sample is large enough to influence the projection, but it does not replace recent form and role data."
+    else:
+        comparison = f"EdgeIQ has {games} verified season games, but no reliable head-to-head sample for the current opponent."
+        caution = " The projection relies more heavily on season form, recent form, role volume, and the current market line."
+    return {
+        "headline": f"Season-based projection: {forecast.projection:.1f}",
+        "summary": comparison + caution,
+        "strength": "Strong" if forecast.paid_eligible and games >= 30 else "Developing" if games >= 10 else "Thin history",
+        "verified_games": games,
+        "opponent_games": opponent_games,
+        "season_average": season_average,
+        "opponent_average": opponent_average,
+        "last_10_average": features.get("last_10_average"),
+        "season_start": features.get("season_start"),
+        "season_end": features.get("season_end"),
+    }
 
 
 def _research_opponent(game: str, team: str) -> str:
@@ -9562,10 +9692,10 @@ def _espn_context(hit_rate) -> dict:
     }
 
 
-def _played_history(player: str, stat: str, sport: str | None = None, limit: int = 10) -> list[dict]:
+def _played_history(player: str, stat: str, sport: str | None = None, limit: int = 10, team: str = "") -> list[dict]:
     return [
         row
-        for row in FinalStatsRepository.history(player, stat, sport=sport, limit=limit)
+        for row in FinalStatsRepository.history(player, stat, sport=sport, limit=limit, team=team)
         if row.get("status", "played") != "dnp"
     ]
 
@@ -11993,6 +12123,7 @@ configure_entry_router(
     )
 )
 app.include_router(entry_router)
+app.include_router(experience_router)
 
 configure_settlement_router(
     SettlementDependencies(

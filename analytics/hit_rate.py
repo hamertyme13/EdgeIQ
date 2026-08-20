@@ -31,10 +31,11 @@ def estimate_hit_rate(
     trending_count: int = 0,
     sport: str | None = None,
     direction: str = "Over",
+    team: str = "",
 ) -> HitRateSummary:
     resolved_projection = projection if projection is not None else auto_projection(line, trending_count)
     edge = calculate_directional_edge(line, resolved_projection, direction)
-    history = FinalStatsRepository.history(player, stat, sport=sport, limit=100)
+    history = FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
     if history:
         return _from_history(player, stat, line, resolved_projection, edge, history, direction)
 

@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260820-v239-opportunity-risk-lanes" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260820-v244-player-hit-rates" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -38,10 +38,15 @@
             <h1 id="view-title">Today</h1>
           </div>
           <div class="topbar-actions">
+            <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
         </header>
+        <aside id="notification-center-drawer" class="notification-center-drawer" hidden aria-label="EdgeIQ alerts">
+          <div class="panel-header"><div><p class="eyebrow">Notification Center</p><h2>Needs Attention</h2></div><button id="notification-center-close" class="secondary" type="button">Close</button></div>
+          <div id="notification-center-list" class="suggestion-list"></div>
+        </aside>
         <div id="runtime-notice" class="runtime-notice" hidden></div>
         <div id="install-hint" class="install-hint" hidden>
           <strong>Install EdgeIQ on your phone</strong>
@@ -145,6 +150,10 @@
                 <button id="refresh-notifications" class="secondary">Refresh</button>
               </div>
               <div id="notification-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div><p class="eyebrow">Product Journey</p><h2>Recommendation Funnel</h2></div><button id="refresh-product-analytics" class="secondary" type="button">Refresh</button></div>
+              <div id="product-analytics-list" class="suggestion-list"><p class="subtle">Journey metrics appear after recommendations are viewed and entries are analyzed.</p></div>
             </div>
             <div class="panel">
               <div class="panel-header">
@@ -509,7 +518,7 @@
         <section id="entries" class="view">
           <div class="two-col">
             <div class="stack">
-              <details class="panel tool-group" open>
+              <details class="panel tool-group">
                 <summary>
                   <span>Betting Preferences</span>
                   <small>Personalize suggestions and guardrails</small>
@@ -771,7 +780,7 @@
                 <div class="workspace-tab-strip" role="tablist" aria-label="Entry Generator modes">
                   <button class="workspace-tab active" type="button" data-workspace-tab="best">Best Entries</button>
                   <button class="workspace-tab" type="button" data-workspace-tab="verified">Verified Only</button>
-                  <button class="workspace-tab" type="button" data-workspace-tab="custom">Custom Rules</button>
+                  <button class="workspace-tab" type="button" data-workspace-tab="custom">Portfolio</button>
                 </div>
               </div>
               <details class="panel tool-group" data-workspace-pane="verified" hidden>
@@ -926,7 +935,7 @@
                 </div>
               </details>
 
-              <details class="panel tool-group" open>
+              <details class="panel tool-group" data-workspace-pane="custom" data-auto-open="false" hidden>
                 <summary>
                   <span>Pending Entries</span>
                   <small>Results and DNP rules</small>
@@ -1003,6 +1012,11 @@
               <button type="submit">Run Full Research</button>
             </div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
+            <div class="recent-research-heading">
+              <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Sync a league once, then EdgeIQ keeps the verified game history.</span></div>
+              <div class="button-row"><button id="sync-season-history" class="secondary compact-button" type="button">Sync Selected Sport</button><button id="refresh-research-history" class="secondary compact-button" type="button">Refresh History</button></div>
+            </div>
+            <div id="research-history-list" class="research-history-list"><span class="subtle">Your recent player research will appear here.</span></div>
           </form>
           <div class="tool-groups">
             <details class="panel tool-group" open data-workspace-pane="prop">
@@ -1010,7 +1024,13 @@
                 <span>Prop Research</span>
                 <small>Projection, hit rate, and complete player context</small>
               </summary>
-              <div class="tool-group-body two-col">
+              <div class="tool-group-body">
+                <details class="inline-disclosure">
+                  <summary>
+                    <span>Individual Research Tools</span>
+                    <small>Optional projection, hit-rate, and player-context controls</small>
+                  </summary>
+                  <div class="two-col disclosure-grid">
                 <div class="mini-tool">
                   <h2>AI Projection Assist</h2>
                   <form id="projection-assist-form" class="form-grid">
@@ -1086,6 +1106,8 @@
                   </form>
                   <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
                 </div>
+                  </div>
+                </details>
               </div>
             </details>
 
@@ -1610,37 +1632,37 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/ui-shell.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/ui-utils.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/circuit-audio.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/js/state.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/js/api.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260820-v239-opportunity-risk-lanes"></script>
+    <script src="/static/app.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

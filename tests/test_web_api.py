@@ -1653,7 +1653,7 @@ def test_web_entry_analysis_uses_espn_history_for_auto_projection(monkeypatch):
         {"actual": 26.0, "status": "played"},
         {"actual": 0.0, "status": "dnp"},
     ]
-    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda player, stat, sport=None, limit=100: history[:limit])
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda player, stat, sport=None, limit=100, team="": history[:limit])
 
     body = analyze_entry(
         EntryPayload.model_validate(
@@ -4720,7 +4720,7 @@ def test_hit_rate_uses_final_stat_history(monkeypatch):
     monkeypatch.setattr(
         hit_rate_module.FinalStatsRepository,
         "history",
-        lambda player, stat, sport=None, limit=100: [
+        lambda player, stat, sport=None, limit=100, team="": [
             {"actual": 24},
             {"actual": 18},
             {"actual": 25},
@@ -6451,3 +6451,32 @@ def test_semantic_button_sounds_cover_dynamic_controls_without_double_playback()
     assert "button.dataset.sound" in app_source
     assert 'button.matches(".danger, [data-remove-prop]")' in app_source
     assert "setupButtonSounds();" in app_source
+
+
+def test_player_stat_hit_leaderboard_ranks_current_lines_by_verified_results(monkeypatch):
+    histories = {
+        "Points": [24, 23, 22, 21, 20, 24, 25, 19, 23, 22],
+        "Rebounds": [5, 6, 7, 4, 5, 6, 5, 4, 6, 5],
+    }
+    monkeypatch.setattr(
+        web_app,
+        "_played_history",
+        lambda player, stat, sport=None, limit=120, team="": [
+            {"actual": value, "status": "played", "game_date": f"2026-07-{index + 1:02d}", "game": f"A@B-{index}", "team": team}
+            for index, value in enumerate(histories[stat])
+        ],
+    )
+
+    rows = web_app._player_stat_hit_leaderboard(
+        "Player",
+        [
+            {"player": "Player", "team": "A", "league": "WNBA", "stat": "Points", "line": 19.5, "platform": "PrizePicks", "line_offer_type": "standard"},
+            {"player": "Player", "team": "A", "league": "WNBA", "stat": "Rebounds", "line": 5.5, "platform": "PrizePicks", "line_offer_type": "standard"},
+        ],
+        "WNBA",
+    )
+
+    assert rows[0]["stat"] == "Points"
+    assert rows[0]["direction"] == "Over"
+    assert rows[0]["season_hit_rate"] == 90.0
+    assert rows[0]["sample_size"] == 10

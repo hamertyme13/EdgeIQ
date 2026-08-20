@@ -9,7 +9,7 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-historical-distribution-v2.3.1"
+MODEL_VERSION = "edgeiq-season-matchup-distribution-v2.4.0"
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -45,8 +45,9 @@ def forecast_prop(
     team: str = "",
     game: str = "",
 ) -> PropForecast:
-    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100)
+    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
     rows = _eligible_history(rows, game_time)
+    rows = _current_season_history(rows, sport, game_time)
     actuals = [float(row["actual"]) for row in rows]
     feature_as_of = datetime.now(UTC).isoformat()
 
@@ -93,7 +94,8 @@ def forecast_prop(
         weighted_mean,
         stat,
     )
-    regularized_center = (projection_center * 0.50) + (float(line) * 0.50)
+    market_prior_weight = 0.25 if len(actuals) >= 40 else 0.35 if len(actuals) >= 20 else 0.50
+    regularized_center = (projection_center * (1.0 - market_prior_weight)) + (float(line) * market_prior_weight)
     side = _game_side(game, team)
     side_values = [
         float(row["actual"]) for row in rows
@@ -145,6 +147,7 @@ def forecast_prop(
     if expected_minutes is None and expected_opportunities is None:
         evidence_strength *= 0.85
     probability = 0.5 + ((raw_probability - 0.5) * evidence_strength)
+    opponent_hits = sum(_value_hits_line(value, float(line), direction) for value in opponent_values)
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -172,7 +175,7 @@ def forecast_prop(
             "weighted_mean": round(weighted_mean, 3),
             "history_center": round(projection_center, 3),
             "market_prior": round(float(line), 3),
-            "market_prior_weight": 0.5,
+            "market_prior_weight": market_prior_weight,
             "regularized_center": round(regularized_center, 3),
             "projection_method": projection_method,
             "zero_rate_recent_20": round(zero_rate, 3),
@@ -198,9 +201,15 @@ def forecast_prop(
             "opponent": opponent,
             "opponent_sample": len(opponent_values),
             "opponent_mean": round(opponent_mean, 3) if opponent_mean is not None else None,
+            "opponent_hit_rate": round((opponent_hits / len(opponent_values)) * 100.0, 1) if opponent_values else None,
+            "opponent_average_difference": round(opponent_mean - projection_center, 3) if opponent_mean is not None else None,
             "opponent_adjustment_weight": round(opponent_weight, 3),
             "opponent_projection_delta": round(contextual_mean - regularized_center, 3),
             "rest_days": _rest_days(game_time, rows),
+            "season_start": min((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
+            "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
+            "season_average": round(sum(actuals) / len(actuals), 3),
+            "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
             "missingness": {
                 "home_away": not bool(side),
                 "opponent": not bool(opponent),
@@ -302,6 +311,32 @@ def _eligible_history(rows: list[dict], game_time: object) -> list[dict]:
         seen_games.add(key)
         deduplicated.append(row)
     return deduplicated
+
+
+def _current_season_history(rows: list[dict], sport: str, game_time: object) -> list[dict]:
+    target_text = _date_text(game_time) or datetime.now(UTC).date().isoformat()
+    try:
+        target = datetime.fromisoformat(target_text).date()
+    except ValueError:
+        return rows
+    sport_key = str(sport or "").upper()
+    if sport_key in {"NBA", "NHL"}:
+        season_year = target.year if target.month >= 9 else target.year - 1
+        start = datetime(season_year, 9, 15).date().isoformat()
+    elif sport_key == "MLB":
+        start = datetime(target.year, 3, 1).date().isoformat()
+    elif sport_key == "WNBA":
+        start = datetime(target.year, 5, 1).date().isoformat()
+    elif sport_key == "NFL":
+        start = datetime(target.year, 7, 15).date().isoformat()
+    else:
+        return rows
+    season_rows = [row for row in rows if not row.get("game_date") or start <= str(row["game_date"])[:10] <= target.isoformat()]
+    return season_rows or rows
+
+
+def _value_hits_line(value: float, line: float, direction: str) -> bool:
+    return value < line if str(direction).lower() == "under" else value > line
 
 
 def _unreliable_context_row(row: dict, stat: str) -> bool:

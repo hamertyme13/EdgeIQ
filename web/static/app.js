@@ -353,7 +353,7 @@ function activateWorkspace(root, paneName, options = {}) {
   panes.forEach((pane) => {
     const active = pane.dataset.workspacePane === paneName;
     pane.hidden = !active;
-    if (active && pane.tagName === "DETAILS") pane.open = true;
+    if (active && pane.tagName === "DETAILS" && pane.dataset.autoOpen !== "false") pane.open = true;
   });
   if (root.dataset.workspace) {
     window.sessionStorage.setItem(`edgeiq.workspace.${root.dataset.workspace}`, paneName);
@@ -374,6 +374,7 @@ function loadWorkspacePaneData(root, paneName) {
     "decision-desk:alerts": [loadTimingAlerts, loadNotifications],
     "decision-desk:builder": [() => loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }), loadTrendingGames],
     "decision-desk:board": [() => loadProps({ cascade: false })],
+    "entry-generator:custom": [loadPending, loadDnpSetting, loadPortfolioIntelligence],
     "results-workspace:performance": [loadPerformance],
     "results-workspace:model": [loadBacktest, loadAccuracyLab],
     "results-workspace:settlement": [loadSettlementAudit],
@@ -448,6 +449,48 @@ function runFullResearch(event) {
     $("projection-assist-form").requestSubmit();
     $("hit-rate-form").requestSubmit();
   }
+  saveResearchHistory({ player, stat, sport, platform, line: line ? Number(line) : null });
+  trackProductEvent("research_run", "prop", `${player}|${stat}`, { sport, platform });
+}
+
+function trackProductEvent(eventName, entityType = "", entityId = "", metadata = {}) {
+  api("/api/experience/events", { method: "POST", body: JSON.stringify({ event_name: eventName, entity_type: entityType, entity_id: String(entityId || ""), metadata }) }).catch(() => {});
+}
+
+async function saveResearchHistory(payload) {
+  await api("/api/experience/research-history", { method: "POST", body: JSON.stringify({ ...payload, summary: {} }) });
+  await loadResearchHistory();
+}
+
+async function loadResearchHistory() {
+  if (!$("research-history-list")) return;
+  const data = await api("/api/experience/research-history?limit=8");
+  $("research-history-list").innerHTML = (data.history || []).map((item) => `<button class="research-history-item secondary" type="button" data-research-id="${item.id}"><strong>${escapeHtml(item.player)}</strong><span>${escapeHtml(item.stat)} · ${escapeHtml(item.sport || "Sport")}${item.line == null ? "" : ` · ${item.line}`}</span></button>`).join("") || `<span class="subtle">Run research once and it will be saved here.</span>`;
+  document.querySelectorAll("[data-research-id]").forEach((button) => {
+    button.addEventListener("click", () => restoreResearchHistory((data.history || []).find((item) => Number(item.id) === Number(button.dataset.researchId)) || {}));
+  });
+}
+
+async function syncSeasonHistory() {
+  const sport = $("research-context-sport").value;
+  const data = await api(`/api/players/season-history/sync?sport=${encodeURIComponent(sport)}`, { method: "POST" });
+  $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
+  if (data.accepted) pollSeasonHistoryStatus();
+}
+
+async function pollSeasonHistoryStatus() {
+  const data = await api("/api/players/season-history/status");
+  $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
+  if (data.state === "running") window.setTimeout(pollSeasonHistoryStatus, 2500);
+}
+
+function restoreResearchHistory(item) {
+  $("research-context-player").value = item.player || "";
+  $("research-context-stat").value = item.stat || "";
+  setResearchToolValue("research-context-sport", item.sport || "");
+  setResearchToolValue("research-context-platform", item.platform || "");
+  $("research-context-line").value = item.line ?? "";
+  $("research-context-form").requestSubmit();
 }
 
 function setView(viewId) {
@@ -479,7 +522,7 @@ function loadViewData(viewId) {
       loadPerformance,
     ],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
-    entries: [loadLossProtection, loadPending, loadPreferences, loadDnpSetting, loadPortfolioIntelligence],
+    entries: [loadLossProtection, loadPreferences],
     analysis: [loadDataHealth, loadNotifications, loadDeployReadiness, loadRefreshSchedule, loadAlertDeliverySettings],
   }[viewId] || [];
   if (!tasks.length) return;
@@ -717,6 +760,11 @@ function renderRecoveryProgress(protection) {
 }
 
 function renderDailyBriefing(data) {
+  const trackedSnapshot = data.snapshot_id || data.generated_at || "daily";
+  if (state.lastTrackedBriefingSnapshot !== trackedSnapshot) {
+    state.lastTrackedBriefingSnapshot = trackedSnapshot;
+    trackProductEvent("recommendation_viewed", "briefing", trackedSnapshot);
+  }
   const cacheLabel = data.cache?.stale
     ? `expired cache ${formatDateTime(data.cache.created_at)} · refresh recommended`
     : data.cache?.hit
@@ -1434,7 +1482,7 @@ async function loadDataHealth() {
       </div>
       <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
       <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
-      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml((scheduler.jobs_run || []).join(", ") || "none")} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
+      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml(humanizeCopilotText((scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
       ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
       ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
     </div>
@@ -1446,8 +1494,8 @@ async function loadDataHealth() {
         </div>
         <p>${provider.purpose} · ${provider.message}</p>
         <p class="subtle">
-          ${escapeHtml(provider.data_role || "Unclassified")} ·
-          ${escapeHtml(provider.settlement_suitability || "Not for settlement")} ·
+          ${escapeHtml(humanizeCopilotText(provider.data_role || "Unclassified"))} ·
+          ${escapeHtml(humanizeCopilotText(provider.settlement_suitability || "Not for settlement"))} ·
           ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
           Contract ${escapeHtml(provider.contract_version || "unversioned")}
         </p>
@@ -1496,6 +1544,18 @@ async function loadNotifications() {
       <p>No smart notifications right now.</p>
     </div>
   `;
+  if ($("notification-center-list")) $("notification-center-list").innerHTML = $("notification-list").innerHTML;
+  if ($("notification-center-count")) {
+    $("notification-center-count").textContent = String(notifications.length);
+    $("notification-center-count").hidden = notifications.length === 0;
+  }
+}
+
+async function loadProductAnalytics() {
+  if (!$("product-analytics-list")) return;
+  const data = await api("/api/experience/analytics");
+  const labels = { recommendation_viewed: "Viewed", entry_analyzed: "Analyzed", recommendation_added: "Added", entry_saved: "Saved", entry_settled: "Settled" };
+  $("product-analytics-list").innerHTML = `<div class="metric-strip">${(data.funnel || []).map((item) => `<span><strong>${Number(item.count || 0)}</strong><small>${labels[item.event] || friendlyStatus(item.event)}</small></span>`).join("")}</div><p class="subtle">View to analysis ${Number(data.conversion?.view_to_analyze || 0).toFixed(1)}% · view to save ${Number(data.conversion?.view_to_save || 0).toFixed(1)}% · saved to settled ${Number(data.conversion?.save_to_settle || 0).toFixed(1)}%</p>`;
 }
 
 async function loadDeployReadiness() {
@@ -2635,6 +2695,7 @@ function addFeedProp(prop) {
     return;
   }
   state.entryProps.push(nextProp);
+  trackProductEvent("recommendation_added", "prop", nextProp.recommendation_snapshot_id || `${nextProp.player}|${nextProp.stat}`, { platform: nextProp.platform, sport: nextProp.sport });
   state.recommendationSnapshotId = nextProp.recommendation_snapshot_id || state.recommendationSnapshotId;
   syncEntryPlatformFromProps();
   renderEntryProps();
@@ -2981,6 +3042,7 @@ async function analyzeEntry() {
   const payload = entryPayload();
   const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
   state.lastAnalysis = data;
+  trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
   state.lastEntryPayload = entryPayload();
@@ -3281,6 +3343,7 @@ async function placeEntry(triggerButton = $("place-entry")) {
   let data;
   try {
     data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
+    trackProductEvent("entry_saved", "entry", data.id, { mode: state.lastEntryPayload.entry_mode, platform: state.lastEntryPayload.platform, legs: state.lastEntryPayload.props.length });
   } catch (error) {
     $("entry-status").textContent = humanizeErrorText(error.message);
     playCircuitSound("warning");
@@ -3395,6 +3458,7 @@ async function loadConfirmedEntries() {
       const suggestion = data.suggestions[Number(button.dataset.loadConfirmedEntry)];
       renderEntryPropsFromAnalyzed(suggestion.entry.props);
       state.recommendationOrigin = true;
+      trackProductEvent("recommendation_added", "card", suggestion.snapshot_id || `confirmed-${suggestion.rank}`, { legs: suggestion.leg_count });
       $("entry-status").textContent = `Loaded confirmed ${suggestion.leg_count}-leg entry #${suggestion.rank}. Analyze/place when ready.`;
     });
   });
@@ -3646,6 +3710,8 @@ async function loadPlayerResearch(event) {
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
   const sensitivity = data.projection_sensitivity || {};
+  const assessment = data.season_assessment || {};
+  const bestHittingStats = data.best_hitting_stats || [];
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
   $("player-research-result").innerHTML = `
@@ -3656,6 +3722,35 @@ async function loadPlayerResearch(event) {
       </div>
       <span class="subtle">${data.history_count} finals · ${data.active_props.length} active</span>
     </div>
+    <section class="season-assessment">
+      <div class="suggestion-top"><div><p class="eyebrow">Season Assessment</p><h3>${escapeHtml(assessment.headline || "Season evidence is still building")}</h3></div><span class="status-pill ${assessment.strength === "Strong" ? "status-positive" : "status-warning"}">${escapeHtml(assessment.strength || "Not ready")}</span></div>
+      <p>${escapeHtml(assessment.summary || "Sync the selected sport to collect verified season game logs.")}</p>
+      <div class="metric-strip">
+        <span><strong>${assessment.verified_games ?? 0}</strong><small>Verified season games</small></span>
+        <span><strong>${assessment.season_average ?? "-"}</strong><small>Season average</small></span>
+        <span><strong>${assessment.last_10_average ?? "-"}</strong><small>Last 10 average</small></span>
+        <span><strong>${assessment.opponent_games ?? 0}</strong><small>Games vs opponent</small></span>
+        <span><strong>${assessment.opponent_average ?? "-"}</strong><small>Average vs opponent</small></span>
+      </div>
+    </section>
+    <section class="best-hitting-stats">
+      <div class="section-heading compact-heading">
+        <div><p class="eyebrow">Best-Hitting Stats</p><h3>Strongest current lines for this player</h3></div>
+        <span class="status-pill ${bestHittingStats.length ? "status-positive" : "status-warning"}">${bestHittingStats.length} compared</span>
+      </div>
+      <p class="subtle">Ranked by verified season results against each currently available standard line. Recent form and sample size are shown separately so a small hot streak is not mistaken for a proven edge.</p>
+      <div class="hit-stat-ranking">
+        ${bestHittingStats.map((row, index) => `
+          <article class="hit-stat-row">
+            <span class="hit-stat-rank">${index + 1}</span>
+            <div><strong>${escapeHtml(row.stat)} · ${escapeHtml(row.direction)} ${Number(row.line).toFixed(1)}</strong><small>${escapeHtml(row.platform || "Current market")} · average ${Number(row.season_average).toFixed(1)}</small></div>
+            <div><strong>${pct(row.season_hit_rate)}</strong><small>Season · ${Number(row.sample_size)} games</small></div>
+            <div><strong>${pct(row.recent_10_hit_rate)}</strong><small>Last 10</small></div>
+            <span class="status-pill ${row.sample_strength === "Strong" ? "status-positive" : "status-warning"}" title="${escapeHtml(row.note || "")}">${escapeHtml(row.sample_strength)}</span>
+          </article>
+        `).join("") || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
+      </div>
+    </section>
     <div class="stats-grid" style="margin-top:14px">
       ${researchSplitCard("Last 5", split.last_5)}
       ${researchSplitCard("Last 10", split.last_10)}
@@ -3703,14 +3798,14 @@ async function loadPlayerResearch(event) {
         <span>
           <strong>${escapeHtml(row.platform)}</strong>
           ${escapeHtml(row.direction || "Over")} ${row.line}
-          <small>${escapeHtml(row.offer_type || "standard")} · ${pct(row.confidence || 0)}</small>
+          <small>${escapeHtml(humanizeCopilotText(row.offer_type || "standard"))} · ${pct(row.confidence || 0)}</small>
         </span>
       `).join("") || `<p class="subtle">No active market lines found.</p>`}
     </div>
     ${(data.closing_lines || []).length ? `<p class="subtle">Recent recorded lines: ${(data.closing_lines || []).slice(0, 6).map((row) => Number(row.line).toFixed(1)).join(" → ")}</p>` : `<p class="subtle">Historical closing lines are not available for this exact market yet.</p>`}
     ${(data.teammate_splits || []).map((row) => `<p class="subtle">With ${escapeHtml(row.teammate)}: ${pct(row.with.hit_rate || 0)} · Without: ${pct(row.without.hit_rate || 0)}</p>`).join("") || `<p class="subtle">With/without teammate splits will appear when lineup participation history is available.</p>`}
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
-    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(note)}</p>`).join("")}
+    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
   `;
 }
 
@@ -4573,8 +4668,16 @@ async function saveBankrollTransaction(event) {
   await loadPerformance();
 }
 
-function showOnboardingIfNeeded() {
-  const stored = localStorage.getItem("edgeiq.onboardingComplete");
+async function showOnboardingIfNeeded() {
+  let stored = localStorage.getItem("edgeiq.onboardingComplete");
+  try {
+    const profile = await api("/api/experience/onboarding");
+    if (profile.complete) {
+      localStorage.setItem("edgeiq.onboarding", JSON.stringify({ bankroll: profile.bankroll, platform: profile.platform, sport: profile.sport, risk: profile.risk, defaultWager: profile.default_wager }));
+      localStorage.setItem("edgeiq.onboardingComplete", "true");
+      stored = "true";
+    }
+  } catch (_error) {}
   syncDefaultInputs();
   if (!stored) {
     $("onboarding-modal").hidden = false;
@@ -4593,6 +4696,7 @@ async function saveOnboarding(event) {
   };
   localStorage.setItem("edgeiq.onboarding", JSON.stringify(setup));
   localStorage.setItem("edgeiq.onboardingComplete", "true");
+  await api("/api/experience/onboarding", { method: "POST", body: JSON.stringify({ bankroll: setup.bankroll, platform: setup.platform, sport: setup.sport, risk: setup.risk, default_wager: setup.defaultWager, complete: true }) });
   if (setup.bankroll > 0) {
     await api("/api/settings/bankroll", {
       method: "POST",
@@ -4605,8 +4709,9 @@ async function saveOnboarding(event) {
   await loadCommandCenter();
 }
 
-function skipOnboarding() {
+async function skipOnboarding() {
   localStorage.setItem("edgeiq.onboardingComplete", "true");
+  await api("/api/experience/onboarding", { method: "POST", body: JSON.stringify({ complete: true }) });
   $("onboarding-modal").hidden = true;
 }
 
@@ -5161,6 +5266,19 @@ function bindEvents() {
   $("backup-database").addEventListener("click", () => withButtonBusy("backup-database", "Backing up...", () => manageDatabase("backup")));
   $("export-database").addEventListener("click", () => withButtonBusy("export-database", "Exporting...", () => manageDatabase("export")));
   $("refresh-notifications").addEventListener("click", () => withButtonBusy("refresh-notifications", "Checking...", loadNotifications));
+  $("notification-center-toggle")?.addEventListener("click", () => {
+    const drawer = $("notification-center-drawer");
+    drawer.hidden = !drawer.hidden;
+    $("notification-center-toggle").setAttribute("aria-expanded", drawer.hidden ? "false" : "true");
+    if (!drawer.hidden) loadNotifications();
+  });
+  $("notification-center-close")?.addEventListener("click", () => {
+    $("notification-center-drawer").hidden = true;
+    $("notification-center-toggle").setAttribute("aria-expanded", "false");
+  });
+  $("refresh-research-history")?.addEventListener("click", () => withButtonBusy("refresh-research-history", "Loading...", loadResearchHistory));
+  $("sync-season-history")?.addEventListener("click", () => withButtonBusy("sync-season-history", "Starting...", syncSeasonHistory));
+  $("refresh-product-analytics")?.addEventListener("click", () => withButtonBusy("refresh-product-analytics", "Loading...", loadProductAnalytics));
   $("refresh-deploy-readiness").addEventListener("click", () => withButtonBusy("refresh-deploy-readiness", "Checking...", loadDeployReadiness));
   $("run-daily-refresh").addEventListener("click", () => withButtonBusy("run-daily-refresh", "Running...", runDailyRefresh));
   $("refresh-timing-alerts").addEventListener("click", () => withButtonBusy("refresh-timing-alerts", "Checking...", loadTimingAlerts));
@@ -5373,9 +5491,9 @@ async function loadAll(options = {}) {
 
   if (!state.backgroundLoadPromise) {
     const backgroundTasks = options.refresh
-      ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
+      ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
-          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(),
+          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");

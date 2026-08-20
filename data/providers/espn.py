@@ -627,6 +627,7 @@ def _baseball_hitting_rows(
     runs = stats.get("R", 0.0)
     rbis = stats.get("RBI", 0.0)
     values = {
+        "At Bats": stats.get("AB", 0.0),
         "Hits": hits,
         "Runs": runs,
         "RBIs": rbis,
@@ -725,6 +726,7 @@ def _basketball_stat_rows(
     fantasy_score = points + (1.2 * rebounds) + (1.5 * assists) + (3.0 * blocks) + (3.0 * steals) - turnovers
 
     values = {
+        "Minutes": stats.get("MIN", 0.0),
         "Points": points,
         "Rebounds": rebounds,
         "Assists": assists,

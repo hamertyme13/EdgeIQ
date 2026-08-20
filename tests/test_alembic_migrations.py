@@ -63,6 +63,14 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
         evidence_exists = connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'research_evidence'"
         ).fetchone()[0]
+        product_events_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'product_events'"
+        ).fetchone()[0]
+        research_sessions_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'research_sessions'"
+        ).fetchone()[0]
 
-    assert revision == "e84f9a2c1d10"
+    assert revision == "f92d4a61c830"
     assert evidence_exists == 1
+    assert product_events_exist == 1
+    assert research_sessions_exist == 1

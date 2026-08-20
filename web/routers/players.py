@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, HTTPException
 
 from web.application.player_service import PlayerLookupError
+from web.application.season_history_service import season_history_status, start_season_history_sync
 
 router = APIRouter(tags=["players"])
 
@@ -65,6 +66,16 @@ def player_research(
     line: float | None = None,
 ) -> dict:
     return _deps().research(player_name, stat, sport, platform, line)
+
+
+@router.post("/api/players/season-history/sync")
+def sync_season_history(sport: str) -> dict:
+    return start_season_history_sync(sport)
+
+
+@router.get("/api/players/season-history/status")
+def get_season_history_status() -> dict:
+    return season_history_status()
 
 
 @router.get("/api/research/evidence")
