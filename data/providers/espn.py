@@ -250,9 +250,12 @@ def fetch_missing_entry_dnp_stats(
 
 def _prop_matches_event(prop: dict, matchup: str, game_date: date) -> bool:
     matchup_key = canonical_matchup_key(matchup, _TEAM_ALIASES)
-    requested_key = canonical_matchup_key(prop.get("game"), _TEAM_ALIASES)
+    requested_game = str(prop.get("game") or "")
+    requested_key = canonical_matchup_key(requested_game, _TEAM_ALIASES)
     team_key = _TEAM_ALIASES.get(str(prop.get("team") or "").upper(), str(prop.get("team") or "").upper())
-    if not team_key or not requested_key or team_key not in matchup_key or requested_key != matchup_key:
+    full_matchup = any(token in requested_game.upper() for token in ("@", " VS ", " VS. ", " VERSUS "))
+    game_matches = requested_key == matchup_key if full_matchup else requested_key in matchup_key
+    if not team_key or not requested_key or team_key not in matchup_key or not game_matches:
         return False
     game_time = str(prop.get("game_time") or "").strip()
     if not game_time:
