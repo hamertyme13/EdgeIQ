@@ -718,7 +718,10 @@ function renderDailyBriefing(data) {
   $("daily-briefing-status").textContent = `${data.headline} · ${data.sport} · ${cacheLabel}`;
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
-  const opportunities = data.top_opportunities || [];
+  const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
+  const opportunities = [...(data.top_opportunities || [])].sort((a, b) =>
+    (riskOrder[a.risk_profile?.key] ?? 2) - (riskOrder[b.risk_profile?.key] ?? 2)
+    || Number(b.score || 0) - Number(a.score || 0));
   const suggestedEntries = data.suggested_entries || [];
   const gamesToday = data.games_today || [];
   const providerBadges = data.provider_badges || [];
@@ -823,7 +826,7 @@ function renderDailyBriefing(data) {
         <div>
           <p class="eyebrow">Single Recommendation Source</p>
           <h3 id="opportunity-board-title">Opportunity Board</h3>
-          <p>EdgeIQ's ranked props appear only here. Open a row to move that prop into the Entry Builder.</p>
+          <p>Conservative emphasizes verified evidence, Balanced accepts measured uncertainty, and Aggressive is best treated as paper-first.</p>
         </div>
         <div class="button-row compact-button-row">
           <span class="status-pill status-connected">${opportunities.length} ranked</span>
@@ -836,17 +839,32 @@ function renderDailyBriefing(data) {
           const movement = receipt.movement || {};
           const exposure = receipt.portfolio_exposure || {};
           const marketProbability = receipt.market_probability;
+          const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
+          const currentProfile = prop.risk_profile?.key || "aggressive";
+          const expired = prop.recommendation_freshness?.status === "expired";
+          const actionable = prop.actionable ?? Boolean(
+            prop.market_supported !== false
+            && Number(prop.trust?.score || 0) >= 50
+            && Number(prop.confidence || 0) >= 52
+          );
+          const profileHeader = currentProfile !== previousProfile ? `
+            <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}">
+              <strong>${escapeHtml(prop.risk_profile?.label || "Aggressive")}</strong>
+              <span>${escapeHtml(prop.risk_profile?.description || "Higher uncertainty. Prefer paper tracking.")}</span>
+            </div>` : "";
           return `
-          <div class="opportunity-row">
+          ${profileHeader}
+          <div class="opportunity-row ${expired ? "opportunity-expired" : ""}">
             <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
-              <input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" />
+              <input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" ${expired || !actionable ? "disabled" : ""} />
             </label>
             <span class="stars">${escapeHtml(prop.stars || "★★★☆☆")}</span>
             <strong>
+              <span class="risk-profile-label risk-${escapeHtml(prop.risk_profile?.key || "aggressive")}">${escapeHtml(prop.risk_profile?.label || "Aggressive")}</span>
               ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")}
               <small>
                 ${escapeHtml(prop.platform || data.platform || "Provider")} · ${escapeHtml(prop.sport || data.sport || "All Sports")}
-                ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : "Adjusted payout"}` : " · Standard line"}
+                ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : (String(prop.line_offer_type || "").toLowerCase() === "demon" ? "Demon · Over only" : "Adjusted payout")}` : " · Standard line"}
               </small>
             </strong>
             <div class="opportunity-proof">
@@ -854,6 +872,7 @@ function renderDailyBriefing(data) {
               <span>${marketProbability == null ? "Market unavailable" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
+              <span class="${expired || !actionable ? "danger-text" : ""}">${expired ? "Expired · refresh required" : !actionable ? "Research only · cannot add" : "Fresh recommendation"}</span>
             </div>
             <div class="opportunity-actions">
               <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
@@ -889,6 +908,7 @@ function renderDailyBriefing(data) {
 function renderDailyGame(game, index) {
   const best = game.best_prop || {};
   const matchup = game.matchup_label || game.game || "Matchup TBD";
+  const generatorAvailable = Boolean(game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2);
   return `
     <details class="daily-game-card">
       <summary>
@@ -897,7 +917,7 @@ function renderDailyGame(game, index) {
           <strong>${escapeHtml(matchup)}</strong>
           <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${pct(game.probability || 0)}</small>
         </div>
-        <button class="secondary" type="button" data-generate-game-entry="${index}">Generate Entry</button>
+        <button class="secondary" type="button" data-generate-game-entry="${index}" ${generatorAvailable ? "" : "disabled"}>${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>
       </summary>
       <div class="daily-game-grid">
         ${renderGameMetric("Projected Winner", game.projected_winner)}
@@ -1136,6 +1156,7 @@ function opportunityExplanation(opportunity) {
     average_confidence: receipt.probability || opportunity.confidence || 0,
     average_edge: receipt.edge || opportunity.edge || 0,
     source_count: (opportunity.data_strength || []).length,
+    trust: opportunity.trust || { score: 0, label: "Not scored" },
     why: `${receipt.probability_source || "EdgeIQ model"} estimates this leg at ${Number(receipt.probability || 0).toFixed(1)}%.`,
     evidence: [
       `Projection ${receipt.projection ?? "unavailable"} versus line ${opportunity.line}.`,
@@ -1316,6 +1337,17 @@ function renderModelHealth(health) {
 async function loadModelHealth() {
   const data = await api("/api/analytics/model-health");
   renderModelHealth(data);
+}
+
+async function loadRuntimeStatus() {
+  if (!$("runtime-status-list")) return;
+  const data = await api("/api/runtime/status");
+  $("runtime-status-list").innerHTML = (data.items || []).map((item) => `
+    <div class="runtime-status-item runtime-${escapeHtml(item.status || "attention")}" title="${escapeHtml(humanizeCopilotText(item.detail || ""))}">
+      <span class="runtime-status-dot" aria-hidden="true"></span>
+      <div><strong>${escapeHtml(item.label || "System")}</strong><small>${escapeHtml(humanizeCopilotText(item.value || "Unknown"))}</small></div>
+    </div>
+  `).join("") || `<div class="runtime-status-loading">Runtime status is not available yet.</div>`;
 }
 
 async function loadDataHealth() {
@@ -2171,7 +2203,7 @@ function renderPropRows(props, platform, sport) {
         <button class="link-button" data-player-detail="${index}">${escapeHtml(prop.player)}</button>
         <button class="micro-button" data-add-prop="${index}">+</button>
       </td>
-      <td>${directionBadge(prop.direction || "Over")}</td>
+      <td>${directionBadge(prop.direction || "Over")}${String(prop.line_offer_type || "").toLowerCase() === "demon" ? `<small class="offer-rule-label">Demon · Over only</small>` : ""}</td>
       <td>${escapeHtml(prop.league || "")}</td>
       <td>${escapeHtml(prop.stat || "")}</td>
       <td>${prop.line ?? "-"}</td>
@@ -2316,26 +2348,38 @@ function renderCopilotResponse(data) {
       <span class="status-pill status-available">Grounded</span>
       <span class="subtle">${escapeHtml(data.model || "")}</span>
     </div>
-    <h3>${escapeHtml(response.recommendation || "Evidence review")}</h3>
-    <p>${escapeHtml(response.answer || "No answer was available.")}</p>
-    <div class="ai-reason-grid">
-      <div><strong>Supporting evidence</strong>${(response.supporting_evidence || []).map((row) => `<p>${escapeHtml(row)}</p>`).join("") || "<p>No verified support was returned.</p>"}</div>
-      <div><strong>Counterargument</strong><p>${escapeHtml(response.counterargument || "No counterargument returned.")}</p></div>
-    </div>
-    <p><strong>Suggested correction:</strong> ${escapeHtml(response.suggested_correction || "No correction suggested.")}</p>
-    ${(response.missing_information || []).map((row) => `<p class="subtle">Missing: ${escapeHtml(row)}</p>`).join("")}
+    <section class="copilot-decision-brief">
+      <div class="copilot-bottom-line"><span>Bottom line</span><h3>${escapeHtml(humanizeCopilotText(response.recommendation || "Evidence review"))}</h3><p>${escapeHtml(humanizeCopilotText(response.answer || "No answer was available."))}</p></div>
+      <div class="copilot-brief-grid">
+        <div><strong>Why</strong><ul>${(response.supporting_evidence || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No verified support was returned.</li>"}</ul></div>
+        <div><strong>What could go wrong</strong><p>${escapeHtml(humanizeCopilotText(response.counterargument || "No counterargument was returned."))}</p></div>
+        <div><strong>Suggested action</strong><p>${escapeHtml(humanizeCopilotText(response.suggested_correction || "No correction was suggested."))}</p></div>
+        <div><strong>Still unknown</strong><ul>${(response.missing_information || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No important gaps were reported.</li>"}</ul></div>
+      </div>
+    </section>
+    <div class="source-heading">Sources used</div>
     <div class="citation-row">
       ${(response.citations || []).map((id) => {
         const citation = citationMap.get(id);
-        const label = escapeHtml(citation?.label || id);
+        const label = escapeHtml(humanizeCopilotText(citation?.label || id));
         const timing = citation?.captured_at ? `Captured ${formatDateTime(citation.captured_at)}` : "Current EdgeIQ snapshot";
         return citation?.source_url
-          ? `<a class="status-pill status-available" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${label} · ${escapeHtml(timing)}">${escapeHtml(id)}</a>`
-          : `<span class="status-pill status-available" title="${label} · ${escapeHtml(timing)}">${escapeHtml(id)}</span>`;
+          ? `<a class="copilot-source" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${label} · ${escapeHtml(timing)}">${label}</a>`
+          : `<span class="copilot-source" title="${label} · ${escapeHtml(timing)}">${label}</span>`;
       }).join("")}
     </div>
     ${data.ai_error ? `<p class="subtle">${humanizeErrorText(data.ai_error)}</p>` : ""}
   `;
+}
+
+function humanizeCopilotText(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/[*`#]+/g, "")
+    .replace(/[{}\[\]"]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[-*#\s]+/, "")
+    .trim();
 }
 
 async function evaluateCopilotModel() {
@@ -2458,6 +2502,8 @@ function formatMovement(movement) {
 }
 
 function entryPropFromFeed(prop) {
+  const demonOnly = String(prop.platform || "").toLowerCase() === "prizepicks"
+    && (String(prop.line_offer_type || "").toLowerCase() === "demon" || Boolean(prop.is_premium_line));
   return {
     player: prop.player,
     player_identity_id: prop.player_identity_id ?? null,
@@ -2476,7 +2522,8 @@ function entryPropFromFeed(prop) {
     is_premium_line: Boolean(prop.is_premium_line),
     line_discount: Number(prop.line_discount || 0),
     projection: prop.projection ?? null,
-    direction: prop.direction || "Over",
+    direction: demonOnly ? "Over" : (prop.direction || "Over"),
+    allowed_directions: demonOnly ? ["Over"] : (prop.allowed_directions || ["Over", "Under"]),
     platform: prop.platform || $("entry-platform").value,
     game: prop.game || "",
     game_time: prop.game_time || "",
@@ -2519,7 +2566,7 @@ function providerBaseMultiplier(platform, legCount) {
 
 function providerMaximumLegs(platform) {
   if (platform === "Underdog") return 8;
-  if (platform === "PrizePicks") return 6;
+  if (platform === "PrizePicks" || platform === "DraftKings Pick6") return 6;
   return 5;
 }
 
@@ -2535,7 +2582,10 @@ function addFeedProp(prop) {
   syncEntryPlatformFromProps();
   renderEntryProps();
   setView("entries");
-  $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.`;
+  const demonNote = nextProp.allowed_directions?.length === 1
+    ? " PrizePicks Demon lines are Over-only."
+    : "";
+  $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.${demonNote}`;
 }
 
 function loadPaperProps(props) {
@@ -2554,24 +2604,67 @@ async function manageDatabase(action) {
 }
 
 function renderEntryProps() {
+  const corrections = new Map((state.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
     const projection = prop.projection == null ? "Auto" : Number(prop.projection).toFixed(1);
     const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
       ? Number(prop.line) - Number(prop.projection)
       : Number(prop.projection) - Number(prop.line);
     const edge = prop.projection == null ? "Auto" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
+    const correction = corrections.get(index);
+    const differs = correction?.action === "flip";
     return `
-      <tr>
+      <tr data-entry-leg="${index}">
         <td>${prop.player}</td>
-        <td>${directionBadge(prop.direction || "Over")}</td>
+        <td>${directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
         <td>${prop.stat}</td>
         <td>${prop.line}</td>
         <td>${projection}</td>
         <td>${edge}</td>
-        <td><button class="danger" data-remove-prop="${index}">Remove</button></td>
+        <td><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
+      </tr>
+      <tr class="entry-leg-editor" data-entry-editor="${index}" hidden>
+        <td colspan="7">
+          <div class="entry-leg-edit-grid">
+            <label>Player<input data-edit-field="player" value="${escapeHtml(prop.player)}"></label>
+            <label>Stat<input data-edit-field="stat" value="${escapeHtml(prop.stat)}"></label>
+            <label>Line<input data-edit-field="line" type="number" step="0.1" value="${Number(prop.line)}"></label>
+            <label>Projection<input data-edit-field="projection" type="number" step="0.1" value="${prop.projection == null ? "" : Number(prop.projection)}"></label>
+            <label>Pick<select data-edit-field="direction"><option${prop.direction === "Over" ? " selected" : ""}>Over</option><option${prop.direction === "Under" ? " selected" : ""}>Under</option></select></label>
+            <button class="secondary compact-button" data-save-prop="${index}">Apply</button>
+          </div>
+        </td>
       </tr>
     `;
   }).join("");
+  document.querySelectorAll("[data-edit-prop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const editor = document.querySelector(`[data-entry-editor="${button.dataset.editProp}"]`);
+      if (editor) editor.hidden = !editor.hidden;
+    });
+  });
+  document.querySelectorAll("[data-save-prop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.saveProp);
+      const editor = document.querySelector(`[data-entry-editor="${index}"]`);
+      const value = (field) => editor?.querySelector(`[data-edit-field="${field}"]`)?.value ?? "";
+      state.entryProps[index] = {
+        ...state.entryProps[index],
+        player: value("player").trim(),
+        stat: value("stat").trim(),
+        line: Number(value("line")),
+        projection: value("projection") === "" ? null : Number(value("projection")),
+        direction: value("direction"),
+      };
+      state.lastAnalysis = null;
+      state.lastEntryPayload = null;
+      $("ai-review-entry").disabled = true;
+      $("prepare-handoff").disabled = true;
+      $("place-entry").disabled = true;
+      renderEntryProps();
+      $("entry-status").textContent = "Leg updated. Analyze the entry again before saving.";
+    });
+  });
   document.querySelectorAll("[data-remove-prop]").forEach((button) => {
     button.addEventListener("click", () => {
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
@@ -2645,6 +2738,7 @@ function renderAnalysis(data) {
   const guardrails = data.risk_guardrails || [];
   const checklist = data.confirmation_checklist || [];
   const payout = data.payout_analysis || {};
+  const payoutVerified = Boolean(data.platform_value?.payout_verified);
   const release = data.release_verdict || {};
   const corrections = data.corrections || {};
   const correctionRows = (corrections.legs || []).map((leg) => {
@@ -2711,8 +2805,10 @@ function renderAnalysis(data) {
     const economics = row.payout_analysis || {};
     const payoutEvidence = row.payout_evidence || {};
     return `<div class="suggestion compact-suggestion">
-      <div class="suggestion-top"><strong>${escapeHtml(row.platform || "Platform")}</strong><span class="subtle">${row.complete_entry ? "All legs matched" : `${row.available_legs || 0}/${state.entryProps.length} legs matched`}</span></div>
-      <p>Expected value ${Number(economics.expected_value || 0) >= 0 ? "+" : ""}${Number(economics.expected_value || 0).toFixed(1)}% · profit chance ${Number(economics.profit_probability || 0).toFixed(1)}% · break-even ${Number(economics.break_even_probability || 0).toFixed(1)}%</p>
+      <div class="suggestion-top"><strong>${escapeHtml(row.platform || "Platform")}</strong><span class="status-pill ${payoutEvidence.verified ? "status-connected" : "status-warning"}">${payoutEvidence.verified ? "Payout verified" : "Payout confirmation needed"}</span></div>
+      <p>${payoutEvidence.verified
+        ? `Expected value ${Number(economics.expected_value || 0) >= 0 ? "+" : ""}${Number(economics.expected_value || 0).toFixed(1)}% · profit chance ${Number(economics.profit_probability || 0).toFixed(1)}% · break-even ${Number(economics.break_even_probability || 0).toFixed(1)}%`
+        : "Enter the exact payout shown in the provider app before using expected value to make a paid decision."}</p>
       <p class="subtle">${escapeHtml(payoutEvidence.note || economics.message || "Confirm the complete card payout.")}</p>
     </div>`;
   }).join("");
@@ -2737,9 +2833,13 @@ function renderAnalysis(data) {
       <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
     </div>
     <div class="analysis-card" style="margin-top:14px">
-      <h3>Payout Economics</h3>
+      <div class="suggestion-top">
+        <h3>${payoutVerified ? "Verified Payout Economics" : "Estimated Payout Economics"}</h3>
+        <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Payout confirmation needed"}</span>
+      </div>
+      ${payoutVerified ? "" : '<p class="subtle">Your sportsbook connection verifies available lines and market odds, but it does not expose the exact Pick’em card payout. Enter the payout shown in the provider app to verify EV.</p>'}
       <div class="metric-strip">
-        <span><strong>${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}</strong><small>Expected Value</small></span>
+        <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Unverified"}</strong><small>Expected Value</small></span>
         <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected Return</small></span>
         <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Profit Chance</small></span>
         <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Provider Break-Even</small></span>
@@ -2898,13 +2998,14 @@ function renderEntryHandoff(data) {
     ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
     <div class="suggestion-list">
       ${(data.legs || []).map((leg, index) => `
-        <div class="suggestion compact-suggestion">
+        <div class="suggestion compact-suggestion ${leg.offer_status === "current" ? "insight-positive" : "insight-warning"}">
           <div class="suggestion-top">
             <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
             <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
           </div>
           <p>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat)} ${leg.line ?? ""}${leg.game ? ` · ${escapeHtml(leg.game)}` : ""}</p>
-          <p class="subtle">${escapeHtml(leg.value_note || "")}</p>
+          <p class="subtle">Live offer: ${escapeHtml(leg.offer_status || "not checked")} · requested ${leg.requested_line ?? leg.line}${leg.current_line == null ? "" : ` · current ${leg.current_line}`}</p>
+          <p class="subtle">${escapeHtml(leg.blocking_reason || leg.value_note || "")}</p>
         </div>
       `).join("")}
     </div>
@@ -2912,7 +3013,7 @@ function renderEntryHandoff(data) {
     <div class="button-row">
       <button class="secondary" id="copy-handoff">Copy Slip</button>
       <button class="secondary" id="share-handoff">Share Slip</button>
-      ${data.open_url ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
+      ${data.open_url && data.ready_for_handoff ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
     </div>
   `;
   $("copy-handoff").addEventListener("click", async () => {
@@ -2983,43 +3084,7 @@ function renderPlacementAudit(data) {
 }
 
 function renderEntryPropsFromAnalyzed(props) {
-  state.entryProps = uniqueUploadedProps(props).map((prop) => ({
-    player: prop.player,
-    player_identity_id: prop.player_identity_id ?? null,
-    player_provider: prop.player_provider || prop.platform || "",
-    provider_player_id: prop.provider_player_id || prop.player_id || "",
-    team: prop.team,
-    position: prop.position || "",
-    sport: prop.sport,
-    stat: prop.stat,
-    line: prop.line,
-    baseline_line: prop.baseline_line ?? null,
-    standard_line: prop.standard_line ?? null,
-    line_offer_type: prop.line_offer_type || "standard",
-    adjusted_line: Boolean(prop.adjusted_line),
-    is_discounted_line: Boolean(prop.is_discounted_line),
-    is_premium_line: Boolean(prop.is_premium_line),
-    line_discount: Number(prop.line_discount || 0),
-    projection: prop.projection,
-    direction: prop.direction || "Over",
-    platform: prop.platform,
-    game: prop.game,
-    game_time: prop.game_time || "",
-    season_type: prop.season_type || "",
-    trending_count: prop.trending_count,
-    auto_projected: prop.auto_projected,
-    provider_backed: prop.provider_backed,
-    projection_source: prop.projection_source,
-    model_version: prop.model_version || "",
-    feature_as_of: prop.feature_as_of || "",
-    forecast_snapshot: prop.forecast_snapshot || {},
-    forecast_paid_eligible: Boolean(prop.forecast_paid_eligible),
-    data_quality: prop.data_quality,
-    data_strength: prop.data_strength,
-    end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
-    settlement_provider: prop.settlement_provider || "",
-    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
-  }));
+  state.entryProps = uniqueUploadedProps(props).map(entryPropFromFeed);
   syncEntryPlatformFromProps();
   renderEntryProps();
 }
@@ -3791,6 +3856,8 @@ async function loadSettlementAudit() {
         ${item.scope === "historical" ? `<p class="subtle">Historical record · entry ${escapeHtml(item.entry_status || "archived")}</p>` : ""}
         <p>${escapeHtml(item.details?.stat || "Stat")} ${item.details?.line ?? ""} · ${escapeHtml(item.result || "Pending")} ${item.actual == null ? "" : `· Final ${item.actual}`}</p>
         <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · ${item.attempt_count || 1} attempt${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
+        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : "No retry scheduled"}</p>
+        ${item.status !== "verified" ? `<p class="human-error">${escapeHtml(item.blocking_reason || "Waiting for verified final data.")}</p>` : ""}
         ${item.matched_player ? `<p class="subtle">Matched ${escapeHtml(item.matched_player)} · ${escapeHtml(item.matched_game || "game unavailable")}</p>` : ""}
       </div>
     `).join("") || `<div class="suggestion">No settlement attempts have been recorded yet. Recheck final stats to populate the audit.</div>`}
@@ -4902,8 +4969,12 @@ async function createAutoPaperCalibrationEntries() {
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
   const diagnostics = data.board_diagnostics || {};
+  const sportResults = (data.sport_results || []).map((row) => `
+    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5</span>
+  `).join("");
   $("auto-paper-calibration-status").innerHTML = `
     Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
+    ${sportResults}
     ${(data.created || []).map((row) => `
       <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
     `).join("") || (skippedText ? `<span class="subtle">${skippedText}</span>` : "")}
@@ -5029,6 +5100,7 @@ function bindEvents() {
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));
+  $("refresh-runtime-status")?.addEventListener("click", () => withButtonBusy("refresh-runtime-status", "Checking...", loadRuntimeStatus));
   $("backup-database").addEventListener("click", () => withButtonBusy("backup-database", "Backing up...", () => manageDatabase("backup")));
   $("export-database").addEventListener("click", () => withButtonBusy("export-database", "Exporting...", () => manageDatabase("export")));
   $("refresh-notifications").addEventListener("click", () => withButtonBusy("refresh-notifications", "Checking...", loadNotifications));
@@ -5244,9 +5316,9 @@ async function loadAll(options = {}) {
 
   if (!state.backgroundLoadPromise) {
     const backgroundTasks = options.refresh
-      ? [loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
+      ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
       : [
-          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(),
+          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");

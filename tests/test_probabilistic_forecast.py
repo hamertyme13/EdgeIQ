@@ -15,6 +15,8 @@ def _history(values):
 
 def test_forecast_uses_verified_history_distribution_for_both_sides() -> None:
     history = _history([24, 23, 22, 25, 21, 24, 23, 22, 26, 24] * 2)
+    for row in history:
+        row["minutes"] = 32
 
     over = forecast_prop("Player", "WNBA", "Points", 20.5, "Over", history=history)
     under = forecast_prop("Player", "WNBA", "Points", 20.5, "Under", history=history)
@@ -79,7 +81,7 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     assert result.features["projection_method"] == "recency_weighted_mean"
     assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
     assert result.features["market_prior_weight"] == 0.5
-    assert result.model_version.endswith("v2.2.3")
+    assert result.model_version.endswith("v2.3.1")
 
 
 def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:
@@ -97,3 +99,26 @@ def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:
     assert result.features["opponent_mean"] > 27
     assert 0 < result.features["opponent_adjustment_weight"] < 0.30
     assert result.features["opponent_projection_delta"] > 0
+
+
+def test_forecast_deduplicates_alias_rows_for_the_same_game() -> None:
+    history = _history([18, 20, 22, 24, 26, 28])
+    duplicate = {**history[0], "actual": 18, "stat": "Points+Rebounds+Assists"}
+
+    result = forecast_prop(
+        "Player", "WNBA", "Points + Rebounds + Assists", 22.5,
+        history=[duplicate, *history],
+    )
+
+    assert result.sample_size == 6
+
+
+def test_thin_high_uncertainty_forecast_shrinks_probability_toward_even() -> None:
+    result = forecast_prop(
+        "Player", "WNBA", "Points + Rebounds + Assists", 22.5, "Under",
+        history=_history([0, 3, 7, 14, 17, 19, 33]),
+    )
+
+    assert result.features["evidence_strength"] < 0.35
+    assert 45 <= result.probability <= 60
+    assert result.paid_eligible is False

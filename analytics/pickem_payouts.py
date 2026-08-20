@@ -26,6 +26,8 @@ def payout_schedule(platform: object, payout_type: object, leg_count: int) -> di
     platform_key = str(platform or "PrizePicks").strip().lower()
     format_key = normalize_payout_type(payout_type)
     legs = int(leg_count or 0)
+    if "draftkings" in platform_key or "pick6" in platform_key:
+        return {}
     if "underdog" in platform_key:
         if format_key == "flex":
             return dict(_UNDERDOG_FLEX.get(legs, {}))
@@ -52,6 +54,13 @@ def payout_analysis(
         if exact_schedule
         else _scale_schedule(payout_schedule(platform, payout_type, len(probs)), displayed_multiplier)
     )
+    manual_multiplier = (
+        displayed_multiplier not in (None, 0, "")
+        and not schedule
+        and normalize_payout_type(payout_type) == "standard"
+    )
+    if manual_multiplier:
+        schedule = {len(probs): float(displayed_multiplier)}
     independent_distribution = win_count_distribution(probs)
     distribution = (
         correlated_win_count_distribution(probs, correlation_matrix)
@@ -84,7 +93,7 @@ def payout_analysis(
         "independent_all_hit_probability": round(independent_distribution.get(len(probs), 0.0) * 100.0, 2),
         "correlation_adjusted": distribution is not independent_distribution,
         "displayed_multiplier": round(displayed_payout, 2),
-        "source": "exact_offer_snapshot" if exact_schedule else "official_base_schedule",
+        "source": "exact_offer_snapshot" if exact_schedule else "user_entered_multiplier" if manual_multiplier else "official_base_schedule",
         "requires_app_confirmation": not bool(exact_schedule),
         "message": "Confirm the final multiplier in the provider app because promotions, adjusted lines, and correlations can change it.",
     }
@@ -101,6 +110,8 @@ def settlement_return_multiplier(
         return 1.0
     wins = sum(1 for row in active if row.get("result") == "Win")
     schedule = _scale_schedule(payout_schedule(platform, payout_type, len(active)), displayed_multiplier)
+    if not schedule and displayed_multiplier not in (None, 0, "") and normalize_payout_type(payout_type) == "standard":
+        schedule = {len(active): float(displayed_multiplier)}
     return round(float(schedule.get(wins, 0.0)), 4)
 
 
@@ -171,4 +182,7 @@ def _scale_schedule(schedule: dict[int, float], displayed_multiplier: float | No
 
 
 def _platform_label(value: object) -> str:
-    return "Underdog" if "underdog" in str(value or "").strip().lower() else "PrizePicks"
+    text = str(value or "").strip().lower()
+    if "draftkings" in text or "pick6" in text:
+        return "DraftKings Pick6"
+    return "Underdog" if "underdog" in text else "PrizePicks"

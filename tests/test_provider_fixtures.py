@@ -8,6 +8,26 @@ from data.providers import espn, prizepicks, underdog
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
+def test_espn_basketball_rows_include_provider_fantasy_score() -> None:
+    rows = espn._basketball_stat_rows(
+        "Fantasy Player", "NY", "WNBA", "NY@IND", date(2026, 8, 11),
+        {"PTS": 14, "REB": 10, "AST": 2, "STL": 1, "BLK": 3, "TO": 1},
+    )
+
+    fantasy = next(row for row in rows if row["stat"] == "Fantasy Score")
+    assert fantasy["actual"] == 40.0
+
+
+def test_espn_event_matching_normalizes_provider_team_aliases() -> None:
+    prop = {
+        "team": "GSV",
+        "game": "CHI @ GSV",
+        "game_time": "2026-08-13T02:00:00Z",
+    }
+
+    assert espn._prop_matches_event(prop, "CHI@GS", date(2026, 8, 12)) is True
+
+
 def test_espn_mlb_final_fixture_preserves_identity_and_scoring() -> None:
     summary = json.loads((FIXTURE_DIR / "espn_mlb_final.json").read_text(encoding="utf-8"))
 

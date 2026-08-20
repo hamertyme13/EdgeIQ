@@ -1,3 +1,6 @@
+from datetime import datetime, timedelta
+
+import repository.repositories.research_evidence_repository as evidence_module
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from web.application.research_service import persist_player_research
 
@@ -55,3 +58,22 @@ def test_settled_outcome_updates_research_usefulness():
     assert repeated == 0
     assert rows[0]["outcomes"]["wins"] == 1
     assert rows[0]["outcomes"]["usefulness_score"] > 50
+
+
+def test_expired_evidence_is_hidden_unless_explicitly_requested(monkeypatch):
+    start = datetime(2026, 8, 20, 12, 0)
+    monkeypatch.setattr(evidence_module, "utc_now", lambda: start)
+    ResearchEvidenceRepository.record_many([{
+        "player": "TTL Player", "sport": "NFL", "stat": "Receiving Yards",
+        "platform": "Underdog", "game": "AAA @ BBB", "evidence_type": "injury",
+        "source_name": "Test", "payload": {"status": "active"}, "ttl_minutes": 1,
+    }])
+
+    monkeypatch.setattr(evidence_module, "utc_now", lambda: start + timedelta(minutes=2))
+
+    assert ResearchEvidenceRepository.relevant("TTL Player", "Receiving Yards", sport="NFL") == []
+    expired = ResearchEvidenceRepository.relevant(
+        "TTL Player", "Receiving Yards", sport="NFL", include_expired=True,
+    )
+    assert len(expired) == 1
+    assert expired[0]["fresh"] is False

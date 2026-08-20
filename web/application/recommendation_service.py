@@ -51,9 +51,10 @@ def trending_props_payload(
     excluded = 0
     for raw in props:
         offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "standard").lower()
-        if raw.get("is_premium_line") or offer_type == "demon":
-            excluded += 1
-            continue
+        if str(raw.get("platform") or platform).strip().lower() == "prizepicks" and (
+            raw.get("is_premium_line") or offer_type == "demon"
+        ):
+            raw = {**raw, "direction": "Over", "allowed_directions": ["Over"]}
         eligibility = end_to_end_eligibility(raw)
         if not eligibility.get("eligible"):
             excluded += 1
@@ -214,12 +215,22 @@ def entry_suggestions_payload(
     raw_props = fetch_props(entry_platform, sport_filter)
     platform_pairs = props_by_platform(entry_platform, raw_props)
     if sport_filter == "NFL" and not platform_pairs:
+        future = []
+        for prop in raw_props:
+            if str(prop.get("league") or prop.get("sport") or "").upper() != "NFL":
+                continue
+            game_time = str(prop.get("game_time") or "").strip()
+            if game_time and str(prop.get("season_type") or "").lower() != "season_long":
+                future.append(game_time)
+        next_slate = min(future, default="")
         return {
             "suggestions": [],
             "mode": "waiting_for_nfl_lines",
+            "next_available_slate": next_slate,
             "message": (
-                "No same-day, full-game NFL player props are posted on the selected platform yet. "
-                "EdgeIQ will generate entries when provider-backed lines with a confirmed matchup and kickoff appear."
+                "No same-day, full-game NFL player props are posted on the selected platform. "
+                + (f"The next provider-backed NFL slate begins {next_slate}. " if next_slate else "")
+                + "EdgeIQ keeps future and season-long offers out of today's entry generator and waits for a confirmed matchup and kickoff."
             ),
         }
     suggestions = []
@@ -467,6 +478,6 @@ def _maximum_legs(platform: str) -> int:
     key = str(platform or "").strip().lower()
     if key == "underdog":
         return 8
-    if key == "prizepicks":
+    if key in {"prizepicks", "draftkings pick6"}:
         return 6
     return 5

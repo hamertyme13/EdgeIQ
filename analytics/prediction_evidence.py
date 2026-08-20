@@ -14,7 +14,7 @@ def independent_market_key(prop: dict) -> str:
         _number(prop.get("line")),
         str(prop.get("direction") or "Over").strip().lower(),
         canonical_matchup_key(prop.get("game") or ""),
-        str(prop.get("game_time") or "")[:10],
+        _game_date(prop.get("game_time")),
     )
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -24,6 +24,8 @@ def offer_key(prop: dict) -> str:
         independent_market_key(prop),
         str(prop.get("platform") or "").strip().lower(),
         str(prop.get("line_offer_type") or "standard").strip().lower(),
+        str(prop.get("provider_player_id") or "").strip().lower(),
+        _number(prop.get("standard_line") if prop.get("standard_line") is not None else prop.get("line")),
     )
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
@@ -51,3 +53,8 @@ def _number(value: object) -> str:
         return f"{float(str(value)):.4f}"
     except (TypeError, ValueError):
         return "0.0000"
+
+
+def _game_date(value: object) -> str:
+    text = str(value or "").strip()
+    return text[:10] if text else ""

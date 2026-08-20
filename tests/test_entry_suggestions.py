@@ -207,7 +207,7 @@ def test_adjusted_prizepicks_lines_do_not_create_opposite_side_free_edges():
         if prop.adjusted_line
     }
     assert ("A", "Under") not in adjusted_sides
-    assert all(player != "A" for player, _ in adjusted_sides)
+    assert all(direction == "Over" for player, direction in adjusted_sides if player == "A")
     assert ("B", "Over") in adjusted_sides
 
 
@@ -236,14 +236,15 @@ def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypat
     assert suggestions
     assert calls["history"] == 1
     assert calls["adjustments"] <= 48
-def test_suggest_entries_excludes_prizepicks_demon_lines() -> None:
+def test_prizepicks_demon_lines_are_modeled_as_over_only() -> None:
     raw_props = [
         {"player": "Premium Player", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 40.5, "standard_line": 20.5, "odds_type": "demon", "adjusted_odds": True},
         {"player": "Standard One", "team": "BBB", "league": "WNBA", "stat": "Points", "line": 18.5, "odds_type": "standard"},
         {"player": "Standard Two", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 7.5, "odds_type": "standard"},
     ]
 
-    suggestions = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=3, leg_count=2)
+    candidates = suggestions_module._props_from_feed(raw_props[0], Platform.PRIZEPICKS)
 
-    assert suggestions
-    assert all(prop.player.name != "Premium Player" for row in suggestions for prop in row.entry.props)
+    assert len(candidates) == 1
+    assert candidates[0].player.name == "Premium Player"
+    assert candidates[0].direction == "Over"

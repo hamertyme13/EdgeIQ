@@ -252,6 +252,8 @@ def _best_matching_row(
     requested_key = _game_key(requested_game)
     if not requested_key:
         return rows[0] if len(rows) == 1 else None
+    if placed_date and not target_date and not _is_full_matchup(requested_game):
+        return None
 
     matched = [row for row in rows if _game_key(row.game) == requested_key]
 
@@ -271,7 +273,10 @@ def _best_matching_row(
     if not matched:
         return None
 
-    matched = _rows_near_target_date(matched, target_date)
+    nearby_matched = _rows_near_target_date(matched, target_date)
+    if not nearby_matched and _is_full_matchup(requested_game) and _rows_allow_extended_date_recovery(matched):
+        nearby_matched = _unique_matchup_row_within_days(matched, target_date, max_days=7)
+    matched = nearby_matched
     if not matched and allow_unique_date_fallback:
         matched = _unique_team_row_on_target_date(rows, team, target_date)
     if not matched:
@@ -308,6 +313,8 @@ def _rows_near_target_date(
     exact = [row for row in rows if str(row.game_date or "") == target_date]
     if exact:
         return exact
+    if any(str(getattr(row, "sport", "") or "").upper() == "MLB" for row in rows):
+        return []
     try:
         requested = date.fromisoformat(target_date)
     except ValueError:
@@ -317,6 +324,36 @@ def _rows_near_target_date(
         for row in rows
         if _date_distance(row.game_date, requested) <= 1
     ]
+
+
+def _unique_matchup_row_within_days(
+    rows: list[FinalPlayerStatModel],
+    target_date: str | None,
+    max_days: int,
+) -> list[FinalPlayerStatModel]:
+    """Recover an incorrect saved date only when one exact matchup is possible."""
+    if not target_date:
+        return []
+    try:
+        requested = date.fromisoformat(target_date)
+    except ValueError:
+        return []
+    nearby = [row for row in rows if _date_distance(row.game_date, requested) <= max_days]
+    dates = {str(row.game_date or "") for row in nearby}
+    return nearby if len(dates) == 1 else []
+
+
+def _is_full_matchup(value: object) -> bool:
+    text = str(value or "").upper()
+    return "@" in text or " VS " in text or " VS. " in text or " VERSUS " in text
+
+
+def _rows_allow_extended_date_recovery(rows: list[FinalPlayerStatModel]) -> bool:
+    sports = {
+        sport for row in rows
+        if (sport := str(getattr(row, "sport", "") or "").upper())
+    }
+    return not sports or sports.issubset({"NBA", "WNBA", "NFL"})
 
 
 def _date_distance(value: object, target: date) -> int:

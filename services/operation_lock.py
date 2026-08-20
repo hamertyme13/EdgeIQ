@@ -21,9 +21,10 @@ def named_operation_lock(name: str) -> Iterator[bool]:
         return
 
     path = Path(tempfile.gettempdir()) / f"edgeiq-{name}.lock"
-    handle = path.open("a+", encoding="ascii")
+    handle = None
     acquired = False
     try:
+        handle = path.open("a+", encoding="ascii")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             acquired = True
@@ -33,5 +34,6 @@ def named_operation_lock(name: str) -> Iterator[bool]:
     finally:
         if acquired:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        if handle is not None:
+            handle.close()
         thread_lock.release()

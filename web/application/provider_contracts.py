@@ -30,6 +30,14 @@ _CONTRACTS = {
         "Entry lines",
         "Not for settlement",
     ),
+    "DraftKings Pick6": ProviderContract(
+        "manual_import",
+        "draftkings-pick6-manual-v1",
+        False,
+        "",
+        "Manual entry tracking and imported Pick6 offers",
+        "Not for settlement; ESPN verifies final player stats",
+    ),
     "Sleeper": ProviderContract(
         "official_public_api",
         "sleeper-v1",

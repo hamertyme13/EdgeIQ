@@ -41,3 +41,28 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "research_evidence",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
+
+
+def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None:
+    database_path = tmp_path / "alembic-roundtrip.db"
+    environment = {**os.environ, "DATABASE_URL": f"sqlite:///{database_path}"}
+    root = Path(__file__).parents[1]
+
+    for command in (("upgrade", "head"), ("downgrade", "base"), ("upgrade", "head")):
+        subprocess.run(
+            [sys.executable, "-m", "alembic", *command],
+            check=True,
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        evidence_exists = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'research_evidence'"
+        ).fetchone()[0]
+
+    assert revision == "c73b8e91d442"
+    assert evidence_exists == 1

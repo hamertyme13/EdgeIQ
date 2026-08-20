@@ -9,9 +9,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import repository.repositories.research_evidence_repository as evidence_module
 import repository.repositories.settlement_audit_repository as audit_module
 import web.app as web_app
 from repository.database import Base
+from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services.data_management import backup_database
 from services.operation_lock import named_operation_lock
@@ -36,6 +38,90 @@ def test_named_operation_lock_allows_only_one_scheduler_instance():
 
     assert outcomes.count(True) == 1
     assert len(entered) == 1
+
+
+@pytest.mark.concurrency
+def test_operation_lock_survives_high_contention():
+    barrier = threading.Barrier(24)
+    active = 0
+    peak = 0
+    guard = threading.Lock()
+
+    def worker(_index):
+        nonlocal active, peak
+        barrier.wait()
+        with named_operation_lock("operation-lock-stress") as acquired:
+            if not acquired:
+                return False
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.03)
+            with guard:
+                active -= 1
+            return True
+
+    with ThreadPoolExecutor(max_workers=24) as pool:
+        outcomes = list(pool.map(worker, range(24)))
+
+    assert outcomes.count(True) == 1
+    assert peak == 1
+
+
+@pytest.mark.concurrency
+def test_scheduled_maintenance_runs_only_once_under_contention(monkeypatch):
+    barrier = threading.Barrier(12)
+    calls = 0
+    guard = threading.Lock()
+
+    def run_locked():
+        nonlocal calls
+        with guard:
+            calls += 1
+        time.sleep(0.04)
+        return {"ok": True, "jobs_run": ["test"]}
+
+    monkeypatch.setattr(web_app, "_run_due_daily_operations_locked", run_locked)
+
+    def worker(_index):
+        barrier.wait()
+        return web_app._run_due_daily_operations()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(worker, range(12)))
+
+    assert calls == 1
+    assert sum(not row.get("skipped", False) for row in results) == 1
+
+
+@pytest.mark.concurrency
+def test_research_evidence_deduplicates_concurrent_writes(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'evidence.db'}",
+        connect_args={"check_same_thread": False, "timeout": 5},
+    )
+    Base.metadata.create_all(engine)
+    sessions = sessionmaker(bind=engine)
+    monkeypatch.setattr(evidence_module, "SessionLocal", sessions)
+    monkeypatch.setattr(evidence_module, "initialize_database", lambda: None)
+    fact = {
+        "player": "Concurrent Player", "sport": "WNBA", "stat": "Points",
+        "platform": "PrizePicks", "game": "AAA @ BBB", "evidence_type": "provider_market",
+        "source_name": "PrizePicks", "payload": {"line": 19.5}, "ttl_minutes": 60,
+    }
+    barrier = threading.Barrier(12)
+
+    def worker(_index):
+        barrier.wait()
+        return ResearchEvidenceRepository.record_many([fact])[0]["id"]
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        ids = list(pool.map(worker, range(12)))
+
+    with sessions() as session:
+        count = session.query(evidence_module.ResearchEvidenceModel).count()
+    assert count == 1
+    assert len(set(ids)) == 1
 
 
 @pytest.mark.concurrency

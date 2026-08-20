@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from data.providers.cache import get_json
 from repository.repositories.final_stats_repository import FinalStatsRepository
-from utils.entity_normalization import canonical_person_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports"
 _SPORT_PATHS = {
@@ -26,6 +26,7 @@ _HEADERS = {
     "Accept": "application/json",
 }
 _SLATE_TIME_ZONE = ZoneInfo("America/New_York")
+_TEAM_ALIASES = {"GSV": "GS", "LAS": "LV", "LVA": "LV", "NYL": "NY", "PHO": "PHX"}
 
 
 def refresh_final_stats_for_entries(entries: list[dict], lookback_days: int = 2) -> dict:
@@ -248,10 +249,10 @@ def fetch_missing_entry_dnp_stats(
 
 
 def _prop_matches_event(prop: dict, matchup: str, game_date: date) -> bool:
-    matchup_key = "".join(character for character in matchup.upper() if character.isalnum())
-    team_key = "".join(character for character in str(prop.get("team") or "").upper() if character.isalnum())
-    opponent_key = "".join(character for character in str(prop.get("game") or "").upper() if character.isalnum())
-    if not team_key or not opponent_key or team_key not in matchup_key or opponent_key not in matchup_key:
+    matchup_key = canonical_matchup_key(matchup, _TEAM_ALIASES)
+    requested_key = canonical_matchup_key(prop.get("game"), _TEAM_ALIASES)
+    team_key = _TEAM_ALIASES.get(str(prop.get("team") or "").upper(), str(prop.get("team") or "").upper())
+    if not team_key or not requested_key or team_key not in matchup_key or requested_key != matchup_key:
         return False
     game_time = str(prop.get("game_time") or "").strip()
     if not game_time:
@@ -441,12 +442,25 @@ def _football_stat_rows(
             "Rush + Rec TDs": rush_tds + rec_tds,
             "Rush+Rec TDs": rush_tds + rec_tds,
         })
+    if passing or rushing:
+        pass_yards = passing.get("YDS", 0.0)
+        rush_yards = rushing.get("YDS", 0.0)
+        pass_tds = passing.get("TD", 0.0)
+        rush_tds = rushing.get("TD", 0.0)
+        values.update({
+            "Pass + Rush Yards": pass_yards + rush_yards,
+            "Pass+Rush Yards": pass_yards + rush_yards,
+            "Pass + Rush TDs": pass_tds + rush_tds,
+            "Pass+Rush TDs": pass_tds + rush_tds,
+        })
     if defensive:
         total_tackles = defensive.get("TOT", 0.0)
         values.update({
             "Sacks": defensive.get("SACKS", 0.0),
             "Tackles": total_tackles,
             "Tackles + Assists": total_tackles,
+            "Solo Tackles": defensive.get("SOLO", 0.0),
+            "Assisted Tackles": defensive.get("AST", 0.0),
         })
     if interceptions:
         values.update({
@@ -454,10 +468,17 @@ def _football_stat_rows(
             "Interceptions": interceptions.get("INT", 0.0),
         })
     if kicking:
-        xp_made, _ = _made_attempted(kicking_raw.get("XP", "0/0"))
+        xp_made, xp_attempted = _made_attempted(kicking_raw.get("XP", "0/0"))
+        fg_made, fg_attempted = _made_attempted(kicking_raw.get("FG", "0/0"))
         values.update({
             "XP Made": xp_made,
             "Extra Points Made": xp_made,
+            "Extra Points Attempted": xp_attempted,
+            "Field Goals Made": fg_made,
+            "Field Goals Attempted": fg_attempted,
+            "Kicking Field Goals Made": fg_made,
+            "Kicking Field Goals Attempted": fg_attempted,
+            "Longest Field Goal": kicking.get("LONG", 0.0),
             "Kicking Points": kicking.get("PTS", 0.0),
         })
 
@@ -471,9 +492,12 @@ def _football_dnp_rows(player: str, team: str, game: str, game_date: date) -> li
         "Rush Yards", "Rushing Yards", "Rush Attempts", "Carries", "Rush TDs", "Rushing TDs",
         "Rec Yards", "Receiving Yards", "Receptions", "Targets", "Rec TDs", "Receiving TDs",
         "Rush + Rec Yards", "Rush+Rec Yards", "Rush + Rec TDs", "Rush+Rec TDs", "Sacks",
-        "Tackles", "Tackles + Assists",
+        "Pass + Rush Yards", "Pass+Rush Yards", "Pass + Rush TDs", "Pass+Rush TDs",
+        "Tackles", "Tackles + Assists", "Solo Tackles", "Assisted Tackles",
         "Defensive Interceptions",
-        "XP Made", "Extra Points Made", "Kicking Points",
+        "XP Made", "Extra Points Made", "Extra Points Attempted", "Field Goals Made",
+        "Field Goals Attempted", "Kicking Field Goals Made",
+        "Kicking Field Goals Attempted", "Longest Field Goal", "Kicking Points",
     ]
     return [_row(player, team, "NFL", stat, game, game_date, 0.0, "dnp") for stat in stats]
 
@@ -626,7 +650,11 @@ def _basketball_stat_rows(
     steals = stats.get("STL", 0.0)
     blocks = stats.get("BLK", 0.0)
     turnovers = stats.get("TO", 0.0)
-    threes = _made_field_goal(stats.get("3PT", 0.0))
+    threes, three_attempts = _shooting_pair(stats, "3PT", "3PM", "3PA")
+    field_goals, field_goal_attempts = _shooting_pair(stats, "FG", "FGM", "FGA")
+    free_throws, free_throw_attempts = _shooting_pair(stats, "FT", "FTM", "FTA")
+    double_digit_categories = sum(value >= 10 for value in (points, rebounds, assists, steals, blocks))
+    fantasy_score = points + (1.2 * rebounds) + (1.5 * assists) + (3.0 * blocks) + (3.0 * steals) - turnovers
 
     values = {
         "Points": points,
@@ -635,7 +663,17 @@ def _basketball_stat_rows(
         "Steals": steals,
         "Blocks": blocks,
         "Turnovers": turnovers,
+        "Fantasy Score": round(fantasy_score, 2),
         "3-Pointers Made": threes,
+        "3-Pointers Attempted": three_attempts,
+        "Field Goals Made": field_goals,
+        "Field Goals Attempted": field_goal_attempts,
+        "Free Throws Made": free_throws,
+        "Free Throws Attempted": free_throw_attempts,
+        "2-Pointers Made": max(0.0, field_goals - threes),
+        "2-Pointers Attempted": max(0.0, field_goal_attempts - three_attempts),
+        "Offensive Rebounds": stats.get("OREB", 0.0),
+        "Defensive Rebounds": stats.get("DREB", 0.0),
         "PRA": points + rebounds + assists,
         "Points + Rebounds + Assists": points + rebounds + assists,
         "Points+Rebounds+Assists": points + rebounds + assists,
@@ -647,6 +685,8 @@ def _basketball_stat_rows(
         "Rebounds+Assists": rebounds + assists,
         "Steals + Blocks": steals + blocks,
         "Steals+Blocks": steals + blocks,
+        "Double Doubles": 1.0 if double_digit_categories >= 2 else 0.0,
+        "Triple Doubles": 1.0 if double_digit_categories >= 3 else 0.0,
     }
     return [
         _row(player, team, sport, stat, game, game_date, actual, status)
@@ -662,7 +702,17 @@ def _dnp_rows(player: str, team: str, sport: str, game: str, game_date: date) ->
         "Steals",
         "Blocks",
         "Turnovers",
+        "Fantasy Score",
         "3-Pointers Made",
+        "3-Pointers Attempted",
+        "Field Goals Made",
+        "Field Goals Attempted",
+        "Free Throws Made",
+        "Free Throws Attempted",
+        "2-Pointers Made",
+        "2-Pointers Attempted",
+        "Offensive Rebounds",
+        "Defensive Rebounds",
         "PRA",
         "Points + Rebounds + Assists",
         "Points+Rebounds+Assists",
@@ -674,6 +724,8 @@ def _dnp_rows(player: str, team: str, sport: str, game: str, game_date: date) ->
         "Rebounds+Assists",
         "Steals + Blocks",
         "Steals+Blocks",
+        "Double Doubles",
+        "Triple Doubles",
     ]
     return [_row(player, team, sport, stat, game, game_date, 0.0, "dnp") for stat in stats]
 
@@ -713,8 +765,22 @@ def _stats_by_label(labels: Iterable[str], values: Iterable[Any]) -> dict[str, f
     stats: dict[str, float] = {}
     for label, value in zip(labels, values, strict=False):
         key = str(label).upper()
-        stats[key] = _made_field_goal(value) if key in {"3PT", "3FG"} else _numeric(value)
+        if key in {"FG", "3PT", "3FG", "FT"}:
+            made, attempted = _made_attempted(value)
+            stats[key] = made
+            prefix = "3P" if key in {"3PT", "3FG"} else key
+            stats[f"{prefix}M"] = made
+            stats[f"{prefix}A"] = attempted
+        else:
+            stats[key] = _numeric(value)
     return stats
+
+
+def _shooting_pair(stats: dict[str, Any], raw_key: str, made_key: str, attempted_key: str) -> tuple[float, float]:
+    raw = stats.get(raw_key)
+    if raw is not None and ("-" in str(raw) or "/" in str(raw)):
+        return _made_attempted(raw)
+    return _numeric(stats.get(made_key, raw)), _numeric(stats.get(attempted_key, 0.0))
 
 
 def _numeric(value: Any) -> float:

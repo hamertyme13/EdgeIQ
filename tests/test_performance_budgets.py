@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 import repository.repositories.settlement_audit_repository as audit_module
 import web.app as web_app
 import web.application.results_service as results_service
+from analytics.card_probability import analyze_card_probability
 from analytics.entry_suggestions import suggest_entries
 from analytics.pickem_payouts import payout_analysis
 from analytics.probabilistic_forecast import forecast_prop
@@ -64,6 +65,26 @@ def test_payout_and_normalization_hot_paths_stay_within_budget():
     )
     assert payout_ms < 500
     assert normalization_ms < 750
+
+
+@pytest.mark.performance
+def test_card_simulation_runtime_stays_bounded_at_two_through_six_legs():
+    for leg_count in range(2, 7):
+        props = [
+            {
+                "player": f"Player {index}", "team": f"T{index % 3}", "sport": "NFL",
+                "stat": "Receiving Yards", "direction": "Over", "game": f"G{index % 2}",
+                "confidence": 55 + index,
+            }
+            for index in range(leg_count)
+        ]
+        elapsed = _elapsed_ms(
+            lambda rows=props: analyze_card_probability(
+                rows, "PrizePicks", "standard", displayed_multiplier=3.0,
+            ),
+            iterations=5,
+        )
+        assert elapsed / 5 < 100, f"{leg_count}-leg simulation exceeded 100 ms average"
 
 
 @pytest.mark.performance

@@ -2345,6 +2345,15 @@ tr.sport-group-row:hover td {
 .direction-under .direction-arrow {
   animation-name: arrowFloatDown;
 }
+
+.offer-rule-label {
+  display: block;
+  margin-top: 4px;
+  color: var(--warning, #f7b84b);
+  font-size: 0.72rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 @keyframes arrowFloatUp {
   0%, 100% { transform: translateY(1px); opacity: .72; }
   50% { transform: translateY(-2px); opacity: 1; }
@@ -4906,9 +4915,177 @@ td,
   gap: 6px;
 }
 
+.copilot-decision-brief {
+  display: grid;
+  gap: 14px;
+}
+
+.copilot-bottom-line {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.copilot-bottom-line > span,
+.source-heading {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.copilot-bottom-line h3,
+.copilot-bottom-line p,
+.copilot-brief-grid p,
+.copilot-brief-grid li {
+  overflow-wrap: anywhere;
+}
+
+.copilot-brief-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.copilot-brief-grid > div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(10, 18, 31, 0.42);
+}
+
+.copilot-brief-grid ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.copilot-source {
+  color: var(--text);
+  font-size: 0.78rem;
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent);
+}
+
+.risk-profile-label {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.risk-conservative { color: #38d996; border-color: rgba(56, 217, 150, .55); }
+.risk-balanced { color: #62b6ff; border-color: rgba(98, 182, 255, .55); }
+.risk-aggressive { color: #f7b84b; border-color: rgba(247, 184, 75, .55); }
+
+.opportunity-risk-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 4px 5px;
+  border-bottom: 1px solid currentColor;
+}
+
+.opportunity-risk-header strong { font-size: 0.82rem; text-transform: uppercase; }
+.opportunity-risk-header span { color: var(--muted); font-size: 0.78rem; }
+
+.opportunity-expired {
+  opacity: 0.68;
+  border-color: rgba(255, 77, 109, .55);
+}
+
+.runtime-status-panel {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+.runtime-status-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.runtime-status-heading h2 { margin: 0; font-size: 1rem; }
+.runtime-status-heading .eyebrow { margin: 0 0 2px; }
+
+.runtime-status-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.runtime-status-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.runtime-status-item div { min-width: 0; }
+.runtime-status-item strong,
+.runtime-status-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-status-item small { color: var(--muted); }
+.runtime-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: #f7b84b; }
+.runtime-ready .runtime-status-dot { background: #38d996; }
+.runtime-status-loading { grid-column: 1 / -1; color: var(--muted); }
+
 @media (max-width: 900px) {
   .copilot-fields,
   .model-evaluation-row {
     grid-template-columns: 1fr;
   }
+  .runtime-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  .copilot-brief-grid,
+  .runtime-status-grid { grid-template-columns: 1fr; }
+}
+.entry-leg-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(150px, 2fr) minmax(140px, 2fr) repeat(3, minmax(90px, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.entry-leg-edit-grid label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.entry-leg-edit-grid input,
+.entry-leg-edit-grid select {
+  margin-top: 4px;
+  width: 100%;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 6px 10px;
+  margin-right: 6px;
+}
+
+.model-disagreement {
+  display: block;
+  margin-top: 4px;
+  color: var(--warning, #f6b73c);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+@media (max-width: 900px) {
+  .entry-leg-edit-grid { grid-template-columns: 1fr 1fr; }
 }

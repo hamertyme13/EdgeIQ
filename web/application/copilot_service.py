@@ -10,12 +10,12 @@ from web.schemas import CopilotQueryPayload, ModelEvaluationPayload, Recommendat
 ANSWER_SCHEMA = {
     "type": "object",
     "properties": {
-        "answer": {"type": "string"},
-        "recommendation": {"type": "string"},
-        "supporting_evidence": {"type": "array", "items": {"type": "string"}},
-        "counterargument": {"type": "string"},
-        "missing_information": {"type": "array", "items": {"type": "string"}},
-        "suggested_correction": {"type": "string"},
+        "answer": {"type": "string", "maxLength": 700},
+        "recommendation": {"type": "string", "maxLength": 240},
+        "supporting_evidence": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 180}},
+        "counterargument": {"type": "string", "maxLength": 240},
+        "missing_information": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 160}},
+        "suggested_correction": {"type": "string", "maxLength": 220},
         "citations": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
@@ -40,6 +40,16 @@ def copilot_query_payload(
             None if payload.sport == "All Sports" else payload.sport,
             payload.platform, payload.line,
         )
+        evidence = {
+            **evidence,
+            "query_context": {
+                "player": payload.player,
+                "stat": payload.stat,
+                "requested_line": payload.line,
+                "requested_sport": payload.sport,
+                "requested_platform": payload.platform,
+            },
+        }
     elif intent == "outcome_learning":
         evidence = loss_review()
     elif intent == "portfolio":
@@ -124,7 +134,8 @@ def _evidence_bundle(intent: str, evidence: dict) -> dict:
             })
         if not citations:
             for index, row in enumerate(compact.get("chart") or [], start=1):
-                citations.append({"id": f"final-{index}", "label": str(row.get("game") or row.get("game_date") or "Final stat"), "data": row})
+                game_label = str(row.get("game") or row.get("game_date") or "Tracked game")
+                citations.append({"id": f"final-{index}", "label": f"Verified final stat · {game_label}", "data": row})
         if compact.get("recommendation"):
             citations.append({"id": "current-market", "label": "Current provider market", "data": compact["recommendation"]})
     elif intent == "outcome_learning":
@@ -209,7 +220,14 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
                 "You are EdgeIQ's grounded local research copilot. Use only the JSON evidence. "
                 "Do not invent or recalculate numbers, players, injuries, lines, odds, or outcomes. "
                 "Citations must be selected only from citation_ids. If evidence is missing, say so. "
-                "Matchup history describes the player's results, never opponent defense. Return only the requested JSON schema."
+                "Answer the user's requested line when query_context.requested_line is present. If a current provider "
+                "offer uses another line, label it separately and never silently substitute it for the requested line. "
+                "Cite forecast evidence for projection or probability claims, provider-market evidence for current-line "
+                "claims, and final-stat or history evidence for historical claims. "
+                "Matchup history describes the player's results, never opponent defense. "
+                "Write for a bettor, not a developer: use short plain-English sentences, never JSON field names, "
+                "underscores, raw object dumps, or unexplained model jargon. Lead with the decision and state uncertainty plainly. "
+                "Return only the requested JSON schema."
             ),
         },
         {"role": "user", "content": json.dumps({"question": question, "citation_ids": citation_ids, "evidence": bundle}, default=str)},
@@ -226,14 +244,53 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
         return None, "Ollama introduced a number that was not in the evidence, so EdgeIQ used its grounded fallback."
     if _unsupported_matchup_claim(answer):
         return None, "Ollama misread matchup evidence, so EdgeIQ used its grounded fallback."
+    if not _citations_support_claim_types(answer, bundle) or _misstates_requested_line(answer, bundle):
+        correction_messages = messages + [
+            {"role": "assistant", "content": json.dumps(answer)},
+            {
+                "role": "user",
+                "content": (
+                    "Revise the JSON answer. One or more claims cite the wrong evidence category. "
+                    "Use a probability_forecast citation for projection/probability/confidence, a provider_market "
+                    "or current-market citation for current offers, and a final_stat/history/role_and_lineup citation "
+                    "for historical claims. Remove any claim that lacks the matching evidence type. Preserve the "
+                    "requested line and distinguish it from other provider lines."
+                ),
+            },
+        ]
+        revised, revised_error = ollama_structured(
+            correction_messages, schema, model=model, timeout=20,
+        )
+        if (
+            not revised
+            or not (revised.get("citations") or [])
+            or not set(revised.get("citations") or []).issubset(set(citation_ids))
+            or _unsupported_numbers(revised, bundle)
+            or _unsupported_matchup_claim(revised)
+            or not _citations_support_claim_types(revised, bundle)
+            or _misstates_requested_line(revised, bundle)
+        ):
+            return None, revised_error or "Ollama cited the wrong evidence type after correction, so EdgeIQ used its grounded fallback."
+        answer = revised
+        used = answer.get("citations") or []
     answer["citations"] = list(dict.fromkeys(used))
     return answer, None
 
 
 def _unsupported_numbers(answer: dict, bundle: dict) -> bool:
-    generated = {token for token in re.findall(r"\d+(?:\.\d+)?", json.dumps(answer)) if float(token) > 10}
-    evidence = set(re.findall(r"\d+(?:\.\d+)?", json.dumps(bundle, default=str)))
-    return bool(generated - evidence)
+    answer_without_citations = {
+        key: value for key, value in answer.items() if key != "citations"
+    }
+    generated = [
+        float(token)
+        for token in re.findall(r"\d+(?:\.\d+)?", json.dumps(answer_without_citations))
+        if float(token) > 10
+    ]
+    evidence = [
+        float(token)
+        for token in re.findall(r"\d+(?:\.\d+)?", json.dumps(bundle, default=str))
+    ]
+    return any(not any(abs(value - supported) < 0.011 for supported in evidence) for value in generated)
 
 
 def _unsupported_matchup_claim(answer: dict) -> bool:
@@ -245,6 +302,37 @@ def _unsupported_matchup_claim(answer: dict) -> bool:
         r"opponent allows?",
     )
     return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _citations_support_claim_types(answer: dict, bundle: dict) -> bool:
+    text = " ".join(str(answer.get(key) or "") for key in (
+        "answer", "recommendation", "supporting_evidence", "counterargument", "suggested_correction",
+    )).lower()
+    cited_ids = set(answer.get("citations") or [])
+    cited_labels = " ".join(
+        str(row.get("label") or "").lower()
+        for row in bundle.get("citations", [])
+        if row.get("id") in cited_ids
+    )
+    requirements = (
+        (("projection", "probability", "confidence", "forecast"), ("forecast", "probability")),
+        (("current line", "current market", "provider line", "offer"), ("provider_market", "provider market", "current provider market")),
+        (("history", "historical", "last 5", "last 10", "season average"), ("history", "final_stat", "final stat", "role_and_lineup")),
+    )
+    return all(
+        not any(term in text for term in claim_terms)
+        or any(label in cited_labels for label in evidence_labels)
+        for claim_terms, evidence_labels in requirements
+    )
+
+
+def _misstates_requested_line(answer: dict, bundle: dict) -> bool:
+    requested = ((bundle.get("summary") or {}).get("query_context") or {}).get("requested_line")
+    if requested is None:
+        return False
+    text = " ".join(str(answer.get(key) or "") for key in ("answer", "recommendation")).lower()
+    stated = re.findall(r"requested line (?:is|of|was)\s*([0-9]+(?:\.[0-9]+)?)", text)
+    return any(abs(float(value) - float(requested)) >= 0.011 for value in stated)
 
 
 def _fallback_answer(intent: str, bundle: dict) -> dict:

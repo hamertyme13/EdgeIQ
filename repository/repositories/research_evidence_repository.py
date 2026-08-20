@@ -5,6 +5,8 @@ import json
 import uuid
 from datetime import timedelta
 
+from sqlalchemy.exc import IntegrityError
+
 from repository.database import SessionLocal, initialize_database
 from repository.models.research_evidence_model import ResearchEvidenceModel
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
@@ -43,8 +45,15 @@ class ResearchEvidenceRepository:
                         last_accessed_at=now,
                         payload=json.dumps(payload, default=str, sort_keys=True),
                     )
-                    session.add(row)
-                    session.flush()
+                    try:
+                        with session.begin_nested():
+                            session.add(row)
+                            session.flush()
+                    except IntegrityError:
+                        row = session.query(ResearchEvidenceModel).filter_by(fingerprint=fingerprint).one()
+                        row.last_accessed_at = now
+                        if row.expires_at < now:
+                            row.expires_at = now + timedelta(minutes=ttl_minutes)
                 else:
                     row.last_accessed_at = now
                     if row.expires_at < now:
