@@ -76,6 +76,7 @@ from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
+from repository.repositories.plausibility_rejection_repository import PlausibilityRejectionRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
@@ -198,6 +199,7 @@ from web.application.provider_health_service import (
 from web.application.provider_health_service import (
     provider_status_key as _provider_status_key,
 )
+from web.application.recommendation_policy import recommendation_eligibility
 from web.application.recommendation_service import (
     cached_command_center_payload as build_cached_command_center_payload,
 )
@@ -467,7 +469,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260813-v238-balanced-paper-sports"
+STATIC_ASSET_VERSION = "20260820-v239-opportunity-risk-lanes"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -763,7 +765,8 @@ def _portfolio_intelligence_payload() -> dict:
         for prop in entry.get("props", [])
         if prop.get("player") and prop.get("stat") and prop.get("platform")
     ])
-    market_entries = [_entry_clv_payload(entry, histories) for entry in pending]
+    checked_at = utc_now()
+    market_entries = [_entry_live_market_payload(entry, histories, now=checked_at) for entry in pending]
     intelligence = build_portfolio_intelligence_payload(
         pending_entries=pending,
         bankroll=float(get_dashboard().get("bankroll") or get_starting_bankroll() or 0.0),
@@ -772,6 +775,7 @@ def _portfolio_intelligence_payload() -> dict:
     intelligence["monitor"] = build_active_portfolio_monitor_payload(
         pending_entries=pending,
         market_entries=market_entries,
+        now=checked_at,
     )
     return intelligence
 
@@ -1504,6 +1508,11 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
             market_supported = False
         if any(label in raw_stat for label in ("first td", "first touchdown", "fantasy point")):
             market_supported = False
+    elif sport == "NHL":
+        market_supported = stat in {
+            "goals", "assists", "points", "shots on goal", "blocked shots", "hits",
+            "saves", "goalie saves", "goals against", "shots against",
+        }
 
     if not player or player.lower() == "unknown":
         reasons.append("named player is required")
@@ -3680,22 +3689,36 @@ def _run_daily_briefing_scan(
     trigger: str = "manual",
     sync_result: dict | None = None,
 ) -> dict:
-    return run_briefing_scan(
-        platform,
-        sport_filter,
-        scan_id=scan_id,
-        trigger=trigger,
-        sync_result=sync_result,
-        create_scan=lambda selected_platform, selected_sport, selected_trigger: _new_daily_scan(
-            selected_platform,
-            selected_sport,
-            selected_trigger,
-        ),
-        save_status=lambda scan: _save_daily_scan_status(scan),
-        update_scan=lambda *args, **kwargs: _update_daily_scan(*args, **kwargs),
-        cached_briefing=lambda *args, **kwargs: _cached_daily_briefing_payload(*args, **kwargs),
-        append_log=lambda scan: _append_daily_scan_log(scan),
-    )
+    with named_operation_lock("daily-briefing-scan") as acquired:
+        if not acquired:
+            scan = _new_daily_scan(platform, sport_filter, trigger)
+            if scan_id:
+                scan["id"] = scan_id
+            return {
+                **scan,
+                "status": "failed",
+                "status_label": "Already Running",
+                "message": "Another Daily Briefing scan is already running.",
+                "progress": 100,
+                "completed_at": iso_utc(utc_now()),
+                "errors": ["Wait for the active scan to finish before starting another refresh."],
+            }
+        return run_briefing_scan(
+            platform,
+            sport_filter,
+            scan_id=scan_id,
+            trigger=trigger,
+            sync_result=sync_result,
+            create_scan=lambda selected_platform, selected_sport, selected_trigger: _new_daily_scan(
+                selected_platform,
+                selected_sport,
+                selected_trigger,
+            ),
+            save_status=lambda scan: _save_daily_scan_status(scan),
+            update_scan=lambda *args, **kwargs: _update_daily_scan(*args, **kwargs),
+            cached_briefing=lambda *args, **kwargs: _cached_daily_briefing_payload(*args, **kwargs),
+            append_log=lambda scan: _append_daily_scan_log(scan),
+        )
 
 
 def _daily_scan_summary(briefing: dict) -> dict:
@@ -4125,7 +4148,8 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
         ),
         reverse=True,
     )
-    top_rows = rows[:5]
+    top_rows = _opportunities_by_risk_lane(rows, per_lane=3)
+    model_paid_enabled = _model_health_payload().get("paid_entry_mode") == "enabled"
     for row in top_rows:
         row["decision_receipt"] = _opportunity_decision_receipt(
             row,
@@ -4133,11 +4157,13 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             pending_entries,
         )
         row["trust"] = _trust_score_for_props([row])
-        row["actionable"] = bool(
-            row.get("market_supported")
-            and float((row.get("trust") or {}).get("score") or 0.0) >= 50.0
-            and float(row.get("confidence") or 0.0) >= 52.0
+        row["recommendation_eligibility"] = recommendation_eligibility(
+            row,
+            trust_score=float((row.get("trust") or {}).get("score") or 0.0),
+            model_paid_enabled=model_paid_enabled,
         )
+        row["actionable"] = row["recommendation_eligibility"]["paper_ready"]
+        row["paid_actionable"] = row["recommendation_eligibility"]["paid_ready"]
         market = row["decision_receipt"].get("market_consensus") or {}
         labels = list(row.get("data_strength") or [])
         if market.get("available"):
@@ -4149,6 +4175,25 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             labels.append({"label": "Live DFS offer matched", "status": "verified"})
         row["data_strength"] = labels
     return top_rows
+
+
+def _opportunities_by_risk_lane(rows: list[dict], *, per_lane: int = 3) -> list[dict]:
+    """Keep one risk lane from crowding every other useful board option out."""
+    lane_order = ("conservative", "balanced", "aggressive")
+    limit = max(1, int(per_lane))
+    selected = [
+        row
+        for lane in lane_order
+        for row in [
+            candidate for candidate in rows
+            if (candidate.get("risk_profile") or {}).get("key") == lane
+        ][:limit]
+    ]
+    if len(selected) >= 5:
+        return selected
+    selected_ids = {id(row) for row in selected}
+    selected.extend(row for row in rows if id(row) not in selected_ids)
+    return selected[:5]
 
 
 def _opportunity_decision_receipt(
@@ -5934,6 +5979,7 @@ def _confirmed_props_payload(
     analysis_limit: int | None = None,
 ) -> dict:
     raw_props = _fetch_props(platform, sport_filter)
+    _record_plausibility_rejections(raw_props, fallback_provider=platform)
     confirmed: list[dict] = []
     eligible = [
         raw
@@ -5981,6 +6027,21 @@ def _confirmed_props_payload(
         "end_to_end_only": True,
         "settlement_provider": "ESPN official box score",
     }
+
+
+def _record_plausibility_rejections(props: list[dict], *, fallback_provider: str = "") -> int:
+    rejected = []
+    for prop in props:
+        result = prop_line_plausibility(prop)
+        if result.valid:
+            continue
+        rejected.append((
+            prop,
+            result,
+            str(prop.get("platform") or prop.get("provider") or fallback_provider),
+        ))
+    PlausibilityRejectionRepository.record_many(rejected)
+    return len(rejected)
 
 
 def _confirmed_prop_prefilter_key(raw: dict) -> tuple[int, int, float, str]:
@@ -7591,7 +7652,7 @@ def _normalize_direction(value: str) -> str:
 def _clv_history_key(prop: dict) -> tuple[str, str, str, str, str]:
     return (
         canonical_person_key(prop.get("player")),
-        str(prop.get("stat") or "").strip(),
+        canonical_stat_label(str(prop.get("stat") or "")).strip().lower(),
         str(prop.get("platform") or "").strip(),
         canonical_matchup_key(prop.get("game")),
         str(prop.get("line_offer_type") or "standard").strip().lower(),
@@ -7621,6 +7682,81 @@ def _entry_clv_payload(
         "average_clv": round(sum(values) / len(values), 2) if values else 0.0,
         "positive_legs": sum(1 for value in values if value > 0),
         "legs": legs,
+    }
+
+
+def _entry_live_market_payload(
+    entry: dict,
+    histories: dict[tuple[str, str, str, str, str], list[dict]],
+    *,
+    now: datetime,
+    freshness_minutes: int = 15,
+) -> dict:
+    """Use recent exact-offer snapshots for active monitoring without weakening audited CLV."""
+    legs = [
+        _live_line_for_prop(
+            prop,
+            entry,
+            history=histories.get(_clv_history_key(prop), []),
+            now=now,
+            freshness_minutes=freshness_minutes,
+        )
+        for prop in entry.get("props", [])
+    ]
+    values = [leg["clv"] for leg in legs if leg["clv"] is not None]
+    return {
+        "id": entry["id"],
+        "status": entry.get("status", ""),
+        "result": entry.get("result", ""),
+        "platform": entry.get("platform", ""),
+        "placed_at": iso_utc(entry.get("placed_at")),
+        "average_clv": round(sum(values) / len(values), 2) if values else 0.0,
+        "positive_legs": sum(1 for value in values if value > 0),
+        "legs": legs,
+    }
+
+
+def _live_line_for_prop(
+    prop: dict,
+    entry: dict,
+    *,
+    history: list[dict],
+    now: datetime,
+    freshness_minutes: int,
+) -> dict:
+    placed_line = float(prop.get("line") or 0.0)
+    placed_at = _aware_datetime_value(entry.get("placed_at"))
+    cutoff = now.astimezone(UTC) - timedelta(minutes=max(1, freshness_minutes))
+    candidates = []
+    for snapshot in history:
+        recorded_at = _aware_datetime_value(snapshot.get("recorded_at"))
+        if recorded_at is None or recorded_at < cutoff:
+            continue
+        if placed_at is not None and recorded_at < placed_at - timedelta(minutes=5):
+            continue
+        candidates.append((recorded_at, float(snapshot["line"])))
+    candidates.sort(key=lambda item: item[0])
+    current_line = candidates[-1][1] if candidates else None
+    movement = current_line - placed_line if current_line is not None else None
+    if movement is not None and str(prop.get("direction") or "Over").lower() == "under":
+        movement *= -1
+    return {
+        "player": prop.get("player", ""),
+        "sport": prop.get("sport", ""),
+        "stat": prop.get("stat", ""),
+        "platform": prop.get("platform", entry.get("platform", "")),
+        "placed_line": placed_line,
+        "current_line": current_line,
+        "clv": round(movement, 2) if movement is not None else None,
+        "beat_market": movement is not None and movement > 0,
+        "reliable": current_line is not None,
+        "reliability_reason": "" if current_line is not None else "no_recent_exact_offer_snapshot",
+        "observed_at": candidates[-1][0].isoformat().replace("+00:00", "Z") if candidates else "",
+        "note": (
+            "Current line matched from a recent same-game, same-offer provider snapshot."
+            if current_line is not None
+            else "No recent exact provider offer matched this active leg."
+        ),
     }
 
 
@@ -8225,7 +8361,7 @@ def _backfill_missing_game_times(entries: list[dict]) -> dict:
         prop
         for entry in entries
         for prop in entry.get("props", [])
-        if str(prop.get("sport", "")).upper() in {"WNBA", "NBA", "MLB", "NFL"}
+        if str(prop.get("sport", "")).upper() in {"WNBA", "NBA", "MLB", "NFL", "NHL"}
     ]
     if not candidates:
         return {"provider": "espn", "updated": 0, "fetched_rows": 0, "errors": []}
@@ -10619,6 +10755,7 @@ def _data_health_payload() -> dict:
             "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
             "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
             "research_memory": ResearchEvidenceRepository.summary(),
+            "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
         },
     )
 

@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, inspect, text
 
 import repository.database as database
+from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
 from repository.models.prediction_record_model import PredictionRecordModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
@@ -40,3 +41,17 @@ def test_evidence_collection_schema_has_dedicated_ledgers() -> None:
 
     assert {"cohort_date", "model_version", "settlement_attempts", "outcome_source", "settled_at"} <= shadow_columns
     assert {"snapshot_id", "model_version", "platform", "sport", "purpose", "payload"} <= snapshot_columns
+
+
+def test_plausibility_rejection_schema_preserves_diagnostics() -> None:
+    columns = set(PlausibilityRejectionModel.__table__.columns.keys())
+
+    assert {
+        "rejection_reason",
+        "original_provider_payload",
+        "provider",
+        "rejected_at",
+        "normalized_value",
+        "expected_minimum",
+        "expected_maximum",
+    } <= columns

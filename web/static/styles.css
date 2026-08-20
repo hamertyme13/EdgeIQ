@@ -915,6 +915,31 @@ p { color: var(--muted); margin: 5px 0 0; }
   gap: 0;
   border-top: 1px solid rgba(255, 255, 255, .07);
 }
+.opportunity-risk-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 12px 14px 10px;
+}
+.opportunity-risk-tabs .risk-tab {
+  min-height: 34px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 5px;
+  background: rgba(7, 11, 20, .7);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+.opportunity-risk-tabs .risk-tab span {
+  margin-left: 4px;
+  color: var(--text);
+}
+.opportunity-risk-tabs .risk-tab.active {
+  border-color: currentColor;
+  background: rgba(255, 255, 255, .07);
+  color: var(--text);
+}
 .opportunity-board-list .opportunity-row {
   grid-template-columns: 34px 76px minmax(200px, 1fr) minmax(260px, auto) minmax(120px, auto);
   min-height: 66px;

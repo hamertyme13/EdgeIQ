@@ -559,6 +559,7 @@ async function startDailyBriefingScan() {
   const sport = $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
+  state.dailyScanPollStartedAt = Date.now();
   renderDailyScanStatus({ current: scan, runs: [] });
   pollDailyScanStatus(true);
 }
@@ -591,10 +592,16 @@ async function loadDailyScanStatus() {
 
 function pollDailyScanStatus(immediate = false) {
   if (state.dailyScanPoll) window.clearTimeout(state.dailyScanPoll);
+  if (!state.dailyScanPollStartedAt) state.dailyScanPollStartedAt = Date.now();
   const tick = async () => {
     await loadDailyScanStatus();
     const status = document.querySelector("[data-daily-scan-status]")?.dataset.dailyScanStatus;
     if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
+      const elapsed = Date.now() - Number(state.dailyScanPollStartedAt || Date.now());
+      if (elapsed >= 180000) {
+        $("daily-briefing-status").textContent = "The scan is taking longer than expected. EdgeIQ stopped frequent polling; use Refresh to check it again.";
+        return;
+      }
       state.dailyScanPoll = window.setTimeout(tick, 2500);
     } else if (status === "ready") {
       await loadDailyBriefing();
@@ -719,9 +726,17 @@ function renderDailyBriefing(data) {
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
   const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
-  const opportunities = [...(data.top_opportunities || [])].sort((a, b) =>
+  const opportunities = (data.top_opportunities || []).map((opportunity, sourceIndex) => ({
+    ...opportunity,
+    _sourceIndex: sourceIndex,
+  })).sort((a, b) =>
     (riskOrder[a.risk_profile?.key] ?? 2) - (riskOrder[b.risk_profile?.key] ?? 2)
     || Number(b.score || 0) - Number(a.score || 0));
+  const opportunityLaneCounts = opportunities.reduce((counts, opportunity) => {
+    const lane = opportunity.risk_profile?.key || "aggressive";
+    counts[lane] = (counts[lane] || 0) + 1;
+    return counts;
+  }, { conservative: 0, balanced: 0, aggressive: 0 });
   const suggestedEntries = data.suggested_entries || [];
   const gamesToday = data.games_today || [];
   const providerBadges = data.provider_badges || [];
@@ -833,8 +848,14 @@ function renderDailyBriefing(data) {
           <button id="send-selected-opportunities" class="secondary" type="button" disabled>Send selected (0)</button>
         </div>
       </div>
+      <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
+        <button class="risk-tab active" type="button" data-opportunity-risk="all">All <span>${opportunities.length}</span></button>
+        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative">Conservative <span>${opportunityLaneCounts.conservative}</span></button>
+        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced">Balanced <span>${opportunityLaneCounts.balanced}</span></button>
+        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive">Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
+      </div>
       <div class="opportunity-list opportunity-board-list">
-        ${opportunities.slice(0, 5).map((prop, index) => {
+        ${opportunities.map((prop, index) => {
           const receipt = prop.decision_receipt || {};
           const movement = receipt.movement || {};
           const exposure = receipt.portfolio_exposure || {};
@@ -842,21 +863,22 @@ function renderDailyBriefing(data) {
           const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
           const currentProfile = prop.risk_profile?.key || "aggressive";
           const expired = prop.recommendation_freshness?.status === "expired";
+          const eligibility = prop.recommendation_eligibility || {};
           const actionable = prop.actionable ?? Boolean(
             prop.market_supported !== false
             && Number(prop.trust?.score || 0) >= 50
             && Number(prop.confidence || 0) >= 52
           );
           const profileHeader = currentProfile !== previousProfile ? `
-            <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}">
+            <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}" data-risk-lane="${escapeHtml(currentProfile)}">
               <strong>${escapeHtml(prop.risk_profile?.label || "Aggressive")}</strong>
               <span>${escapeHtml(prop.risk_profile?.description || "Higher uncertainty. Prefer paper tracking.")}</span>
             </div>` : "";
           return `
           ${profileHeader}
-          <div class="opportunity-row ${expired ? "opportunity-expired" : ""}">
+          <div class="opportunity-row ${expired ? "opportunity-expired" : ""}" data-risk-lane="${escapeHtml(currentProfile)}">
             <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
-              <input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" ${expired || !actionable ? "disabled" : ""} />
+              <input class="opportunity-select" type="checkbox" data-select-opportunity="${prop._sourceIndex}" ${expired || !actionable ? "disabled" : ""} />
             </label>
             <span class="stars">${escapeHtml(prop.stars || "★★★☆☆")}</span>
             <strong>
@@ -872,10 +894,18 @@ function renderDailyBriefing(data) {
               <span>${marketProbability == null ? "Market unavailable" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
-              <span class="${expired || !actionable ? "danger-text" : ""}">${expired ? "Expired · refresh required" : !actionable ? "Research only · cannot add" : "Fresh recommendation"}</span>
+              <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
+                expired
+                  ? "Expired · refresh required"
+                  : eligibility.label
+                    ? `${eligibility.label}${eligibility.paper_ready && !eligibility.paid_ready ? " · calibration tracking" : ""}`
+                    : !actionable
+                      ? "Research only · cannot add"
+                      : "Fresh recommendation"
+              )}</span>
             </div>
             <div class="opportunity-actions">
-              <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
+              <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${prop._sourceIndex}">Proof</button>
             </div>
           </div>
         `;
@@ -1072,6 +1102,17 @@ function bindDailyBriefingSummaryActions() {
     selectionButton.disabled = state.opportunitySelections.size === 0;
     selectionButton.textContent = `Send selected (${state.opportunitySelections.size})`;
   };
+  document.querySelectorAll("[data-opportunity-risk]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const lane = button.dataset.opportunityRisk || "all";
+      document.querySelectorAll("[data-opportunity-risk]").forEach((tab) => {
+        tab.classList.toggle("active", tab === button);
+      });
+      document.querySelectorAll("#opportunity-board [data-risk-lane]").forEach((row) => {
+        row.hidden = lane !== "all" && row.dataset.riskLane !== lane;
+      });
+    });
+  });
   document.querySelectorAll("[data-select-opportunity]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const index = Number(checkbox.dataset.selectOpportunity);
@@ -1098,9 +1139,13 @@ function bindDailyBriefingSummaryActions() {
     if (!selected.length) return;
     renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
     if ($("entry-platform") && selected[0]?.platform) $("entry-platform").value = selected[0].platform;
+    const paperOnly = selected.some((prop) => !prop.recommendation_eligibility?.paid_ready);
+    if (paperOnly && $("entry-mode")) $("entry-mode").value = "paper";
     state.recommendationOrigin = true;
     setView("entries");
-    $("entry-status").textContent = `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
+    $("entry-status").textContent = paperOnly
+      ? `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as a paper entry because at least one leg has not cleared paid-use evidence policy.`
+      : `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
   });
   document.querySelectorAll("[data-next-action-view]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1141,6 +1186,7 @@ function opportunityExplanation(opportunity) {
   const exposure = receipt.portfolio_exposure || {};
   const market = receipt.market_consensus || {};
   const marketAvailable = receipt.market_probability != null;
+  const eligibility = opportunity.recommendation_eligibility || {};
   const dfsOfferSummary = (market.dfs_offers || []).map((offer) => {
     const selection = String(opportunity.direction || "Over").toLowerCase() === "under"
       ? offer.under
@@ -1150,8 +1196,14 @@ function opportunityExplanation(opportunity) {
   }).join(" · ");
   return {
     title: `${opportunity.player} · ${opportunity.stat}`,
-    grade: receipt.status || "Research",
-    summary: `${opportunity.direction || "Over"} ${opportunity.line} on ${opportunity.platform}. Inspect the evidence before adding it to a paid card.`,
+    grade: eligibility.label || receipt.status || "Research",
+    summary: `${opportunity.direction || "Over"} ${opportunity.line} on ${opportunity.platform}. ${
+      eligibility.paid_ready
+        ? "This leg cleared the current paid-recommendation evidence policy; verify the complete card and live payout."
+        : eligibility.paper_ready
+          ? "This leg is suitable for paper calibration but has not cleared paid-use evidence policy."
+          : "This leg is research-only and cannot be added until its blocking evidence is resolved."
+    }`,
     score: opportunity.score || 0,
     average_confidence: receipt.probability || opportunity.confidence || 0,
     average_edge: receipt.edge || opportunity.edge || 0,
@@ -1173,6 +1225,7 @@ function opportunityExplanation(opportunity) {
     ],
     freshness: receipt.freshness,
     breakers: [
+      ...(eligibility.paid_blocks || []),
       ...(!marketAvailable ? [receipt.market_probability_note || "Market-derived probability is unavailable."] : []),
       ...(marketAvailable && Number(receipt.market_book_count || 0) < 2
         ? ["Only one paired sportsbook supports this exact line; market confirmation is too thin for app-generated paid use."]
@@ -1191,9 +1244,12 @@ function opportunityExplanation(opportunity) {
       confidence: opportunity.confidence,
       edge: opportunity.edge,
     }],
-    warnings: exposure.same_market_entries
-      ? ["A matching market is already pending. EdgeIQ will block duplicate paid exposure."]
-      : [],
+    warnings: [
+      ...(eligibility.warnings || []),
+      ...(exposure.same_market_entries
+        ? ["A matching market is already pending. EdgeIQ will block duplicate paid exposure."]
+        : []),
+    ],
   };
 }
 
@@ -1820,11 +1876,12 @@ function activePortfolioEntryCard(entry) {
 
 function activePortfolioLegRow(leg) {
   const value = leg.line_value;
+  const locked = ["Live", "Final", "Awaiting Result"].includes(String(leg.game_state || ""));
   const valueLabel = value === null || value === undefined
-    ? "Refresh needed"
+    ? locked ? "Offer closed" : "Refresh needed"
     : `${Number(value) > 0 ? "+" : ""}${Number(value).toFixed(1)} line value`;
   const current = leg.current_line === null || leg.current_line === undefined
-    ? "Latest line unavailable"
+    ? locked ? "Placement line retained" : "Latest line unavailable"
     : `Latest ${Number(leg.current_line).toFixed(1)}`;
   const tone = leg.movement_status === "Adverse"
     ? "movement-adverse"

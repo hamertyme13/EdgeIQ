@@ -172,6 +172,25 @@ def test_active_monitor_locks_started_entry_instead_of_giving_pregame_advice():
     assert "avoid duplicating" in payload["entries"][0]["action"]
 
 
+def test_active_monitor_moves_old_unsettled_game_to_awaiting_result():
+    pending = [{
+        "id": 22,
+        "entry_mode": "real",
+        "platform": "PrizePicks",
+        "wager": 5,
+        "props": [{**_prop("A", "AAA @ BBB"), "game_time": "2026-08-08T18:00:00Z"}],
+    }]
+
+    payload = active_portfolio_monitor_payload(
+        pending_entries=pending,
+        market_entries=[{"id": 22, "legs": []}],
+        now=datetime(2026, 8, 9, 2, tzinfo=UTC),
+    )
+
+    assert payload["entries"][0]["status"] == "Locked"
+    assert payload["entries"][0]["legs"][0]["game_state"] == "Awaiting Result"
+
+
 def test_market_refresh_targets_only_providers_on_pending_paid_entries():
     calls = []
     pending = [
@@ -220,3 +239,24 @@ def test_market_refresh_explains_when_exact_line_match_is_still_missing():
     )
 
     assert "still needs an exact same-game line match" in result["message"]
+
+
+def test_market_refresh_explains_closed_lines_for_locked_entries():
+    result = refresh_portfolio_market_payload(
+        pending_entries=[{
+            "id": 42,
+            "entry_mode": "real",
+            "platform": "PrizePicks",
+            "props": [{**_prop("A", "AAA @ BBB"), "platform": "PrizePicks"}],
+        }],
+        fetch_platform_props=lambda platform, force_refresh: [{"player": "A"}],
+        intelligence=lambda: {
+            "monitor": {
+                "status_counts": {"Locked": 1},
+                "entries": [{"unavailable_legs": 2}],
+            },
+        },
+    )
+
+    assert "2 live or completed offers are now closed" in result["message"]
+    assert "settlement completes" in result["message"]

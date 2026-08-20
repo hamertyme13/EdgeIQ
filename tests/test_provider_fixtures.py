@@ -109,6 +109,48 @@ def test_espn_nfl_final_summary_supports_provider_markets() -> None:
     assert next(row for row in rows if row["player"] == "Test Receiver")["provider_player_id"] == "nfl-2"
 
 
+def test_espn_nhl_final_summary_supports_skater_and_goalie_markets() -> None:
+    summary = {
+        "header": {"competitions": [{"competitors": [
+            {"homeAway": "away", "team": {"abbreviation": "EDM"}},
+            {"homeAway": "home", "team": {"abbreviation": "FLA"}},
+        ]}]},
+        "boxscore": {"players": [{
+            "team": {"abbreviation": "EDM"},
+            "statistics": [
+                {
+                    "name": "forwards",
+                    "labels": ["BS", "HT", "G", "A", "SOG"],
+                    "athletes": [{
+                        "athlete": {"id": "nhl-1", "displayName": "Test Skater"},
+                        "stats": ["2", "3", "1", "2", "5"],
+                    }],
+                },
+                {
+                    "name": "goalies",
+                    "labels": ["GA", "SA", "SV"],
+                    "athletes": [{
+                        "athlete": {"id": "nhl-2", "displayName": "Test Goalie"},
+                        "stats": ["2", "31", "29"],
+                    }],
+                },
+            ],
+        }]},
+    }
+
+    rows = espn._parse_summary(summary, "NHL", date(2026, 6, 17))
+
+    def actual(player: str, stat: str) -> float:
+        return next(row["actual"] for row in rows if row["player"] == player and row["stat"] == stat)
+
+    assert actual("Test Skater", "Points") == 3
+    assert actual("Test Skater", "Shots on Goal") == 5
+    assert actual("Test Skater", "Blocked Shots") == 2
+    assert actual("Test Goalie", "Saves") == 29
+    assert actual("Test Goalie", "Goals Against") == 2
+    assert next(row for row in rows if row["player"] == "Test Goalie")["provider_player_id"] == "nhl-2"
+
+
 def test_prizepicks_fixture_preserves_offer_and_pra(monkeypatch) -> None:
     payload = json.loads((FIXTURE_DIR / "prizepicks_projection.json").read_text(encoding="utf-8"))
     request = {}

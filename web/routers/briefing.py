@@ -51,6 +51,9 @@ def start_daily_briefing_scan(
 ) -> dict:
     sport_filter = _sport_filter(sport)
     dependencies = _deps()
+    current = (dependencies.scan_status(platform, sport_filter) or {}).get("current") or {}
+    if current.get("status") in {"scanning_props", "analyzing_games", "building_entries"}:
+        return current
     scan = dependencies.new_scan(platform, sport_filter, "manual")
     dependencies.save_scan(scan)
     background_tasks.add_task(dependencies.run_scan, platform, sport_filter, scan["id"], "manual", None)

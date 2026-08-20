@@ -766,6 +766,23 @@ def test_prop_risk_profiles_set_clear_user_expectations() -> None:
     assert "paper" in aggressive["description"].lower()
 
 
+def test_opportunity_board_keeps_options_from_each_available_risk_lane() -> None:
+    rows = [
+        {"player": f"{lane}-{index}", "risk_profile": {"key": lane}}
+        for lane in ("conservative", "balanced", "aggressive")
+        for index in range(5)
+    ]
+
+    selected = web_app._opportunities_by_risk_lane(rows, per_lane=3)
+
+    assert len(selected) == 9
+    assert [row["risk_profile"]["key"] for row in selected] == [
+        "conservative", "conservative", "conservative",
+        "balanced", "balanced", "balanced",
+        "aggressive", "aggressive", "aggressive",
+    ]
+
+
 def test_unsupported_market_caps_opportunity_probability_and_trust() -> None:
     prop = {
         "player": "Example Player",
@@ -1191,6 +1208,20 @@ def test_daily_briefing_scan_writes_status_and_run_log(monkeypatch):
     assert scan["summary"]["games"] == 1
     assert status["current"]["id"] == "scan123"
     assert status["runs"][0]["id"] == "scan123"
+
+
+def test_daily_scan_status_does_not_return_embedded_maintenance_payloads(monkeypatch):
+    current = web_app._new_daily_scan("PrizePicks", "WNBA", trigger="daily_refresh")
+    current["sync_result"] = {"entries": [{"props": [{"large": "payload"}]}]}
+    monkeypatch.setattr(
+        web_app.SettingsRepository,
+        "get",
+        lambda key, default="": json.dumps(current) if key == web_app.DAILY_SCAN_STATUS_KEY else default,
+    )
+
+    status = web_app._daily_scan_status_payload("PrizePicks", "WNBA")
+
+    assert "sync_result" not in status["current"]
 
 
 def test_daily_briefing_scan_failure_is_logged(monkeypatch):
@@ -6076,6 +6107,66 @@ def test_portfolio_market_refresh_returns_updated_monitor(monkeypatch):
     assert calls == [("PrizePicks", True)]
     assert body["providers"][0]["status"] == "refreshed"
     assert body["intelligence"]["monitor"]["entries"] == []
+
+
+def test_active_tracker_uses_recent_exact_offer_without_projection_metadata():
+    now = datetime(2026, 8, 20, 16, 0, tzinfo=UTC)
+    entry = {
+        "id": 18,
+        "platform": "PrizePicks",
+        "placed_at": now - timedelta(hours=1),
+        "props": [{
+            "player": "Azurá Stevens",
+            "sport": "WNBA",
+            "stat": "Points",
+            "line": 12.5,
+            "direction": "Over",
+            "platform": "PrizePicks",
+            "game": "MIN @ LA",
+            "line_offer_type": "standard",
+        }],
+    }
+    history = {
+        web_app._clv_history_key(entry["props"][0]): [{
+            "line": 13.5,
+            "recorded_at": now - timedelta(minutes=2),
+        }],
+    }
+
+    result = web_app._entry_live_market_payload(entry, history, now=now)
+
+    assert result["legs"][0]["current_line"] == 13.5
+    assert result["legs"][0]["clv"] == 1.0
+    assert result["legs"][0]["reliable"] is True
+
+
+def test_active_tracker_does_not_reuse_stale_line_as_current():
+    now = datetime(2026, 8, 20, 16, 0, tzinfo=UTC)
+    entry = {
+        "id": 19,
+        "platform": "Underdog",
+        "placed_at": now - timedelta(hours=2),
+        "props": [{
+            "player": "Example Player",
+            "sport": "NFL",
+            "stat": "Passing Yards",
+            "line": 225.5,
+            "direction": "Under",
+            "platform": "Underdog",
+            "game": "AAA @ BBB",
+        }],
+    }
+    history = {
+        web_app._clv_history_key(entry["props"][0]): [{
+            "line": 220.5,
+            "recorded_at": now - timedelta(minutes=45),
+        }],
+    }
+
+    result = web_app._entry_live_market_payload(entry, history, now=now)
+
+    assert result["legs"][0]["current_line"] is None
+    assert result["legs"][0]["reliability_reason"] == "no_recent_exact_offer_snapshot"
 
 
 def test_recheck_entry_final_stats_refreshes_backfills_and_settles_unknowns(monkeypatch):

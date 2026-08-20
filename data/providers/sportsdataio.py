@@ -16,6 +16,7 @@ _BASES = {
     "NBA": "https://api.sportsdata.io/v3/nba/stats/json",
     "NFL": "https://api.sportsdata.io/v3/nfl/stats/json",
     "MLB": "https://api.sportsdata.io/v3/mlb/stats/json",
+    "NHL": "https://api.sportsdata.io/v3/nhl/stats/json",
 }
 
 
@@ -48,6 +49,8 @@ def _normalize_rows(raw: dict[str, Any], sport: str, game_date: date) -> list[di
         values = _mlb_values(raw)
     elif sport == "NFL":
         values = _nfl_values(raw)
+    elif sport == "NHL":
+        values = _nhl_values(raw)
     else:
         values = _basketball_values(raw)
 
@@ -127,6 +130,23 @@ def _nfl_values(raw: dict[str, Any]) -> dict[str, float]:
         "Receptions": receptions,
         "Touchdowns": touchdowns,
         "Rush+Rec Yards": rushing + receiving,
+    }
+
+
+def _nhl_values(raw: dict[str, Any]) -> dict[str, float]:
+    goals = _num(raw, "Goals")
+    assists = _num(raw, "Assists")
+    saves = _num(raw, "GoaltendingSaves", "Saves")
+    return {
+        "Goals": goals,
+        "Assists": assists,
+        "Points": goals + assists,
+        "Shots on Goal": _num(raw, "ShotsOnGoal"),
+        "Blocked Shots": _num(raw, "BlockedShots"),
+        "Hits": _num(raw, "Hits"),
+        "Saves": saves,
+        "Goalie Saves": saves,
+        "Goals Against": _num(raw, "GoaltendingGoalsAgainst", "GoalsAgainst"),
     }
 
 

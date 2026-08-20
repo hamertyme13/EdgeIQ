@@ -26,3 +26,9 @@ def test_missing_line_is_rejected_at_persistence_validation():
 
     assert result.valid is False
     assert "numeric" in result.reason
+
+
+def test_nhl_market_ranges_accept_normal_lines_and_reject_contract_mismatches():
+    assert prop_line_plausibility({"sport": "NHL", "stat": "Shots on Goal", "line": 3.5}).valid
+    assert prop_line_plausibility({"sport": "NHL", "stat": "Goalie Saves", "line": 27.5}).valid
+    assert not prop_line_plausibility({"sport": "NHL", "stat": "Goals", "line": 29.5}).valid

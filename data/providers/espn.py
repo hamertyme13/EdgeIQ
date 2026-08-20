@@ -18,6 +18,7 @@ _SPORT_PATHS = {
     "NBA": "basketball/nba",
     "MLB": "baseball/mlb",
     "NFL": "football/nfl",
+    "NHL": "hockey/nhl",
 }
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -331,7 +332,71 @@ def _parse_summary(summary: dict, sport: str, game_date: date, row_status: str =
         return _parse_baseball_summary(summary, game_date, row_status=row_status)
     if sport == "NFL":
         return _parse_football_summary(summary, game_date, row_status=row_status)
+    if sport == "NHL":
+        return _parse_hockey_summary(summary, game_date, row_status=row_status)
     return []
+
+
+def _parse_hockey_summary(summary: dict, game_date: date, row_status: str = "played") -> list[dict]:
+    matchup = _matchup(summary)
+    rows: list[dict] = []
+    for team_group in summary.get("boxscore", {}).get("players", []):
+        team = str(team_group.get("team", {}).get("abbreviation") or "")
+        for group in team_group.get("statistics", []):
+            category = str(group.get("name") or "").lower()
+            labels = group.get("names") or group.get("labels") or []
+            for athlete_row in group.get("athletes", []):
+                athlete = athlete_row.get("athlete") or {}
+                player = str(athlete.get("displayName") or "").strip()
+                if not player:
+                    continue
+                if athlete_row.get("didNotPlay"):
+                    player_rows = _hockey_dnp_rows(player, team, matchup, game_date)
+                else:
+                    stats = _stats_by_label(labels, athlete_row.get("stats", []))
+                    player_rows = _hockey_stat_rows(
+                        player, team, matchup, game_date, category, stats, row_status
+                    )
+                rows.extend(_with_athlete_identity(player_rows, athlete))
+    return rows
+
+
+def _hockey_stat_rows(
+    player: str,
+    team: str,
+    game: str,
+    game_date: date,
+    category: str,
+    stats: dict[str, float],
+    status: str,
+) -> list[dict]:
+    if category == "goalies":
+        values = {
+            "Saves": stats.get("SV", 0.0),
+            "Goalie Saves": stats.get("SV", 0.0),
+            "Goals Against": stats.get("GA", 0.0),
+            "Shots Against": stats.get("SA", 0.0),
+        }
+    else:
+        goals = stats.get("G", 0.0)
+        assists = stats.get("A", 0.0)
+        values = {
+            "Goals": goals,
+            "Assists": assists,
+            "Points": goals + assists,
+            "Shots on Goal": stats.get("SOG", 0.0),
+            "Blocked Shots": stats.get("BS", 0.0),
+            "Hits": stats.get("HT", 0.0),
+        }
+    return [_row(player, team, "NHL", stat, game, game_date, actual, status) for stat, actual in values.items()]
+
+
+def _hockey_dnp_rows(player: str, team: str, game: str, game_date: date) -> list[dict]:
+    stats = (
+        "Goals", "Assists", "Points", "Shots on Goal", "Blocked Shots", "Hits",
+        "Saves", "Goalie Saves", "Goals Against", "Shots Against",
+    )
+    return [_row(player, team, "NHL", stat, game, game_date, 0.0, "dnp") for stat in stats]
 
 
 def _parse_football_summary(summary: dict, game_date: date, row_status: str = "played") -> list[dict]:

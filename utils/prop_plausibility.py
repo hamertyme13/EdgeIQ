@@ -125,6 +125,18 @@ _SPORT_STAT_RANGES: dict[str, dict[str, tuple[float, float]]] = {
         "Longest Field Goal": (15.5, 75.5),
         "Kicking Points": (0.5, 25.5),
     },
+    "NHL": {
+        "Goals": (0.5, 3.5),
+        "Assists": (0.5, 4.5),
+        "Points": (0.5, 5.5),
+        "Shots on Goal": (0.5, 12.5),
+        "Blocked Shots": (0.5, 12.5),
+        "Hits": (0.5, 15.5),
+        "Saves": (5.5, 65.5),
+        "Goalie Saves": (5.5, 65.5),
+        "Goals Against": (0.5, 9.5),
+        "Shots Against": (5.5, 70.5),
+    },
 }
 
 
