@@ -155,11 +155,8 @@ def _diversified_scored_entries(
 
 
 def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:
-    """Exclude premium lines that manufacture confidence without standard payout value."""
-    if platform != Platform.PRIZEPICKS:
-        return True
-    offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "standard").strip().lower()
-    return not raw.get("is_premium_line") and offer_type != "demon"
+    """Keep provider offers whose supported side can be modeled honestly."""
+    return raw.get("line") is not None
 
 
 def _score_entry(entry: Entry, warnings: list[str]) -> float:
@@ -230,6 +227,8 @@ def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
     baseline_line = float(raw.get("baseline_line") or raw.get("standard_line") or line)
     trending_count = int(raw.get("trending_count") or 0)
     explicit_direction = _explicit_direction(raw.get("direction"))
+    if platform == Platform.PRIZEPICKS and _is_demon_offer(raw):
+        explicit_direction = "Over"
     projection_value = raw.get("projection")
 
     if projection_value not in (None, ""):
@@ -361,6 +360,11 @@ def _adjusted_offer_direction(raw: dict, line: float, baseline_line: float) -> s
     if raw.get("is_premium_line") or str(raw.get("line_offer_type") or raw.get("odds_type") or "").lower() == "demon":
         return "Over" if delta > 0 else "Under"
     return None
+
+
+def _is_demon_offer(raw: dict) -> bool:
+    offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "").strip().lower()
+    return bool(raw.get("is_premium_line")) or offer_type == "demon"
 
 
 def _top_markets_per_player(props: list[Prop], per_player: int = 2, limit: int = 24) -> list[Prop]:

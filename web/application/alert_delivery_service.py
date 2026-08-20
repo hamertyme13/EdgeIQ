@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import smtplib
 from collections.abc import Callable
+from copy import deepcopy
 from email.message import EmailMessage
 
 import requests
@@ -18,6 +19,7 @@ def delivery_hooks(settings: dict) -> dict:
 
 
 def deliver_alert(alert: dict, settings: dict, *, sent_at: str, post: Callable[..., object] = requests.post) -> dict:
+    alert = deepcopy(alert)
     priority = float(alert.get("priority") or 0.0)
     if priority < float(settings.get("min_priority") or 0.0):
         return {"delivered": False, "skipped": True, "reason": f"Priority {priority:.0f} is below alert threshold.", "channels": []}

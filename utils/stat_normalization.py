@@ -11,6 +11,9 @@ _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
         "points rebounds assists",
         "points + rebounds + assists",
     ),
+    StatType.STEALS_BLOCKS: ("stls+blks", "stls blks", "blocks + steals", "blocks steals"),
+    StatType.DOUBLE_DOUBLES: ("double double", "double-double"),
+    StatType.TRIPLE_DOUBLES: ("triple double", "triple-double"),
     StatType.POINTS_REBOUNDS: (
         "pr",
         "p+r",
@@ -63,13 +66,31 @@ _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
         "rushing receiving touchdowns",
     ),
     StatType.SACKS: ("defensive sacks",),
+    StatType.FIELD_GOALS_ATTEMPTED: ("fg attempted", "fg attempts", "fga", "field goal attempts"),
+    StatType.FIELD_GOALS_MADE: ("fg made", "fgm", "field goals"),
+    StatType.FREE_THROWS_ATTEMPTED: ("ft attempted", "ft attempts", "fta", "free throw attempts"),
+    StatType.FREE_THROWS_MADE: ("ft made", "ftm", "free throws"),
+    StatType.THREES_ATTEMPTED: ("3pt attempted", "3pt attempts", "3pa", "three pointers attempted"),
+    StatType.THREES: ("3pt made", "3pm", "three pointers made"),
+    StatType.TWO_POINTERS_ATTEMPTED: ("2pt attempted", "2pt attempts", "2pa"),
+    StatType.TWO_POINTERS_MADE: ("2pt made", "2pm"),
+    StatType.OFFENSIVE_REBOUNDS: ("oreb", "off rebounds"),
+    StatType.DEFENSIVE_REBOUNDS: ("dreb", "def rebounds"),
+    StatType.PASS_RUSH_YARDS: ("pass+rush yards", "passing + rushing yards", "passing rushing yards"),
+    StatType.PASS_RUSH_TDS: ("pass+rush tds", "passing + rushing touchdowns", "passing rushing touchdowns"),
+    StatType.SOLO_TACKLES: ("solo", "solo tackles"),
+    StatType.ASSISTED_TACKLES: ("tackle assists", "assisted tackles"),
     StatType.TACKLES: (
         "tackles + assists",
         "tackles assists",
         "total tackles",
         "combined tackles",
     ),
-    StatType.EXTRA_POINTS_MADE: ("xp made", "extra points made"),
+    StatType.EXTRA_POINTS_MADE: ("xp made", "xpm", "extra points made", "pat made", "pats made"),
+    StatType.EXTRA_POINTS_ATTEMPTED: ("xp attempted", "xpa", "extra points attempted", "pat attempts"),
+    StatType.FIELD_GOALS_KICKING_MADE: ("kicking fg made", "field goals kicking made"),
+    StatType.FIELD_GOALS_KICKING_ATTEMPTED: ("kicking fg attempted", "field goals kicking attempted"),
+    StatType.LONGEST_FIELD_GOAL: ("longest fg", "fg long"),
 }
 
 
@@ -102,6 +123,10 @@ def _matched_stat_type(value: object) -> StatType | None:
     text = _stat_text(value)
     if not text:
         return None
+
+    for stat in StatType:
+        if text == _stat_text(stat.value):
+            return stat
 
     alias_candidates = sorted(
         (

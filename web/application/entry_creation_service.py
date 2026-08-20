@@ -5,8 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from analytics.correlation import estimate_correlation_matrix
-from analytics.pickem_payouts import payout_analysis
+from analytics.card_probability import analyze_card_probability
 from analytics.prop_metrics import calculate_confidence, calculate_edge
 from repository.repositories.entry_repository import EntryRepository
 from web.schemas import EntryPayload
@@ -44,7 +43,7 @@ def payout_analysis_payload(
     normalize_direction: Callable[[str], str],
 ) -> dict:
     reject_combined_props(payload.props)
-    probabilities = []
+    analysis_props = []
     for prop in payload.props:
         if prop.confidence is not None:
             confidence = float(prop.confidence)
@@ -55,13 +54,12 @@ def payout_analysis_payload(
             confidence = calculate_confidence(edge, prop.stat, prop.sport)
         else:
             confidence = 50.0
-        probabilities.append(confidence / 100.0)
-    return payout_analysis(
-        probabilities,
+        analysis_props.append({**prop.model_dump(), "confidence": confidence})
+    return analyze_card_probability(
+        analysis_props,
         payload.platform,
         payload.payout_type,
         displayed_multiplier=payload.multiplier,
-        correlation_matrix=estimate_correlation_matrix(payload.props),
         exact_schedule=payload.payout_schedule or None,
     )
 

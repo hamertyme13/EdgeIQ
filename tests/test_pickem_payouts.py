@@ -1,6 +1,14 @@
 from analytics.pickem_payouts import payout_analysis, payout_schedule, settlement_return_multiplier
 
 
+def test_draftkings_pick6_uses_user_entered_multiplier_without_claiming_official_schedule() -> None:
+    result = payout_analysis([0.6, 0.6, 0.6], "DraftKings Pick6", displayed_multiplier=5.0)
+
+    assert result["platform"] == "DraftKings Pick6"
+    assert result["source"] == "user_entered_multiplier"
+    assert result["payouts"] == {"3": 5.0}
+
+
 def test_prizepicks_flex_expected_value_includes_partial_payouts():
     result = payout_analysis([0.6, 0.6, 0.6], "PrizePicks", "flex")
 

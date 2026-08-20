@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260809-remaining-improvements-v1" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260820-v244-player-hit-rates" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -38,10 +38,15 @@
             <h1 id="view-title">Today</h1>
           </div>
           <div class="topbar-actions">
+            <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
         </header>
+        <aside id="notification-center-drawer" class="notification-center-drawer" hidden aria-label="EdgeIQ alerts">
+          <div class="panel-header"><div><p class="eyebrow">Notification Center</p><h2>Needs Attention</h2></div><button id="notification-center-close" class="secondary" type="button">Close</button></div>
+          <div id="notification-center-list" class="suggestion-list"></div>
+        </aside>
         <div id="runtime-notice" class="runtime-notice" hidden></div>
         <div id="install-hint" class="install-hint" hidden>
           <strong>Install EdgeIQ on your phone</strong>
@@ -106,6 +111,15 @@
             </div>
           </div>
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
+          <section class="runtime-status-panel" aria-labelledby="runtime-status-title">
+            <div class="runtime-status-heading">
+              <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
+              <button id="refresh-runtime-status" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="runtime-status-list" class="runtime-status-grid" aria-live="polite">
+              <div class="runtime-status-loading">Checking Ollama, automation, settlement, providers, and model release...</div>
+            </div>
+          </section>
           <details class="dashboard-support-drawer">
             <summary>
               <span>System + Settings</span>
@@ -136,6 +150,10 @@
                 <button id="refresh-notifications" class="secondary">Refresh</button>
               </div>
               <div id="notification-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div><p class="eyebrow">Product Journey</p><h2>Recommendation Funnel</h2></div><button id="refresh-product-analytics" class="secondary" type="button">Refresh</button></div>
+              <div id="product-analytics-list" class="suggestion-list"><p class="subtle">Journey metrics appear after recommendations are viewed and entries are analyzed.</p></div>
             </div>
             <div class="panel">
               <div class="panel-header">
@@ -379,6 +397,32 @@
                 <button class="micro-button" data-ai-prompt="Give me an aggressive 4-leg parlay">Aggressive 4-leg</button>
               </div>
               <div id="ai-parlay-response" class="analysis-card muted-card">Ask EdgeIQ for a custom 2-leg, 3-leg, or 5-leg entry.</div>
+              <div class="copilot-workspace">
+                <div class="section-heading compact-heading">
+                  <div><p class="eyebrow">Local Research Copilot</p><h3>Question grounded in EdgeIQ records</h3></div>
+                  <button id="ask-copilot" class="secondary">Research</button>
+                </div>
+                <div class="form-grid copilot-fields">
+                  <input id="copilot-question" value="Summarize today's strongest evidence and biggest risk" aria-label="Copilot question" />
+                  <input id="copilot-player" placeholder="Player (optional)" aria-label="Copilot player" />
+                  <input id="copilot-stat" placeholder="Stat (optional)" aria-label="Copilot stat" />
+                  <input id="copilot-line" type="number" step="0.5" placeholder="Line (optional)" aria-label="Copilot line" />
+                </div>
+                <div class="quick-prompts">
+                  <button class="micro-button" data-copilot-prompt="Compare verified winning and losing entries">Wins vs losses</button>
+                  <button class="micro-button" data-copilot-prompt="Review my portfolio exposure and shared-leg risk">Portfolio risk</button>
+                  <button class="micro-button" data-copilot-prompt="Narrate today's briefing and identify missing evidence">Daily briefing</button>
+                </div>
+                <div class="model-evaluation-row">
+                  <select id="copilot-model" aria-label="Local Ollama model">
+                    <option value="llama3.1:8b" selected>8B Research · llama3.1</option>
+                    <option value="llama3.2:3b">3B Fast · llama3.2</option>
+                  </select>
+                  <button id="evaluate-copilot-model" class="secondary">Qualify Model</button>
+                  <span id="copilot-model-status" class="subtle">Paid explanations require a passing grounding check.</span>
+                </div>
+                <div id="copilot-response" class="analysis-card muted-card">Ask about a player, recommendation, settled results, or portfolio exposure.</div>
+              </div>
             </div>
 
             <div class="dashboard-side">
@@ -474,7 +518,7 @@
         <section id="entries" class="view">
           <div class="two-col">
             <div class="stack">
-              <details class="panel tool-group" open>
+              <details class="panel tool-group">
                 <summary>
                   <span>Betting Preferences</span>
                   <small>Personalize suggestions and guardrails</small>
@@ -562,6 +606,18 @@
                     <option value="Points + Assists"></option>
                     <option value="Rebounds + Assists"></option>
                     <option value="3-Pointers Made"></option>
+                    <option value="3-Pointers Attempted"></option>
+                    <option value="Field Goals Made"></option>
+                    <option value="Field Goals Attempted"></option>
+                    <option value="Free Throws Made"></option>
+                    <option value="Free Throws Attempted"></option>
+                    <option value="2-Pointers Made"></option>
+                    <option value="2-Pointers Attempted"></option>
+                    <option value="Offensive Rebounds"></option>
+                    <option value="Defensive Rebounds"></option>
+                    <option value="Steals + Blocks"></option>
+                    <option value="Double Doubles"></option>
+                    <option value="Triple Doubles"></option>
                     <option value="Blocks"></option>
                     <option value="Steals"></option>
                     <option value="Turnovers"></option>
@@ -577,6 +633,18 @@
                     <option value="Receptions"></option>
                     <option value="Targets"></option>
                     <option value="Receiving TDs"></option>
+                    <option value="Rush + Rec Yards"></option>
+                    <option value="Rush + Rec TDs"></option>
+                    <option value="Pass + Rush Yards"></option>
+                    <option value="Pass + Rush TDs"></option>
+                    <option value="Sacks"></option>
+                    <option value="Solo Tackles"></option>
+                    <option value="Assisted Tackles"></option>
+                    <option value="Extra Points Made"></option>
+                    <option value="Extra Points Attempted"></option>
+                    <option value="Field Goals Made"></option>
+                    <option value="Field Goals Attempted"></option>
+                    <option value="Longest Field Goal"></option>
                     <option value="Kicking Points"></option>
                     <option value="Hits"></option>
                     <option value="Runs"></option>
@@ -596,6 +664,11 @@
                     <option value="Shots on Goal"></option>
                     <option value="Saves"></option>
                     <option value="Goals"></option>
+                    <option value="Assists"></option>
+                    <option value="Blocked Shots"></option>
+                    <option value="Goalie Saves"></option>
+                    <option value="Goals Against"></option>
+                    <option value="Shots Against"></option>
                     <option value="Shots"></option>
                     <option value="Shots on Target"></option>
                     <option value="Tackles"></option>
@@ -633,6 +706,7 @@
                     <select id="entry-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>DraftKings Pick6</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
                     </select>
@@ -706,7 +780,7 @@
                 <div class="workspace-tab-strip" role="tablist" aria-label="Entry Generator modes">
                   <button class="workspace-tab active" type="button" data-workspace-tab="best">Best Entries</button>
                   <button class="workspace-tab" type="button" data-workspace-tab="verified">Verified Only</button>
-                  <button class="workspace-tab" type="button" data-workspace-tab="custom">Custom Rules</button>
+                  <button class="workspace-tab" type="button" data-workspace-tab="custom">Portfolio</button>
                 </div>
               </div>
               <details class="panel tool-group" data-workspace-pane="verified" hidden>
@@ -861,7 +935,7 @@
                 </div>
               </details>
 
-              <details class="panel tool-group" open>
+              <details class="panel tool-group" data-workspace-pane="custom" data-auto-open="false" hidden>
                 <summary>
                   <span>Pending Entries</span>
                   <small>Results and DNP rules</small>
@@ -938,6 +1012,11 @@
               <button type="submit">Run Full Research</button>
             </div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
+            <div class="recent-research-heading">
+              <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Sync a league once, then EdgeIQ keeps the verified game history.</span></div>
+              <div class="button-row"><button id="sync-season-history" class="secondary compact-button" type="button">Sync Selected Sport</button><button id="refresh-research-history" class="secondary compact-button" type="button">Refresh History</button></div>
+            </div>
+            <div id="research-history-list" class="research-history-list"><span class="subtle">Your recent player research will appear here.</span></div>
           </form>
           <div class="tool-groups">
             <details class="panel tool-group" open data-workspace-pane="prop">
@@ -945,7 +1024,13 @@
                 <span>Prop Research</span>
                 <small>Projection, hit rate, and complete player context</small>
               </summary>
-              <div class="tool-group-body two-col">
+              <div class="tool-group-body">
+                <details class="inline-disclosure">
+                  <summary>
+                    <span>Individual Research Tools</span>
+                    <small>Optional projection, hit-rate, and player-context controls</small>
+                  </summary>
+                  <div class="two-col disclosure-grid">
                 <div class="mini-tool">
                   <h2>AI Projection Assist</h2>
                   <form id="projection-assist-form" class="form-grid">
@@ -1021,6 +1106,8 @@
                   </form>
                   <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
                 </div>
+                  </div>
+                </details>
               </div>
             </details>
 
@@ -1545,37 +1632,37 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260808-reliability-audit-v6"></script>
+    <script src="/static/ui-shell.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260728-circuit-audio-v2"></script>
+    <script src="/static/ui-utils.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260728-circuit-audio-v2"></script>
+    <script src="/static/circuit-audio.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260808-generator-diversity-v1"></script>
+    <script src="/static/js/state.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260730-modules-v1"></script>
+    <script src="/static/js/api.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260809-remaining-improvements-v1"></script>
+    <script src="/static/app.js?v=20260820-v244-player-hit-rates"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

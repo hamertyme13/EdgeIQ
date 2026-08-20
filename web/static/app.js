@@ -353,7 +353,7 @@ function activateWorkspace(root, paneName, options = {}) {
   panes.forEach((pane) => {
     const active = pane.dataset.workspacePane === paneName;
     pane.hidden = !active;
-    if (active && pane.tagName === "DETAILS") pane.open = true;
+    if (active && pane.tagName === "DETAILS" && pane.dataset.autoOpen !== "false") pane.open = true;
   });
   if (root.dataset.workspace) {
     window.sessionStorage.setItem(`edgeiq.workspace.${root.dataset.workspace}`, paneName);
@@ -374,6 +374,7 @@ function loadWorkspacePaneData(root, paneName) {
     "decision-desk:alerts": [loadTimingAlerts, loadNotifications],
     "decision-desk:builder": [() => loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }), loadTrendingGames],
     "decision-desk:board": [() => loadProps({ cascade: false })],
+    "entry-generator:custom": [loadPending, loadDnpSetting, loadPortfolioIntelligence],
     "results-workspace:performance": [loadPerformance],
     "results-workspace:model": [loadBacktest, loadAccuracyLab],
     "results-workspace:settlement": [loadSettlementAudit],
@@ -448,6 +449,48 @@ function runFullResearch(event) {
     $("projection-assist-form").requestSubmit();
     $("hit-rate-form").requestSubmit();
   }
+  saveResearchHistory({ player, stat, sport, platform, line: line ? Number(line) : null });
+  trackProductEvent("research_run", "prop", `${player}|${stat}`, { sport, platform });
+}
+
+function trackProductEvent(eventName, entityType = "", entityId = "", metadata = {}) {
+  api("/api/experience/events", { method: "POST", body: JSON.stringify({ event_name: eventName, entity_type: entityType, entity_id: String(entityId || ""), metadata }) }).catch(() => {});
+}
+
+async function saveResearchHistory(payload) {
+  await api("/api/experience/research-history", { method: "POST", body: JSON.stringify({ ...payload, summary: {} }) });
+  await loadResearchHistory();
+}
+
+async function loadResearchHistory() {
+  if (!$("research-history-list")) return;
+  const data = await api("/api/experience/research-history?limit=8");
+  $("research-history-list").innerHTML = (data.history || []).map((item) => `<button class="research-history-item secondary" type="button" data-research-id="${item.id}"><strong>${escapeHtml(item.player)}</strong><span>${escapeHtml(item.stat)} · ${escapeHtml(item.sport || "Sport")}${item.line == null ? "" : ` · ${item.line}`}</span></button>`).join("") || `<span class="subtle">Run research once and it will be saved here.</span>`;
+  document.querySelectorAll("[data-research-id]").forEach((button) => {
+    button.addEventListener("click", () => restoreResearchHistory((data.history || []).find((item) => Number(item.id) === Number(button.dataset.researchId)) || {}));
+  });
+}
+
+async function syncSeasonHistory() {
+  const sport = $("research-context-sport").value;
+  const data = await api(`/api/players/season-history/sync?sport=${encodeURIComponent(sport)}`, { method: "POST" });
+  $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
+  if (data.accepted) pollSeasonHistoryStatus();
+}
+
+async function pollSeasonHistoryStatus() {
+  const data = await api("/api/players/season-history/status");
+  $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
+  if (data.state === "running") window.setTimeout(pollSeasonHistoryStatus, 2500);
+}
+
+function restoreResearchHistory(item) {
+  $("research-context-player").value = item.player || "";
+  $("research-context-stat").value = item.stat || "";
+  setResearchToolValue("research-context-sport", item.sport || "");
+  setResearchToolValue("research-context-platform", item.platform || "");
+  $("research-context-line").value = item.line ?? "";
+  $("research-context-form").requestSubmit();
 }
 
 function setView(viewId) {
@@ -479,7 +522,7 @@ function loadViewData(viewId) {
       loadPerformance,
     ],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
-    entries: [loadLossProtection, loadPending, loadPreferences, loadDnpSetting, loadPortfolioIntelligence],
+    entries: [loadLossProtection, loadPreferences],
     analysis: [loadDataHealth, loadNotifications, loadDeployReadiness, loadRefreshSchedule, loadAlertDeliverySettings],
   }[viewId] || [];
   if (!tasks.length) return;
@@ -559,6 +602,7 @@ async function startDailyBriefingScan() {
   const sport = $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
+  state.dailyScanPollStartedAt = Date.now();
   renderDailyScanStatus({ current: scan, runs: [] });
   pollDailyScanStatus(true);
 }
@@ -591,10 +635,16 @@ async function loadDailyScanStatus() {
 
 function pollDailyScanStatus(immediate = false) {
   if (state.dailyScanPoll) window.clearTimeout(state.dailyScanPoll);
+  if (!state.dailyScanPollStartedAt) state.dailyScanPollStartedAt = Date.now();
   const tick = async () => {
     await loadDailyScanStatus();
     const status = document.querySelector("[data-daily-scan-status]")?.dataset.dailyScanStatus;
     if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
+      const elapsed = Date.now() - Number(state.dailyScanPollStartedAt || Date.now());
+      if (elapsed >= 180000) {
+        $("daily-briefing-status").textContent = "The scan is taking longer than expected. EdgeIQ stopped frequent polling; use Refresh to check it again.";
+        return;
+      }
       state.dailyScanPoll = window.setTimeout(tick, 2500);
     } else if (status === "ready") {
       await loadDailyBriefing();
@@ -710,6 +760,11 @@ function renderRecoveryProgress(protection) {
 }
 
 function renderDailyBriefing(data) {
+  const trackedSnapshot = data.snapshot_id || data.generated_at || "daily";
+  if (state.lastTrackedBriefingSnapshot !== trackedSnapshot) {
+    state.lastTrackedBriefingSnapshot = trackedSnapshot;
+    trackProductEvent("recommendation_viewed", "briefing", trackedSnapshot);
+  }
   const cacheLabel = data.cache?.stale
     ? `expired cache ${formatDateTime(data.cache.created_at)} · refresh recommended`
     : data.cache?.hit
@@ -718,7 +773,18 @@ function renderDailyBriefing(data) {
   $("daily-briefing-status").textContent = `${data.headline} · ${data.sport} · ${cacheLabel}`;
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
-  const opportunities = data.top_opportunities || [];
+  const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
+  const opportunities = (data.top_opportunities || []).map((opportunity, sourceIndex) => ({
+    ...opportunity,
+    _sourceIndex: sourceIndex,
+  })).sort((a, b) =>
+    (riskOrder[a.risk_profile?.key] ?? 2) - (riskOrder[b.risk_profile?.key] ?? 2)
+    || Number(b.score || 0) - Number(a.score || 0));
+  const opportunityLaneCounts = opportunities.reduce((counts, opportunity) => {
+    const lane = opportunity.risk_profile?.key || "aggressive";
+    counts[lane] = (counts[lane] || 0) + 1;
+    return counts;
+  }, { conservative: 0, balanced: 0, aggressive: 0 });
   const suggestedEntries = data.suggested_entries || [];
   const gamesToday = data.games_today || [];
   const providerBadges = data.provider_badges || [];
@@ -823,30 +889,52 @@ function renderDailyBriefing(data) {
         <div>
           <p class="eyebrow">Single Recommendation Source</p>
           <h3 id="opportunity-board-title">Opportunity Board</h3>
-          <p>EdgeIQ's ranked props appear only here. Open a row to move that prop into the Entry Builder.</p>
+          <p>Conservative emphasizes verified evidence, Balanced accepts measured uncertainty, and Aggressive is best treated as paper-first.</p>
         </div>
         <div class="button-row compact-button-row">
           <span class="status-pill status-connected">${opportunities.length} ranked</span>
           <button id="send-selected-opportunities" class="secondary" type="button" disabled>Send selected (0)</button>
         </div>
       </div>
+      <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
+        <button class="risk-tab active" type="button" data-opportunity-risk="all">All <span>${opportunities.length}</span></button>
+        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative">Conservative <span>${opportunityLaneCounts.conservative}</span></button>
+        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced">Balanced <span>${opportunityLaneCounts.balanced}</span></button>
+        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive">Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
+      </div>
       <div class="opportunity-list opportunity-board-list">
-        ${opportunities.slice(0, 5).map((prop, index) => {
+        ${opportunities.map((prop, index) => {
           const receipt = prop.decision_receipt || {};
           const movement = receipt.movement || {};
           const exposure = receipt.portfolio_exposure || {};
           const marketProbability = receipt.market_probability;
+          const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
+          const currentProfile = prop.risk_profile?.key || "aggressive";
+          const expired = prop.recommendation_freshness?.status === "expired";
+          const eligibility = prop.recommendation_eligibility || {};
+          const actionable = prop.actionable ?? Boolean(
+            prop.market_supported !== false
+            && Number(prop.trust?.score || 0) >= 50
+            && Number(prop.confidence || 0) >= 52
+          );
+          const profileHeader = currentProfile !== previousProfile ? `
+            <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}" data-risk-lane="${escapeHtml(currentProfile)}">
+              <strong>${escapeHtml(prop.risk_profile?.label || "Aggressive")}</strong>
+              <span>${escapeHtml(prop.risk_profile?.description || "Higher uncertainty. Prefer paper tracking.")}</span>
+            </div>` : "";
           return `
-          <div class="opportunity-row">
+          ${profileHeader}
+          <div class="opportunity-row ${expired ? "opportunity-expired" : ""}" data-risk-lane="${escapeHtml(currentProfile)}">
             <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
-              <input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" />
+              <input class="opportunity-select" type="checkbox" data-select-opportunity="${prop._sourceIndex}" ${expired || !actionable ? "disabled" : ""} />
             </label>
             <span class="stars">${escapeHtml(prop.stars || "★★★☆☆")}</span>
             <strong>
+              <span class="risk-profile-label risk-${escapeHtml(prop.risk_profile?.key || "aggressive")}">${escapeHtml(prop.risk_profile?.label || "Aggressive")}</span>
               ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")}
               <small>
                 ${escapeHtml(prop.platform || data.platform || "Provider")} · ${escapeHtml(prop.sport || data.sport || "All Sports")}
-                ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : "Adjusted payout"}` : " · Standard line"}
+                ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : (String(prop.line_offer_type || "").toLowerCase() === "demon" ? "Demon · Over only" : "Adjusted payout")}` : " · Standard line"}
               </small>
             </strong>
             <div class="opportunity-proof">
@@ -854,9 +942,18 @@ function renderDailyBriefing(data) {
               <span>${marketProbability == null ? "Market unavailable" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
+              <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
+                expired
+                  ? "Expired · refresh required"
+                  : eligibility.label
+                    ? `${eligibility.label}${eligibility.paper_ready && !eligibility.paid_ready ? " · calibration tracking" : ""}`
+                    : !actionable
+                      ? "Research only · cannot add"
+                      : "Fresh recommendation"
+              )}</span>
             </div>
             <div class="opportunity-actions">
-              <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
+              <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${prop._sourceIndex}">Proof</button>
             </div>
           </div>
         `;
@@ -889,6 +986,7 @@ function renderDailyBriefing(data) {
 function renderDailyGame(game, index) {
   const best = game.best_prop || {};
   const matchup = game.matchup_label || game.game || "Matchup TBD";
+  const generatorAvailable = Boolean(game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2);
   return `
     <details class="daily-game-card">
       <summary>
@@ -897,7 +995,7 @@ function renderDailyGame(game, index) {
           <strong>${escapeHtml(matchup)}</strong>
           <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${pct(game.probability || 0)}</small>
         </div>
-        <button class="secondary" type="button" data-generate-game-entry="${index}">Generate Entry</button>
+        <button class="secondary" type="button" data-generate-game-entry="${index}" ${generatorAvailable ? "" : "disabled"}>${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>
       </summary>
       <div class="daily-game-grid">
         ${renderGameMetric("Projected Winner", game.projected_winner)}
@@ -1052,6 +1150,17 @@ function bindDailyBriefingSummaryActions() {
     selectionButton.disabled = state.opportunitySelections.size === 0;
     selectionButton.textContent = `Send selected (${state.opportunitySelections.size})`;
   };
+  document.querySelectorAll("[data-opportunity-risk]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const lane = button.dataset.opportunityRisk || "all";
+      document.querySelectorAll("[data-opportunity-risk]").forEach((tab) => {
+        tab.classList.toggle("active", tab === button);
+      });
+      document.querySelectorAll("#opportunity-board [data-risk-lane]").forEach((row) => {
+        row.hidden = lane !== "all" && row.dataset.riskLane !== lane;
+      });
+    });
+  });
   document.querySelectorAll("[data-select-opportunity]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const index = Number(checkbox.dataset.selectOpportunity);
@@ -1078,9 +1187,13 @@ function bindDailyBriefingSummaryActions() {
     if (!selected.length) return;
     renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
     if ($("entry-platform") && selected[0]?.platform) $("entry-platform").value = selected[0].platform;
+    const paperOnly = selected.some((prop) => !prop.recommendation_eligibility?.paid_ready);
+    if (paperOnly && $("entry-mode")) $("entry-mode").value = "paper";
     state.recommendationOrigin = true;
     setView("entries");
-    $("entry-status").textContent = `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
+    $("entry-status").textContent = paperOnly
+      ? `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as a paper entry because at least one leg has not cleared paid-use evidence policy.`
+      : `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
   });
   document.querySelectorAll("[data-next-action-view]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1121,6 +1234,7 @@ function opportunityExplanation(opportunity) {
   const exposure = receipt.portfolio_exposure || {};
   const market = receipt.market_consensus || {};
   const marketAvailable = receipt.market_probability != null;
+  const eligibility = opportunity.recommendation_eligibility || {};
   const dfsOfferSummary = (market.dfs_offers || []).map((offer) => {
     const selection = String(opportunity.direction || "Over").toLowerCase() === "under"
       ? offer.under
@@ -1130,12 +1244,19 @@ function opportunityExplanation(opportunity) {
   }).join(" · ");
   return {
     title: `${opportunity.player} · ${opportunity.stat}`,
-    grade: receipt.status || "Research",
-    summary: `${opportunity.direction || "Over"} ${opportunity.line} on ${opportunity.platform}. Inspect the evidence before adding it to a paid card.`,
+    grade: eligibility.label || receipt.status || "Research",
+    summary: `${opportunity.direction || "Over"} ${opportunity.line} on ${opportunity.platform}. ${
+      eligibility.paid_ready
+        ? "This leg cleared the current paid-recommendation evidence policy; verify the complete card and live payout."
+        : eligibility.paper_ready
+          ? "This leg is suitable for paper calibration but has not cleared paid-use evidence policy."
+          : "This leg is research-only and cannot be added until its blocking evidence is resolved."
+    }`,
     score: opportunity.score || 0,
     average_confidence: receipt.probability || opportunity.confidence || 0,
     average_edge: receipt.edge || opportunity.edge || 0,
     source_count: (opportunity.data_strength || []).length,
+    trust: opportunity.trust || { score: 0, label: "Not scored" },
     why: `${receipt.probability_source || "EdgeIQ model"} estimates this leg at ${Number(receipt.probability || 0).toFixed(1)}%.`,
     evidence: [
       `Projection ${receipt.projection ?? "unavailable"} versus line ${opportunity.line}.`,
@@ -1152,6 +1273,7 @@ function opportunityExplanation(opportunity) {
     ],
     freshness: receipt.freshness,
     breakers: [
+      ...(eligibility.paid_blocks || []),
       ...(!marketAvailable ? [receipt.market_probability_note || "Market-derived probability is unavailable."] : []),
       ...(marketAvailable && Number(receipt.market_book_count || 0) < 2
         ? ["Only one paired sportsbook supports this exact line; market confirmation is too thin for app-generated paid use."]
@@ -1170,9 +1292,12 @@ function opportunityExplanation(opportunity) {
       confidence: opportunity.confidence,
       edge: opportunity.edge,
     }],
-    warnings: exposure.same_market_entries
-      ? ["A matching market is already pending. EdgeIQ will block duplicate paid exposure."]
-      : [],
+    warnings: [
+      ...(eligibility.warnings || []),
+      ...(exposure.same_market_entries
+        ? ["A matching market is already pending. EdgeIQ will block duplicate paid exposure."]
+        : []),
+    ],
   };
 }
 
@@ -1318,6 +1443,17 @@ async function loadModelHealth() {
   renderModelHealth(data);
 }
 
+async function loadRuntimeStatus() {
+  if (!$("runtime-status-list")) return;
+  const data = await api("/api/runtime/status");
+  $("runtime-status-list").innerHTML = (data.items || []).map((item) => `
+    <div class="runtime-status-item runtime-${escapeHtml(item.status || "attention")}" title="${escapeHtml(humanizeCopilotText(item.detail || ""))}">
+      <span class="runtime-status-dot" aria-hidden="true"></span>
+      <div><strong>${escapeHtml(item.label || "System")}</strong><small>${escapeHtml(humanizeCopilotText(item.value || "Unknown"))}</small></div>
+    </div>
+  `).join("") || `<div class="runtime-status-loading">Runtime status is not available yet.</div>`;
+}
+
 async function loadDataHealth() {
   const data = await api("/api/data-health");
   const providers = sortProviderHealth(data.providers);
@@ -1329,6 +1465,7 @@ async function loadDataHealth() {
   const scheduler = operations.scheduler || {};
   const shadow = operations.shadow_evaluation || {};
   const shadowSettlement = operations.shadow_settlement || {};
+  const researchMemory = operations.research_memory || {};
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
@@ -1344,7 +1481,8 @@ async function loadDataHealth() {
         <span class="status-pill ${operations.status === "degraded" ? "status-warning" : "status-connected"}">${operations.status === "degraded" ? "Needs attention" : "Operational"}</span>
       </div>
       <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
-      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml((scheduler.jobs_run || []).join(", ") || "none")} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
+      <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
+      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml(humanizeCopilotText((scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
       ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
       ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
     </div>
@@ -1356,8 +1494,8 @@ async function loadDataHealth() {
         </div>
         <p>${provider.purpose} · ${provider.message}</p>
         <p class="subtle">
-          ${escapeHtml(provider.data_role || "Unclassified")} ·
-          ${escapeHtml(provider.settlement_suitability || "Not for settlement")} ·
+          ${escapeHtml(humanizeCopilotText(provider.data_role || "Unclassified"))} ·
+          ${escapeHtml(humanizeCopilotText(provider.settlement_suitability || "Not for settlement"))} ·
           ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
           Contract ${escapeHtml(provider.contract_version || "unversioned")}
         </p>
@@ -1406,6 +1544,18 @@ async function loadNotifications() {
       <p>No smart notifications right now.</p>
     </div>
   `;
+  if ($("notification-center-list")) $("notification-center-list").innerHTML = $("notification-list").innerHTML;
+  if ($("notification-center-count")) {
+    $("notification-center-count").textContent = String(notifications.length);
+    $("notification-center-count").hidden = notifications.length === 0;
+  }
+}
+
+async function loadProductAnalytics() {
+  if (!$("product-analytics-list")) return;
+  const data = await api("/api/experience/analytics");
+  const labels = { recommendation_viewed: "Viewed", entry_analyzed: "Analyzed", recommendation_added: "Added", entry_saved: "Saved", entry_settled: "Settled" };
+  $("product-analytics-list").innerHTML = `<div class="metric-strip">${(data.funnel || []).map((item) => `<span><strong>${Number(item.count || 0)}</strong><small>${labels[item.event] || friendlyStatus(item.event)}</small></span>`).join("")}</div><p class="subtle">View to analysis ${Number(data.conversion?.view_to_analyze || 0).toFixed(1)}% · view to save ${Number(data.conversion?.view_to_save || 0).toFixed(1)}% · saved to settled ${Number(data.conversion?.save_to_settle || 0).toFixed(1)}%</p>`;
 }
 
 async function loadDeployReadiness() {
@@ -1786,11 +1936,12 @@ function activePortfolioEntryCard(entry) {
 
 function activePortfolioLegRow(leg) {
   const value = leg.line_value;
+  const locked = ["Live", "Final", "Awaiting Result"].includes(String(leg.game_state || ""));
   const valueLabel = value === null || value === undefined
-    ? "Refresh needed"
+    ? locked ? "Offer closed" : "Refresh needed"
     : `${Number(value) > 0 ? "+" : ""}${Number(value).toFixed(1)} line value`;
   const current = leg.current_line === null || leg.current_line === undefined
-    ? "Latest line unavailable"
+    ? locked ? "Placement line retained" : "Latest line unavailable"
     : `Latest ${Number(leg.current_line).toFixed(1)}`;
   const tone = leg.movement_status === "Adverse"
     ? "movement-adverse"
@@ -2169,7 +2320,7 @@ function renderPropRows(props, platform, sport) {
         <button class="link-button" data-player-detail="${index}">${escapeHtml(prop.player)}</button>
         <button class="micro-button" data-add-prop="${index}">+</button>
       </td>
-      <td>${directionBadge(prop.direction || "Over")}</td>
+      <td>${directionBadge(prop.direction || "Over")}${String(prop.line_offer_type || "").toLowerCase() === "demon" ? `<small class="offer-rule-label">Demon · Over only</small>` : ""}</td>
       <td>${escapeHtml(prop.league || "")}</td>
       <td>${escapeHtml(prop.stat || "")}</td>
       <td>${prop.line ?? "-"}</td>
@@ -2192,9 +2343,10 @@ async function askAiParlay() {
       sport: $("props-sport").value,
     }),
   });
+  state.lastAiRecommendation = data;
   $("ai-parlay-status").textContent = data.ai_enabled
-    ? `OpenAI assisted · ${data.model}`
-    : `EdgeIQ Local · ${data.model} · ${data.request?.risk_profile || "balanced"} · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs`;
+    ? `${data.ai_provider || "AI"} assisted · ${data.model}`
+    : `EdgeIQ Local · ${data.model} · ${data.request?.risk_profile || "balanced"} · ${data.request?.sport_label || "All Sports"} · ${data.request?.leg_count || 3} legs${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`;
   $("ai-parlay-response").classList.remove("muted-card");
   renderAiParlayResponse(data);
 }
@@ -2221,6 +2373,7 @@ function renderAiParlayResponse(data) {
           ${confidenceMoveNotes(props)}
         </div>
         <button class="secondary" data-load-ai-suggestion="0">Load</button>
+        <button class="secondary" data-explain-ai-suggestion>Why?</button>
       </div>
       <div class="ai-leg-list">
         ${props.map((prop) => `
@@ -2265,6 +2418,97 @@ function renderAiParlayResponse(data) {
       $("entry-status").textContent = "Loaded Ask EdgeIQ suggestion. Analyze/place when ready.";
     });
   });
+  document.querySelector("[data-explain-ai-suggestion]")?.addEventListener("click", explainAiSuggestion);
+}
+
+async function explainAiSuggestion() {
+  const current = state.lastAiRecommendation || {};
+  if (!current.suggestion) return;
+  $("copilot-response").classList.add("muted-card");
+  $("copilot-response").textContent = "Checking the recommendation snapshot and alternatives...";
+  const data = await api("/api/ai/explain-recommendation", {
+    method: "POST",
+    body: JSON.stringify({
+      question: "Why is this card preferred, what could make it lose, and is there a stronger replacement leg?",
+      suggestion: current.suggestion,
+      alternatives: current.alternatives || [],
+    }),
+  });
+  renderCopilotResponse(data);
+}
+
+async function askCopilot() {
+  $("copilot-response").classList.add("muted-card");
+  $("copilot-response").textContent = "Collecting verified EdgeIQ evidence...";
+  const line = $("copilot-line").value;
+  const data = await api("/api/ai/copilot", {
+    method: "POST",
+    body: JSON.stringify({
+      question: $("copilot-question").value,
+      player: $("copilot-player").value.trim(),
+      stat: $("copilot-stat").value.trim(),
+      line: line === "" ? null : Number(line),
+      sport: $("props-sport").value,
+      platform: $("props-platform").value,
+    }),
+  });
+  renderCopilotResponse(data);
+}
+
+function renderCopilotResponse(data) {
+  const response = data.response || {};
+  const citationMap = new Map((data.citations || []).map((row) => [row.id, row]));
+  $("copilot-response").classList.remove("muted-card");
+  $("copilot-response").innerHTML = `
+    <div class="ai-answer-header">
+      <span class="status-pill status-connected">${escapeHtml(data.provider || "EdgeIQ Local")}</span>
+      <span class="status-pill status-available">Grounded</span>
+      <span class="subtle">${escapeHtml(data.model || "")}</span>
+    </div>
+    <section class="copilot-decision-brief">
+      <div class="copilot-bottom-line"><span>Bottom line</span><h3>${escapeHtml(humanizeCopilotText(response.recommendation || "Evidence review"))}</h3><p>${escapeHtml(humanizeCopilotText(response.answer || "No answer was available."))}</p></div>
+      <div class="copilot-brief-grid">
+        <div><strong>Why</strong><ul>${(response.supporting_evidence || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No verified support was returned.</li>"}</ul></div>
+        <div><strong>What could go wrong</strong><p>${escapeHtml(humanizeCopilotText(response.counterargument || "No counterargument was returned."))}</p></div>
+        <div><strong>Suggested action</strong><p>${escapeHtml(humanizeCopilotText(response.suggested_correction || "No correction was suggested."))}</p></div>
+        <div><strong>Still unknown</strong><ul>${(response.missing_information || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No important gaps were reported.</li>"}</ul></div>
+      </div>
+    </section>
+    <div class="source-heading">Sources used</div>
+    <div class="citation-row">
+      ${(response.citations || []).map((id) => {
+        const citation = citationMap.get(id);
+        const label = escapeHtml(humanizeCopilotText(citation?.label || id));
+        const timing = citation?.captured_at ? `Captured ${formatDateTime(citation.captured_at)}` : "Current EdgeIQ snapshot";
+        return citation?.source_url
+          ? `<a class="copilot-source" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${label} · ${escapeHtml(timing)}">${label}</a>`
+          : `<span class="copilot-source" title="${label} · ${escapeHtml(timing)}">${label}</span>`;
+      }).join("")}
+    </div>
+    ${data.ai_error ? `<p class="subtle">${humanizeErrorText(data.ai_error)}</p>` : ""}
+  `;
+}
+
+function humanizeCopilotText(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replace(/[*`#]+/g, "")
+    .replace(/[{}\[\]"]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[-*#\s]+/, "")
+    .trim();
+}
+
+async function evaluateCopilotModel() {
+  const data = await api("/api/ai/evaluate-model", {
+    method: "POST",
+    body: JSON.stringify({ model: $("copilot-model").value.trim() }),
+  });
+  const status = $("copilot-model-status");
+  status.textContent = data.passed
+    ? `${data.model} passed structured output and citation checks.`
+    : `${data.model} is not qualified: ${humanizeErrorText(data.error || data.note)}`;
+  status.className = data.passed ? "success-text" : "warning-text";
 }
 
 async function loadTrendingGames(platform = $("props-platform").value, sport = $("props-sport").value) {
@@ -2375,6 +2619,8 @@ function formatMovement(movement) {
 }
 
 function entryPropFromFeed(prop) {
+  const demonOnly = String(prop.platform || "").toLowerCase() === "prizepicks"
+    && (String(prop.line_offer_type || "").toLowerCase() === "demon" || Boolean(prop.is_premium_line));
   return {
     player: prop.player,
     player_identity_id: prop.player_identity_id ?? null,
@@ -2393,7 +2639,8 @@ function entryPropFromFeed(prop) {
     is_premium_line: Boolean(prop.is_premium_line),
     line_discount: Number(prop.line_discount || 0),
     projection: prop.projection ?? null,
-    direction: prop.direction || "Over",
+    direction: demonOnly ? "Over" : (prop.direction || "Over"),
+    allowed_directions: demonOnly ? ["Over"] : (prop.allowed_directions || ["Over", "Under"]),
     platform: prop.platform || $("entry-platform").value,
     game: prop.game || "",
     game_time: prop.game_time || "",
@@ -2436,7 +2683,7 @@ function providerBaseMultiplier(platform, legCount) {
 
 function providerMaximumLegs(platform) {
   if (platform === "Underdog") return 8;
-  if (platform === "PrizePicks") return 6;
+  if (platform === "PrizePicks" || platform === "DraftKings Pick6") return 6;
   return 5;
 }
 
@@ -2448,11 +2695,15 @@ function addFeedProp(prop) {
     return;
   }
   state.entryProps.push(nextProp);
+  trackProductEvent("recommendation_added", "prop", nextProp.recommendation_snapshot_id || `${nextProp.player}|${nextProp.stat}`, { platform: nextProp.platform, sport: nextProp.sport });
   state.recommendationSnapshotId = nextProp.recommendation_snapshot_id || state.recommendationSnapshotId;
   syncEntryPlatformFromProps();
   renderEntryProps();
   setView("entries");
-  $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.`;
+  const demonNote = nextProp.allowed_directions?.length === 1
+    ? " PrizePicks Demon lines are Over-only."
+    : "";
+  $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.${demonNote}`;
 }
 
 function loadPaperProps(props) {
@@ -2471,24 +2722,67 @@ async function manageDatabase(action) {
 }
 
 function renderEntryProps() {
+  const corrections = new Map((state.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
     const projection = prop.projection == null ? "Auto" : Number(prop.projection).toFixed(1);
     const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
       ? Number(prop.line) - Number(prop.projection)
       : Number(prop.projection) - Number(prop.line);
     const edge = prop.projection == null ? "Auto" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
+    const correction = corrections.get(index);
+    const differs = correction?.action === "flip";
     return `
-      <tr>
+      <tr data-entry-leg="${index}">
         <td>${prop.player}</td>
-        <td>${directionBadge(prop.direction || "Over")}</td>
+        <td>${directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
         <td>${prop.stat}</td>
         <td>${prop.line}</td>
         <td>${projection}</td>
         <td>${edge}</td>
-        <td><button class="danger" data-remove-prop="${index}">Remove</button></td>
+        <td><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
+      </tr>
+      <tr class="entry-leg-editor" data-entry-editor="${index}" hidden>
+        <td colspan="7">
+          <div class="entry-leg-edit-grid">
+            <label>Player<input data-edit-field="player" value="${escapeHtml(prop.player)}"></label>
+            <label>Stat<input data-edit-field="stat" value="${escapeHtml(prop.stat)}"></label>
+            <label>Line<input data-edit-field="line" type="number" step="0.1" value="${Number(prop.line)}"></label>
+            <label>Projection<input data-edit-field="projection" type="number" step="0.1" value="${prop.projection == null ? "" : Number(prop.projection)}"></label>
+            <label>Pick<select data-edit-field="direction"><option${prop.direction === "Over" ? " selected" : ""}>Over</option><option${prop.direction === "Under" ? " selected" : ""}>Under</option></select></label>
+            <button class="secondary compact-button" data-save-prop="${index}">Apply</button>
+          </div>
+        </td>
       </tr>
     `;
   }).join("");
+  document.querySelectorAll("[data-edit-prop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const editor = document.querySelector(`[data-entry-editor="${button.dataset.editProp}"]`);
+      if (editor) editor.hidden = !editor.hidden;
+    });
+  });
+  document.querySelectorAll("[data-save-prop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.saveProp);
+      const editor = document.querySelector(`[data-entry-editor="${index}"]`);
+      const value = (field) => editor?.querySelector(`[data-edit-field="${field}"]`)?.value ?? "";
+      state.entryProps[index] = {
+        ...state.entryProps[index],
+        player: value("player").trim(),
+        stat: value("stat").trim(),
+        line: Number(value("line")),
+        projection: value("projection") === "" ? null : Number(value("projection")),
+        direction: value("direction"),
+      };
+      state.lastAnalysis = null;
+      state.lastEntryPayload = null;
+      $("ai-review-entry").disabled = true;
+      $("prepare-handoff").disabled = true;
+      $("place-entry").disabled = true;
+      renderEntryProps();
+      $("entry-status").textContent = "Leg updated. Analyze the entry again before saving.";
+    });
+  });
   document.querySelectorAll("[data-remove-prop]").forEach((button) => {
     button.addEventListener("click", () => {
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
@@ -2562,6 +2856,7 @@ function renderAnalysis(data) {
   const guardrails = data.risk_guardrails || [];
   const checklist = data.confirmation_checklist || [];
   const payout = data.payout_analysis || {};
+  const payoutVerified = Boolean(data.platform_value?.payout_verified);
   const release = data.release_verdict || {};
   const corrections = data.corrections || {};
   const correctionRows = (corrections.legs || []).map((leg) => {
@@ -2628,8 +2923,10 @@ function renderAnalysis(data) {
     const economics = row.payout_analysis || {};
     const payoutEvidence = row.payout_evidence || {};
     return `<div class="suggestion compact-suggestion">
-      <div class="suggestion-top"><strong>${escapeHtml(row.platform || "Platform")}</strong><span class="subtle">${row.complete_entry ? "All legs matched" : `${row.available_legs || 0}/${state.entryProps.length} legs matched`}</span></div>
-      <p>Expected value ${Number(economics.expected_value || 0) >= 0 ? "+" : ""}${Number(economics.expected_value || 0).toFixed(1)}% · profit chance ${Number(economics.profit_probability || 0).toFixed(1)}% · break-even ${Number(economics.break_even_probability || 0).toFixed(1)}%</p>
+      <div class="suggestion-top"><strong>${escapeHtml(row.platform || "Platform")}</strong><span class="status-pill ${payoutEvidence.verified ? "status-connected" : "status-warning"}">${payoutEvidence.verified ? "Payout verified" : "Payout confirmation needed"}</span></div>
+      <p>${payoutEvidence.verified
+        ? `Expected value ${Number(economics.expected_value || 0) >= 0 ? "+" : ""}${Number(economics.expected_value || 0).toFixed(1)}% · profit chance ${Number(economics.profit_probability || 0).toFixed(1)}% · break-even ${Number(economics.break_even_probability || 0).toFixed(1)}%`
+        : "Enter the exact payout shown in the provider app before using expected value to make a paid decision."}</p>
       <p class="subtle">${escapeHtml(payoutEvidence.note || economics.message || "Confirm the complete card payout.")}</p>
     </div>`;
   }).join("");
@@ -2654,9 +2951,13 @@ function renderAnalysis(data) {
       <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
     </div>
     <div class="analysis-card" style="margin-top:14px">
-      <h3>Payout Economics</h3>
+      <div class="suggestion-top">
+        <h3>${payoutVerified ? "Verified Payout Economics" : "Estimated Payout Economics"}</h3>
+        <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Payout confirmation needed"}</span>
+      </div>
+      ${payoutVerified ? "" : '<p class="subtle">Your sportsbook connection verifies available lines and market odds, but it does not expose the exact Pick’em card payout. Enter the payout shown in the provider app to verify EV.</p>'}
       <div class="metric-strip">
-        <span><strong>${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}</strong><small>Expected Value</small></span>
+        <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Unverified"}</strong><small>Expected Value</small></span>
         <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected Return</small></span>
         <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Profit Chance</small></span>
         <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Provider Break-Even</small></span>
@@ -2741,6 +3042,7 @@ async function analyzeEntry() {
   const payload = entryPayload();
   const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
   state.lastAnalysis = data;
+  trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
   renderEntryPropsFromAnalyzed(data.entry.props);
   state.lastEntryPayload = entryPayload();
@@ -2773,11 +3075,11 @@ async function reviewEntryWithAi() {
   $("entry-analysis").innerHTML += `
     <div class="analysis-card" style="margin-top:14px">
       <h3>AI Entry Review</h3>
-        <p class="subtle">${data.ai_enabled ? `OpenAI assisted · ${data.model}` : `EdgeIQ Local review${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`}</p>
+        <p class="subtle">${data.ai_enabled ? `${escapeHtml(data.ai_provider || "AI")} assisted · ${escapeHtml(data.model)}` : `EdgeIQ Local review${data.ai_error ? ` · ${humanizeErrorText(data.ai_error)}` : ""}`}</p>
       <p>${data.review}</p>
     </div>
   `;
-  $("entry-status").textContent = data.ai_enabled ? "AI review complete." : "EdgeIQ Local review complete.";
+  $("entry-status").textContent = data.ai_enabled ? `${data.ai_provider || "AI"} review complete.` : "EdgeIQ Local review complete.";
 }
 
 async function prepareEntryHandoff() {
@@ -2815,13 +3117,14 @@ function renderEntryHandoff(data) {
     ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
     <div class="suggestion-list">
       ${(data.legs || []).map((leg, index) => `
-        <div class="suggestion compact-suggestion">
+        <div class="suggestion compact-suggestion ${leg.offer_status === "current" ? "insight-positive" : "insight-warning"}">
           <div class="suggestion-top">
             <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
             <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
           </div>
           <p>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat)} ${leg.line ?? ""}${leg.game ? ` · ${escapeHtml(leg.game)}` : ""}</p>
-          <p class="subtle">${escapeHtml(leg.value_note || "")}</p>
+          <p class="subtle">Live offer: ${escapeHtml(leg.offer_status || "not checked")} · requested ${leg.requested_line ?? leg.line}${leg.current_line == null ? "" : ` · current ${leg.current_line}`}</p>
+          <p class="subtle">${escapeHtml(leg.blocking_reason || leg.value_note || "")}</p>
         </div>
       `).join("")}
     </div>
@@ -2829,7 +3132,7 @@ function renderEntryHandoff(data) {
     <div class="button-row">
       <button class="secondary" id="copy-handoff">Copy Slip</button>
       <button class="secondary" id="share-handoff">Share Slip</button>
-      ${data.open_url ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
+      ${data.open_url && data.ready_for_handoff ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
     </div>
   `;
   $("copy-handoff").addEventListener("click", async () => {
@@ -2900,43 +3203,7 @@ function renderPlacementAudit(data) {
 }
 
 function renderEntryPropsFromAnalyzed(props) {
-  state.entryProps = uniqueUploadedProps(props).map((prop) => ({
-    player: prop.player,
-    player_identity_id: prop.player_identity_id ?? null,
-    player_provider: prop.player_provider || prop.platform || "",
-    provider_player_id: prop.provider_player_id || prop.player_id || "",
-    team: prop.team,
-    position: prop.position || "",
-    sport: prop.sport,
-    stat: prop.stat,
-    line: prop.line,
-    baseline_line: prop.baseline_line ?? null,
-    standard_line: prop.standard_line ?? null,
-    line_offer_type: prop.line_offer_type || "standard",
-    adjusted_line: Boolean(prop.adjusted_line),
-    is_discounted_line: Boolean(prop.is_discounted_line),
-    is_premium_line: Boolean(prop.is_premium_line),
-    line_discount: Number(prop.line_discount || 0),
-    projection: prop.projection,
-    direction: prop.direction || "Over",
-    platform: prop.platform,
-    game: prop.game,
-    game_time: prop.game_time || "",
-    season_type: prop.season_type || "",
-    trending_count: prop.trending_count,
-    auto_projected: prop.auto_projected,
-    provider_backed: prop.provider_backed,
-    projection_source: prop.projection_source,
-    model_version: prop.model_version || "",
-    feature_as_of: prop.feature_as_of || "",
-    forecast_snapshot: prop.forecast_snapshot || {},
-    forecast_paid_eligible: Boolean(prop.forecast_paid_eligible),
-    data_quality: prop.data_quality,
-    data_strength: prop.data_strength,
-    end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
-    settlement_provider: prop.settlement_provider || "",
-    recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
-  }));
+  state.entryProps = uniqueUploadedProps(props).map(entryPropFromFeed);
   syncEntryPlatformFromProps();
   renderEntryProps();
 }
@@ -3076,6 +3343,7 @@ async function placeEntry(triggerButton = $("place-entry")) {
   let data;
   try {
     data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
+    trackProductEvent("entry_saved", "entry", data.id, { mode: state.lastEntryPayload.entry_mode, platform: state.lastEntryPayload.platform, legs: state.lastEntryPayload.props.length });
   } catch (error) {
     $("entry-status").textContent = humanizeErrorText(error.message);
     playCircuitSound("warning");
@@ -3190,6 +3458,7 @@ async function loadConfirmedEntries() {
       const suggestion = data.suggestions[Number(button.dataset.loadConfirmedEntry)];
       renderEntryPropsFromAnalyzed(suggestion.entry.props);
       state.recommendationOrigin = true;
+      trackProductEvent("recommendation_added", "card", suggestion.snapshot_id || `confirmed-${suggestion.rank}`, { legs: suggestion.leg_count });
       $("entry-status").textContent = `Loaded confirmed ${suggestion.leg_count}-leg entry #${suggestion.rank}. Analyze/place when ready.`;
     });
   });
@@ -3441,6 +3710,8 @@ async function loadPlayerResearch(event) {
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
   const sensitivity = data.projection_sensitivity || {};
+  const assessment = data.season_assessment || {};
+  const bestHittingStats = data.best_hitting_stats || [];
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
   $("player-research-result").innerHTML = `
@@ -3451,6 +3722,35 @@ async function loadPlayerResearch(event) {
       </div>
       <span class="subtle">${data.history_count} finals · ${data.active_props.length} active</span>
     </div>
+    <section class="season-assessment">
+      <div class="suggestion-top"><div><p class="eyebrow">Season Assessment</p><h3>${escapeHtml(assessment.headline || "Season evidence is still building")}</h3></div><span class="status-pill ${assessment.strength === "Strong" ? "status-positive" : "status-warning"}">${escapeHtml(assessment.strength || "Not ready")}</span></div>
+      <p>${escapeHtml(assessment.summary || "Sync the selected sport to collect verified season game logs.")}</p>
+      <div class="metric-strip">
+        <span><strong>${assessment.verified_games ?? 0}</strong><small>Verified season games</small></span>
+        <span><strong>${assessment.season_average ?? "-"}</strong><small>Season average</small></span>
+        <span><strong>${assessment.last_10_average ?? "-"}</strong><small>Last 10 average</small></span>
+        <span><strong>${assessment.opponent_games ?? 0}</strong><small>Games vs opponent</small></span>
+        <span><strong>${assessment.opponent_average ?? "-"}</strong><small>Average vs opponent</small></span>
+      </div>
+    </section>
+    <section class="best-hitting-stats">
+      <div class="section-heading compact-heading">
+        <div><p class="eyebrow">Best-Hitting Stats</p><h3>Strongest current lines for this player</h3></div>
+        <span class="status-pill ${bestHittingStats.length ? "status-positive" : "status-warning"}">${bestHittingStats.length} compared</span>
+      </div>
+      <p class="subtle">Ranked by verified season results against each currently available standard line. Recent form and sample size are shown separately so a small hot streak is not mistaken for a proven edge.</p>
+      <div class="hit-stat-ranking">
+        ${bestHittingStats.map((row, index) => `
+          <article class="hit-stat-row">
+            <span class="hit-stat-rank">${index + 1}</span>
+            <div><strong>${escapeHtml(row.stat)} · ${escapeHtml(row.direction)} ${Number(row.line).toFixed(1)}</strong><small>${escapeHtml(row.platform || "Current market")} · average ${Number(row.season_average).toFixed(1)}</small></div>
+            <div><strong>${pct(row.season_hit_rate)}</strong><small>Season · ${Number(row.sample_size)} games</small></div>
+            <div><strong>${pct(row.recent_10_hit_rate)}</strong><small>Last 10</small></div>
+            <span class="status-pill ${row.sample_strength === "Strong" ? "status-positive" : "status-warning"}" title="${escapeHtml(row.note || "")}">${escapeHtml(row.sample_strength)}</span>
+          </article>
+        `).join("") || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
+      </div>
+    </section>
     <div class="stats-grid" style="margin-top:14px">
       ${researchSplitCard("Last 5", split.last_5)}
       ${researchSplitCard("Last 10", split.last_10)}
@@ -3498,14 +3798,14 @@ async function loadPlayerResearch(event) {
         <span>
           <strong>${escapeHtml(row.platform)}</strong>
           ${escapeHtml(row.direction || "Over")} ${row.line}
-          <small>${escapeHtml(row.offer_type || "standard")} · ${pct(row.confidence || 0)}</small>
+          <small>${escapeHtml(humanizeCopilotText(row.offer_type || "standard"))} · ${pct(row.confidence || 0)}</small>
         </span>
       `).join("") || `<p class="subtle">No active market lines found.</p>`}
     </div>
     ${(data.closing_lines || []).length ? `<p class="subtle">Recent recorded lines: ${(data.closing_lines || []).slice(0, 6).map((row) => Number(row.line).toFixed(1)).join(" → ")}</p>` : `<p class="subtle">Historical closing lines are not available for this exact market yet.</p>`}
     ${(data.teammate_splits || []).map((row) => `<p class="subtle">With ${escapeHtml(row.teammate)}: ${pct(row.with.hit_rate || 0)} · Without: ${pct(row.without.hit_rate || 0)}</p>`).join("") || `<p class="subtle">With/without teammate splits will appear when lineup participation history is available.</p>`}
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
-    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(note)}</p>`).join("")}
+    ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
   `;
 }
 
@@ -3708,6 +4008,8 @@ async function loadSettlementAudit() {
         ${item.scope === "historical" ? `<p class="subtle">Historical record · entry ${escapeHtml(item.entry_status || "archived")}</p>` : ""}
         <p>${escapeHtml(item.details?.stat || "Stat")} ${item.details?.line ?? ""} · ${escapeHtml(item.result || "Pending")} ${item.actual == null ? "" : `· Final ${item.actual}`}</p>
         <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · ${item.attempt_count || 1} attempt${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
+        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : "No retry scheduled"}</p>
+        ${item.status !== "verified" ? `<p class="human-error">${escapeHtml(item.blocking_reason || "Waiting for verified final data.")}</p>` : ""}
         ${item.matched_player ? `<p class="subtle">Matched ${escapeHtml(item.matched_player)} · ${escapeHtml(item.matched_game || "game unavailable")}</p>` : ""}
       </div>
     `).join("") || `<div class="suggestion">No settlement attempts have been recorded yet. Recheck final stats to populate the audit.</div>`}
@@ -4366,8 +4668,16 @@ async function saveBankrollTransaction(event) {
   await loadPerformance();
 }
 
-function showOnboardingIfNeeded() {
-  const stored = localStorage.getItem("edgeiq.onboardingComplete");
+async function showOnboardingIfNeeded() {
+  let stored = localStorage.getItem("edgeiq.onboardingComplete");
+  try {
+    const profile = await api("/api/experience/onboarding");
+    if (profile.complete) {
+      localStorage.setItem("edgeiq.onboarding", JSON.stringify({ bankroll: profile.bankroll, platform: profile.platform, sport: profile.sport, risk: profile.risk, defaultWager: profile.default_wager }));
+      localStorage.setItem("edgeiq.onboardingComplete", "true");
+      stored = "true";
+    }
+  } catch (_error) {}
   syncDefaultInputs();
   if (!stored) {
     $("onboarding-modal").hidden = false;
@@ -4386,6 +4696,7 @@ async function saveOnboarding(event) {
   };
   localStorage.setItem("edgeiq.onboarding", JSON.stringify(setup));
   localStorage.setItem("edgeiq.onboardingComplete", "true");
+  await api("/api/experience/onboarding", { method: "POST", body: JSON.stringify({ bankroll: setup.bankroll, platform: setup.platform, sport: setup.sport, risk: setup.risk, default_wager: setup.defaultWager, complete: true }) });
   if (setup.bankroll > 0) {
     await api("/api/settings/bankroll", {
       method: "POST",
@@ -4398,8 +4709,9 @@ async function saveOnboarding(event) {
   await loadCommandCenter();
 }
 
-function skipOnboarding() {
+async function skipOnboarding() {
   localStorage.setItem("edgeiq.onboardingComplete", "true");
+  await api("/api/experience/onboarding", { method: "POST", body: JSON.stringify({ complete: true }) });
   $("onboarding-modal").hidden = true;
 }
 
@@ -4818,12 +5130,17 @@ async function createAutoPaperCalibrationEntries() {
   });
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
+  const diagnostics = data.board_diagnostics || {};
+  const sportResults = (data.sport_results || []).map((row) => `
+    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5</span>
+  `).join("");
   $("auto-paper-calibration-status").innerHTML = `
     Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
+    ${sportResults}
     ${(data.created || []).map((row) => `
       <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
     `).join("") || (skippedText ? `<span class="subtle">${skippedText}</span>` : "")}
-    ${data.shortfall ? `<span class="subtle">${Number(data.shortfall)} card${Number(data.shortfall) === 1 ? "" : "s"} could not be built from unique, verified props on today's board.</span>` : ""}
+    ${data.shortfall ? `<span class="subtle">${Number(data.shortfall)} card${Number(data.shortfall) === 1 ? "" : "s"} could not be built. EdgeIQ found ${Number(diagnostics.eligible_same_day_props || 0)} unique same-day verified props across ${escapeHtml((diagnostics.sports || []).join(", ") || "no available sports")}; ${Number(diagnostics.pending_paper_cards || 0)} paper cards are already pending.</span>` : ""}
   `;
   $("entry-status").textContent = data.created_count
     ? `Created ${data.created_count} pending paper calibration entries.`
@@ -4945,9 +5262,23 @@ function bindEvents() {
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));
+  $("refresh-runtime-status")?.addEventListener("click", () => withButtonBusy("refresh-runtime-status", "Checking...", loadRuntimeStatus));
   $("backup-database").addEventListener("click", () => withButtonBusy("backup-database", "Backing up...", () => manageDatabase("backup")));
   $("export-database").addEventListener("click", () => withButtonBusy("export-database", "Exporting...", () => manageDatabase("export")));
   $("refresh-notifications").addEventListener("click", () => withButtonBusy("refresh-notifications", "Checking...", loadNotifications));
+  $("notification-center-toggle")?.addEventListener("click", () => {
+    const drawer = $("notification-center-drawer");
+    drawer.hidden = !drawer.hidden;
+    $("notification-center-toggle").setAttribute("aria-expanded", drawer.hidden ? "false" : "true");
+    if (!drawer.hidden) loadNotifications();
+  });
+  $("notification-center-close")?.addEventListener("click", () => {
+    $("notification-center-drawer").hidden = true;
+    $("notification-center-toggle").setAttribute("aria-expanded", "false");
+  });
+  $("refresh-research-history")?.addEventListener("click", () => withButtonBusy("refresh-research-history", "Loading...", loadResearchHistory));
+  $("sync-season-history")?.addEventListener("click", () => withButtonBusy("sync-season-history", "Starting...", syncSeasonHistory));
+  $("refresh-product-analytics")?.addEventListener("click", () => withButtonBusy("refresh-product-analytics", "Loading...", loadProductAnalytics));
   $("refresh-deploy-readiness").addEventListener("click", () => withButtonBusy("refresh-deploy-readiness", "Checking...", loadDeployReadiness));
   $("run-daily-refresh").addEventListener("click", () => withButtonBusy("run-daily-refresh", "Running...", runDailyRefresh));
   $("refresh-timing-alerts").addEventListener("click", () => withButtonBusy("refresh-timing-alerts", "Checking...", loadTimingAlerts));
@@ -5052,6 +5383,14 @@ function bindEvents() {
   $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", () => runOptimizer(false)));
   $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));
   $("refresh-portfolio-lines").addEventListener("click", () => withButtonBusy("refresh-portfolio-lines", "Refreshing...", refreshPortfolioLines));
+  $("ask-copilot").addEventListener("click", () => withButtonBusy("ask-copilot", "Researching...", askCopilot));
+  $("evaluate-copilot-model").addEventListener("click", () => withButtonBusy("evaluate-copilot-model", "Checking...", evaluateCopilotModel));
+  document.querySelectorAll("[data-copilot-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      $("copilot-question").value = button.dataset.copilotPrompt;
+      askCopilot();
+    });
+  });
   $("refresh-sportsbook-sync").addEventListener("click", () => withButtonBusy("refresh-sportsbook-sync", "Checking...", loadSportsbookSync));
   $("refresh-trending-props").addEventListener("click", () => withButtonBusy("refresh-trending-props", "Loading...", loadTrendingProps));
   $("send-selected-trending").addEventListener("click", sendSelectedTrendingProps);
@@ -5152,9 +5491,9 @@ async function loadAll(options = {}) {
 
   if (!state.backgroundLoadPromise) {
     const backgroundTasks = options.refresh
-      ? [loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(), loadPerformance(), loadSettlementAudit()]
+      ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
-          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadDataHealth(), loadNotifications(),
+          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");

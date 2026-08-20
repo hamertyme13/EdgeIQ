@@ -28,3 +28,14 @@ def test_data_health_surfaces_scheduler_and_shadow_failures(monkeypatch):
     })
     assert payload["operations"]["status"] == "degraded"
     assert len(payload["operations"]["warnings"]) == 3
+
+
+def test_data_health_exposes_plausibility_diagnostics(monkeypatch):
+    monkeypatch.setattr("web.application.provider_health_service.cache_metrics", lambda: {})
+    rejection = {"provider": "PrizePicks", "rejection_reason": "Line outside expected range."}
+
+    payload = build_data_health_payload(
+        {}, {}, "settlement", operational_health={"plausibility_rejections": [rejection]}
+    )
+
+    assert payload["operations"]["plausibility_rejections"] == [rejection]

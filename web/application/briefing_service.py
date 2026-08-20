@@ -147,8 +147,17 @@ def append_daily_scan_log(
 ) -> None:
     raw = safe_json_loads(get_setting(log_key, ""))
     rows = raw.get("runs", []) if isinstance(raw, dict) else []
-    rows = [scan, *[row for row in rows if row.get("id") != scan.get("id")]][:20]
+    compact = compact_daily_scan(scan)
+    rows = [compact, *[compact_daily_scan(row) for row in rows if row.get("id") != scan.get("id")]][:20]
     set_setting(log_key, json.dumps({"runs": rows}))
+
+
+def compact_daily_scan(scan: dict) -> dict:
+    keys = (
+        "id", "status", "status_label", "message", "platform", "sport", "trigger",
+        "started_at", "updated_at", "completed_at", "progress", "steps", "summary", "cache", "errors",
+    )
+    return {key: scan.get(key) for key in keys if key in scan}
 
 
 def run_daily_briefing_scan(
@@ -168,7 +177,10 @@ def run_daily_briefing_scan(
     if scan_id:
         scan["id"] = scan_id
     if sync_result:
-        scan["sync_result"] = sync_result
+        scan["sync_summary"] = {
+            "completed": True,
+            "errors": len(sync_result.get("errors") or []) if isinstance(sync_result, dict) else 0,
+        }
     save_status(scan)
     try:
         scan = update_scan(
@@ -247,7 +259,10 @@ def daily_scan_status_payload(
                 }
         except ValueError:
             pass
-    return {"current": current, "runs": runs[:8]}
+    return {
+        "current": compact_daily_scan(current),
+        "runs": [compact_daily_scan(run) for run in runs[:8]],
+    }
 
 
 def daily_briefing_cache_key(platform: str, sport_filter: str | None) -> str:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.stat_normalization import stat_type_from_text
@@ -49,7 +49,13 @@ def refresh_portfolio_market_payload(
 
     refreshed = sum(1 for row in provider_results if row["status"] == "refreshed")
     payload = intelligence()
-    remaining = int((payload.get("monitor") or {}).get("status_counts", {}).get("Needs Refresh", 0))
+    monitor = payload.get("monitor") or {}
+    remaining = int(monitor.get("status_counts", {}).get("Needs Refresh", 0))
+    unavailable_legs = sum(
+        int(entry.get("unavailable_legs") or 0)
+        for entry in monitor.get("entries", [])
+    )
+    locked_entries = int(monitor.get("status_counts", {}).get("Locked", 0))
     if not real_entries:
         message = "There are no pending paid entries to refresh."
     elif not platforms:
@@ -58,6 +64,17 @@ def refresh_portfolio_market_payload(
         message = (
             f"Refreshed {refreshed}/{len(platforms)} provider feeds. "
             f"{remaining} entr{'y still needs' if remaining == 1 else 'ies still need'} an exact same-game line match."
+        )
+    elif unavailable_legs and locked_entries:
+        message = (
+            f"Refreshed {refreshed}/{len(platforms)} provider feeds. "
+            f"{unavailable_legs} live or completed offer{' is' if unavailable_legs == 1 else 's are'} now closed; "
+            "the tracker will use the recorded placement lines while settlement completes."
+        )
+    elif unavailable_legs:
+        message = (
+            f"Refreshed {refreshed}/{len(platforms)} provider feeds, but "
+            f"{unavailable_legs} current offer{' was' if unavailable_legs == 1 else 's were'} not found."
         )
     else:
         message = f"Refreshed {refreshed}/{len(platforms)} provider feeds. Portfolio lines are current."
@@ -152,6 +169,7 @@ def active_portfolio_monitor_payload(
     review_count = statuses.get("Review", 0)
     watch_count = statuses.get("Watch", 0)
     refresh_count = statuses.get("Needs Refresh", 0)
+    locked_count = statuses.get("Locked", 0)
     return {
         "checked_at": checked_at.isoformat().replace("+00:00", "Z"),
         "entries": monitored,
@@ -165,6 +183,8 @@ def active_portfolio_monitor_payload(
             if watch_count
             else f"Refresh market data for {refresh_count} paid entr{'y' if refresh_count == 1 else 'ies'}."
             if refresh_count
+            else f"{locked_count} paid entr{'y is' if locked_count == 1 else 'ies are'} live or awaiting settlement."
+            if locked_count
             else "Pending paid entries are holding their recorded line value."
             if monitored
             else "No paid entries are currently pending."
@@ -227,6 +247,8 @@ def _monitored_leg(prop: dict, market_leg: dict, now: datetime) -> dict:
         game_state = "Pregame"
     elif prop.get("actual") is not None or prop.get("final_result"):
         game_state = "Awaiting Result" if not prop.get("final_result") else "Final"
+    elif now >= game_time + timedelta(hours=6):
+        game_state = "Awaiting Result"
     else:
         game_state = "Live"
     movement_status = (
@@ -248,6 +270,7 @@ def _monitored_leg(prop: dict, market_leg: dict, now: datetime) -> dict:
         "game_state": game_state,
         "reliable": bool(market_leg.get("reliable")),
         "reliability_reason": str(market_leg.get("reliability_reason") or ""),
+        "observed_at": str(market_leg.get("observed_at") or ""),
     }
 
 

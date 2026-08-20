@@ -10,10 +10,14 @@ from repository.models.bankroll_transaction_model import BankrollTransactionMode
 from repository.models.entry_model import EntryModel  # noqa: F401
 from repository.models.entry_prop_model import EntryPropModel  # noqa: F401
 from repository.models.final_player_stat_model import FinalPlayerStatModel  # noqa: F401
+from repository.models.plausibility_rejection_model import PlausibilityRejectionModel  # noqa: F401
 from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel  # noqa: F401
 from repository.models.prediction_record_model import PredictionRecordModel  # noqa: F401
 from repository.models.prop_line_history_model import PropLineHistoryModel  # noqa: F401
+from repository.models.product_event_model import ProductEventModel  # noqa: F401
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel  # noqa: F401
+from repository.models.research_evidence_model import ResearchEvidenceModel  # noqa: F401
+from repository.models.research_session_model import ResearchSessionModel  # noqa: F401
 from repository.models.settings_model import SettingsModel  # noqa: F401
 from repository.models.settlement_audit_model import SettlementAuditModel  # noqa: F401
 from repository.models.shadow_prediction_model import ShadowPredictionModel  # noqa: F401

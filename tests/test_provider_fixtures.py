@@ -8,6 +8,26 @@ from data.providers import espn, prizepicks, underdog
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 
+def test_espn_basketball_rows_include_provider_fantasy_score() -> None:
+    rows = espn._basketball_stat_rows(
+        "Fantasy Player", "NY", "WNBA", "NY@IND", date(2026, 8, 11),
+        {"PTS": 14, "REB": 10, "AST": 2, "STL": 1, "BLK": 3, "TO": 1},
+    )
+
+    fantasy = next(row for row in rows if row["stat"] == "Fantasy Score")
+    assert fantasy["actual"] == 40.0
+
+
+def test_espn_event_matching_normalizes_provider_team_aliases() -> None:
+    prop = {
+        "team": "GSV",
+        "game": "CHI @ GSV",
+        "game_time": "2026-08-13T02:00:00Z",
+    }
+
+    assert espn._prop_matches_event(prop, "CHI@GS", date(2026, 8, 12)) is True
+
+
 def test_espn_mlb_final_fixture_preserves_identity_and_scoring() -> None:
     summary = json.loads((FIXTURE_DIR / "espn_mlb_final.json").read_text(encoding="utf-8"))
 
@@ -87,6 +107,48 @@ def test_espn_nfl_final_summary_supports_provider_markets() -> None:
     assert actual("Test Defender", "Defensive Interceptions") == 1
     assert next(row for row in rows if row["player"] == "Test Quarterback")["game"] == "ARI@CAR"
     assert next(row for row in rows if row["player"] == "Test Receiver")["provider_player_id"] == "nfl-2"
+
+
+def test_espn_nhl_final_summary_supports_skater_and_goalie_markets() -> None:
+    summary = {
+        "header": {"competitions": [{"competitors": [
+            {"homeAway": "away", "team": {"abbreviation": "EDM"}},
+            {"homeAway": "home", "team": {"abbreviation": "FLA"}},
+        ]}]},
+        "boxscore": {"players": [{
+            "team": {"abbreviation": "EDM"},
+            "statistics": [
+                {
+                    "name": "forwards",
+                    "labels": ["BS", "HT", "G", "A", "SOG"],
+                    "athletes": [{
+                        "athlete": {"id": "nhl-1", "displayName": "Test Skater"},
+                        "stats": ["2", "3", "1", "2", "5"],
+                    }],
+                },
+                {
+                    "name": "goalies",
+                    "labels": ["GA", "SA", "SV"],
+                    "athletes": [{
+                        "athlete": {"id": "nhl-2", "displayName": "Test Goalie"},
+                        "stats": ["2", "31", "29"],
+                    }],
+                },
+            ],
+        }]},
+    }
+
+    rows = espn._parse_summary(summary, "NHL", date(2026, 6, 17))
+
+    def actual(player: str, stat: str) -> float:
+        return next(row["actual"] for row in rows if row["player"] == player and row["stat"] == stat)
+
+    assert actual("Test Skater", "Points") == 3
+    assert actual("Test Skater", "Shots on Goal") == 5
+    assert actual("Test Skater", "Blocked Shots") == 2
+    assert actual("Test Goalie", "Saves") == 29
+    assert actual("Test Goalie", "Goals Against") == 2
+    assert next(row for row in rows if row["player"] == "Test Goalie")["provider_player_id"] == "nhl-2"
 
 
 def test_prizepicks_fixture_preserves_offer_and_pra(monkeypatch) -> None:

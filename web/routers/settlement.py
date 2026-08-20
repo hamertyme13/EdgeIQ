@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, HTTPException
 
+from repository.repositories.product_experience_repository import ProductExperienceRepository
 from web.schemas import FinalStatsPayload, SettlePayload
 
 router = APIRouter(tags=["settlement"])
@@ -65,7 +66,14 @@ def entry_progress(
 
 @router.post("/api/entries/{entry_id}/settle")
 def settle_entry(entry_id: int, payload: SettlePayload) -> dict:
-    return _deps().settle_entry(entry_id, payload)
+    result = _deps().settle_entry(entry_id, payload)
+    ProductExperienceRepository.record_event(
+        "entry_settled",
+        "entry",
+        str(entry_id),
+        {"result": payload.result},
+    )
+    return result
 
 
 @router.post("/api/entries/auto-check")

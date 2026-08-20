@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
+
+from sqlalchemy.exc import IntegrityError
 
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
@@ -57,7 +59,26 @@ class SettlementAuditRepository:
                 for key, value in values.items():
                     setattr(row, key, value)
                 row.attempt_count = int(row.attempt_count or 0) + 1
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                # A manual action and scheduler retry can observe the row as
+                # missing simultaneously. Preserve one audit row and count both attempts.
+                session.rollback()
+                row = (
+                    session.query(SettlementAuditModel)
+                    .filter_by(
+                        entry_prop_id=entry_prop_id,
+                        status=status,
+                        provider=provider,
+                        reason_code=reason_code,
+                    )
+                    .one()
+                )
+                for key, value in values.items():
+                    setattr(row, key, value)
+                row.attempt_count = int(row.attempt_count or 0) + 1
+                session.commit()
 
     @staticmethod
     def queue(limit: int = 100) -> dict:
@@ -232,6 +253,12 @@ def _serialize(row: SettlementAuditModel) -> dict:
         details = json.loads(row.details or "{}")
     except (TypeError, ValueError):
         details = {}
+    confidence = _match_confidence(row)
+    next_retry = None
+    if row.status in {"scheduled", "waiting", "blocked"} and row.attempted_at:
+        attempted = row.attempted_at.replace(tzinfo=UTC) if row.attempted_at.tzinfo is None else row.attempted_at
+        delay_minutes = min(360, 15 * (2 ** max(0, int(row.attempt_count or 1) - 1)))
+        next_retry = attempted + timedelta(minutes=delay_minutes)
     return {
         "id": row.id,
         "entry_id": row.entry_id,
@@ -249,13 +276,40 @@ def _serialize(row: SettlementAuditModel) -> dict:
         "message": row.message,
         "attempt_count": row.attempt_count,
         "attempted_at": row.attempted_at.isoformat() if row.attempted_at else "",
+        "match_confidence": confidence,
+        "next_retry_at": next_retry.isoformat() if next_retry else "",
+        "blocking_reason": _blocking_reason(row.reason_code, row.message),
         "details": details,
     }
 
 
+def _match_confidence(row: SettlementAuditModel) -> int:
+    if row.status == "verified":
+        return 100
+    score = 0
+    if row.matched_identity_id:
+        score += 45
+    if canonical_person_key(row.requested_player) == canonical_person_key(row.matched_player) and row.matched_player:
+        score += 30
+    if canonical_matchup_key(row.requested_game) == canonical_matchup_key(row.matched_game) and row.matched_game:
+        score += 25
+    return score
+
+
+def _blocking_reason(reason_code: str, message: str) -> str:
+    labels = {
+        "game_not_final": "The game has not been confirmed final yet.",
+        "player_not_found": "The final-stat provider did not return a matching player.",
+        "game_mismatch": "The saved matchup does not match the provider's final game.",
+        "stat_unavailable": "The provider final does not contain this stat market.",
+        "provider_unavailable": "The final-stat provider is temporarily unavailable.",
+    }
+    return labels.get(str(reason_code or "").lower(), str(message or "Waiting for verified final data."))
+
+
 def _final_evidence_key(player: object, game: object, provider: object, actual: object) -> tuple:
     try:
-        actual_key = round(float(actual), 6)
+        actual_key = round(float(str(actual)), 6)
     except (TypeError, ValueError):
         actual_key = None
     return (

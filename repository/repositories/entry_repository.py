@@ -605,7 +605,7 @@ class EntryRepository:
                 repairs.append({
                     "entry_id": entry.id,
                     "prop_id": prop.id,
-                    "player": prop.player,
+                    "player": prop.player_name,
                     "game": prop.game,
                     "previous_game_time": previous_game_time,
                     "game_time": game_time,

@@ -3,6 +3,11 @@ from __future__ import annotations
 from repository.database import SessionLocal
 from repository.models.prop_line_history_model import PropLineHistoryModel
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
+from utils.stat_normalization import canonical_stat_label
+
+
+def _stat_key(value: object) -> str:
+    return canonical_stat_label(str(value or "")).strip().lower()
 
 
 class LineHistoryRepository:
@@ -12,12 +17,11 @@ class LineHistoryRepository:
         """Load line histories for many props with one database checkout."""
         if not requests:
             return {}
-        stats = {str(row.get("stat", "")).strip() for row in requests if row.get("stat")}
         platforms = {str(row.get("platform", "")).strip() for row in requests if row.get("platform")}
         requested_keys = {
             (
                 canonical_person_key(row.get("player")),
-                str(row.get("stat", "")).strip(),
+                _stat_key(row.get("stat")),
                 str(row.get("platform", "")).strip(),
                 canonical_matchup_key(row.get("game")),
                 str(row.get("line_offer_type") or "standard").strip().lower(),
@@ -29,7 +33,6 @@ class LineHistoryRepository:
             rows = (
                 session.query(PropLineHistoryModel)
                 .filter(
-                    PropLineHistoryModel.stat.in_(stats),
                     PropLineHistoryModel.platform.in_(platforms),
                 )
                 .order_by(PropLineHistoryModel.recorded_at.asc(), PropLineHistoryModel.id.asc())
@@ -38,7 +41,7 @@ class LineHistoryRepository:
             for row in rows:
                 key = (
                     canonical_person_key(row.player),
-                    row.stat,
+                    _stat_key(row.stat),
                     row.platform,
                     canonical_matchup_key(getattr(row, "game", "")),
                     str(getattr(row, "line_offer_type", "standard") or "standard").lower(),
@@ -99,7 +102,7 @@ class LineHistoryRepository:
             for item in recent_rows:
                 key = (
                     canonical_person_key(item.player),
-                    item.stat,
+                    _stat_key(item.stat),
                     item.platform,
                     canonical_matchup_key(getattr(item, "game", "")),
                     str(getattr(item, "line_offer_type", "standard") or "standard").lower(),
@@ -117,7 +120,7 @@ class LineHistoryRepository:
                     continue
                 player_key = canonical_person_key(player)
                 game_key = canonical_matchup_key(game)
-                key = (player_key, stat, platform, game_key, offer_type)
+                key = (player_key, _stat_key(stat), platform, game_key, offer_type)
                 last = latest.get(key)
                 line_value = float(line)
                 if force_snapshot or last is None or last.line != line_value:
@@ -142,7 +145,7 @@ class LineHistoryRepository:
     ) -> list[dict]:
         """Return recorded snapshots oldest-first as list of {line, recorded_at}."""
         with SessionLocal() as session:
-            base_query = session.query(PropLineHistoryModel).filter_by(stat=stat, platform=platform)
+            base_query = session.query(PropLineHistoryModel).filter_by(platform=platform)
             candidates = (
                 base_query
                 .filter_by(player=player)
@@ -151,10 +154,13 @@ class LineHistoryRepository:
             )
             player_key = canonical_person_key(player)
             if candidates:
-                rows = candidates
+                rows = [row for row in candidates if _stat_key(row.stat) == _stat_key(stat)]
             else:
                 candidates = base_query.order_by(PropLineHistoryModel.recorded_at.asc()).all()
-                rows = [row for row in candidates if canonical_person_key(row.player) == player_key]
+                rows = [
+                    row for row in candidates
+                    if canonical_person_key(row.player) == player_key and _stat_key(row.stat) == _stat_key(stat)
+                ]
             if game:
                 game_key = canonical_matchup_key(game)
                 rows = [row for row in rows if canonical_matchup_key(getattr(row, "game", "")) == game_key]

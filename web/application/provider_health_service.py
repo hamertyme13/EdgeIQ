@@ -32,7 +32,7 @@ def build_data_health_payload(
         ),
         provider_health_row(
             "SportsDataIO",
-            "supplemental injuries/context only",
+            "optional NFL/NBA/NHL final-stat cross-check",
             configured=bool(os.getenv("SPORTSDATAIO_API_KEY")),
             key_env="SPORTSDATAIO_API_KEY",
             settlement_status_key=settlement_status_key,
@@ -112,6 +112,8 @@ def build_data_health_payload(
     schedule = operational_health.get("schedule") or {}
     shadow = operational_health.get("shadow_evaluation") or {}
     settlement = operational_health.get("shadow_settlement") or {}
+    research_memory = operational_health.get("research_memory") or {}
+    plausibility_rejections = operational_health.get("plausibility_rejections") or []
     operational_warnings = []
     if scheduler.get("failures"):
         operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
@@ -138,6 +140,8 @@ def build_data_health_payload(
             "schedule": schedule,
             "shadow_settlement": settlement,
             "shadow_evaluation": shadow,
+            "research_memory": research_memory,
+            "plausibility_rejections": plausibility_rejections,
             "warnings": operational_warnings,
             "status": "degraded" if operational_warnings else "healthy",
         },

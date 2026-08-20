@@ -15,6 +15,8 @@ def _history(values):
 
 def test_forecast_uses_verified_history_distribution_for_both_sides() -> None:
     history = _history([24, 23, 22, 25, 21, 24, 23, 22, 26, 24] * 2)
+    for row in history:
+        row["minutes"] = 32
 
     over = forecast_prop("Player", "WNBA", "Points", 20.5, "Over", history=history)
     under = forecast_prop("Player", "WNBA", "Points", 20.5, "Under", history=history)
@@ -64,7 +66,7 @@ def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
 
     assert result.features["projection_method"] == "zero_inflated_recent_median"
     assert result.features["zero_rate_recent_20"] >= 0.35
-    assert result.projection == 0.25
+    assert result.projection == 0.17
 
 
 def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
@@ -78,5 +80,63 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
 
     assert result.features["projection_method"] == "recency_weighted_mean"
     assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
-    assert result.features["market_prior_weight"] == 0.5
-    assert result.model_version.endswith("v2.2")
+    assert result.features["market_prior_weight"] == 0.35
+    assert result.model_version.endswith("v2.4.0")
+
+
+def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:
+    history = _history([18, 19, 20, 21, 18, 20, 19, 21, 18, 20] * 2)
+    history[0].update({"game": "DAL@MIN", "team": "DAL", "actual": 29})
+    history[1].update({"game": "MIN@DAL", "team": "DAL", "actual": 27})
+
+    result = forecast_prop(
+        "Paige Bueckers", "WNBA", "Points", 19.5, "Over",
+        history=history, team="DAL", game="DAL@MIN",
+    )
+
+    assert result.features["opponent"] == "MIN"
+    assert result.features["opponent_sample"] == 2
+    assert result.features["opponent_mean"] > 27
+    assert 0 < result.features["opponent_adjustment_weight"] < 0.30
+    assert result.features["opponent_projection_delta"] > 0
+    assert result.features["opponent_hit_rate"] == 100.0
+    assert result.features["opponent_average_difference"] > 0
+
+
+def test_forecast_deduplicates_alias_rows_for_the_same_game() -> None:
+    history = _history([18, 20, 22, 24, 26, 28])
+    duplicate = {**history[0], "actual": 18, "stat": "Points+Rebounds+Assists"}
+
+    result = forecast_prop(
+        "Player", "WNBA", "Points + Rebounds + Assists", 22.5,
+        history=[duplicate, *history],
+    )
+
+    assert result.sample_size == 6
+
+
+def test_thin_high_uncertainty_forecast_shrinks_probability_toward_even() -> None:
+    result = forecast_prop(
+        "Player", "WNBA", "Points + Rebounds + Assists", 22.5, "Under",
+        history=_history([0, 3, 7, 14, 17, 19, 33]),
+    )
+
+    assert result.features["evidence_strength"] < 0.35
+    assert 45 <= result.probability <= 60
+    assert result.paid_eligible is False
+
+
+def test_forecast_requests_team_specific_history(monkeypatch) -> None:
+    captured = {}
+
+    def history(player, stat, sport=None, limit=100, team=""):
+        captured.update({"player": player, "sport": sport, "team": team})
+        rows = _history([1, 2, 1, 0, 1] * 4)
+        for row in rows:
+            row["team"] = team
+        return rows
+
+    monkeypatch.setattr("analytics.probabilistic_forecast.FinalStatsRepository.history", history)
+    forecast_prop("Max Muncy", "MLB", "Hits", 0.5, team="LAD", game="LAD@COL")
+
+    assert captured == {"player": "Max Muncy", "sport": "MLB", "team": "LAD"}

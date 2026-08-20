@@ -9,7 +9,7 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-historical-distribution-v2.2"
+MODEL_VERSION = "edgeiq-season-matchup-distribution-v2.4.0"
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -45,8 +45,9 @@ def forecast_prop(
     team: str = "",
     game: str = "",
 ) -> PropForecast:
-    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100)
+    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
     rows = _eligible_history(rows, game_time)
+    rows = _current_season_history(rows, sport, game_time)
     actuals = [float(row["actual"]) for row in rows]
     feature_as_of = datetime.now(UTC).isoformat()
 
@@ -93,30 +94,42 @@ def forecast_prop(
         weighted_mean,
         stat,
     )
-    regularized_center = (projection_center * 0.50) + (float(line) * 0.50)
+    market_prior_weight = 0.25 if len(actuals) >= 40 else 0.35 if len(actuals) >= 20 else 0.50
+    regularized_center = (projection_center * (1.0 - market_prior_weight)) + (float(line) * market_prior_weight)
     side = _game_side(game, team)
     side_values = [
         float(row["actual"]) for row in rows
         if side and _game_side(str(row.get("game") or ""), str(row.get("team") or team)) == side
     ]
     opponent = _opponent(game, team)
-    opponent_values = [
-        float(row["actual"]) for row in rows
+    opponent_rows = [
+        row for row in rows
         if opponent and opponent == _opponent(str(row.get("game") or ""), str(row.get("team") or team))
+        and not _unreliable_context_row(row, stat)
     ]
+    opponent_values = [float(row["actual"]) for row in opponent_rows]
+    opponent_weights = [_recency_weight(index) for index in range(len(opponent_values))]
+    opponent_mean = (
+        sum(value * weight for value, weight in zip(opponent_values, opponent_weights, strict=False))
+        / sum(opponent_weights)
+        if opponent_weights
+        else None
+    )
+    # Head-to-head history matters immediately, but is shrunk heavily until it repeats.
+    # The cap prevents a small matchup sample from overpowering season and recent form.
+    opponent_weight = min(0.30, 0.40 * len(opponent_values) / (len(opponent_values) + 3.0))
     contextual_mean = regularized_center
     if len(side_values) >= 5:
         contextual_mean = contextual_mean * 0.80 + (sum(side_values) / len(side_values)) * 0.20
-    if len(opponent_values) >= 3:
-        contextual_mean = contextual_mean * 0.85 + (sum(opponent_values) / len(opponent_values)) * 0.15
+    if opponent_mean is not None:
+        contextual_mean = contextual_mean * (1.0 - opponent_weight) + opponent_mean * opponent_weight
     variance = sum(
         weight * ((value - contextual_mean) ** 2)
         for value, weight in zip(actuals, weights, strict=False)
     ) / weight_sum
     sigma = max(_minimum_sigma(stat, weighted_mean), math.sqrt(max(variance, 0.0)))
     effective_n = (weight_sum * weight_sum) / sum(weight * weight for weight in weights)
-    probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
-    paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8
+    raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     recent = actuals[:5]
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
     expected_minutes = _optional_history_median(rows, ("minutes", "min"))
@@ -124,9 +137,17 @@ def forecast_prop(
         rows,
         ("opportunities", "attempts", "usage_opportunities", "targets", "carries"),
     )
+    role_required = sport.upper() in {"WNBA", "NBA", "NFL"}
+    role_verified = expected_minutes is not None or expected_opportunities is not None
+    paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
     uncertainty_drivers = _uncertainty_drivers(
         len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
     )
+    evidence_strength = min(1.0, effective_n / MIN_HISTORY_FOR_PAID)
+    if expected_minutes is None and expected_opportunities is None:
+        evidence_strength *= 0.85
+    probability = 0.5 + ((raw_probability - 0.5) * evidence_strength)
+    opponent_hits = sum(_value_hits_line(value, float(line), direction) for value in opponent_values)
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -140,6 +161,8 @@ def forecast_prop(
         reason=(
             "Verified history clears the minimum paid-model evidence threshold."
             if paid_eligible
+            else "Forecast available, but verified minutes or opportunity evidence is required for paid mode."
+            if role_required and not role_verified
             else f"Forecast available, but paid mode requires {MIN_HISTORY_FOR_PAID} verified games."
         ),
         feature_as_of=feature_as_of,
@@ -152,7 +175,7 @@ def forecast_prop(
             "weighted_mean": round(weighted_mean, 3),
             "history_center": round(projection_center, 3),
             "market_prior": round(float(line), 3),
-            "market_prior_weight": 0.5,
+            "market_prior_weight": market_prior_weight,
             "regularized_center": round(regularized_center, 3),
             "projection_method": projection_method,
             "zero_rate_recent_20": round(zero_rate, 3),
@@ -169,11 +192,24 @@ def forecast_prop(
             "standard_deviation": round(sigma, 3),
             "recency_decay": 0.93,
             "market_line_used_as_prior": False,
+            "role_evidence_required": role_required,
+            "role_evidence_verified": role_verified,
+            "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
+            "evidence_strength": round(evidence_strength, 3),
             "home_away": side or "unknown",
             "home_away_sample": len(side_values),
             "opponent": opponent,
             "opponent_sample": len(opponent_values),
+            "opponent_mean": round(opponent_mean, 3) if opponent_mean is not None else None,
+            "opponent_hit_rate": round((opponent_hits / len(opponent_values)) * 100.0, 1) if opponent_values else None,
+            "opponent_average_difference": round(opponent_mean - projection_center, 3) if opponent_mean is not None else None,
+            "opponent_adjustment_weight": round(opponent_weight, 3),
+            "opponent_projection_delta": round(contextual_mean - regularized_center, 3),
             "rest_days": _rest_days(game_time, rows),
+            "season_start": min((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
+            "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
+            "season_average": round(sum(actuals) / len(actuals), 3),
+            "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
             "missingness": {
                 "home_away": not bool(side),
                 "opponent": not bool(opponent),
@@ -264,7 +300,50 @@ def _eligible_history(rows: list[dict], game_time: object) -> list[dict]:
         and (not cutoff or not row.get("game_date") or str(row["game_date"]) < cutoff)
     ]
     eligible.sort(key=lambda row: (str(row.get("game_date") or ""), str(row.get("game") or "")), reverse=True)
-    return eligible
+    deduplicated: list[dict] = []
+    seen_games: set[tuple[str, str]] = set()
+    for row in eligible:
+        game_key = str(row.get("game") or "").upper().replace(" ", "")
+        date_key = str(row.get("game_date") or "")[:10]
+        key = (date_key, game_key)
+        if key in seen_games:
+            continue
+        seen_games.add(key)
+        deduplicated.append(row)
+    return deduplicated
+
+
+def _current_season_history(rows: list[dict], sport: str, game_time: object) -> list[dict]:
+    target_text = _date_text(game_time) or datetime.now(UTC).date().isoformat()
+    try:
+        target = datetime.fromisoformat(target_text).date()
+    except ValueError:
+        return rows
+    sport_key = str(sport or "").upper()
+    if sport_key in {"NBA", "NHL"}:
+        season_year = target.year if target.month >= 9 else target.year - 1
+        start = datetime(season_year, 9, 15).date().isoformat()
+    elif sport_key == "MLB":
+        start = datetime(target.year, 3, 1).date().isoformat()
+    elif sport_key == "WNBA":
+        start = datetime(target.year, 5, 1).date().isoformat()
+    elif sport_key == "NFL":
+        start = datetime(target.year, 7, 15).date().isoformat()
+    else:
+        return rows
+    season_rows = [row for row in rows if not row.get("game_date") or start <= str(row["game_date"])[:10] <= target.isoformat()]
+    return season_rows or rows
+
+
+def _value_hits_line(value: float, line: float, direction: str) -> bool:
+    return value < line if str(direction).lower() == "under" else value > line
+
+
+def _unreliable_context_row(row: dict, stat: str) -> bool:
+    """Do not let an unexplained zero define opponent-specific combined-stat context."""
+    key = canonical_stat_label(stat).lower()
+    combined = "+" in key or any(token in key for token in ("points rebounds", "points assists", "rebounds assists"))
+    return combined and float(row.get("actual") or 0.0) == 0.0
 
 
 def _side_probability(mean: float, sigma: float, line: float, direction: str, stat: str) -> float:

@@ -38,6 +38,9 @@ def test_settlement_audit_deduplicates_retries(monkeypatch):
     assert queue["waiting"] == 1
     assert queue["scheduled"] == 0
     assert queue["items"][0]["attempt_count"] == 2
+    assert queue["items"][0]["match_confidence"] == 0
+    assert queue["items"][0]["next_retry_at"]
+    assert queue["items"][0]["blocking_reason"] == "Waiting for a verified final box score."
 
 
 def test_settlement_audit_separates_historical_blocks_from_current_queue(monkeypatch):
@@ -113,3 +116,4 @@ def test_latest_settlement_evidence_includes_matched_final_date(monkeypatch):
 
     assert evidence[12][31]["matched_player"] == "Azurá Stevens"
     assert evidence[12][31]["matched_game_dates"] == ["2026-08-07"]
+    assert evidence[12][31]["match_confidence"] == 100

@@ -56,6 +56,9 @@ class EntryPayload(BaseModel):
             "prize picks": "PrizePicks",
             "underdog": "Underdog",
             "underdog fantasy": "Underdog",
+            "draftkings": "DraftKings Pick6",
+            "draftkings pick6": "DraftKings Pick6",
+            "dk pick6": "DraftKings Pick6",
             "sleeper": "Sleeper",
             "ball don't lie": "Ball Don't Lie",
             "balldontlie": "Ball Don't Lie",
@@ -77,7 +80,7 @@ class EntryPayload(BaseModel):
                 "Build one entry per sportsbook."
             )
         detected = next(iter(explicit_sources), canonical(self.platform) or "PrizePicks")
-        maximum_legs = 8 if detected == "Underdog" else 6 if detected == "PrizePicks" else 5
+        maximum_legs = 8 if detected == "Underdog" else 6 if detected in {"PrizePicks", "DraftKings Pick6"} else 5
         if len(self.props) > maximum_legs:
             raise ValueError(
                 f"{detected} entries support at most {maximum_legs} legs."
@@ -86,6 +89,16 @@ class EntryPayload(BaseModel):
         for prop in self.props:
             if "platform" not in prop.model_fields_set or not str(prop.platform or "").strip():
                 prop.platform = detected
+            offer_type = str(prop.line_offer_type or "standard").strip().lower()
+            if (
+                detected == "PrizePicks"
+                and (offer_type == "demon" or prop.is_premium_line)
+                and prop.direction == "Under"
+            ):
+                raise ValueError(
+                    f"{prop.player} uses a PrizePicks Demon line, which only supports Over. "
+                    "Change this leg to Over or choose the standard line."
+                )
         return self
 
 

@@ -34,6 +34,7 @@ class OperationsDependencies:
     update_alert_delivery: Callable[[AlertDeliveryPayload], dict]
     test_alert_delivery: Callable[[AlertDeliveryTestPayload], dict]
     deploy_readiness: Callable[[], dict]
+    runtime_status: Callable[[], dict]
     notifications: Callable[[], dict]
     watchlist: Callable[[], dict]
     save_watchlist: Callable[[WatchlistItemPayload], dict]
@@ -124,6 +125,11 @@ def test_alert_delivery(payload: AlertDeliveryTestPayload) -> dict:
 @router.get("/api/deploy/readiness")
 def deploy_readiness() -> dict:
     return _deps().deploy_readiness()
+
+
+@router.get("/api/runtime/status")
+def runtime_status() -> dict:
+    return _deps().runtime_status()
 
 
 @router.get("/api/notifications")

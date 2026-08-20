@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,12 @@ def wait_for_server(timeout_seconds: float = 20.0) -> None:
         except OSError:
             time.sleep(0.2)
     raise RuntimeError("EdgeIQ visual test server did not become ready.")
+
+
+def available_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
 
 
 def visual_issues(page: Page) -> dict:
@@ -80,6 +87,7 @@ def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
 
 
 def main() -> int:
+    global BASE_URL
     OUTPUT.mkdir(parents=True, exist_ok=True)
     database_path = Path(tempfile.gettempdir()) / "edgeiq-visual-regression.db"
     database_path.unlink(missing_ok=True)
@@ -88,11 +96,15 @@ def main() -> int:
         "DATABASE_URL": f"sqlite:///{database_path}",
         "EDGEIQ_SETTLEMENT_INITIAL_REFRESH_SECONDS": "3600",
     }
+    port = available_port()
+    BASE_URL = f"http://127.0.0.1:{port}"
+    server_log = OUTPUT / "server.log"
+    log_handle = server_log.open("w", encoding="utf-8")
     server = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "web.app:app", "--host", "127.0.0.1", "--port", "8765"],
+        [sys.executable, "-m", "uvicorn", "web.app:app", "--host", "127.0.0.1", "--port", str(port)],
         cwd=ROOT,
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=log_handle,
         stderr=subprocess.STDOUT,
     )
     results = []
@@ -116,6 +128,7 @@ def main() -> int:
             server.wait(timeout=5)
         except subprocess.TimeoutExpired:
             server.kill()
+        log_handle.close()
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")
     return 0
