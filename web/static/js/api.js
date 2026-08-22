@@ -65,16 +65,32 @@
     const requestKey = method === "GET" ? `${API_BASE}${path}` : "";
     if (requestKey && inflightGetRequests.has(requestKey)) return inflightGetRequests.get(requestKey);
     const request = (async () => {
-      const response = await fetch(`${API_BASE}${path}`, {
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        cache: "no-store",
-        ...options,
-      });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(humanizeApiError(detail, response.status));
+      const { timeoutMs = method === "GET" ? 20000 : 60000, signal, ...fetchOptions } = options;
+      const controller = new AbortController();
+      const abortFromCaller = () => controller.abort();
+      if (signal) signal.addEventListener("abort", abortFromCaller, { once: true });
+      const timeout = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 20000));
+      try {
+        const response = await fetch(`${API_BASE}${path}`, {
+          headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+          cache: "no-store",
+          ...fetchOptions,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(humanizeApiError(detail, response.status));
+        }
+        return response.json();
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw new Error("This is taking longer than expected. Check provider status, then try again.");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+        if (signal) signal.removeEventListener("abort", abortFromCaller);
       }
-      return response.json();
     })();
     if (requestKey) inflightGetRequests.set(requestKey, request);
     try {

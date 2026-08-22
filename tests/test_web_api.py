@@ -3471,6 +3471,31 @@ def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_s
     assert all(len(row["providers"]) == 2 for row in result["sport_results"])
 
 
+def test_paper_calibration_status_separates_waiting_settled_and_blocked(monkeypatch):
+    now = datetime.now(ZoneInfo("America/New_York"))
+    audit = json.dumps({"source": "auto_paper_calibration"})
+    entries = [
+        {"id": 1, "entry_mode": "paper", "status": "Pending", "placed_at": now, "audit_snapshot": audit,
+         "props": [{"player": "Waiting", "sport": "WNBA", "actual": None}]},
+        {"id": 2, "entry_mode": "paper", "status": "Settled", "placed_at": now, "audit_snapshot": audit,
+         "props": [{"player": "Settled", "sport": "WNBA", "actual": 20}]},
+        {"id": 3, "entry_mode": "paper", "status": "Pending", "placed_at": now, "audit_snapshot": audit,
+         "props": [{"player": "Blocked", "sport": "NFL", "actual": None}]},
+    ]
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: entries)
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {"schedule": {"enabled": True, "auto_paper_samples": "08:30"}})
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": default)
+    monkeypatch.setattr(web_app, "_end_to_end_prop_eligibility", lambda prop: {"eligible": prop["player"] != "Blocked"})
+    monkeypatch.setattr(web_app, "_automatic_final_retry_expired", lambda prop: False)
+
+    result = web_app._paper_calibration_status_payload()
+
+    assert result["totals"] == {"created": 3, "waiting": 1, "settled": 1, "blocked": 1}
+    assert {row["sport"] for row in result["sports"]} == {"WNBA", "NFL"}
+    assert result["next_run_at"]
+    assert "without risking bankroll" in result["explanation"]
+
+
 def test_under_leg_result_wins_below_line():
     assert _leg_result(17.0, 20.5, "Under") == "Win"
     assert _leg_result(24.0, 20.5, "Under") == "Loss"

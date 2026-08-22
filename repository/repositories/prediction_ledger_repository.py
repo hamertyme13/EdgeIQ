@@ -219,6 +219,12 @@ def _projection_accuracy(rows: list[dict]) -> dict:
     errors = []
     market_errors = []
     regularized_errors = []
+    baseline_errors: dict[str, list[float]] = {
+        "season_average": [],
+        "recent_10_average": [],
+        "sportsbook_line": [],
+        "edgeiq_projection": [],
+    }
     signed = []
     distribution_predictions = 0
     middle_50_hits = 0
@@ -232,9 +238,15 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             - float(row["actual"])
         )
         market_errors.append(market_error)
+        baseline_errors["sportsbook_line"].append(market_error)
+        baseline_errors["edgeiq_projection"].append(abs(error))
         regularized_errors.append(regularized_error)
         signed.append(error)
         distribution = (row.get("feature_snapshot") or {}).get("distribution") or {}
+        features = (row.get("feature_snapshot") or {}).get("features") or {}
+        for label, key in (("season_average", "season_average"), ("recent_10_average", "last_10_average")):
+            if features.get(key) is not None:
+                baseline_errors[label].append(abs(float(features[key]) - float(row["actual"])))
         percentile_25 = distribution.get("percentile_25")
         percentile_75 = distribution.get("percentile_75")
         floor = distribution.get("floor")
@@ -276,6 +288,31 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             }
             for source, values in sorted(groups.items())
         },
+        "baseline_comparison": _baseline_comparison(baseline_errors),
+    }
+
+
+def _baseline_comparison(errors: dict[str, list[float]]) -> dict:
+    rows = {
+        name: {
+            "samples": len(values),
+            "mae": round(sum(values) / len(values), 3) if values else None,
+        }
+        for name, values in errors.items()
+    }
+    comparable = [(name, row["mae"]) for name, row in rows.items() if row["mae"] is not None]
+    winner = min(comparable, key=lambda item: item[1])[0] if comparable else ""
+    model_mae = rows["edgeiq_projection"]["mae"]
+    market_mae = rows["sportsbook_line"]["mae"]
+    return {
+        "baselines": rows,
+        "best_baseline": winner,
+        "edgeiq_beats_market": bool(model_mae is not None and market_mae is not None and model_mae < market_mae),
+        "message": (
+            "EdgeIQ currently beats the sportsbook-line baseline on settled projection error."
+            if model_mae is not None and market_mae is not None and model_mae < market_mae
+            else "Keep paid mode restricted until EdgeIQ beats the sportsbook-line baseline."
+        ),
     }
 
 

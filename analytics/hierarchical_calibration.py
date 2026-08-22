@@ -27,12 +27,23 @@ def calibrate_probability(
         ("sport", ("sport",), 100),
     )
     target = {
-        "sport": sport.upper(),
+        "sport": sport.strip().lower(),
         "stat": stat.lower(),
         "platform": provider.lower(),
         "direction": direction.lower(),
         "projection_source": projection_source.lower(),
     }
+    segment_peers = [
+        row for row in unique_rows
+        if _matches(row, target, ("sport", "stat", "platform"))
+    ]
+    segment_samples = len(segment_peers)
+    maturity = (
+        "mature" if segment_samples >= 500
+        else "developing" if segment_samples >= 200
+        else "calibrated" if segment_samples >= 100
+        else "thin"
+    )
 
     for tier, fields, minimum in tiers:
         peers = [row for row in unique_rows if _matches(row, target, fields)]
@@ -50,7 +61,10 @@ def calibrate_probability(
             "tier": tier,
             "sample_size": len(peers),
             "uncertainty_points": round(uncertainty * 100.0, 2),
-            "paid_eligible": len(peers) >= minimum and uncertainty <= 0.10,
+            "paid_eligible": segment_samples >= 100 and uncertainty <= 0.10,
+            "segment_sample_size": segment_samples,
+            "segment_maturity": maturity,
+            "segment_next_threshold": 100 if segment_samples < 100 else 200 if segment_samples < 200 else 500,
             "confidence_cap": round(cap * 100.0, 1),
             "cap_reason": "Confidence is capped until this segment has enough precise independent outcomes.",
         }
@@ -63,6 +77,9 @@ def calibrate_probability(
         "sample_size": 0,
         "uncertainty_points": 50.0,
         "paid_eligible": False,
+        "segment_sample_size": segment_samples,
+        "segment_maturity": maturity,
+        "segment_next_threshold": 100 if segment_samples < 100 else 200 if segment_samples < 200 else 500,
         "confidence_cap": cap * 100.0,
         "cap_reason": "Uncalibrated predictions cannot exceed 69% confidence.",
     }

@@ -20,6 +20,7 @@ class RecommendationDependencies:
     command_center: Callable[[str, str, bool], dict]
     opportunity_feed: Callable[[str, str, float, int, int], dict]
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
+    paper_calibration_status: Callable[[], dict]
     entry_suggestions: Callable[[str, str, int, set[str]], dict]
     confirmed_suggestions: Callable[[str, str], dict]
     crazy_six: Callable[[str, str], dict]
@@ -90,6 +91,11 @@ def opportunity_feed(
 @router.post("/api/entries/auto-paper-calibration")
 def auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
     return _deps().auto_paper(payload)
+
+
+@router.get("/api/entries/paper-calibration-status")
+def paper_calibration_status() -> dict:
+    return _deps().paper_calibration_status()
 
 
 @router.get("/api/entries/suggestions")

@@ -11,7 +11,8 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
@@ -72,6 +73,7 @@ from models.stat_type import StatType
 from repository.bet_repository import BetRepository
 from repository.database import initialize_database
 from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
+from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
@@ -487,6 +489,8 @@ SETTLEMENT_AUTOMATIC_RETRY_HOURS = max(
     float(os.getenv("EDGEIQ_SETTLEMENT_AUTOMATIC_RETRY_HOURS", "24")),
 )
 COMMAND_CENTER_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_COMMAND_CENTER_CACHE_SECONDS", "120")))
+OPPORTUNITY_FEED_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_OPPORTUNITY_FEED_CACHE_SECONDS", "120")))
+BACKTEST_CACHE_SECONDS = max(15, int(os.getenv("EDGEIQ_BACKTEST_CACHE_SECONDS", "30")))
 SETTLEMENT_REFRESH_STATUS_KEY = "settlement_refresh_status"
 _PROP_FETCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
@@ -494,6 +498,10 @@ _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
 _COMMAND_CENTER_CACHE: dict[tuple, tuple[float, dict]] = {}
 _COMMAND_CENTER_LOCK = threading.RLock()
+_OPPORTUNITY_FEED_CACHE: dict[tuple, tuple[float, dict]] = {}
+_OPPORTUNITY_FEED_LOCK = threading.RLock()
+_BACKTEST_CACHE: tuple[float, tuple[object, object], dict] = (0.0, (None, None), {})
+_BACKTEST_LOCK = threading.RLock()
 _TRENDING_PROPS_CACHE: dict[tuple, tuple[float, dict]] = {}
 _TRENDING_PROPS_LOCK = threading.RLock()
 _PREDICTION_EVIDENCE_CACHE: tuple[float, list[dict]] = (0.0, [])
@@ -1175,7 +1183,17 @@ def _performance_payload() -> dict:
 
 
 def _backtest_payload() -> dict:
-    return build_backtest_payload(clv_report())
+    global _BACKTEST_CACHE
+    now = time.monotonic()
+    source_key = (EntryRepository.all, BetRepository.get_all)
+    with _BACKTEST_LOCK:
+        expires_at, cached_source_key, cached = _BACKTEST_CACHE
+        if cached and cached_source_key == source_key and expires_at > now:
+            return {**cached, "cache": {"hit": True, "ttl_seconds": BACKTEST_CACHE_SECONDS}}
+    payload = build_backtest_payload(clv_report())
+    with _BACKTEST_LOCK:
+        _BACKTEST_CACHE = (now + BACKTEST_CACHE_SECONDS, source_key, payload)
+    return {**payload, "cache": {"hit": False, "ttl_seconds": BACKTEST_CACHE_SECONDS}}
 
 
 def _data_integrity_repair_payload(dry_run: bool = True) -> dict:
@@ -1228,10 +1246,12 @@ def _refresh_calibration_data_payload() -> dict:
     backfill_ids = refreshed_ids | unresolved_settled_ids
     latest_targets = [entry for entry in EntryRepository.all() if int(entry.get("id") or 0) in backfill_ids]
     backfill = _backfill_settled_entry_leg_results(latest_targets)
+    board_settlement = BoardOfferRepository.settle_pending(limit=1000)
     return {
         "entries_targeted": len(refresh_entries),
         "provider_refresh": provider_refresh,
         "backfill": backfill,
+        "board_settlement": board_settlement,
         "backtest": backtest_summary(BetRepository().get_all(), EntryRepository.all()),
     }
 
@@ -1350,6 +1370,10 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
         return []
     for prop in props:
         prop.setdefault("platform", canonical)
+    # Capture the provider's complete board before recommendation and
+    # settlement filters introduce selection bias.
+    with suppress(Exception):
+        BoardOfferRepository.record_many(props, canonical)
     actionable = [
         prop for prop in props
         if _is_actionable_provider_prop(prop)
@@ -2004,12 +2028,110 @@ def _run_automatic_paper_samples() -> dict:
     )
     result = _auto_paper_calibration(payload)
     result["automatic"] = True
+    SettingsRepository.set("auto_paper_samples:last_result", json.dumps({
+        "ran_at": iso_utc(utc_now()),
+        "created_count": result.get("created_count", 0),
+        "requested_count": result.get("requested_count", 0),
+        "sports_requested": result.get("sports_requested", []),
+        "sport_results": result.get("sport_results", []),
+    }, default=str))
     result["message"] = (
         f"Created {result['created_count']} automatic paper calibration cards across {len(result.get('sports_requested') or [])} active sports."
         if result["created_count"]
         else "No automatic paper cards were created because today's verified board could not fill a new unique card."
     )
     return result
+
+
+def _paper_calibration_status_payload() -> dict:
+    now = datetime.now(ENTRY_DAY_TIME_ZONE)
+    today = now.date()
+    schedule = _refresh_schedule_payload()["schedule"]
+    last_result = _safe_json_loads(SettingsRepository.get("auto_paper_samples:last_result", ""))
+    entries = []
+    for entry in EntryRepository.all():
+        if str(entry.get("entry_mode") or "real").lower() != "paper":
+            continue
+        audit = _safe_json_loads(entry.get("audit_snapshot", ""))
+        if audit.get("source") != "auto_paper_calibration":
+            continue
+        placed_at = entry.get("placed_at") or entry.get("created_at")
+        if isinstance(placed_at, str):
+            with suppress(ValueError):
+                placed_at = datetime.fromisoformat(placed_at.replace("Z", "+00:00"))
+        if not isinstance(placed_at, datetime):
+            continue
+        if placed_at.tzinfo is None:
+            placed_at = placed_at.replace(tzinfo=UTC)
+        if placed_at.astimezone(ENTRY_DAY_TIME_ZONE).date() == today:
+            entries.append(entry)
+
+    def blocked(entry: dict) -> bool:
+        unresolved = [prop for prop in entry.get("props", []) if prop.get("actual") is None]
+        return bool(unresolved) and any(
+            not _end_to_end_prop_eligibility(prop)["eligible"]
+            or _automatic_final_retry_expired(prop)
+            for prop in unresolved
+        )
+
+    waiting = [entry for entry in entries if entry.get("status") != "Settled" and not blocked(entry)]
+    blocked_entries = [entry for entry in entries if entry.get("status") != "Settled" and blocked(entry)]
+    settled = [entry for entry in entries if entry.get("status") == "Settled"]
+    sports = list(last_result.get("sports_requested") or [])
+    for entry in entries:
+        for prop in entry.get("props", []):
+            sport = str(prop.get("sport") or "").upper()
+            if sport and sport not in sports:
+                sports.append(sport)
+    result_by_sport = {row.get("sport"): row for row in last_result.get("sport_results", [])}
+    sport_rows = []
+    for sport in sports:
+        cards = [entry for entry in entries if sport in {str(prop.get("sport") or "").upper() for prop in entry.get("props", [])}]
+        result = result_by_sport.get(sport, {})
+        created = len(cards) if cards else int(result.get("created_count") or 0)
+        sport_rows.append({
+            "sport": sport,
+            "created": created,
+            "target": 5,
+            "coverage": round(min(100.0, created / 5 * 100.0), 1),
+            "waiting": sum(entry in waiting for entry in cards),
+            "settled": sum(entry in settled for entry in cards),
+            "blocked": sum(entry in blocked_entries for entry in cards),
+            "providers": result.get("providers", []),
+            "shortfall": max(0, 5 - created),
+        })
+
+    next_run = None
+    if schedule.get("enabled", True):
+        try:
+            hour, minute = [int(part) for part in str(schedule.get("auto_paper_samples") or "08:30").split(":", 1)]
+            candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            last_run = str(SettingsRepository.get("daily_scheduler_run:auto_paper_samples", ""))
+            if candidate <= now or last_run.startswith(today.isoformat()):
+                candidate += timedelta(days=1)
+            next_run = candidate.isoformat()
+        except (TypeError, ValueError):
+            next_run = None
+
+    alerts = [
+        f"{row['sport']} produced {row['created']} of 5 cards because only verified same-day offers are allowed."
+        for row in sport_rows if row["shortfall"]
+    ]
+    return {
+        "date": today.isoformat(),
+        "next_run_at": next_run,
+        "scheduler_enabled": bool(schedule.get("enabled", True)),
+        "last_run_at": last_result.get("ran_at") or SettingsRepository.get("daily_scheduler_run:auto_paper_samples", ""),
+        "sports": sport_rows,
+        "totals": {
+            "created": len(entries) if entries else sum(int(row.get("created_count") or 0) for row in last_result.get("sport_results", [])),
+            "waiting": len(waiting),
+            "settled": len(settled),
+            "blocked": len(blocked_entries),
+        },
+        "alerts": alerts,
+        "explanation": "Each settled paper prop becomes an independent outcome used to measure confidence, sport, stat, and provider calibration without risking bankroll.",
+    }
 
 
 def _create_standard_calibration_batch(
@@ -5403,6 +5525,21 @@ def _sportsbook_integrations_payload() -> dict:
 
 
 def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: float, limit: int, odds: int) -> dict:
+    cache_key = (
+        _canonical_platform(platform),
+        str(sport_filter or "All Sports").strip().upper(),
+        round(float(min_ev), 2),
+        max(1, min(int(limit), 50)),
+        int(odds),
+    )
+    now = time.monotonic()
+    with _OPPORTUNITY_FEED_LOCK:
+        expires_at, cached = _OPPORTUNITY_FEED_CACHE.get(cache_key, (0.0, {}))
+        if cached and expires_at > now:
+            return {
+                **cached,
+                "cache": {"hit": True, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
+            }
     ev_rows = _ev_scanner_rows(platform, sport_filter, min_ev=min_ev, limit=max(limit * 2, 20), odds=odds)
     timing_rows = _market_timing_alert_rows(
         platform,
@@ -5479,7 +5616,12 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
         payload["opportunities"],
         model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2",
     )
-    return payload
+    with _OPPORTUNITY_FEED_LOCK:
+        _OPPORTUNITY_FEED_CACHE[cache_key] = (time.monotonic() + OPPORTUNITY_FEED_CACHE_SECONDS, payload)
+    return {
+        **payload,
+        "cache": {"hit": False, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
+    }
 
 
 def _opportunity_from_ev_row(row: dict) -> dict:
@@ -6042,6 +6184,8 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     row["data_quality"] = _feed_data_quality(row, movement)
     row["data_strength"] = _data_strength_labels(row)
     row["risk_profile"] = _prop_risk_profile(row)
+    with suppress(Exception):
+        BoardOfferRepository.attach_analysis(row)
     return row
 
 
@@ -10925,6 +11069,7 @@ def _data_health_payload() -> dict:
             "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
             "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
             "research_memory": ResearchEvidenceRepository.summary(),
+            "complete_board": BoardOfferRepository.summary(),
             "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
         },
     )
@@ -11076,6 +11221,7 @@ def _run_due_daily_operations_locked() -> dict:
         "result_check": lambda: {
             "entries": _auto_check_pending_entries(False, True),
             "shadow": ModelRehabilitationRepository.settle_pending(),
+            "complete_board": BoardOfferRepository.settle_pending(limit=1000),
         },
         "nightly_calibration": lambda: _backtest_payload(),
         "shadow_cohort": _queue_daily_shadow_cohort,
@@ -12017,6 +12163,7 @@ configure_recommendation_router(
             odds,
         ),
         auto_paper=lambda payload: _auto_paper_calibration(payload),
+        paper_calibration_status=lambda: _paper_calibration_status_payload(),
         entry_suggestions=lambda sport, platform, leg_count, avoid_prop_keys: build_entry_suggestions_payload(
             sport,
             platform,

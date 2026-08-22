@@ -45,6 +45,7 @@ def forecast_prop(
     team: str = "",
     game: str = "",
 ) -> PropForecast:
+    policy = _league_stat_policy(sport, stat)
     rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
     trailing_rows = _eligible_history(rows, game_time)
     rows = _current_season_history(trailing_rows, sport, game_time)
@@ -96,7 +97,11 @@ def forecast_prop(
         weighted_mean,
         stat,
     )
-    market_prior_weight = 0.25 if len(actuals) >= 40 else 0.35 if len(actuals) >= 20 else 0.50
+    market_prior_weight = policy["market_prior_weight"]
+    if len(actuals) >= 40:
+        market_prior_weight = max(0.20, market_prior_weight - 0.10)
+    elif len(actuals) < 20:
+        market_prior_weight = min(0.60, market_prior_weight + 0.10)
     regularized_center = (projection_center * (1.0 - market_prior_weight)) + (float(line) * market_prior_weight)
     side = _game_side(game, team)
     side_values = [
@@ -137,9 +142,9 @@ def forecast_prop(
     expected_minutes = _optional_history_median(rows, ("minutes", "min"))
     expected_opportunities = _optional_history_median(
         rows,
-        ("opportunities", "attempts", "usage_opportunities", "targets", "carries"),
+        policy["opportunity_keys"],
     )
-    role_required = sport.upper() in {"WNBA", "NBA", "NFL"}
+    role_required = bool(policy["requires_role_evidence"])
     role_verified = expected_minutes is not None or expected_opportunities is not None
     paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
     uncertainty_drivers = _uncertainty_drivers(
@@ -172,6 +177,8 @@ def forecast_prop(
             "player_key": canonical_person_key(player),
             "sport": sport.upper(),
             "stat": canonical_stat_label(stat),
+            "league_stat_policy": policy["name"],
+            "opportunity_metric": policy["opportunity_metric"],
             "verified_games": len(actuals),
             "effective_sample_size": round(effective_n, 2),
             "weighted_mean": round(weighted_mean, 3),
@@ -291,6 +298,52 @@ def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float |
         except (TypeError, ValueError):
             continue
     return round(float(median(values)), 2) if values else None
+
+
+def _league_stat_policy(sport: str, stat: str) -> dict:
+    """Route forecasts through league/stat-specific opportunity assumptions."""
+    league = str(sport or "").upper()
+    market = canonical_stat_label(stat).lower()
+    if league == "NFL":
+        if any(token in market for token in ("pass", "completion", "interception")):
+            return _policy("nfl_passing", "dropbacks/pass attempts", ("pass_attempts", "attempts", "dropbacks"), 0.40)
+        if any(token in market for token in ("rush", "carry")):
+            return _policy("nfl_rushing", "carries", ("carries", "rush_attempts", "opportunities"), 0.40)
+        if any(token in market for token in ("reception", "receiving", "target")):
+            return _policy("nfl_receiving", "targets/routes", ("targets", "routes", "route_participation"), 0.40)
+        if any(token in market for token in ("field goal", "extra point", "kicking")):
+            return _policy("nfl_kicking", "kicking attempts", ("field_goal_attempts", "extra_point_attempts", "attempts"), 0.45)
+        return _policy("nfl_general", "snaps", ("snaps", "opportunities", "attempts"), 0.45)
+    if league in {"NBA", "WNBA"}:
+        return _policy(
+            f"{league.lower()}_minutes_usage",
+            "minutes/usage",
+            ("usage_opportunities", "possessions", "opportunities", "attempts"),
+            0.35,
+        )
+    if league == "MLB":
+        if any(token in market for token in ("strikeout", "pitch", "earned run", "walks allowed")):
+            return _policy("mlb_pitching", "batters faced/pitches", ("batters_faced", "pitches", "innings_pitched"), 0.35)
+        return _policy("mlb_batting", "plate appearances", ("plate_appearances", "at_bats", "opportunities"), 0.35)
+    if league == "NHL":
+        return _policy("nhl_ice_time_role", "time on ice/shifts", ("time_on_ice", "shifts", "opportunities"), 0.40)
+    return _policy("generic_verified_history", "opportunities", ("opportunities", "attempts", "targets", "carries"), 0.40, False)
+
+
+def _policy(
+    name: str,
+    metric: str,
+    keys: tuple[str, ...],
+    market_prior_weight: float,
+    requires_role: bool = True,
+) -> dict:
+    return {
+        "name": name,
+        "opportunity_metric": metric,
+        "opportunity_keys": keys,
+        "market_prior_weight": market_prior_weight,
+        "requires_role_evidence": requires_role,
+    }
 
 
 def _uncertainty_level(sample_size: int, sigma: float, mean: float) -> str:

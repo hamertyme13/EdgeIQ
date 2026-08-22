@@ -54,6 +54,7 @@ def suggest_entries(
     recommendation_props = _prefilter_raw_markets(
         [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)],
         sport,
+        limit=max(12, leg_count * 2),
     )
     forecast_cache: dict[tuple, PropForecast] = {}
     candidates = []
@@ -170,8 +171,13 @@ def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:
     return raw.get("line") is not None and is_supported_full_game_stat(raw.get("stat"))
 
 
-def _prefilter_raw_markets(raw_props: list[dict], sport: str, limit: int = 240) -> list[dict]:
-    """Bound expensive history forecasts while retaining several markets per player."""
+def _prefilter_raw_markets(raw_props: list[dict], sport: str, limit: int = 16) -> list[dict]:
+    """Bound expensive history forecasts while retaining enough markets for diverse cards.
+
+    Each market can create both an over and under candidate. The caller scales
+    this shortlist with the requested leg count so longer cards retain enough
+    unique players without making small-card users wait on unused forecasts.
+    """
     filtered = [
         prop for prop in raw_props
         if sport.upper() == "ALL SPORTS" or str(prop.get("league") or prop.get("sport") or "").upper() == sport.upper()

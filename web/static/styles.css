@@ -2103,6 +2103,100 @@ tr.sport-group-row:hover td {
 }
 .calibration-batch-summary strong { color: var(--text); }
 .calibration-batch-summary span { color: var(--muted); font-size: 13px; }
+.calibration-dashboard {
+  display: grid;
+  gap: 14px;
+  margin: 16px 0 8px;
+  padding: 16px 0;
+  border-top: 1px solid rgba(74, 91, 119, .45);
+  border-bottom: 1px solid rgba(74, 91, 119, .45);
+}
+.calibration-dashboard-head,
+.calibration-sport-progress,
+.calibration-state-strip,
+.calibration-next-run {
+  display: flex;
+  align-items: center;
+}
+.calibration-dashboard-head { justify-content: space-between; gap: 18px; }
+.calibration-dashboard-head h3 { margin: 2px 0 0; }
+.calibration-next-run {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px 10px;
+  text-align: right;
+}
+.calibration-next-run span,
+.calibration-next-run small { color: var(--muted); }
+.calibration-next-run strong { color: var(--primary); font-size: 18px; }
+.calibration-next-run small { flex-basis: 100%; }
+.calibration-state-strip { gap: 10px; }
+.calibration-state-strip > span {
+  display: grid;
+  min-width: 96px;
+  padding: 9px 12px;
+  border: 1px solid rgba(74, 91, 119, .45);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .45);
+}
+.calibration-state-strip small { color: var(--muted); }
+.status-negative-text strong { color: var(--danger); }
+.calibration-explanation {
+  margin: 0;
+  padding-left: 12px;
+  border-left: 3px solid var(--secondary);
+  color: var(--muted);
+}
+.calibration-sport-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+}
+.calibration-sport-progress {
+  gap: 12px;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid rgba(74, 91, 119, .45);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .45);
+}
+.calibration-ring {
+  display: grid;
+  flex: 0 0 58px;
+  width: 58px;
+  height: 58px;
+  place-items: center;
+  border-radius: 50%;
+  background: conic-gradient(var(--primary) var(--coverage), rgba(74, 91, 119, .34) 0);
+}
+.calibration-ring::before {
+  grid-area: 1 / 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--raised);
+  content: "";
+}
+.calibration-ring span { z-index: 1; display: flex; align-items: baseline; gap: 2px; }
+.calibration-ring small { color: var(--muted); }
+.calibration-sport-copy { min-width: 0; flex: 1; }
+.calibration-sport-copy p { margin: 5px 0 2px; }
+.calibration-empty { display: grid; gap: 4px; color: var(--muted); }
+.calibration-shortfall {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 9px 12px;
+  border-left: 3px solid var(--warn);
+  background: rgba(255, 184, 77, .07);
+}
+.calibration-shortfall span { color: var(--muted); }
+@media (max-width: 680px) {
+  .calibration-dashboard-head { align-items: flex-start; flex-direction: column; }
+  .calibration-next-run { justify-content: flex-start; text-align: left; }
+  .calibration-state-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .calibration-state-strip > span { min-width: 0; }
+}
 .generator-diversity-note {
   display: flex;
   align-items: center;

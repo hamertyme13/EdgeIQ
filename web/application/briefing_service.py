@@ -325,7 +325,10 @@ def cached_daily_briefing_payload(
         payload = cached.get("payload") if cached.get("version") == cache_version else None
         if isinstance(payload, dict):
             fresh = daily_briefing_cache_is_fresh(cached, ttl_hours)
-            payload = refresh_runtime_state(payload)
+            # Startup reads should remain instant. A full scan or a non-cached
+            # request refreshes runtime-sensitive loss-protection calculations.
+            if not cached_only:
+                payload = refresh_runtime_state(payload)
             return {
                 **payload,
                 "cache": {

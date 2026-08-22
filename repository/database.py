@@ -39,6 +39,7 @@ def initialize_database():
 
     from repository.entities import BetEntity
     from repository.models.bankroll_transaction_model import BankrollTransactionModel
+    from repository.models.board_offer_observation_model import BoardOfferObservationModel
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
     from repository.models.final_player_stat_model import FinalPlayerStatModel

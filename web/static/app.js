@@ -376,7 +376,7 @@ function loadWorkspacePaneData(root, paneName) {
     "decision-desk:board": [() => loadProps({ cascade: false })],
     "entry-generator:custom": [loadPending, loadDnpSetting, loadPortfolioIntelligence],
     "results-workspace:performance": [loadPerformance],
-    "results-workspace:model": [loadBacktest, loadAccuracyLab],
+    "results-workspace:model": [loadBacktest, loadAccuracyLab, loadPaperCalibrationStatus],
     "results-workspace:settlement": [loadSettlementAudit],
   }[key] || [];
   if (!loaders.length) return;
@@ -1709,7 +1709,16 @@ async function loadTrendingProps() {
   updateTrendingSelectionActions();
   $("trending-props-status").textContent = `Loading ${sport} market activity...`;
   $("trending-props-list").innerHTML = Array.from({ length: 5 }, () => `<div class="skeleton-row"></div>`).join("");
-  const data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
+  let data;
+  try {
+    data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
+  } catch (error) {
+    $("trending-props-count").textContent = "Unavailable";
+    $("trending-props-status").textContent = humanizeErrorText(error.message);
+    $("trending-props-list").innerHTML = `<div class="suggestion compact-suggestion"><strong>Trending props could not load.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-trending>Try again</button></div>`;
+    $("trending-props-list").querySelector("[data-retry-trending]")?.addEventListener("click", loadTrendingProps);
+    return;
+  }
   state.trendingProps = data.props || [];
   $("trending-props-count").textContent = `Top ${data.count || 0}`;
   $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
@@ -3375,7 +3384,14 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   const recentPropKeys = state.generatorRecentProps[historyKey] || [];
   list.innerHTML = `<div class="suggestion">Building ${escapeHtml(platform)} ${legCount}-leg entries...</div>`;
   const avoidQuery = recentPropKeys.length ? `&avoid=${encodeURIComponent(recentPropKeys.join(","))}` : "";
-  const data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`);
+  let data;
+  try {
+    data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`, { timeoutMs: 30000 });
+  } catch (error) {
+    list.innerHTML = `<div class="suggestion"><strong>${escapeHtml(platform)} entries could not be generated.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-generator>Try again</button></div>`;
+    list.querySelector("[data-retry-generator]")?.addEventListener("click", () => loadProviderSuggestions(platform, sportId, legsId, listId));
+    return;
+  }
   const generatedPropKeys = [...new Set(
     (data.suggestions || []).flatMap((suggestion) => suggestion.diversification?.prop_keys || []),
   )];
@@ -5147,7 +5163,57 @@ async function createAutoPaperCalibrationEntries() {
   $("entry-status").textContent = data.created_count
     ? `Created ${data.created_count} pending paper calibration entries.`
     : "No new paper entries created; current targets may already be covered.";
-  await Promise.allSettled([loadPending(), loadBacktest(), loadDashboard(), loadAccuracyLab()]);
+  await Promise.allSettled([loadPending(), loadBacktest(), loadDashboard(), loadAccuracyLab(), loadPaperCalibrationStatus()]);
+}
+
+function paperCalibrationCountdown(nextRunAt) {
+  if (!nextRunAt) return "Automation is paused";
+  const remaining = new Date(nextRunAt).getTime() - Date.now();
+  if (remaining <= 0) return "Due now";
+  const totalMinutes = Math.ceil(remaining / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days) return `${days}d ${hours}h`;
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+async function loadPaperCalibrationStatus() {
+  if (!$("paper-calibration-dashboard")) return;
+  const data = await api("/api/entries/paper-calibration-status");
+  const totals = data.totals || {};
+  const sportRows = (data.sports || []).map((row) => `
+    <article class="calibration-sport-progress">
+      <div class="calibration-ring" style="--coverage:${Math.max(0, Math.min(100, Number(row.coverage || 0))) * 3.6}deg" aria-label="${escapeHtml(row.sport)} ${Number(row.created || 0)} of 5 cards">
+        <span><strong>${Number(row.created || 0)}</strong><small>/ 5</small></span>
+      </div>
+      <div class="calibration-sport-copy">
+        <div class="suggestion-top"><strong>${escapeHtml(row.sport)}</strong><span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${Number(row.shortfall || 0) ? `${Number(row.shortfall)} open` : "Complete"}</span></div>
+        <p>${Number(row.waiting || 0)} waiting · ${Number(row.settled || 0)} settled · ${Number(row.blocked || 0)} blocked</p>
+        <span class="subtle">${(row.providers || []).map((provider) => `${escapeHtml(provider.platform)} ${Number(provider.created_count || 0)}`).join(" · ") || "Provider mix appears after today's run."}</span>
+      </div>
+    </article>
+  `).join("") || `<div class="calibration-empty"><strong>Ready for today's first calibration run</strong><span>Coverage appears here after verified sportsbook offers are available.</span></div>`;
+  const alerts = (data.alerts || []).map((message) => `<div class="calibration-shortfall"><strong>Coverage notice</strong><span>${escapeHtml(message)}</span></div>`).join("");
+  $("paper-calibration-dashboard").innerHTML = `
+    <div class="calibration-dashboard-head">
+      <div><p class="eyebrow">Daily Calibration</p><h3>Paper progress by sport</h3></div>
+      <div class="calibration-next-run"><span>Next automatic run</span><strong id="paper-calibration-countdown">${paperCalibrationCountdown(data.next_run_at)}</strong><small>${data.scheduler_enabled ? formatDateTime(data.next_run_at) : "Scheduler disabled"}</small></div>
+    </div>
+    <div class="calibration-state-strip">
+      <span><strong>${Number(totals.waiting || 0)}</strong><small>Waiting</small></span>
+      <span><strong>${Number(totals.settled || 0)}</strong><small>Settled</small></span>
+      <span class="${Number(totals.blocked || 0) ? "status-negative-text" : ""}"><strong>${Number(totals.blocked || 0)}</strong><small>Blocked</small></span>
+    </div>
+    <p class="calibration-explanation">${escapeHtml(data.explanation || "Paper results improve calibration without affecting bankroll.")}</p>
+    <div class="calibration-sport-grid">${sportRows}</div>
+    ${alerts}
+  `;
+  if (state.paperCalibrationCountdownTimer) window.clearInterval(state.paperCalibrationCountdownTimer);
+  state.paperCalibrationCountdownTimer = window.setInterval(() => {
+    const countdown = $("paper-calibration-countdown");
+    if (countdown) countdown.textContent = paperCalibrationCountdown(data.next_run_at);
+  }, 60000);
 }
 
 function renderSegmentList(segments, emptyText) {
