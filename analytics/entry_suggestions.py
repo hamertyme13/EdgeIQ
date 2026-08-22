@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
+from threading import Lock
 
 from analytics.correlation import detect_correlations
 from analytics.entry_recommendation import recommendation
 from analytics.model_feedback import feedback_adjustment, settled_feedback_entries
-from analytics.probabilistic_forecast import forecast_prop
+from analytics.probabilistic_forecast import PropForecast, forecast_prop
 from analytics.projection import auto_projection
 from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
 from models.entry import Entry
@@ -14,7 +16,12 @@ from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
 from utils.entity_normalization import canonical_person_key
+from utils.market_validation import is_supported_full_game_stat
 from utils.stat_normalization import stat_type_from_text
+
+_FORECAST_CACHE: dict[tuple, tuple[float, PropForecast]] = {}
+_FORECAST_CACHE_LOCK = Lock()
+_FORECAST_CACHE_TTL_SECONDS = 90.0
 
 
 @dataclass
@@ -44,14 +51,18 @@ def suggest_entries(
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
 
-    recommendation_props = [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)]
-    candidates = [
-        candidate
-        for prop in recommendation_props
-        if prop.get("line") is not None
-        and (sport.upper() == "ALL SPORTS" or prop.get("league", "").upper() == sport.upper())
-        for candidate in _props_from_feed(prop, platform)
-    ]
+    recommendation_props = _prefilter_raw_markets(
+        [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)],
+        sport,
+    )
+    forecast_cache: dict[tuple, PropForecast] = {}
+    candidates = []
+    for prop in recommendation_props:
+        if prop.get("line") is None or (
+            sport.upper() != "ALL SPORTS" and prop.get("league", "").upper() != sport.upper()
+        ):
+            continue
+        candidates.extend(_props_from_feed(prop, platform, forecast_cache))
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
     candidates = _top_markets_per_player(candidates, per_player=2, limit=48)
@@ -156,7 +167,32 @@ def _diversified_scored_entries(
 
 def _recommendation_offer_allowed(raw: dict, platform: Platform) -> bool:
     """Keep provider offers whose supported side can be modeled honestly."""
-    return raw.get("line") is not None
+    return raw.get("line") is not None and is_supported_full_game_stat(raw.get("stat"))
+
+
+def _prefilter_raw_markets(raw_props: list[dict], sport: str, limit: int = 240) -> list[dict]:
+    """Bound expensive history forecasts while retaining several markets per player."""
+    filtered = [
+        prop for prop in raw_props
+        if sport.upper() == "ALL SPORTS" or str(prop.get("league") or prop.get("sport") or "").upper() == sport.upper()
+    ]
+    filtered.sort(key=lambda prop: (
+        int(str(prop.get("line_offer_type") or prop.get("odds_type") or "standard").lower() == "standard"),
+        float(prop.get("source_score") or 0.0), int(prop.get("trending_count") or 0),
+    ), reverse=True)
+    selected, seen = [], set()
+    player_counts: dict[str, int] = {}
+    for prop in filtered:
+        player = canonical_person_key(prop.get("player"))
+        key = (player, str(prop.get("stat") or "").strip().lower(), str(prop.get("game") or "").strip().lower())
+        if not player or key in seen or player_counts.get(player, 0) >= 8:
+            continue
+        seen.add(key)
+        player_counts[player] = player_counts.get(player, 0) + 1
+        selected.append(prop)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _score_entry(entry: Entry, warnings: list[str]) -> float:
@@ -222,7 +258,7 @@ def _beam_combinations(candidates: list[Prop], leg_count: int, beam_width: int =
     return [props for _, props in states if len(props) == leg_count]
 
 
-def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
+def _props_from_feed(raw: dict, platform: Platform, forecast_cache: dict[tuple, PropForecast] | None = None) -> list[Prop]:
     line = float(raw.get("line") or 0.0)
     baseline_line = float(raw.get("baseline_line") or raw.get("standard_line") or line)
     trending_count = int(raw.get("trending_count") or 0)
@@ -237,16 +273,16 @@ def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
         return [_prop_from_side(raw, platform, line, trending_count, direction, projection)]
 
     forecast_direction = explicit_direction or _adjusted_offer_direction(raw, line, baseline_line) or "Over"
-    forecast = forecast_prop(
-        raw.get("player", ""),
-        raw.get("league", ""),
-        raw.get("stat", ""),
-        baseline_line,
-        forecast_direction,
-        game_time=raw.get("game_time", ""),
-        team=raw.get("team", ""),
-        game=raw.get("game", ""),
+    cache = forecast_cache if forecast_cache is not None else {}
+    forecast_key = (
+        canonical_person_key(raw.get("player")), str(raw.get("league") or "").upper(),
+        str(raw.get("stat") or "").lower(), baseline_line, forecast_direction,
+        str(raw.get("game") or ""), str(raw.get("team") or ""),
     )
+    forecast = cache.get(forecast_key)
+    if forecast is None:
+        forecast = _cached_forecast(raw, baseline_line, forecast_direction, forecast_key)
+        cache[forecast_key] = forecast
     raw = {
         **raw,
         "forecast_probability": forecast.probability,
@@ -267,6 +303,26 @@ def _props_from_feed(raw: dict, platform: Platform) -> list[Prop]:
         _prop_from_side(raw, platform, line, trending_count, "Over", forecast.projection),
         _prop_from_side(raw, platform, line, trending_count, "Under", forecast.projection),
     ]
+
+
+def _cached_forecast(raw: dict, baseline_line: float, direction: str, key: tuple) -> PropForecast:
+    now = time.monotonic()
+    with _FORECAST_CACHE_LOCK:
+        cached = _FORECAST_CACHE.get(key)
+        if cached and cached[0] > now:
+            return cached[1]
+    forecast = forecast_prop(
+        raw.get("player", ""), raw.get("league", ""), raw.get("stat", ""),
+        baseline_line, direction, game_time=raw.get("game_time", ""),
+        team=raw.get("team", ""), game=raw.get("game", ""),
+    )
+    with _FORECAST_CACHE_LOCK:
+        _FORECAST_CACHE[key] = (now + _FORECAST_CACHE_TTL_SECONDS, forecast)
+        if len(_FORECAST_CACHE) > 2000:
+            expired = [cache_key for cache_key, value in _FORECAST_CACHE.items() if value[0] <= now]
+            for cache_key in expired or list(_FORECAST_CACHE)[:500]:
+                _FORECAST_CACHE.pop(cache_key, None)
+    return forecast
 
 
 def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: int, direction: str, projection: float) -> Prop:
@@ -321,6 +377,8 @@ def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: 
         player_identity_id=raw.get("player_identity_id"),
         player_provider=str(raw.get("player_provider") or raw.get("platform") or platform.value),
         provider_player_id=str(raw.get("provider_player_id") or raw.get("player_id") or ""),
+        provider_projection_id=str(raw.get("projection_id") or raw.get("provider_projection_id") or ""),
+        provider_offer_verified=bool(raw.get("projection_id") or raw.get("provider_projection_id")),
         model_version=str(forecast_snapshot.get("model_version") or ""),
         feature_as_of=str(forecast_snapshot.get("feature_as_of") or ""),
         forecast_snapshot=forecast_snapshot,

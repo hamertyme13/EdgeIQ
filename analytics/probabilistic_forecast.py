@@ -46,9 +46,10 @@ def forecast_prop(
     game: str = "",
 ) -> PropForecast:
     rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
-    rows = _eligible_history(rows, game_time)
-    rows = _current_season_history(rows, sport, game_time)
+    trailing_rows = _eligible_history(rows, game_time)
+    rows = _current_season_history(trailing_rows, sport, game_time)
     actuals = [float(row["actual"]) for row in rows]
+    trailing_actuals = [float(row["actual"]) for row in trailing_rows]
     feature_as_of = datetime.now(UTC).isoformat()
 
     if len(actuals) < MIN_HISTORY_FOR_FORECAST:
@@ -69,6 +70,7 @@ def forecast_prop(
                 "stat": canonical_stat_label(stat),
                 "verified_games": len(actuals),
                 "market_line_used_as_prior": True,
+                "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
             },
             distribution={
                 "expected_result": round(float(line), 2),
@@ -210,6 +212,7 @@ def forecast_prop(
             "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
             "season_average": round(sum(actuals) / len(actuals), 3),
             "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
+            "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
             "missingness": {
                 "home_away": not bool(side),
                 "opponent": not bool(opponent),
@@ -243,6 +246,38 @@ def _quantile(values: list[float], probability: float) -> float:
     if lower == upper:
         return ordered[lower]
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _history_filter_comparison(
+    current: list[float], trailing: list[float], line: float, direction: str, stat: str,
+) -> dict:
+    """Persist a counterfactual so settled outcomes can compare season filtering fairly."""
+    def estimate(values: list[float]) -> dict:
+        if not values:
+            return {"sample_size": 0, "projection": None, "probability": None}
+        weights = [_recency_weight(index) for index in range(len(values))]
+        center = sum(value * weight for value, weight in zip(values, weights, strict=False)) / sum(weights)
+        sigma = max(_minimum_sigma(stat, center), _sample_spread(values, center, weights))
+        probability = _side_probability(center, sigma, line, direction, stat)
+        return {"sample_size": len(values), "projection": round(center, 3), "probability": round(probability * 100.0, 2)}
+
+    current_result = estimate(current)
+    trailing_result = estimate(trailing)
+    return {
+        "current_season": current_result,
+        "trailing_history": trailing_result,
+        "excluded_prior_season_games": max(0, len(trailing) - len(current)),
+        "projection_delta": round(
+            float(current_result["projection"]) - float(trailing_result["projection"]), 3,
+        ) if current_result["projection"] is not None and trailing_result["projection"] is not None else None,
+    }
+
+
+def _sample_spread(values: list[float], center: float, weights: list[float]) -> float:
+    if not values:
+        return 0.0
+    variance = sum(weight * ((value - center) ** 2) for value, weight in zip(values, weights, strict=False)) / sum(weights)
+    return math.sqrt(max(0.0, variance))
 
 
 def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float | None:

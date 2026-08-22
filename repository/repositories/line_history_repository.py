@@ -17,6 +17,8 @@ class LineHistoryRepository:
         """Load line histories for many props with one database checkout."""
         if not requests:
             return {}
+        players = {str(row.get("player", "")).strip() for row in requests if row.get("player")}
+        stats = {str(row.get("stat", "")).strip() for row in requests if row.get("stat")}
         platforms = {str(row.get("platform", "")).strip() for row in requests if row.get("platform")}
         requested_keys = {
             (
@@ -33,6 +35,8 @@ class LineHistoryRepository:
             rows = (
                 session.query(PropLineHistoryModel)
                 .filter(
+                    PropLineHistoryModel.player.in_(players),
+                    PropLineHistoryModel.stat.in_(stats),
                     PropLineHistoryModel.platform.in_(platforms),
                 )
                 .order_by(PropLineHistoryModel.recorded_at.asc(), PropLineHistoryModel.id.asc())

@@ -1948,6 +1948,28 @@ def test_basketball_end_to_end_eligibility_accepts_shooting_volume_markets():
     ):
         assert web_app._end_to_end_prop_eligibility({**base, "stat": stat})["eligible"] is True
 
+
+def test_basketball_partial_game_market_is_not_treated_as_full_game_points():
+    prop = {
+        "player": "Kelsey Mitchell", "team": "IND", "league": "WNBA",
+        "stat": "1Q Points", "line": 6.5, "game": "IND @ NYL",
+        "game_time": "2026-08-22T23:00:00Z", "platform": "Underdog",
+    }
+
+    assert web_app._is_actionable_provider_prop(prop) is False
+    eligibility = web_app._end_to_end_prop_eligibility(prop)
+    assert eligibility["eligible"] is False
+    assert "1Q Points" in eligibility["reasons"][0]
+
+
+def test_prizepicks_explicit_standard_offer_is_not_reclassified_as_adjusted():
+    row = {
+        "player": "Kelsey Mitchell", "league": "WNBA", "stat": "Points",
+        "line": 25.5, "odds_type": "standard", "adjusted_odds": True,
+    }
+
+    assert web_app._prizepicks_offer_type(row) == "standard"
+
 def test_end_to_end_eligibility_requires_matchup_and_valid_start_time():
     eligibility = web_app._end_to_end_prop_eligibility({
         "player": "A",
@@ -3386,14 +3408,8 @@ def test_standard_calibration_batch_uses_fixed_leg_plan_and_distinct_targets(mon
     assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5]
 
 
-def test_automatic_paper_samples_uses_saved_platform_and_all_sports(monkeypatch):
+def test_automatic_paper_samples_balances_providers_across_all_sports(monkeypatch):
     captured = {}
-    monkeypatch.setattr(
-        web_app,
-        "_user_preferences",
-        lambda: {"default_platform": "Underdog", "default_sport": "NFL"},
-    )
-
     def fake_auto_paper(payload):
         captured["payload"] = payload
         return {"created_count": 2}
@@ -3402,7 +3418,7 @@ def test_automatic_paper_samples_uses_saved_platform_and_all_sports(monkeypatch)
 
     result = web_app._run_automatic_paper_samples()
 
-    assert captured["payload"].platform == "Underdog"
+    assert captured["payload"].platform == "Both"
     assert captured["payload"].sport == "All Sports"
     assert captured["payload"].standard_batch is True
     assert captured["payload"].max_entries == 5
@@ -3412,21 +3428,24 @@ def test_automatic_paper_samples_uses_saved_platform_and_all_sports(monkeypatch)
 
 def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_sport(monkeypatch):
     monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [
-        {"league": "WNBA"},
-        {"league": "NFL"},
-        {"league": "WNBA"},
+        {"league": league, "platform": platform, "player": f"{league}-{platform}-{index}"}
+        for league in ("WNBA", "NFL")
+        for platform in ("PrizePicks", "Underdog")
+        for index in range(6)
     ])
+    monkeypatch.setattr(web_app, "_paper_calibration_prop_pool", lambda props, sport: props)
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {})
     observed = []
 
     def fake_auto_paper(payload):
-        observed.append((payload.sport, payload.max_entries))
+        observed.append((payload.sport, payload.platform, payload.batch_plan))
+        created = [{"suggestion": {"leg_count": legs}} for legs in payload.batch_plan]
         return {
-            "created": [{"suggestion": {"leg_count": 2}}],
-            "created_count": 1,
-            "created_plan": [2],
-            "shortfall": 4,
+            "created": created,
+            "created_count": len(created),
+            "created_plan": list(payload.batch_plan),
+            "shortfall": 0,
             "skipped": [],
             "targets": [{"type": "Coverage", "sport": payload.sport}],
             "board_diagnostics": {"eligible_same_day_props": 8},
@@ -3437,11 +3456,19 @@ def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_s
         AutoPaperCalibrationPayload(sport="All Sports", standard_batch=True, dry_run=True)
     )
 
-    assert observed == [("WNBA", 5), ("NFL", 5)]
+    assert len(observed) == 4
+    assert {(sport, platform) for sport, platform, _plan in observed} == {
+        ("WNBA", "PrizePicks"), ("WNBA", "Underdog"),
+        ("NFL", "PrizePicks"), ("NFL", "Underdog"),
+    }
+    for sport in ("WNBA", "NFL"):
+        provider_sizes = sorted(len(plan) for row_sport, _platform, plan in observed if row_sport == sport)
+        assert provider_sizes == [2, 3]
     assert result["sports_requested"] == ["WNBA", "NFL"]
     assert result["requested_count"] == 10
-    assert result["created_count"] == 2
+    assert result["created_count"] == 10
     assert [row["sport"] for row in result["sport_results"]] == ["WNBA", "NFL"]
+    assert all(len(row["providers"]) == 2 for row in result["sport_results"])
 
 
 def test_under_leg_result_wins_below_line():
@@ -3893,7 +3920,7 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
         {"player": "A", "sport": "WNBA", "stat": "Points", "game": "AAA-CCC", "game_date": "2026-07-02", "actual": 18, "status": "played", "source": "test"},
         {"player": "A", "sport": "WNBA", "stat": "Points", "game": "AAA-DDD", "game_date": "2026-07-03", "actual": 24, "status": "played", "source": "test"},
     ]
-    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(web_app, "_cached_research_props", lambda platform, sport: raw_props)
     monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
     monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: history)
 
@@ -3911,6 +3938,7 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
     assert "starter" in body["splits"]
     assert "bench" in body["splits"]
     assert "closing_lines" in body
+    assert body["best_hitting_stats"][0]["uncertainty"]["percentile_25"] is not None
 
 
 def test_sharp_consensus_returns_fair_line_and_market_width(monkeypatch):

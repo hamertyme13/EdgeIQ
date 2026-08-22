@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from analytics.edgeiq_model import MODEL_VERSION as LEGACY_MODEL_VERSION
+from analytics.model_version_evaluation import evaluate_model_versions
 from analytics.prediction_evidence import deduplicate_outcomes, independent_market_key, offer_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
@@ -185,6 +186,7 @@ class PredictionLedgerRepository:
             "legacy_quarantined": sum(1 for row in rows if row["legacy_quarantined"]),
             "settled_unique_markets": len(unique),
             "projection_accuracy": accuracy,
+            "model_version_evaluation": evaluate_model_versions(rows),
         }
 
 

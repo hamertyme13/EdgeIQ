@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
@@ -94,6 +94,7 @@ from services.ollama_client import (
 )
 from services.operation_lock import named_operation_lock
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
+from utils.market_validation import is_partial_game_market
 from utils.prop_plausibility import prop_line_plausibility
 from utils.stat_normalization import canonical_stat_label, stat_type_from_text
 from utils.stat_normalization import stat_key as canonical_stat_key
@@ -179,6 +180,7 @@ from web.application.operations_service import (
 )
 from web.application.operations_service import watchlist_alerts_payload as build_watchlist_alerts_payload
 from web.application.operations_service import watchlist_payload as build_watchlist_payload
+from web.application.player_hit_ranking_service import player_stat_hit_leaderboard
 from web.application.player_service import player_detail_payload as build_player_detail_payload
 from web.application.player_service import player_hit_rate_payload as build_player_hit_rate_payload
 from web.application.player_service import player_identity_payload as build_player_identity_payload
@@ -292,10 +294,10 @@ from web.routers.entries import (
     shared_entry,
     shared_entry_page,
 )
-from web.routers.experience import router as experience_router
 from web.routers.entries import (
     router as entry_router,
 )
+from web.routers.experience import router as experience_router
 from web.routers.intelligence import (
     IntelligenceDependencies,
     ai_copilot,
@@ -1240,9 +1242,12 @@ def _import_betting_history_payload(payload: str, source: str) -> dict:
 
 def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
     selected = _selected_platforms(platform)
-    props: list[dict] = []
-    for platform_name in selected:
-        props.extend(_fetch_platform_props(platform_name))
+    if len(selected) > 1:
+        with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+            batches = list(pool.map(_fetch_platform_props, selected))
+        props = [prop for batch in batches for prop in batch]
+    else:
+        props = _fetch_platform_props(selected[0]) if selected else []
 
     if sport_filter:
         props = [prop for prop in props if prop.get("league", "").upper() == sport_filter]
@@ -1420,7 +1425,7 @@ def _prizepicks_offer_group_key(prop: dict) -> tuple[str, str, str, str, str]:
 
 def _prizepicks_offer_type(prop: dict) -> str:
     odds_type = str(prop.get("odds_type") or "").strip().lower()
-    if odds_type in {"goblin", "demon"}:
+    if odds_type in {"standard", "goblin", "demon"}:
         return odds_type
     if prop.get("adjusted_odds"):
         line = float(prop.get("line") or 0.0)
@@ -1450,6 +1455,7 @@ def _is_actionable_provider_prop(prop: dict) -> bool:
         return False
     return (
         not is_combined_player_prop(prop)
+        and not is_partial_game_market(prop.get("stat"))
         and not _is_season_long_prop(prop)
         and prop_line_plausibility(prop).valid
     )
@@ -1496,7 +1502,9 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
     pitcher_positions = {"p", "sp", "rp", "pitcher", "starting pitcher", "relief pitcher"}
 
     market_supported = False
-    if sport in {"NBA", "WNBA"}:
+    if is_partial_game_market(raw_stat):
+        market_supported = False
+    elif sport in {"NBA", "WNBA"}:
         market_supported = stat in basketball_stats
     elif sport == "MLB":
         if stat in baseball_hitting_stats:
@@ -1505,8 +1513,6 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
             market_supported = stat not in {"points", "strikeouts"} or position in pitcher_positions
     elif sport == "NFL":
         market_supported = stat in football_stats
-        if re.search(r"(?:^|\s)(?:1q|2q|3q|4q|1h|2h|first quarter|first half|second half)(?:\s|$)", raw_stat):
-            market_supported = False
         if any(label in raw_stat for label in ("first td", "first touchdown", "fantasy point")):
             market_supported = False
     elif sport == "NHL":
@@ -1835,7 +1841,11 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
                 ):
                     continue
 
-    requested_plan = [2, 2, 3, 4, 5] if payload.standard_batch else [payload.leg_count] * payload.max_entries
+    requested_plan = (
+        list(payload.batch_plan or [2, 2, 3, 4, 5])
+        if payload.standard_batch
+        else [payload.leg_count] * payload.max_entries
+    )
     board_diagnostics = _auto_paper_board_diagnostics(prop_pool_cache, pending_paper_count)
 
     return {
@@ -1854,25 +1864,87 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
 
 
 def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
-    raw_props = _fetch_props(payload.platform, None)
+    raw_props = _fetch_props("Both", None)
     active_sports = _available_prop_sports(raw_props)
     sport_results: list[dict] = []
     created: list[dict] = []
     skipped: list[dict] = []
     targets: list[dict] = []
     for sport in active_sports:
-        sport_payload = payload.model_copy(update={"sport": sport, "max_entries": 5})
-        result = _auto_paper_calibration(sport_payload)
+        sport_props = [
+            prop for prop in raw_props
+            if str(prop.get("league") or prop.get("sport") or "").upper() == sport
+        ]
+        provider_counts = {
+            provider: len(_paper_calibration_prop_pool([
+                prop for prop in sport_props
+                if _canonical_platform(prop.get("platform") or "") == provider
+            ], sport))
+            for provider in ("PrizePicks", "Underdog")
+        }
+        available_providers = [provider for provider, count in provider_counts.items() if count >= 2]
+        if not available_providers:
+            sport_results.append({
+                "sport": sport,
+                "created_count": 0,
+                "created_plan": [],
+                "shortfall": 5,
+                "eligible_same_day_props": sum(provider_counts.values()),
+                "providers": [],
+            })
+            continue
+
+        plan = [2, 2, 3, 4, 5]
+        if len(available_providers) > 1:
+            rotate = datetime.now(ENTRY_DAY_TIME_ZONE).date().toordinal() % 2
+            ordered_providers = available_providers[rotate:] + available_providers[:rotate]
+            assigned_counts = {provider: 0 for provider in ordered_providers}
+            assignments = []
+            for leg_count in plan:
+                capable = [provider for provider in ordered_providers if provider_counts[provider] >= leg_count]
+                candidates = capable or ordered_providers
+                provider = min(candidates, key=lambda name: (assigned_counts[name], ordered_providers.index(name)))
+                assignments.append(provider)
+                assigned_counts[provider] += 1
+        else:
+            assignments = [available_providers[0]] * len(plan)
+
+        provider_results = []
+        result_parts = []
+        for provider in available_providers:
+            provider_plan = [legs for legs, assigned in zip(plan, assignments, strict=True) if assigned == provider]
+            if not provider_plan:
+                continue
+            provider_result = _auto_paper_calibration(payload.model_copy(update={
+                "platform": provider,
+                "sport": sport,
+                "max_entries": len(provider_plan),
+                "batch_plan": provider_plan,
+            }))
+            result_parts.append(provider_result)
+            provider_results.append({
+                "platform": provider,
+                "created_count": provider_result["created_count"],
+                "requested_count": len(provider_plan),
+                "created_plan": provider_result["created_plan"],
+                "eligible_same_day_props": provider_counts[provider],
+            })
+
+        sport_created = [row for result in result_parts for row in result["created"]]
+        sport_skipped = [row for result in result_parts for row in result["skipped"]]
+        sport_targets = [row for result in result_parts for row in result["targets"]]
+        sport_created_plan = [int(row["suggestion"].get("leg_count") or 0) for row in sport_created]
         sport_results.append({
             "sport": sport,
-            "created_count": result["created_count"],
-            "created_plan": result["created_plan"],
-            "shortfall": result["shortfall"],
-            "eligible_same_day_props": (result.get("board_diagnostics") or {}).get("eligible_same_day_props", 0),
+            "created_count": len(sport_created),
+            "created_plan": sport_created_plan,
+            "shortfall": max(0, 5 - len(sport_created)),
+            "eligible_same_day_props": sum(provider_counts.values()),
+            "providers": provider_results,
         })
-        created.extend(result["created"])
-        skipped.extend({**row, "sport": row.get("sport") or sport} for row in result["skipped"])
-        targets.extend(result["targets"])
+        created.extend(sport_created)
+        skipped.extend({**row, "sport": row.get("sport") or sport} for row in sport_skipped)
+        targets.extend(sport_targets)
     requested_plan = [leg for _sport in active_sports for leg in (2, 2, 3, 4, 5)]
     return {
         "created": created,
@@ -1922,12 +1994,8 @@ def _auto_paper_board_diagnostics(
 
 
 def _run_automatic_paper_samples() -> dict:
-    preferences = _user_preferences()
-    platform = _canonical_platform(preferences.get("default_platform") or "PrizePicks")
-    if platform not in ENTRY_PLATFORMS:
-        platform = "PrizePicks"
     payload = AutoPaperCalibrationPayload(
-        platform=platform,
+        platform="Both",
         sport="All Sports",
         max_entries=5,
         standard_batch=True,
@@ -1954,7 +2022,7 @@ def _create_standard_calibration_batch(
     prop_pool_cache: dict[tuple[str, str], list[dict]],
     analyzed_cache: dict[tuple, dict],
 ) -> None:
-    plan = [2, 2, 3, 4, 5]
+    plan = list(payload.batch_plan or [2, 2, 3, 4, 5])
     confidence_targets = [target for target in targets if target.get("type") == "Confidence"]
     other_targets = [target for target in targets if target.get("type") != "Confidence"]
     ordered_targets = confidence_targets + other_targets
@@ -5803,27 +5871,30 @@ def _props_by_platform_from_props(platform: str, props: list[dict]) -> list[tupl
 
 def _prefer_standard_provider_offers(props: list[dict]) -> list[dict]:
     """Use adjusted offers only when a market has no usable standard line."""
-    groups: dict[tuple[str, str, str, str, str], list[dict]] = {}
+    groups: dict[tuple[str, str, str, str, str, str], list[dict]] = {}
     for prop in props:
         platform = _canonical_platform(str(prop.get("platform") or ""))
-        if platform != "PrizePicks":
-            groups[(str(id(prop)), "", "", "", platform)] = [prop]
-            continue
-        groups.setdefault(_prizepicks_offer_group_key(prop), []).append(prop)
+        player_key = str(prop.get("player_id") or canonical_person_key(prop.get("player")))
+        groups.setdefault((
+            player_key, canonical_stat_label(prop.get("stat")),
+            str(prop.get("league") or prop.get("sport") or "").upper(),
+            canonical_matchup_key(prop.get("game"), EntryRepository.TEAM_ALIASES),
+            str(prop.get("team") or "").upper(), platform,
+        ), []).append(prop)
 
     selected: list[dict] = []
     for group in groups.values():
         standards = [
             prop for prop in group
-            if _prizepicks_offer_type(prop) == "standard"
+            if str(prop.get("line_offer_type") or _prizepicks_offer_type(prop)).lower() == "standard"
             and _offer_line_is_usable(prop)
         ]
         discounted = [
             prop for prop in group
-            if _prizepicks_offer_type(prop) == "goblin"
+            if str(prop.get("line_offer_type") or _prizepicks_offer_type(prop)).lower() == "goblin"
             and _offer_line_is_usable(prop)
         ]
-        selected.extend(standards or discounted or [prop for prop in group if _offer_line_is_usable(prop)])
+        selected.extend(standards or discounted)
     return selected
 
 
@@ -6446,10 +6517,10 @@ def _player_research_payload(
     platform: str,
     line: float | None,
 ) -> dict:
-    source_props = _fetch_props(platform, sport_filter)
-    selected_market_props = _matching_market_props(
+    source_props = _cached_research_props(platform, sport_filter)
+    selected_market_props = _prefer_standard_provider_offers(_matching_market_props(
         player, stat, sport_filter, platform, source_props=source_props,
-    )
+    ))
     active_props = [_analyzed_feed_prop(prop) for prop in selected_market_props]
     active_props.sort(key=lambda prop: (prop.get("platform", ""), float(prop.get("line") or 0)))
     target_line = line
@@ -6555,7 +6626,7 @@ def _player_research_payload(
         ),
         "notes": _research_notes(active_props, history, target_line),
     }
-    availability = _player_availability_payload(
+    availability = _bounded_player_availability_payload(
         player,
         sport_filter or str((recommendation or {}).get("sport") or ""),
         str((recommendation or {}).get("team") or ""),
@@ -6564,78 +6635,47 @@ def _player_research_payload(
     return persist_player_research(research, availability=availability)
 
 
-def _player_stat_hit_leaderboard(
-    player: str,
-    player_props: list[dict],
-    sport: str | None,
-) -> list[dict]:
-    preferred = _prefer_standard_provider_offers(player_props)
-    by_stat: dict[str, list[dict]] = {}
-    for prop in preferred:
-        if prop.get("line") is None or not prop.get("stat"):
-            continue
-        by_stat.setdefault(canonical_stat_label(prop.get("stat")), []).append(prop)
+def _cached_research_props(platform: str, sport_filter: str | None) -> list[dict]:
+    """Read the latest known offers without turning research into a provider refresh."""
+    selected = {_canonical_platform(value) for value in _selected_platforms(platform)}
+    rows: list[dict] = []
+    with _PROP_FETCH_LOCK:
+        for cache_key, (_, cached_rows) in _PROP_FETCH_CACHE.items():
+            cached_platform = cache_key.split(":", 1)[0]
+            if cached_platform in selected:
+                rows.extend(dict(row) for row in cached_rows)
 
-    rows = []
-    for stat_label, offers in by_stat.items():
-        offer = max(
-            offers,
-            key=lambda row: (
-                int(str(row.get("line_offer_type") or row.get("odds_type") or "standard").lower() == "standard"),
-                int(row.get("trending_count") or 0),
-            ),
+    if not rows:
+        snapshots = ModelRehabilitationRepository.snapshot_history(20)
+        for snapshot in snapshots:
+            payload = snapshot.get("payload") or {}
+            candidates = payload.get("props") or (payload.get("opportunity_feed") or {}).get("opportunities") or []
+            for candidate in candidates:
+                candidate_platform = _canonical_platform(str(candidate.get("platform") or snapshot.get("platform") or ""))
+                if candidate_platform in selected:
+                    rows.append(dict(candidate))
+
+    if sport_filter:
+        rows = [
+            row for row in rows
+            if str(row.get("league") or row.get("sport") or "").upper() == sport_filter.upper()
+        ]
+    deduplicated: dict[tuple, dict] = {}
+    for row in rows:
+        key = (
+            _canonical_platform(str(row.get("platform") or "")),
+            str(row.get("provider_projection_id") or row.get("projection_id") or ""),
+            canonical_person_key(row.get("player")),
+            _stat_match_key(str(row.get("stat") or "")),
+            str(row.get("line") or ""),
+            str(row.get("game") or ""),
         )
-        line = float(offer.get("line") or 0.0)
-        team = str(offer.get("team") or "")
-        history = _played_history(player, stat_label, sport=sport, limit=120, team=team)
-        if len(history) < 3:
-            continue
-        over_forecast = forecast_prop(
-            player,
-            sport or str(offer.get("league") or ""),
-            stat_label,
-            line,
-            "Over",
-            history=history,
-            game_time=offer.get("game_time"),
-            team=team,
-            game=str(offer.get("game") or ""),
-        )
-        direction = "Under" if over_forecast.projection < line else "Over"
-        decisions = [float(row.get("actual") or 0.0) for row in history if float(row.get("actual") or 0.0) != line]
-        recent = decisions[:10]
-        if not decisions:
-            continue
-        season_hits = sum(bool(_history_hit(value, line, direction)) for value in decisions)
-        recent_hits = sum(bool(_history_hit(value, line, direction)) for value in recent)
-        rows.append({
-            "stat": stat_label,
-            "direction": direction,
-            "line": line,
-            "platform": str(offer.get("platform") or ""),
-            "projection": over_forecast.projection,
-            "season_hit_rate": round((season_hits / len(decisions)) * 100.0, 1),
-            "recent_10_hit_rate": round((recent_hits / len(recent)) * 100.0, 1),
-            "season_average": round(sum(float(row.get("actual") or 0.0) for row in history) / len(history), 2),
-            "sample_size": len(history),
-            "sample_strength": "Strong" if len(history) >= 25 else "Developing" if len(history) >= 10 else "Thin",
-            "note": (
-                "Strong season sample at the current standard line."
-                if len(history) >= 25
-                else "Useful early signal, but the season sample is still developing."
-                if len(history) >= 10
-                else "Thin sample; use this for research or paper tracking only."
-            ),
-        })
-    rows.sort(
-        key=lambda row: (
-            min(int(row["sample_size"]), 25) / 25.0 * float(row["season_hit_rate"]),
-            float(row["recent_10_hit_rate"]),
-            int(row["sample_size"]),
-        ),
-        reverse=True,
-    )
-    return rows[:8]
+        deduplicated.setdefault(key, row)
+    return list(deduplicated.values())
+
+
+def _player_stat_hit_leaderboard(player: str, player_props: list[dict], sport: str | None) -> list[dict]:
+    return player_stat_hit_leaderboard(player, player_props, sport, history_loader=_played_history)
 
 
 def _season_assessment(forecast, opponent: str) -> dict:
@@ -11241,6 +11281,34 @@ def _player_availability_payload(player: str, sport: str, team: str = "", game: 
     return {"player": player, "sport": sport, "team": team, "game": game, "availability_score": score, "status": status, "factors": factors}
 
 
+def _bounded_player_availability_payload(
+    player: str,
+    sport: str,
+    team: str = "",
+    game: str = "",
+    *,
+    timeout_seconds: float = 3.0,
+) -> dict:
+    """Keep optional live context from delaying the core statistical report."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_player_availability_payload, player, sport, team, game)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        future.cancel()
+        return {
+            "player": player,
+            "sport": sport,
+            "team": team,
+            "game": game,
+            "availability_score": None,
+            "status": "Live context pending",
+            "factors": ["The statistical report is ready. Injury and news checks are still refreshing."],
+        }
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _accuracy_lab_payload() -> dict:
     return build_accuracy_lab_payload()
 
@@ -11275,6 +11343,8 @@ def _serialize_prop(prop: Prop) -> dict:
         "player_identity_id": prop.player_identity_id,
         "player_provider": prop.player_provider,
         "provider_player_id": prop.provider_player_id,
+        "provider_projection_id": prop.provider_projection_id,
+        "provider_offer_verified": prop.provider_offer_verified,
         "team": prop.player.team,
         "position": prop.position,
         "sport": prop.player.sport,

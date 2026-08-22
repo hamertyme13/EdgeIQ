@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PropPayload(BaseModel):
@@ -112,8 +112,16 @@ class AutoPaperCalibrationPayload(BaseModel):
     leg_count: int = Field(default=2, ge=2, le=5)
     max_entries: int = Field(default=3, ge=1, le=10)
     standard_batch: bool = False
+    batch_plan: list[int] | None = Field(default=None, min_length=1, max_length=5)
     prefer_confirmed: bool = True
     dry_run: bool = False
+
+    @field_validator("batch_plan")
+    @classmethod
+    def validate_batch_plan(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and any(legs < 2 or legs > 5 for legs in value):
+            raise ValueError("Paper calibration cards must contain between 2 and 5 legs.")
+        return value
 
 
 class AiEntryReviewPayload(EntryPayload):

@@ -1025,6 +1025,7 @@
                 <small>Projection, hit rate, and complete player context</small>
               </summary>
               <div class="tool-group-body">
+                <div id="player-research-result" class="analysis-card muted-card">Enter a player and stat above to load the complete research report.</div>
                 <details class="inline-disclosure">
                   <summary>
                     <span>Individual Research Tools</span>
@@ -1104,7 +1105,6 @@
                     <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Player research line" />
                     <button type="submit">Research Prop</button>
                   </form>
-                  <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
                 </div>
                   </div>
                 </details>
@@ -1543,6 +1543,7 @@
                     <div class="scorecard-filters">
                       <label class="field-label">Platform
                         <select id="auto-paper-platform">
+                          <option value="Both" selected>Balanced providers</option>
                           <option>PrizePicks</option>
                           <option>Underdog</option>
                         </select>
@@ -1568,19 +1569,19 @@
                         </select>
                       </label>
                       <div class="calibration-batch-summary" aria-label="Paper calibration batch">
-                        <strong>5 cards</strong>
-                        <span>2 · 2 · 3 · 4 · 5 legs</span>
+                        <strong>5 cards per sport</strong>
+                        <span>$0 risk · 2 · 2 · 3 · 4 · 5 legs</span>
                       </div>
                     </div>
                     <div class="scorecard-actions">
-                      <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
+                      <button id="auto-paper-calibration" class="secondary">Create Today's Paper Samples</button>
                       <button id="refresh-calibration-data" class="secondary">Refresh Calibration Finals</button>
                       <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
                       <button id="repair-data-integrity" class="secondary">Repair Invalid Markets</button>
                     </div>
                   </div>
                 </div>
-                <div id="auto-paper-calibration-status" class="subtle">Ready to sample weak confidence buckets with end-to-end verified props.</div>
+                <div id="auto-paper-calibration-status" class="subtle" aria-live="polite">Paper only. EdgeIQ creates five unique same-day cards per available sport and balances providers when possible.</div>
                 <div id="data-integrity-repair-status" class="subtle" aria-live="polite"></div>
                 <div id="backtest-summary" class="suggestion-list"></div>
               </div>
@@ -1662,7 +1663,9 @@
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260822-v245-evaluation"></script>
+    <script src="/static/app.js?v=20260822-paper-balance-v1"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

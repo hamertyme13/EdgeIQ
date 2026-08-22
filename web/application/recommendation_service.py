@@ -3,12 +3,19 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from copy import deepcopy
+from threading import Lock
 
 from utils.entity_normalization import canonical_person_key
 
 
 class RecommendationRequestError(ValueError):
     pass
+
+
+_ENTRY_GENERATOR_CACHE: dict[tuple, tuple[float, dict]] = {}
+_ENTRY_GENERATOR_LOCK = Lock()
+_ENTRY_GENERATOR_TTL_SECONDS = 45.0
 
 
 def top_props_payload(
@@ -203,6 +210,7 @@ def entry_suggestions_payload(
     serialize_suggestion: Callable[[object], dict],
     avoid_prop_keys: set[str] | None = None,
 ) -> dict:
+    started = time.perf_counter()
     sport_filter = _sport_filter(sport)
     entry_platform = canonical_platform(platform)
     if entry_platform not in entry_platforms and entry_platform != "Both":
@@ -213,6 +221,21 @@ def entry_suggestions_payload(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
     raw_props = fetch_props(entry_platform, sport_filter)
+    cache_key = (
+        entry_platform, sport_filter or "ALL", int(leg_count), tuple(sorted(avoid_prop_keys or set())), id(suggest),
+        tuple(
+            (str(prop.get("platform") or ""), str(prop.get("player") or ""), str(prop.get("stat") or ""),
+             float(prop.get("line") or 0.0), str(prop.get("direction") or ""))
+            for prop in raw_props[:150]
+        ),
+    )
+    now = time.monotonic()
+    with _ENTRY_GENERATOR_LOCK:
+        cached = _ENTRY_GENERATOR_CACHE.get(cache_key)
+        if cached and cached[0] > now:
+            payload = deepcopy(cached[1])
+            payload["performance"] = {"cache_hit": True, "generation_ms": round((time.perf_counter() - started) * 1000.0, 1)}
+            return payload
     platform_pairs = props_by_platform(entry_platform, raw_props)
     if sport_filter == "NFL" and not platform_pairs:
         future = []
@@ -258,7 +281,7 @@ def entry_suggestions_payload(
             "prop_keys": keys,
             "reused_from_recent_batch": sum(1 for key in keys if key in (avoid_prop_keys or set())),
         }
-    return {
+    payload = {
         "suggestions": serialized,
         "mode": f"{entry_platform.lower()}_{leg_count}_leg",
         "platform": entry_platform,
@@ -273,7 +296,15 @@ def entry_suggestions_payload(
                 "Cards favor different props when comparably strong verified alternatives are available."
             ),
         },
+        "performance": {"cache_hit": False, "generation_ms": round((time.perf_counter() - started) * 1000.0, 1)},
     }
+    with _ENTRY_GENERATOR_LOCK:
+        _ENTRY_GENERATOR_CACHE[cache_key] = (now + _ENTRY_GENERATOR_TTL_SECONDS, deepcopy(payload))
+        if len(_ENTRY_GENERATOR_CACHE) > 64:
+            expired = [key for key, value in _ENTRY_GENERATOR_CACHE.items() if value[0] <= now]
+            for key in expired or list(_ENTRY_GENERATOR_CACHE)[:16]:
+                _ENTRY_GENERATOR_CACHE.pop(key, None)
+    return payload
 
 
 def _serialized_prop_key(prop: dict) -> str:

@@ -82,6 +82,9 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
     assert result.features["market_prior_weight"] == 0.35
     assert result.model_version.endswith("v2.4.0")
+    comparison = result.features["history_filter_comparison"]
+    assert comparison["current_season"]["sample_size"] == 20
+    assert comparison["trailing_history"]["probability"] is not None
 
 
 def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:

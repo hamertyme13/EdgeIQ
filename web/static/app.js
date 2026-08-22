@@ -445,10 +445,6 @@ function runFullResearch(event) {
     ? "Running projection, hit-rate, and player-context analysis..."
     : "Running player context. Add a line to include projection and hit-rate analysis.";
   $("player-research-form").requestSubmit();
-  if (line) {
-    $("projection-assist-form").requestSubmit();
-    $("hit-rate-form").requestSubmit();
-  }
   saveResearchHistory({ player, stat, sport, platform, line: line ? Number(line) : null });
   trackProductEvent("research_run", "prop", `${player}|${stat}`, { sport, platform });
 }
@@ -523,7 +519,7 @@ function loadViewData(viewId) {
     ],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection, loadPreferences],
-    analysis: [loadDataHealth, loadNotifications, loadDeployReadiness, loadRefreshSchedule, loadAlertDeliverySettings],
+    analysis: [],
   }[viewId] || [];
   if (!tasks.length) return;
   Promise.allSettled(tasks.map((task) => task())).then((results) => {
@@ -3705,7 +3701,15 @@ async function loadPlayerResearch(event) {
     platform: $("research-platform").value,
   });
   if ($("research-line").value) params.set("line", $("research-line").value);
-  const data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
+  const started = performance.now();
+  let data;
+  try {
+    data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
+  } catch (error) {
+    $("player-research-result").textContent = humanizeCopilotText(error?.message || "Player research is temporarily unavailable. Refresh provider data and try again.");
+    $("research-context-status").textContent = "Research could not finish. Check the player, stat, sport, and current provider status.";
+    return;
+  }
   const split = data.splits || {};
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
@@ -3740,15 +3744,7 @@ async function loadPlayerResearch(event) {
       </div>
       <p class="subtle">Ranked by verified season results against each currently available standard line. Recent form and sample size are shown separately so a small hot streak is not mistaken for a proven edge.</p>
       <div class="hit-stat-ranking">
-        ${bestHittingStats.map((row, index) => `
-          <article class="hit-stat-row">
-            <span class="hit-stat-rank">${index + 1}</span>
-            <div><strong>${escapeHtml(row.stat)} · ${escapeHtml(row.direction)} ${Number(row.line).toFixed(1)}</strong><small>${escapeHtml(row.platform || "Current market")} · average ${Number(row.season_average).toFixed(1)}</small></div>
-            <div><strong>${pct(row.season_hit_rate)}</strong><small>Season · ${Number(row.sample_size)} games</small></div>
-            <div><strong>${pct(row.recent_10_hit_rate)}</strong><small>Last 10</small></div>
-            <span class="status-pill ${row.sample_strength === "Strong" ? "status-positive" : "status-warning"}" title="${escapeHtml(row.note || "")}">${escapeHtml(row.sample_strength)}</span>
-          </article>
-        `).join("") || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
+        ${window.EdgeIQPlayerHitRankings?.render(bestHittingStats, { escapeHtml, pct }) || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
       </div>
     </section>
     <div class="stats-grid" style="margin-top:14px">
@@ -3807,6 +3803,8 @@ async function loadPlayerResearch(event) {
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
     ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
   `;
+  $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
+  $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function researchSplitCard(label, split = {}) {
@@ -4842,6 +4840,7 @@ async function loadBacktest() {
   const ledger = data.prediction_ledger || {};
   const shadow = data.shadow_evaluation || {};
   const projectionAccuracy = ledger.projection_accuracy || {};
+  const modelVersionEvaluation = data.model_version_evaluation || ledger.model_version_evaluation || {};
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
     <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
@@ -4885,6 +4884,7 @@ async function loadBacktest() {
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
     </div>
+    ${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, { escapeHtml }) || ""}
     <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
         <strong>v2.2 Shadow Evaluation</strong>
@@ -5114,8 +5114,10 @@ async function recheckFinalStats() {
 
 async function createAutoPaperCalibrationEntries() {
   const sport = $("auto-paper-sport")?.value || "All Sports";
-  const platform = $("auto-paper-platform")?.value || "PrizePicks";
-  $("auto-paper-calibration-status").textContent = `Building five ${sport} calibration cards from weak confidence buckets...`;
+  const platform = $("auto-paper-platform")?.value || "Both";
+  $("auto-paper-calibration-status").textContent = sport === "All Sports"
+    ? "Building five $0-risk calibration cards for every sport with verified offers..."
+    : `Building five $0-risk ${sport} calibration cards from weak confidence buckets...`;
   const data = await api("/api/entries/auto-paper-calibration", {
     method: "POST",
     body: JSON.stringify({
@@ -5132,10 +5134,10 @@ async function createAutoPaperCalibrationEntries() {
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
   const diagnostics = data.board_diagnostics || {};
   const sportResults = (data.sport_results || []).map((row) => `
-    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5</span>
+    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5${(row.providers || []).length ? ` · ${(row.providers || []).map((provider) => `${escapeHtml(provider.platform)} ${Number(provider.created_count || 0)}`).join(" / ")}` : ""}</span>
   `).join("");
   $("auto-paper-calibration-status").innerHTML = `
-    Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
+    <strong>Created ${data.created_count} of ${data.requested_count || 5} $0-risk paper entries.</strong>${plan ? ` ${escapeHtml(plan)}.` : ""}
     ${sportResults}
     ${(data.created || []).map((row) => `
       <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
@@ -5489,7 +5491,8 @@ async function loadAll(options = {}) {
   }
   hideRuntimeNotice();
 
-  if (!state.backgroundLoadPromise) {
+  const runBackgroundLoads = () => {
+    if (state.backgroundLoadPromise) return;
     const backgroundTasks = options.refresh
       ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
@@ -5499,6 +5502,15 @@ async function loadAll(options = {}) {
       const backgroundFailure = results.find((result) => result.status === "rejected");
       if (backgroundFailure) console.warn("Background EdgeIQ panel refresh failed", backgroundFailure.reason);
     }).finally(() => { state.backgroundLoadPromise = null; });
+  };
+  if (options.refresh) {
+    runBackgroundLoads();
+  } else if (!state.backgroundLoadScheduled) {
+    state.backgroundLoadScheduled = true;
+    window.setTimeout(() => {
+      state.backgroundLoadScheduled = false;
+      if ($("dashboard")?.classList.contains("active")) runBackgroundLoads();
+    }, 1800);
   }
 
   if (!state.ledgerLoadScheduled) {
