@@ -69,7 +69,7 @@ LAUNCHER_SCRIPT
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>2.3.0</string>
+  <string>2.4.1</string>
   <key>CFBundleVersion</key>
   <string>20260811.3</string>
   <key>CFBundleIconFile</key>

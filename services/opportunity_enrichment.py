@@ -3,8 +3,11 @@ from __future__ import annotations
 from utils.stat_normalization import canonical_stat_label
 
 ROLE_STATS = {
-    "Minutes", "Field Goals Attempted", "Passing Attempts", "Pass Attempts",
-    "Rush Attempts", "Carries", "Targets", "At Bats", "Shots on Goal",
+    "Minutes", "Field Goals Attempted", "Free Throws Attempted", "3-Pointers Attempted",
+    "Passing Attempts", "Pass Attempts", "Rush Attempts", "Carries", "Targets",
+    "Snaps", "Routes", "Route Participation", "At Bats", "Plate Appearances",
+    "Batters Faced", "Pitches", "Innings Pitched", "Shots on Goal", "Time on Ice", "Shifts",
+    "Kicking Field Goals Attempted", "Extra Points Attempted",
 }
 
 
@@ -46,18 +49,31 @@ def role_opportunities(sport: str, stat: str, values: dict[str, float]) -> float
     sport_key = sport.upper()
     stat_key = canonical_stat_label(stat).lower()
     if sport_key in {"WNBA", "NBA"}:
-        return values.get("Minutes") if "assist" in stat_key else values.get("Field Goals Attempted")
+        scoring_attempts = sum(
+            values.get(label, 0.0)
+            for label in ("Field Goals Attempted", "Free Throws Attempted")
+        )
+        if any(token in stat_key for token in ("point", "three", "field goal", "free throw")):
+            return scoring_attempts or values.get("Field Goals Attempted")
+        return values.get("Minutes")
     if sport_key == "NFL":
         if "pass" in stat_key or "completion" in stat_key or "interception" in stat_key:
             return values.get("Passing Attempts", values.get("Pass Attempts"))
         if "rush" in stat_key or "carr" in stat_key:
             return values.get("Rush Attempts", values.get("Carries"))
         if "rec" in stat_key or "target" in stat_key:
-            return values.get("Targets")
+            return values.get("Targets", values.get("Routes"))
+        if "field goal" in stat_key:
+            return values.get("Kicking Field Goals Attempted", values.get("Field Goals Attempted"))
+        if "extra point" in stat_key:
+            return values.get("Extra Points Attempted")
+        return values.get("Snaps")
     if sport_key == "MLB":
-        return values.get("At Bats")
+        if any(token in stat_key for token in ("strikeout", "pitch", "earned run", "walks allowed")):
+            return values.get("Batters Faced", values.get("Pitches", values.get("Innings Pitched")))
+        return values.get("Plate Appearances", values.get("At Bats"))
     if sport_key == "NHL":
-        return values.get("Shots on Goal")
+        return values.get("Time on Ice", values.get("Shifts", values.get("Shots on Goal")))
     return None
 
 

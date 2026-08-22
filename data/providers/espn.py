@@ -626,12 +626,24 @@ def _baseball_hitting_rows(
     hits = stats.get("H", 0.0)
     runs = stats.get("R", 0.0)
     rbis = stats.get("RBI", 0.0)
+    doubles = stats.get("2B", 0.0)
+    triples = stats.get("3B", 0.0)
+    home_runs = stats.get("HR", 0.0)
     values = {
         "At Bats": stats.get("AB", 0.0),
+        "Plate Appearances": stats.get("PA", stats.get("AB", 0.0) + stats.get("BB", 0.0) + stats.get("HBP", 0.0)),
         "Hits": hits,
         "Runs": runs,
         "RBIs": rbis,
-        "Home Runs": stats.get("HR", 0.0),
+        "Home Runs": home_runs,
+        "Singles": max(0.0, hits - doubles - triples - home_runs),
+        "Doubles": doubles,
+        "Triples": triples,
+        "Total Bases": stats.get("TB", hits + doubles + (2 * triples) + (3 * home_runs)),
+        "Walks": stats.get("BB", 0.0),
+        "Stolen Bases": stats.get("SB", 0.0),
+        "Hit By Pitch": stats.get("HBP", 0.0),
+        "Strikeouts": stats.get("SO", stats.get("K", 0.0)),
         "Hits + Runs + RBIs": hits + runs + rbis,
     }
     return [_row(player, team, "MLB", stat, game, game_date, actual, status) for stat, actual in values.items()]
@@ -661,11 +673,17 @@ def _baseball_pitching_rows(
     )
     values = {
         "Points": fantasy_points,
+        "Fantasy Score": fantasy_points,
         "Pitcher Fantasy Score": fantasy_points,
         "Pitcher Strikeouts": strikeouts,
         "Strikeouts": strikeouts,
         "Pitching Outs": outs,
+        "Outs Recorded": outs,
         "Earned Runs": earned_runs,
+        "Hits Allowed": stats.get("H", 0.0),
+        "Pitching Walks": stats.get("BB", 0.0),
+        "Pitches": stats.get("PC", stats.get("PITCHES", 0.0)),
+        "Batters Faced": stats.get("BF", 0.0),
     }
     return [_row(player, team, "MLB", stat, game, game_date, actual, status) for stat, actual in values.items()]
 

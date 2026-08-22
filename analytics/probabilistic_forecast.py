@@ -9,7 +9,7 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-season-matchup-distribution-v2.4.0"
+MODEL_VERSION = "edgeiq-opportunity-aware-distribution-v2.4.1"
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -139,17 +139,21 @@ def forecast_prop(
     raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     recent = actuals[:5]
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
-    expected_minutes = _optional_history_median(rows, ("minutes", "min"))
-    expected_opportunities = _optional_history_median(
-        rows,
-        policy["opportunity_keys"],
-    )
+    expected_minutes = _recent_weighted_history_value(rows, ("minutes", "min"))
+    expected_opportunities = _recent_weighted_history_value(rows, policy["opportunity_keys"])
+    workload = _workload_adjustment(rows, policy)
+    if workload["verified"]:
+        contextual_mean *= workload["factor"]
+        raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
+        over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
     role_required = bool(policy["requires_role_evidence"])
-    role_verified = expected_minutes is not None or expected_opportunities is not None
+    role_verified = bool(workload["verified"])
     paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
     uncertainty_drivers = _uncertainty_drivers(
         len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
     )
+    if role_required and not role_verified:
+        uncertainty_drivers.append("Verified workload coverage is below the paid-entry threshold")
     evidence_strength = min(1.0, effective_n / MIN_HISTORY_FOR_PAID)
     if expected_minutes is None and expected_opportunities is None:
         evidence_strength *= 0.85
@@ -203,6 +207,7 @@ def forecast_prop(
             "market_line_used_as_prior": False,
             "role_evidence_required": role_required,
             "role_evidence_verified": role_verified,
+            "workload_evidence": workload,
             "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
             "evidence_strength": round(evidence_strength, 3),
             "home_away": side or "unknown",
@@ -237,6 +242,7 @@ def forecast_prop(
             "probability_under_exact_line": round((1.0 - over_probability) * 100.0, 2),
             "expected_minutes": expected_minutes,
             "expected_opportunities": expected_opportunities,
+            "workload_adjustment_pct": workload["adjustment_pct"],
             "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
             "uncertainty_drivers": uncertainty_drivers,
         },
@@ -298,6 +304,69 @@ def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float |
         except (TypeError, ValueError):
             continue
     return round(float(median(values)), 2) if values else None
+
+
+def _recent_weighted_history_value(rows: list[dict], keys: tuple[str, ...]) -> float | None:
+    values: list[float] = []
+    for row in rows[:5]:
+        value = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        try:
+            if value is not None and float(value) > 0:
+                values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return _optional_history_median(rows, keys)
+    weights = [_recency_weight(index) for index in range(len(values))]
+    return round(sum(value * weight for value, weight in zip(values, weights, strict=False)) / sum(weights), 2)
+
+
+def _workload_adjustment(rows: list[dict], policy: dict) -> dict:
+    keys = ("minutes", "min") if "minutes" in policy["opportunity_metric"] else policy["opportunity_keys"]
+    observations: list[float] = []
+    for row in rows[:20]:
+        value = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        try:
+            if value is not None and float(value) > 0:
+                observations.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    coverage = len(observations) / min(20, len(rows)) if rows else 0.0
+    if len(observations) < 5:
+        return {
+            "verified": False,
+            "metric": policy["opportunity_metric"],
+            "games": len(observations),
+            "coverage_pct": round(coverage * 100.0, 1),
+            "recent": None,
+            "baseline": None,
+            "factor": 1.0,
+            "adjustment_pct": 0.0,
+            "reason": "At least five matched workload games are required.",
+        }
+    recent_count = min(5, len(observations))
+    recent = sum(observations[:recent_count]) / recent_count
+    baseline = float(median(observations))
+    raw_ratio = recent / baseline if baseline > 0 else 1.0
+    evidence = min(1.0, len(observations) / 15.0) * min(1.0, coverage / 0.75)
+    factor = 1.0 + ((raw_ratio - 1.0) * 0.50 * evidence)
+    factor = max(0.85, min(1.15, factor))
+    verified = coverage >= 0.50
+    return {
+        "verified": verified,
+        "metric": policy["opportunity_metric"],
+        "games": len(observations),
+        "coverage_pct": round(coverage * 100.0, 1),
+        "recent": round(recent, 2),
+        "baseline": round(baseline, 2),
+        "factor": round(factor, 4) if verified else 1.0,
+        "adjustment_pct": round((factor - 1.0) * 100.0, 1) if verified else 0.0,
+        "reason": (
+            "Recent verified workload adjusted the projection with a capped, evidence-weighted factor."
+            if verified
+            else "Workload coverage is below 50%, so it did not change the projection."
+        ),
+    }
 
 
 def _league_stat_policy(sport: str, stat: str) -> dict:

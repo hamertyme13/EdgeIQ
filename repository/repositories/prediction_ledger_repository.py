@@ -135,6 +135,43 @@ class PredictionLedgerRepository:
             return len(rows)
 
     @staticmethod
+    def quarantine_incomplete_settled(dry_run: bool = True) -> dict:
+        """Keep incomplete entry legs out of calibration even if their card was marked settled."""
+        PredictionLedgerRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(PredictionRecordModel)
+                .join(EntryPropModel, EntryPropModel.id == PredictionRecordModel.entry_prop_id)
+                .join(EntryModel, EntryModel.id == PredictionRecordModel.entry_id)
+                .filter(EntryModel.status == "Settled")
+                .filter(PredictionRecordModel.legacy_quarantined.is_(False))
+                .filter(
+                    (EntryPropModel.actual.is_(None))
+                    | (EntryPropModel.final_status.is_(None))
+                    | (~EntryPropModel.final_status.in_(("played", "dnp")))
+                    | (EntryPropModel.final_source.is_(None))
+                    | (EntryPropModel.final_source.in_(("", "unknown", "unmatched", "projection_estimate")))
+                )
+                .all()
+            )
+            items = [
+                {
+                    "prediction_id": row.id,
+                    "entry_id": row.entry_id,
+                    "entry_prop_id": row.entry_prop_id,
+                    "player": row.player,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                }
+                for row in rows
+            ]
+            if not dry_run:
+                for row in rows:
+                    row.legacy_quarantined = True
+                session.commit()
+            return {"candidates": len(rows), "quarantined": 0 if dry_run else len(rows), "items": items}
+
+    @staticmethod
     def evidence_rows(include_legacy: bool = False) -> list[dict]:
         PredictionLedgerRepository._ensure_schema()
         with SessionLocal() as session:

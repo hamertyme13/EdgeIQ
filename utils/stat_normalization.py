@@ -91,6 +91,16 @@ _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
     StatType.FIELD_GOALS_KICKING_MADE: ("kicking fg made", "field goals kicking made"),
     StatType.FIELD_GOALS_KICKING_ATTEMPTED: ("kicking fg attempted", "field goals kicking attempted"),
     StatType.LONGEST_FIELD_GOAL: ("longest fg", "fg long"),
+    StatType.FANTASY_SCORE: ("fantasy points", "fantasy pts", "fantasy score"),
+    StatType.OUTS_RECORDED: ("pitching outs", "outs", "outs recorded"),
+    StatType.PITCHING_WALKS: ("walks allowed", "pitcher walks", "pitching walks"),
+    StatType.HITS_ALLOWED: ("hits allowed", "pitcher hits allowed"),
+    StatType.STOLEN_BASES: ("stolen base", "stolen bases", "sb"),
+    StatType.HIT_BY_PITCH: ("hit by pitch", "hbp"),
+    StatType.BATTERS_FACED: ("batters faced", "bf"),
+    StatType.PITCHES: ("pitch count", "pitches thrown", "pitches"),
+    StatType.AT_BATS: ("at bat", "at bats", "ab"),
+    StatType.PLATE_APPEARANCES: ("plate appearance", "plate appearances", "pa"),
 }
 
 

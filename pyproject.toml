@@ -1,6 +1,6 @@
 [project]
 name = "edgeiq"
-version = "2.3.0"
+version = "2.4.1"
 description = "Desktop, browser, and CLI platform for player-prop research, probabilistic forecasting, entry validation, and performance tracking."
 requires-python = ">=3.11"
 dependencies = [
@@ -14,6 +14,29 @@ dependencies = [
     "SQLAlchemy==2.0.51",
     "uvicorn>=0.30.0,<1.0.0",
 ]
+
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app", "config", "desktop"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "analytics*",
+    "data*",
+    "gui*",
+    "models*",
+    "repository*",
+    "services*",
+    "ui*",
+    "utils*",
+    "web*",
+]
+exclude = ["tests*", "artifacts*", "assets*", "migrations*"]
+namespaces = true
 
 [project.optional-dependencies]
 dev = [

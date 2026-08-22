@@ -18,6 +18,30 @@ def test_espn_basketball_rows_include_provider_fantasy_score() -> None:
     assert fantasy["actual"] == 40.0
 
 
+def test_espn_baseball_rows_preserve_settleable_market_components() -> None:
+    hitting = espn._baseball_hitting_rows(
+        "Test Hitter", "ATL", "ATL@NYM", date(2026, 8, 21),
+        {"AB": 4, "PA": 5, "H": 3, "2B": 1, "3B": 1, "HR": 1, "BB": 1, "SB": 1, "SO": 1},
+        "played",
+    )
+    pitching = espn._baseball_pitching_rows(
+        "Test Pitcher", "ATL", "ATL@NYM", date(2026, 8, 21),
+        {"IP": 6.0, "ER": 2, "K": 8, "H": 5, "BB": 2, "PC": 96, "BF": 24},
+        {"starter": True, "notes": []},
+        "played",
+    )
+
+    hit_values = {row["stat"]: row["actual"] for row in hitting}
+    pitch_values = {row["stat"]: row["actual"] for row in pitching}
+    assert hit_values["Singles"] == 0
+    assert hit_values["Total Bases"] == 9
+    assert hit_values["Plate Appearances"] == 5
+    assert pitch_values["Fantasy Score"] == 40
+    assert pitch_values["Hits Allowed"] == 5
+    assert pitch_values["Pitching Walks"] == 2
+    assert pitch_values["Pitches"] == 96
+
+
 def test_espn_event_matching_normalizes_provider_team_aliases() -> None:
     prop = {
         "team": "GSV",

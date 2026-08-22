@@ -10,6 +10,7 @@ from analytics.model_feedback import feedback_adjustment, settled_feedback_entri
 from analytics.probabilistic_forecast import PropForecast, forecast_prop
 from analytics.projection import auto_projection
 from analytics.prop_metrics import calculate_confidence, calculate_directional_edge
+from analytics.push_risk import push_risk
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
@@ -184,6 +185,7 @@ def _prefilter_raw_markets(raw_props: list[dict], sport: str, limit: int = 16) -
     ]
     filtered.sort(key=lambda prop: (
         int(str(prop.get("line_offer_type") or prop.get("odds_type") or "standard").lower() == "standard"),
+        int(not float(prop.get("line") or 0.0).is_integer()),
         float(prop.get("source_score") or 0.0), int(prop.get("trending_count") or 0),
     ), reverse=True)
     selected, seen = [], set()
@@ -208,6 +210,7 @@ def _score_entry(entry: Entry, warnings: list[str]) -> float:
     model_bonus = sum(3.0 for prop in entry.props if prop.forecast_paid_eligible)
     adjusted_line_bonus = sum(3.0 for prop in entry.props if getattr(prop, "is_discounted_line", False))
     premium_line_penalty = sum(2.0 for prop in entry.props if getattr(prop, "is_premium_line", False))
+    push_penalty = sum(push_risk(prop)["score"] for prop in entry.props) / 8.0
     return (
         entry.average_confidence
         + entry.average_edge * 10
@@ -217,6 +220,7 @@ def _score_entry(entry: Entry, warnings: list[str]) -> float:
         - same_team_penalty
         - unproven_penalty
         - premium_line_penalty
+        - push_penalty
     )
 
 
@@ -228,13 +232,14 @@ def _max_team_count(entry: Entry) -> int:
     return max(counts.values(), default=0)
 
 
-def _candidate_sort_key(prop: Prop) -> tuple[int, float, float, float, str]:
+def _candidate_sort_key(prop: Prop) -> tuple[int, float, float, float, float, str]:
     sample_size = float((prop.forecast_snapshot or {}).get("effective_sample_size") or 0.0)
     return (
         int(prop.forecast_paid_eligible),
         prop.confidence,
         prop.edge,
         sample_size,
+        -push_risk(prop)["score"],
         prop.direction,
     )
 
@@ -255,6 +260,7 @@ def _beam_combinations(candidates: list[Prop], leg_count: int, beam_width: int =
                     sum(prop.confidence for prop in next_props) / len(next_props)
                     + sum(prop.edge for prop in next_props) * 4.0
                     + sum(3.0 for prop in next_props if prop.forecast_paid_eligible)
+                    - sum(push_risk(prop)["score"] for prop in next_props) / 10.0
                 )
                 expanded.append((partial_score, indices + (index,), next_props))
         expanded.sort(key=lambda row: row[0], reverse=True)

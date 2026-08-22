@@ -52,6 +52,7 @@ from analytics.prediction_evidence import deduplicate_outcomes
 from analytics.probabilistic_forecast import forecast_prop
 from analytics.projection import auto_projection
 from analytics.prop_metrics import calculate_confidence, calculate_directional_edge, calculate_edge
+from analytics.push_risk import push_risk
 from analytics.recommendation import recommendation as ev_recommendation
 from analytics.risk import calculate_entry_risk
 from data.providers.espn import (
@@ -632,7 +633,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.3.0", lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version="2.4.1", lifespan=lifespan)
 allowed_origins = [
     origin.strip()
     for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
@@ -1202,9 +1203,11 @@ def _data_integrity_repair_payload(dry_run: bool = True) -> dict:
     if not dry_run:
         backup = backup_database()
     repair = EntryRepository.quarantine_implausible_markets(dry_run=dry_run)
+    incomplete = PredictionLedgerRepository.quarantine_incomplete_settled(dry_run=dry_run)
     after = _backtest_payload() if not dry_run else before
     return {
         **repair,
+        "incomplete_settled_predictions": incomplete,
         "backup": backup,
         "metrics_before": {
             "scorecard": before.get("scorecard", {}),
@@ -1217,9 +1220,11 @@ def _data_integrity_repair_payload(dry_run: bool = True) -> dict:
             "calibration": after.get("calibration", []),
         },
         "message": (
-            f"Preview found {repair['candidate_entries']} entries with invalid markets. No records changed."
+            f"Preview found {repair['candidate_entries']} entries with invalid markets and "
+            f"{incomplete['candidates']} settled predictions without verified leg results. No records changed."
             if dry_run
-            else f"Quarantined {repair['quarantined_entries']} entries and rebuilt model metrics from validated records."
+            else f"Quarantined {repair['quarantined_entries']} invalid entries and "
+            f"{incomplete['quarantined']} incomplete settled predictions, then rebuilt model metrics."
         ),
     }
 
@@ -1504,12 +1509,17 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
         "points assists", "rebounds assists", "steals blocks", "3 pointers attempted",
         "field goals made", "field goals attempted", "free throws made", "free throws attempted",
         "2 pointers made", "2 pointers attempted", "offensive rebounds", "defensive rebounds",
-        "double doubles", "triple doubles",
+        "double doubles", "triple doubles", "fantasy score",
     }
-    baseball_hitting_stats = {"hits", "runs", "rbis", "home runs", "hits runs rbis"}
+    baseball_hitting_stats = {
+        "at bats", "plate appearances", "hits", "runs", "rbis", "home runs",
+        "hits runs rbis", "total bases", "singles", "doubles", "triples", "walks",
+        "stolen bases", "hit by pitch", "strikeouts",
+    }
     baseball_pitching_stats = {
-        "points", "pitcher fantasy score", "pitcher strikeouts", "strikeouts",
-        "pitching outs", "outs recorded", "earned runs",
+        "points", "fantasy score", "pitcher fantasy score", "pitcher strikeouts", "strikeouts",
+        "pitching outs", "outs recorded", "earned runs", "hits allowed", "pitching walks",
+        "pitches", "batters faced",
     }
     football_stats = {
         "pass yards", "passing yards", "pass tds", "passing tds", "completions",
@@ -1534,7 +1544,11 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
         if stat in baseball_hitting_stats:
             market_supported = True
         elif stat in baseball_pitching_stats:
-            market_supported = stat not in {"points", "strikeouts"} or position in pitcher_positions
+            market_supported = (
+                stat not in {"points", "fantasy score", "strikeouts"}
+                or "pitcher" in raw_stat
+                or position in pitcher_positions
+            )
     elif sport == "NFL":
         market_supported = stat in football_stats
         if any(label in raw_stat for label in ("first td", "first touchdown", "fantasy point")):
@@ -1544,6 +1558,11 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
             "goals", "assists", "points", "shots on goal", "blocked shots", "hits",
             "saves", "goalie saves", "goals against", "shots against",
         }
+
+    platform = str(_prop_value(prop, "platform") or "").strip().lower()
+    if stat == "fantasy score" and platform in {"draftkings", "draftkings pick6", "dk pick6"}:
+        market_supported = False
+        reasons.append("DraftKings fantasy scoring requires a provider-specific formula snapshot")
 
     if not player or player.lower() == "unknown":
         reasons.append("named player is required")
@@ -4281,6 +4300,8 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
         market_supported = bool(sportsbook_odds.prop_market_key(stat))
         quality = float((prop.get("data_quality") or {}).get("score") or 50.0)
         score = max(confidence, (confidence * 0.74) + (quality * 0.18) + min(8.0, abs(float(prop.get("edge") or 0.0)) * 3.0))
+        push_profile = push_risk(prop)
+        score -= float(push_profile["score"]) * 0.12
         if not market_supported:
             score = min(score, 59.0)
         rows.append({
@@ -4321,6 +4342,7 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "end_to_end_confirmed": bool(prop.get("end_to_end_confirmed")),
             "settlement_provider": prop.get("settlement_provider", ""),
             "data_quality": prop.get("data_quality") or {},
+            "push_risk": push_profile,
             "decision_receipt": {},
         })
         rows[-1]["risk_profile"] = _prop_risk_profile(rows[-1])

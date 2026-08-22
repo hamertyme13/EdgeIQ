@@ -1907,7 +1907,7 @@ def test_provider_board_only_keeps_end_to_end_gradable_props():
 
     props = web_app._fetch_platform_props_uncached("PrizePicks", lambda: rows)
 
-    assert {prop["player"] for prop in props} == {"WNBA Player", "NFL Player", "MLB Pitcher"}
+    assert {prop["player"] for prop in props} == {"WNBA Player", "NFL Player", "MLB Pitcher", "Unsupported Hitter"}
     assert all(web_app._end_to_end_prop_eligibility(prop)["eligible"] for prop in props)
 
 
@@ -1944,9 +1944,29 @@ def test_basketball_end_to_end_eligibility_accepts_shooting_volume_markets():
     for stat in (
         "Field Goals Attempted", "Field Goals Made", "3-Pointers Attempted",
         "Free Throws Attempted", "2-Pointers Made", "Offensive Rebounds", "Steals + Blocks",
-        "Double Doubles", "Triple Doubles",
+        "Double Doubles", "Triple Doubles", "Fantasy Points",
     ):
         assert web_app._end_to_end_prop_eligibility({**base, "stat": stat})["eligible"] is True
+
+
+def test_mlb_end_to_end_eligibility_accepts_preserved_box_score_markets():
+    base = {
+        "player": "MLB Player",
+        "team": "ATL",
+        "league": "MLB",
+        "game": "ATL @ NYM",
+        "game_time": "2026-08-21T19:00:00-04:00",
+    }
+    for stat in ("At Bats", "Plate Appearances", "Total Bases", "Singles", "Doubles", "Triples", "Walks", "Stolen Bases"):
+        assert web_app._end_to_end_prop_eligibility({**base, "position": "OF", "stat": stat})["eligible"] is True
+    for stat in ("Fantasy Score", "Pitching Outs", "Hits Allowed", "Walks Allowed", "Pitches"):
+        assert web_app._end_to_end_prop_eligibility({**base, "position": "SP", "stat": stat})["eligible"] is True
+
+    draftkings_fantasy = web_app._end_to_end_prop_eligibility({
+        **base, "position": "SP", "stat": "Fantasy Score", "platform": "DraftKings Pick6",
+    })
+    assert draftkings_fantasy["eligible"] is False
+    assert "provider-specific formula" in draftkings_fantasy["reasons"][0]
 
 
 def test_basketball_partial_game_market_is_not_treated_as_full_game_points():
