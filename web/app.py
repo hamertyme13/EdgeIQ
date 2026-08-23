@@ -475,7 +475,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260820-v244-player-hit-rates"
+STATIC_ASSET_VERSION = "20260822-v245-runtime-ux"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -507,6 +507,12 @@ _TRENDING_PROPS_CACHE: dict[tuple, tuple[float, dict]] = {}
 _TRENDING_PROPS_LOCK = threading.RLock()
 _PREDICTION_EVIDENCE_CACHE: tuple[float, list[dict]] = (0.0, [])
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
+_MODEL_HEALTH_CACHE: tuple[float, dict] = (0.0, {})
+_MODEL_HEALTH_LOCK = threading.RLock()
+_SEGMENT_DASHBOARD_CACHE: tuple[float, dict] = (0.0, {})
+_SEGMENT_DASHBOARD_LOCK = threading.RLock()
+_TRUST_CLV_CACHE: tuple[float, dict] = (0.0, {})
+_TRUST_CLV_LOCK = threading.RLock()
 _ENDPOINT_TIMINGS: dict[str, list[dict]] = {}
 _ENDPOINT_TIMING_LOCK = threading.RLock()
 ENDPOINT_SLOW_THRESHOLD_MS = 1000.0
@@ -4309,6 +4315,8 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "player_identity_id": prop.get("player_identity_id"),
             "player_provider": prop.get("player_provider", ""),
             "provider_player_id": prop.get("provider_player_id", ""),
+            "provider_projection_id": prop.get("provider_projection_id") or prop.get("projection_id") or "",
+            "projection_id": prop.get("projection_id") or prop.get("provider_projection_id") or "",
             "team": prop.get("team", ""),
             "position": prop.get("position", ""),
             "stat": stat,
@@ -4322,6 +4330,7 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "is_premium_line": prop.get("is_premium_line", False),
             "line_discount": prop.get("line_discount", 0.0),
             "sport": prop.get("sport") or prop.get("league") or "",
+            "league": prop.get("league") or prop.get("sport") or "",
             "platform": prop.get("platform", ""),
             "game": prop.get("game", ""),
             "game_time": prop.get("game_time", ""),
@@ -5249,7 +5258,14 @@ def _trust_score_for_props(props: list[dict], warnings: list[str] | None = None)
     })
     line_edges = [_best_line_edge_for_prop(prop) for prop in props]
     line_score = 50.0 + min(25.0, sum(line_edges) * 4.0)
-    clv = clv_report()
+    global _TRUST_CLV_CACHE
+    now = time.monotonic()
+    with _TRUST_CLV_LOCK:
+        if _TRUST_CLV_CACHE[0] > now:
+            clv = _TRUST_CLV_CACHE[1]
+        else:
+            clv = clv_report()
+            _TRUST_CLV_CACHE = (now + 30.0, clv)
     avg_clv = float(clv.get("average_clv") or 0.0)
     clv_penalty = min(12.0, abs(avg_clv) * 1.8) if avg_clv < 0 else 0.0
     correlation_penalty = min(18.0, len(warnings) * 6.0)
@@ -5304,31 +5320,13 @@ def _trust_score_for_props(props: list[dict], warnings: list[str] | None = None)
 
 
 def _best_line_edge_for_prop(prop: dict) -> float:
-    player = prop.get("player", "")
-    stat = prop.get("stat", "")
-    sport = prop.get("sport") or prop.get("league") or None
     direction = prop.get("direction") or "Over"
     current_line = float(prop.get("line") or 0.0)
-    if not player or not stat or not current_line:
+    baseline = prop.get("standard_line") or prop.get("baseline_line")
+    if not current_line or baseline in (None, ""):
         return 0.0
-    # Opportunity receipts already contain an exact-line market check. Avoid
-    # reloading the full provider feed merely to decorate the trust badge.
-    if prop.get("decision_receipt"):
-        return 0.0
-    try:
-        matches = _matching_market_props(player, stat, sport, "Both")
-    except Exception:
-        return 0.0
-    game = str(prop.get("game", "")).strip().upper()
-    if game:
-        same_game = [row for row in matches if str(row.get("game", "")).strip().upper() == game]
-        if same_game:
-            matches = same_game
-    if not matches:
-        return 0.0
-    best_row = min(matches, key=lambda row: float(row.get("line") or current_line)) if direction == "Over" else max(matches, key=lambda row: float(row.get("line") or current_line))
-    best_line = float(best_row.get("line") or current_line)
-    return round(current_line - best_line, 2) if direction == "Over" else round(best_line - current_line, 2)
+    standard_line = float(baseline)
+    return round(standard_line - current_line, 2) if direction == "Over" else round(current_line - standard_line, 2)
 
 
 def _market_timing_score_for_props(props: list[dict]) -> dict:
@@ -5456,7 +5454,14 @@ def _prop_risk_profile(prop: dict) -> dict:
 
 
 def _model_health_payload() -> dict:
-    return build_model_health_payload(ai_status())
+    global _MODEL_HEALTH_CACHE
+    now = time.monotonic()
+    with _MODEL_HEALTH_LOCK:
+        if _MODEL_HEALTH_CACHE[0] > now:
+            return dict(_MODEL_HEALTH_CACHE[1])
+        payload = build_model_health_payload(ai_status())
+        _MODEL_HEALTH_CACHE = (now + 30.0, dict(payload))
+        return payload
 
 
 def _advantage_center_payload(platform: str, sport_filter: str | None) -> dict:
@@ -10561,7 +10566,14 @@ def _prop_data_quality(prop: Prop) -> dict:
 
 
 def _entry_segment_flags(props: list[dict | Prop], platform: str = "") -> list[dict]:
-    dashboard_stats = get_dashboard()
+    global _SEGMENT_DASHBOARD_CACHE
+    now = time.monotonic()
+    with _SEGMENT_DASHBOARD_LOCK:
+        if _SEGMENT_DASHBOARD_CACHE[0] > now:
+            dashboard_stats = _SEGMENT_DASHBOARD_CACHE[1]
+        else:
+            dashboard_stats = get_dashboard()
+            _SEGMENT_DASHBOARD_CACHE = (now + 15.0, dashboard_stats)
     flags: list[dict] = []
 
     def prop_value(prop: dict | Prop, name: str, default: str = "") -> str:
@@ -11591,6 +11603,8 @@ def _serialize_suggestion(suggestion, include_release: bool = True) -> dict:
     }
     if include_release:
         serialized["release_status"] = _card_release_status(card)
+        if not serialized["release_status"]["ok"] and "pass" not in str(serialized["action"]).lower():
+            serialized["action"] = "Track on Paper"
     _stamp_current_recommendation_lineage(serialized, groups=("props",))
     entry["recommendation_snapshot_id"] = serialized.get("recommendation_snapshot_id", "")
     for prop in entry["props"]:

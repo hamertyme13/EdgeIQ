@@ -220,7 +220,12 @@ def entry_suggestions_payload(
         raise RecommendationRequestError(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
-    raw_props = fetch_props(entry_platform, sport_filter)
+    briefing = cached_briefing(entry_platform, sport_filter)
+    raw_props = _briefing_generator_props(briefing, entry_platform, sport_filter)
+    source = "daily_briefing_snapshot"
+    if len({canonical_person_key(prop.get("player")) for prop in raw_props}) < leg_count:
+        raw_props = fetch_props(entry_platform, sport_filter)
+        source = "live_provider_board"
     cache_key = (
         entry_platform, sport_filter or "ALL", int(leg_count), tuple(sorted(avoid_prop_keys or set())), id(suggest),
         tuple(
@@ -234,7 +239,11 @@ def entry_suggestions_payload(
         cached = _ENTRY_GENERATOR_CACHE.get(cache_key)
         if cached and cached[0] > now:
             payload = deepcopy(cached[1])
-            payload["performance"] = {"cache_hit": True, "generation_ms": round((time.perf_counter() - started) * 1000.0, 1)}
+            payload["performance"] = {
+                "cache_hit": True,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": source,
+            }
             return payload
     platform_pairs = props_by_platform(entry_platform, raw_props)
     if sport_filter == "NFL" and not platform_pairs:
@@ -296,7 +305,11 @@ def entry_suggestions_payload(
                 "Cards favor different props when comparably strong verified alternatives are available."
             ),
         },
-        "performance": {"cache_hit": False, "generation_ms": round((time.perf_counter() - started) * 1000.0, 1)},
+        "performance": {
+            "cache_hit": False,
+            "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "source": source,
+        },
     }
     with _ENTRY_GENERATOR_LOCK:
         _ENTRY_GENERATOR_CACHE[cache_key] = (now + _ENTRY_GENERATOR_TTL_SECONDS, deepcopy(payload))
@@ -305,6 +318,27 @@ def entry_suggestions_payload(
             for key in expired or list(_ENTRY_GENERATOR_CACHE)[:16]:
                 _ENTRY_GENERATOR_CACHE.pop(key, None)
     return payload
+
+
+def _briefing_generator_props(briefing: dict, platform: str, sport_filter: str | None) -> list[dict]:
+    """Reuse the immutable briefing shortlist before rescanning a large provider board."""
+    if not briefing or (briefing.get("cache") or {}).get("stale"):
+        return []
+    selected_platform = str(platform or "").strip().lower()
+    rows: list[dict] = []
+    for prop in briefing.get("top_opportunities") or []:
+        prop_platform = str(prop.get("platform") or briefing.get("platform") or "").strip().lower()
+        prop_sport = str(prop.get("sport") or prop.get("league") or "").strip().upper()
+        if selected_platform != "both" and prop_platform != selected_platform:
+            continue
+        if sport_filter and prop_sport != sport_filter:
+            continue
+        rows.append({
+            **prop,
+            "league": prop_sport,
+            "platform": prop.get("platform") or briefing.get("platform") or platform,
+        })
+    return rows
 
 
 def _serialized_prop_key(prop: dict) -> str:

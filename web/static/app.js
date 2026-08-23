@@ -935,7 +935,7 @@ function renderDailyBriefing(data) {
             </strong>
             <div class="opportunity-proof">
               <span>Model ${Number(receipt.probability || prop.confidence || 0).toFixed(0)}%</span>
-              <span>${marketProbability == null ? "Market unavailable" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
+              <span>${marketProbability == null ? "No comparison odds" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
               <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
@@ -1038,7 +1038,7 @@ function renderBriefingSection(elementId, cards, emptyMessage) {
       <div class="briefing-card ${isHero ? "daily-best-card" : ""} ${card.grade ? gradeClass(card.grade) : ""}" data-briefing-card="${elementId}:${index}">
         <div class="suggestion-top">
           <span class="pill">${escapeHtml(isHero ? "Daily Best Card" : card.title || "Card")}</span>
-          <strong>${escapeHtml(card.grade || card.type || "")}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
+          <strong>${escapeHtml(card.grade || friendlyCardType(card.type))}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
         </div>
         <div class="recommendation-meta-row">
           ${trust.label ? `<span class="model-trust-badge">Model Trust ${Number(trust.score || 0).toFixed(0)} · ${escapeHtml(trust.label)}</span>` : ""}
@@ -1075,6 +1075,18 @@ function friendlyCardAction(card) {
   if (/pass/i.test(text)) return text.replace(/pass/ig, "No Bet");
   if (/avoid/i.test(text)) return text.replace(/avoid/ig, "No Bet");
   return text;
+}
+
+function friendlyCardType(type) {
+  const labels = {
+    paper_status: "Calibration status",
+    avoid_status: "Board status",
+    paper: "Paper calibration",
+    watch: "Watch",
+    avoid: "No bet",
+    bet: "Paid candidate",
+  };
+  return labels[String(type || "").toLowerCase()] || "Recommendation";
 }
 
 function friendlyEmptyState(elementId, emptyMessage) {

@@ -801,6 +801,45 @@ def test_unsupported_market_caps_opportunity_probability_and_trust() -> None:
     assert any("No external sportsbook mapping" in flag for flag in trust["flags"])
 
 
+def test_trust_score_uses_captured_line_evidence_without_provider_reload(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_app,
+        "_matching_market_props",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("provider reload")),
+    )
+    prop = {
+        "player": "Example Player",
+        "sport": "WNBA",
+        "stat": "Points",
+        "direction": "Over",
+        "line": 18.5,
+        "standard_line": 19.5,
+        "confidence": 60,
+        "edge": 1.0,
+        "data_quality": {"score": 70},
+    }
+
+    trust = web_app._trust_score_for_props([prop])
+
+    assert trust["components"]["line_value"] > 50
+
+
+def test_model_health_reuses_short_lived_result(monkeypatch) -> None:
+    calls = {"count": 0}
+    monkeypatch.setattr(web_app, "_MODEL_HEALTH_CACHE", (0.0, {}))
+    monkeypatch.setattr(web_app, "ai_status", lambda: {"configured": False})
+
+    def build(_ai):
+        calls["count"] += 1
+        return {"paid_entry_mode": "paper_first", "trust_score": 42}
+
+    monkeypatch.setattr(web_app, "build_model_health_payload", build)
+
+    assert web_app._model_health_payload()["trust_score"] == 42
+    assert web_app._model_health_payload()["trust_score"] == 42
+    assert calls["count"] == 1
+
+
 def test_opportunity_board_prioritizes_supported_markets(monkeypatch) -> None:
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
     monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])

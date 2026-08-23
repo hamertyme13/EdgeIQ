@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260822-runtime-speed-v1";
+const CACHE_NAME = "edgeiq-shell-20260822-v245-runtime-ux";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
