@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260824-v247-esports-markets";
+const CACHE_NAME = "edgeiq-shell-20260824-v248-model-evidence";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

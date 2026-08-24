@@ -58,6 +58,10 @@ def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them()
     assert 30 <= result.distribution["expected_minutes"] <= 32
     assert 18 <= result.distribution["expected_opportunities"] <= 19
     assert result.features["workload_evidence"]["verified"] is True
+    assert result.features["opportunity_projection"]["verified"] is True
+    assert result.features["opportunity_source"] == "verified_game_workload"
+    assert result.distribution["production_per_opportunity"] is not None
+    assert result.distribution["opportunity_evidence_games"] == 20
 
 
 def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
@@ -82,7 +86,7 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     assert result.features["projection_method"] == "recency_weighted_mean"
     assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
     assert result.features["market_prior_weight"] == 0.35
-    assert result.model_version.endswith("v2.4.1")
+    assert result.model_version.endswith("v2.4.2")
     comparison = result.features["history_filter_comparison"]
     assert comparison["current_season"]["sample_size"] == 20
     assert comparison["trailing_history"]["probability"] is not None

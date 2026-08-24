@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -78,7 +80,46 @@ def test_under_analysis_attaches_to_two_sided_provider_offer(tmp_path, monkeypat
         "forecast_snapshot": {"distribution": {}},
     }) is True
     with session_local() as session:
-        assert session.query(BoardOfferObservationModel).one().projection == 18.0
+        row = session.query(BoardOfferObservationModel).one()
+        assert row.projection == 18.0
+        assert row.direction == "Under"
+
+
+def test_complete_board_builds_due_final_stat_targets_without_future_offers(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    now = datetime(2026, 8, 24, 18, tzinfo=UTC)
+    due = {**_offer(), "game_time": "2026-08-24T14:00:00Z", "end_to_end_confirmed": True}
+    future = {**_offer(), "id": "future", "game_id": "game-2", "game": "NY @ LV", "game_time": "2026-08-24T20:00:00Z", "end_to_end_confirmed": True}
+    BoardOfferRepository.record_many([due, future], "PrizePicks", captured_at=now)
+
+    entries = BoardOfferRepository.settlement_entries(now=now)
+
+    assert len(entries) == 1
+    assert len(entries[0]["props"]) == 1
+    assert entries[0]["props"][0]["game"] == "MIN @ DAL"
+
+
+def test_complete_board_evidence_compares_analyzed_and_unselected_markets(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    BoardOfferRepository.record_many([_offer(), {**_offer(18.5), "id": "offer-2", "stat": "Rebounds"}], "PrizePicks")
+    BoardOfferRepository.attach_analysis({
+        **_offer(), "sport": "WNBA", "projection": 22.0, "confidence": 60.0,
+        "model_version": "edgeiq-v2.4", "forecast_snapshot": {"distribution": {}},
+    })
+    with session_local() as session:
+        rows = session.query(BoardOfferObservationModel).order_by(BoardOfferObservationModel.id).all()
+        rows[0].outcome, rows[0].actual, rows[0].closing_line = "Win", 24.0, 21.0
+        rows[1].outcome, rows[1].actual, rows[1].closing_line = "Loss", 17.0, 18.0
+        session.commit()
+
+    report = BoardOfferRepository.evidence_report()
+
+    assert report["coverage"]["independent_offers"] == 2
+    assert report["coverage"]["settled_offers"] == 2
+    assert report["model"]["samples"] == 1
+    assert report["baseline"]["samples"] == 1
+    assert report["selection_lift"] == 100.0
+    assert report["by_model_version"][0]["name"] == "edgeiq-v2.4"
 
 
 def test_segment_requires_one_hundred_independent_results_for_paid_mode():

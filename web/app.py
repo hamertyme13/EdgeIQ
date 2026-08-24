@@ -476,7 +476,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260824-v247-esports-markets"
+STATIC_ASSET_VERSION = "20260824-v248-model-evidence"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -1440,6 +1440,9 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
         return []
     for prop in props:
         prop.setdefault("platform", canonical)
+        eligibility = _end_to_end_prop_eligibility(prop)
+        prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
+        prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
     # Capture the provider's complete board before recommendation and
     # settlement filters introduce selection bias.
     with suppress(Exception):
@@ -1783,6 +1786,21 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
             + summer_league_refresh.get("errors", [])
             + pandascore_refresh.get("errors", [])
         ),
+    }
+
+
+def _refresh_and_settle_complete_board() -> dict:
+    targets = BoardOfferRepository.settlement_entries(limit=1000)
+    refresh = _refresh_final_stats(targets) if targets else {
+        "skipped": True,
+        "reason": "No complete-board offers are due for final-stat retrieval.",
+        "imported": 0,
+    }
+    settlement = BoardOfferRepository.settle_pending(limit=2000)
+    return {
+        "targeted_offers": sum(len(entry.get("props") or []) for entry in targets),
+        "provider_refresh": refresh,
+        "settlement": settlement,
     }
 
 
@@ -11399,7 +11417,7 @@ def _run_due_daily_operations_locked() -> dict:
         "result_check": lambda: {
             "entries": _auto_check_pending_entries(False, True),
             "shadow": ModelRehabilitationRepository.settle_pending(),
-            "complete_board": BoardOfferRepository.settle_pending(limit=1000),
+            "complete_board": _refresh_and_settle_complete_board(),
         },
         "nightly_calibration": lambda: _backtest_payload(),
         "shadow_cohort": _queue_daily_shadow_cohort,

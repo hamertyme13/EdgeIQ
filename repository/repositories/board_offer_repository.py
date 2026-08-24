@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
 
@@ -111,6 +111,7 @@ class BoardOfferRepository:
             distribution = forecast.get("distribution") or {}
             observation.projection = _float_or_none(row.get("projection"))
             observation.probability = _float_or_none(row.get("confidence") or row.get("probability"))
+            observation.direction = str(row.get("direction") or observation.direction)
             observation.expected_minutes = _float_or_none(distribution.get("expected_minutes"))
             observation.expected_opportunities = _float_or_none(distribution.get("expected_opportunities"))
             observation.model_version = str(row.get("model_version") or "")
@@ -193,6 +194,86 @@ class BoardOfferRepository:
             if settled:
                 session.commit()
         return {"attempted": len(rows), "settled": settled, "unresolved": unresolved}
+
+    @staticmethod
+    def settlement_entries(limit: int = 500, now: datetime | None = None) -> list[dict]:
+        """Build synthetic entries so complete-board offers trigger official final-stat retrieval."""
+        BoardOfferRepository._ensure_schema()
+        current = (now or utc_now()).astimezone(UTC)
+        due_before = current - timedelta(hours=2)
+        with SessionLocal() as session:
+            rows = (
+                session.query(BoardOfferObservationModel)
+                .filter(
+                    BoardOfferObservationModel.outcome == "",
+                    BoardOfferObservationModel.eligibility_status.in_(("trackable", "paid_eligible", "paper_only")),
+                    BoardOfferObservationModel.scheduled_start != "",
+                )
+                .order_by(BoardOfferObservationModel.captured_at.asc())
+                .limit(max(1, min(int(limit) * 4, 4000)))
+                .all()
+            )
+            props: list[dict] = []
+            seen: set[str] = set()
+            for row in rows:
+                if row.market_key in seen:
+                    continue
+                scheduled = _aware_datetime(row.scheduled_start)
+                if scheduled is None or scheduled > due_before:
+                    continue
+                seen.add(row.market_key)
+                props.append({
+                    "player": row.player,
+                    "player_identity_id": row.player_identity_id,
+                    "provider_player_id": row.provider_player_id,
+                    "player_provider": row.provider,
+                    "team": row.team,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                    "line": row.line,
+                    "direction": row.direction,
+                    "game": row.game,
+                    "game_time": row.scheduled_start,
+                    "platform": row.provider,
+                })
+                if len(props) >= limit:
+                    break
+        return [{"placed_at": current, "entry_mode": "complete_board", "props": props}] if props else []
+
+    @staticmethod
+    def evidence_report() -> dict:
+        """Summarize independent complete-board outcomes and analyzed model performance."""
+        BoardOfferRepository._ensure_schema()
+        with SessionLocal() as session:
+            latest_ids = session.query(
+                func.max(BoardOfferObservationModel.id).label("id")
+            ).group_by(BoardOfferObservationModel.market_key).subquery()
+            independent = session.query(BoardOfferObservationModel).join(
+                latest_ids, BoardOfferObservationModel.id == latest_ids.c.id
+            ).all()
+        settled = [row for row in independent if row.outcome in {"Win", "Loss", "Push"}]
+        decisions = [row for row in settled if row.outcome in {"Win", "Loss"}]
+        analyzed = [row for row in decisions if row.analyzed_at is not None and row.probability is not None]
+        selected_keys = {row.market_key for row in analyzed}
+        baseline = [row for row in decisions if row.market_key not in selected_keys]
+        return {
+            "coverage": {
+                "independent_offers": len(independent),
+                "settled_offers": len(settled),
+                "unresolved_offers": max(0, len(independent) - len(settled)),
+                "analyzed_offers": sum(row.analyzed_at is not None for row in independent),
+                "rejected_or_unselected": sum(row.analyzed_at is None for row in independent),
+                "settlement_rate": round(len(settled) / len(independent) * 100.0, 1) if independent else 0.0,
+            },
+            "model": _evidence_metrics(analyzed),
+            "baseline": _evidence_metrics(baseline),
+            "selection_lift": round(_hit_rate(analyzed) - _hit_rate(baseline), 1) if analyzed and baseline else None,
+            "by_model_version": _grouped_evidence(analyzed, lambda row: row.model_version or "Unversioned"),
+            "by_sport": _grouped_evidence(analyzed, lambda row: row.sport),
+            "by_stat": _grouped_evidence(analyzed, lambda row: row.stat, limit=8),
+            "by_provider": _grouped_evidence(analyzed, lambda row: row.provider),
+            "message": "Complete-board evidence includes provider offers EdgeIQ selected, rejected, and never recommended.",
+        }
 
     @staticmethod
     def summary() -> dict:
@@ -287,3 +368,50 @@ def _float_or_none(value: object) -> float | None:
         return float(value) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
+
+
+def _aware_datetime(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _hit_rate(rows: list[BoardOfferObservationModel]) -> float:
+    return sum(row.outcome == "Win" for row in rows) / len(rows) * 100.0 if rows else 0.0
+
+
+def _evidence_metrics(rows: list[BoardOfferObservationModel]) -> dict:
+    wins = sum(row.outcome == "Win" for row in rows)
+    probabilities = [max(0.0, min(1.0, float(row.probability) / 100.0)) for row in rows if row.probability is not None]
+    probability_rows = [row for row in rows if row.probability is not None]
+    brier = (
+        sum((probability - (1.0 if row.outcome == "Win" else 0.0)) ** 2 for probability, row in zip(probabilities, probability_rows, strict=False))
+        / len(probability_rows)
+        if probability_rows else None
+    )
+    clv_rows = [row for row in rows if row.closing_line is not None]
+    favorable_clv = [
+        (float(row.closing_line) - row.line) * (1 if row.direction.lower() == "over" else -1)
+        for row in clv_rows
+    ]
+    return {
+        "samples": len(rows),
+        "wins": wins,
+        "losses": len(rows) - wins,
+        "hit_rate": round(_hit_rate(rows), 1),
+        "average_probability": round(sum(probabilities) / len(probabilities) * 100.0, 1) if probabilities else None,
+        "brier_score": round(brier, 4) if brier is not None else None,
+        "calibration_gap": round(_hit_rate(probability_rows) - (sum(probabilities) / len(probabilities) * 100.0), 1) if probabilities else None,
+        "average_clv": round(sum(favorable_clv) / len(favorable_clv), 3) if favorable_clv else None,
+    }
+
+
+def _grouped_evidence(rows: list[BoardOfferObservationModel], key_fn, limit: int = 12) -> list[dict]:
+    grouped: dict[str, list[BoardOfferObservationModel]] = {}
+    for row in rows:
+        grouped.setdefault(str(key_fn(row) or "Unknown"), []).append(row)
+    metrics = [{"name": name, **_evidence_metrics(values)} for name, values in grouped.items()]
+    metrics.sort(key=lambda row: row["samples"], reverse=True)
+    return metrics[:limit]

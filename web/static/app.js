@@ -4925,6 +4925,7 @@ async function loadBacktest() {
   const shadow = data.shadow_evaluation || {};
   const projectionAccuracy = ledger.projection_accuracy || {};
   const modelVersionEvaluation = data.model_version_evaluation || ledger.model_version_evaluation || {};
+  const completeBoardEvidence = data.complete_board_evidence || {};
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
     <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
@@ -4968,7 +4969,7 @@ async function loadBacktest() {
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
     </div>
-    ${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, { escapeHtml }) || ""}
+    ${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, completeBoardEvidence, { escapeHtml }) || ""}
     <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
         <strong>v2.2 Shadow Evaluation</strong>

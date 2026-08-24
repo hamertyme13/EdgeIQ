@@ -5535,3 +5535,45 @@ td,
   .hit-stat-row { grid-template-columns: 28px minmax(0, 1fr); }
   .hit-stat-row > :nth-child(n + 3) { margin-left: 40px; }
 }
+.evidence-dashboard {
+  container-type: inline-size;
+}
+
+.evidence-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+
+.evidence-comparison-grid > div,
+.evidence-segments > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.evidence-comparison-grid span,
+.evidence-segments small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.evidence-segments {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 12px 0;
+}
+
+@media (max-width: 720px) {
+  .evidence-comparison-grid { grid-template-columns: 1fr; }
+}
+
+@container (max-width: 620px) {
+  .evidence-comparison-grid { grid-template-columns: 1fr; }
+  .evidence-segments { grid-template-columns: 1fr; }
+}

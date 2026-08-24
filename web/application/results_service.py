@@ -7,6 +7,7 @@ from analytics.grouped_validation import grouped_rolling_validation
 from analytics.release_validation import validation_readiness
 from repository.bet_repository import BetRepository
 from repository.repositories.entry_repository import EntryRepository
+from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from services.dashboard import get_dashboard
@@ -66,6 +67,7 @@ def backtest_payload(clv: dict) -> dict:
         prediction_summary=prediction_summary,
     )
     payload["prediction_ledger"] = prediction_summary
+    payload["complete_board_evidence"] = BoardOfferRepository.evidence_report()
     payload["shadow_evaluation"] = ModelRehabilitationRepository.shadow_status(
         prediction_rows,
         validation={

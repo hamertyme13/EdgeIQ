@@ -9,7 +9,7 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-opportunity-aware-distribution-v2.4.1"
+MODEL_VERSION = "edgeiq-opportunity-aware-distribution-v2.4.2"
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -142,8 +142,12 @@ def forecast_prop(
     expected_minutes = _recent_weighted_history_value(rows, ("minutes", "min"))
     expected_opportunities = _recent_weighted_history_value(rows, policy["opportunity_keys"])
     workload = _workload_adjustment(rows, policy)
-    if workload["verified"]:
-        contextual_mean *= workload["factor"]
+    opportunity_projection = _opportunity_rate_projection(rows, policy)
+    if opportunity_projection["verified"]:
+        opportunity_center = float(opportunity_projection["projection"])
+        blended = (contextual_mean * 0.60) + (opportunity_center * 0.40)
+        lower, upper = contextual_mean * 0.85, contextual_mean * 1.15
+        contextual_mean = max(min(lower, upper), min(max(lower, upper), blended))
         raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
         over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
     role_required = bool(policy["requires_role_evidence"])
@@ -208,6 +212,8 @@ def forecast_prop(
             "role_evidence_required": role_required,
             "role_evidence_verified": role_verified,
             "workload_evidence": workload,
+            "opportunity_projection": opportunity_projection,
+            "opportunity_source": opportunity_projection["source"],
             "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
             "evidence_strength": round(evidence_strength, 3),
             "home_away": side or "unknown",
@@ -243,6 +249,9 @@ def forecast_prop(
             "expected_minutes": expected_minutes,
             "expected_opportunities": expected_opportunities,
             "workload_adjustment_pct": workload["adjustment_pct"],
+            "opportunity_projection": opportunity_projection.get("projection"),
+            "production_per_opportunity": opportunity_projection.get("production_rate"),
+            "opportunity_evidence_games": opportunity_projection.get("games", 0),
             "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
             "uncertainty_drivers": uncertainty_drivers,
         },
@@ -366,6 +375,53 @@ def _workload_adjustment(rows: list[dict], policy: dict) -> dict:
             if verified
             else "Workload coverage is below 50%, so it did not change the projection."
         ),
+    }
+
+
+def _opportunity_rate_projection(rows: list[dict], policy: dict) -> dict:
+    """Estimate production from verified workload before blending result history."""
+    keys = ("minutes", "min") if "minutes" in policy["opportunity_metric"] else policy["opportunity_keys"]
+    pairs: list[tuple[float, float]] = []
+    for row in rows[:20]:
+        opportunity = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        try:
+            actual = float(row["actual"])
+            volume = float(opportunity)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if volume > 0:
+            pairs.append((actual, volume))
+    coverage = len(pairs) / min(20, len(rows)) if rows else 0.0
+    if len(pairs) < 5 or coverage < 0.50:
+        return {
+            "verified": False,
+            "source": "unavailable",
+            "metric": policy["opportunity_metric"],
+            "games": len(pairs),
+            "coverage_pct": round(coverage * 100.0, 1),
+            "expected_opportunities": None,
+            "production_rate": None,
+            "projection": None,
+            "reason": "At least five matched games and 50% workload coverage are required.",
+        }
+    recent = pairs[:5]
+    weights = [_recency_weight(index) for index in range(len(recent))]
+    expected_volume = sum(volume * weight for (_, volume), weight in zip(recent, weights, strict=False)) / sum(weights)
+    rate_weights = [_recency_weight(index) for index in range(len(pairs))]
+    production_rate = sum(
+        (actual / volume) * weight
+        for (actual, volume), weight in zip(pairs, rate_weights, strict=False)
+    ) / sum(rate_weights)
+    return {
+        "verified": True,
+        "source": "verified_game_workload",
+        "metric": policy["opportunity_metric"],
+        "games": len(pairs),
+        "coverage_pct": round(coverage * 100.0, 1),
+        "expected_opportunities": round(expected_volume, 2),
+        "production_rate": round(production_rate, 4),
+        "projection": round(production_rate * expected_volume, 3),
+        "reason": "Projection uses verified production per opportunity and recent expected workload.",
     }
 
 
