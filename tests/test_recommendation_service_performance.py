@@ -1,4 +1,54 @@
-from web.application.recommendation_service import entry_suggestions_payload
+from web.application.recommendation_service import entry_suggestions_payload, trending_props_payload
+
+
+def test_gaming_markets_are_visible_but_not_graded_as_paid_recommendations() -> None:
+    result = trending_props_payload(
+        "PrizePicks",
+        "CS2",
+        15,
+        fetch_props=lambda *args: [{
+            "platform": "PrizePicks",
+            "player": "device",
+            "league": "CS2",
+            "stat": "MAPS 1-2 Kills",
+            "line": 27.5,
+            "game": "Astralis vs Liquid",
+            "game_time": "2026-08-24T18:00:00Z",
+            "trending_count": 5000,
+            "research_only": True,
+        }],
+        analyze_prop=lambda prop: (_ for _ in ()).throw(AssertionError("research rows must not be modeled")),
+        end_to_end_eligibility=lambda prop: {
+            "eligible": False,
+            "reasons": ["verified esports results source is not connected"],
+        },
+    )
+
+    assert result["mode"] == "provider_market_research"
+    assert result["research_only"] is True
+    assert result["props"][0]["player"] == "device"
+    assert result["props"][0]["forecast_paid_eligible"] is False
+    assert result["props"][0]["end_to_end_confirmed"] is False
+
+
+def test_gaming_entry_generator_prevents_unsettleable_cards() -> None:
+    result = entry_suggestions_payload(
+        "CS2",
+        "Underdog",
+        3,
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks", "Underdog"},
+        cached_briefing=lambda *args: (_ for _ in ()).throw(AssertionError("briefing should not run")),
+        fetch_props=lambda *args: (_ for _ in ()).throw(AssertionError("provider generator should not run")),
+        props_by_platform=lambda *args: [],
+        mixed_risk=lambda *args: [],
+        suggest=lambda *args, **kwargs: [],
+        serialize_suggestion=lambda value: value,
+    )
+
+    assert result["suggestions"] == []
+    assert result["mode"] == "esports_research_only"
+    assert "preventing stuck entries" in result["message"]
 
 
 def test_entry_generator_reuses_identical_short_lived_result() -> None:

@@ -1572,6 +1572,19 @@ p { color: var(--muted); margin: 5px 0 0; }
   color: var(--primary);
   font-weight: 900;
 }
+.research-only-market {
+  border-left: 3px solid rgba(248, 193, 74, .58);
+  background: rgba(248, 193, 74, .035);
+}
+.research-only-market .grade-chip {
+  width: 40px;
+  border-color: rgba(248, 193, 74, .5);
+  color: var(--warn);
+  font-size: 11px;
+}
+.research-only-market .trending-count {
+  color: var(--warn);
+}
 .opportunity-select {
   width: 18px;
   height: 18px;
@@ -2083,6 +2096,148 @@ tr.sport-group-row:hover td {
 }
 .entry-correction p { margin: 5px 0 0; }
 .entry-correction-copy { min-width: 0; }
+
+.entry-analysis-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+}
+
+.entry-analysis-summary h2,
+.entry-analysis-summary p {
+  margin: 0;
+}
+
+.entry-analysis-summary .eyebrow {
+  margin: 10px 0 4px;
+}
+
+.entry-analysis-lead {
+  max-width: 68ch;
+  margin-top: 7px !important;
+  color: var(--text) !important;
+  font-size: 15px;
+}
+
+.entry-analysis-risk {
+  min-width: 112px;
+  padding: 12px;
+  border: 1px solid rgba(74, 91, 119, .55);
+  border-radius: 7px;
+  background: rgba(10, 16, 27, .58);
+  text-align: right;
+}
+
+.entry-analysis-risk strong,
+.entry-analysis-risk span {
+  display: block;
+}
+
+.entry-analysis-risk strong {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.entry-analysis-risk span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.entry-analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.entry-analysis-metrics span {
+  min-width: 0;
+  padding: 11px 12px;
+  border: 1px solid rgba(74, 91, 119, .48);
+  border-radius: 6px;
+  background: rgba(10, 16, 27, .48);
+}
+
+.entry-analysis-metrics strong,
+.entry-analysis-metrics small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.entry-analysis-metrics strong {
+  color: var(--text);
+  font-size: 17px;
+}
+
+.entry-analysis-metrics small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.entry-analysis-section,
+.entry-analysis-alert,
+.entry-analysis-details {
+  margin-top: 12px;
+  border: 1px solid rgba(74, 91, 119, .5);
+  border-radius: 7px;
+  background: rgba(10, 16, 27, .46);
+}
+
+.entry-analysis-section,
+.entry-analysis-alert {
+  padding: 14px;
+}
+
+.entry-analysis-alert {
+  border-color: rgba(248, 193, 74, .42);
+  background: rgba(248, 193, 74, .08);
+}
+
+.entry-analysis-alert strong {
+  color: var(--warn);
+}
+
+.entry-analysis-alert p {
+  margin-top: 4px;
+}
+
+.entry-analysis-details > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  align-items: center;
+  padding: 13px 14px;
+  cursor: pointer;
+}
+
+.entry-analysis-details > summary span {
+  color: var(--text);
+  font-weight: 850;
+}
+
+.entry-analysis-details > summary small {
+  max-width: none;
+  color: var(--muted);
+  text-align: left;
+}
+
+.entry-analysis-details[open] > summary {
+  border-bottom: 1px solid rgba(74, 91, 119, .42);
+}
+
+.entry-analysis-detail-body {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.entry-analysis-detail-body h3 {
+  margin: 8px 0 0;
+}
 .correction-keep { border-left-color: var(--primary); }
 .correction-flip { border-left-color: var(--warn); }
 .correction-remove { border-left-color: var(--danger); }
@@ -4228,6 +4383,11 @@ tr:hover td {
 
 .toggle-control input {
   position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -4754,6 +4914,34 @@ td {
   }
 }
 
+@media (max-width: 1250px) {
+  .two-col {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .advantage-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .advantage-tools .trending-props-tool {
+    grid-column: auto;
+  }
+
+  .opportunity-board-list .opportunity-row {
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+  }
+
+  .opportunity-board-list .stars,
+  .opportunity-board-list .opportunity-proof {
+    display: none;
+  }
+
+  .opportunity-actions {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+}
+
 @media (max-width: 1050px) {
   .nav {
     flex: 1 1 auto;
@@ -4823,6 +5011,98 @@ td {
   .stat-value {
     font-size: 21px;
     overflow-wrap: anywhere;
+  }
+
+  .entry-analysis-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .entry-analysis-risk {
+    width: 100%;
+    text-align: left;
+  }
+
+  .entry-analysis-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .entry-analysis-details > summary {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .entry-analysis-details > summary small {
+    max-width: none;
+    text-align: left;
+  }
+
+  .entry-correction {
+    grid-template-columns: 1fr;
+  }
+
+  .entry-correction .compact-action {
+    width: 100%;
+  }
+
+  .opportunity-board-list .opportunity-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .opportunity-board-list .opportunity-actions {
+    grid-column: 2;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .opportunity-board-list .opportunity-actions button {
+    flex: 1 1 96px;
+  }
+
+  .trending-prop-row {
+    grid-template-columns: 24px 40px minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 10px 4px;
+  }
+
+  .trending-prop-row .opportunity-select {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+  }
+
+  .trending-prop-row .trending-rank {
+    display: none;
+  }
+
+  .trending-prop-row .grade-chip {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: start;
+  }
+
+  .trending-prop-row strong {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .trending-prop-row > button {
+    grid-column: 4;
+    grid-row: 1;
+    align-self: start;
+  }
+
+  .trending-prop-row .trending-stat {
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .trending-prop-row .trending-direction {
+    grid-column: 4;
+    grid-row: 2;
+  }
+
+  .trending-prop-row .trending-count {
+    grid-column: 3 / 5;
+    grid-row: 3;
   }
 
   .workspace-tab,
@@ -5010,10 +5290,6 @@ td,
   #entries .two-col > .stack[data-workspace="entry-generator"] {
     position: sticky;
     top: 88px;
-    max-height: calc(100vh - 112px);
-    overflow-y: auto;
-    padding-right: 4px;
-    scrollbar-color: rgba(59, 130, 246, .55) rgba(18, 26, 40, .55);
   }
 }
 

@@ -79,6 +79,13 @@ def build_data_health_payload(
             key_env="",
             settlement_status_key=settlement_status_key,
         ),
+        provider_health_row(
+            "PandaScore",
+            "verified CS2, League of Legends, Dota 2, and Valorant final player stats",
+            configured=bool(os.getenv("PANDASCORE_API_KEY")),
+            key_env="PANDASCORE_API_KEY",
+            settlement_status_key=settlement_status_key,
+        ),
     ]
     providers = [enrich_provider_health(provider) for provider in providers]
     api_usage = dict(cache_metrics())

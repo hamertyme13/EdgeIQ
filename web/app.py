@@ -30,6 +30,7 @@ import data.providers.balldontlie as balldontlie
 import data.providers.nba_summer_league as nba_summer_league
 import data.providers.newsapi as newsapi
 import data.providers.openweather as openweather
+import data.providers.pandascore as pandascore
 import data.providers.prizepicks as prizepicks
 import data.providers.sleeper as sleeper
 import data.providers.sportsdataio as sportsdataio
@@ -475,7 +476,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260823-v246-builder-reliability"
+STATIC_ASSET_VERSION = "20260824-v247-esports-markets"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -494,6 +495,7 @@ OPPORTUNITY_FEED_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_OPPORTUNITY_FEED_
 BACKTEST_CACHE_SECONDS = max(15, int(os.getenv("EDGEIQ_BACKTEST_CACHE_SECONDS", "30")))
 SETTLEMENT_REFRESH_STATUS_KEY = "settlement_refresh_status"
 _PROP_FETCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_RESEARCH_PROP_CACHE: dict[str, list[dict]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
 _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
@@ -534,7 +536,14 @@ SUPPORTED_SPORTS = (
     "PGA",
     "MMA",
     "NASCAR",
+    "CS2",
+    "LOL",
+    "VALORANT",
+    "DOTA2",
+    "COD",
+    "APEX",
 )
+ESPORT_SPORTS = frozenset({"CS2", "LOL", "VALORANT", "DOTA2", "COD", "APEX"})
 ENTRY_PLATFORMS = ("PrizePicks", "Underdog", "DraftKings Pick6", "Sleeper")
 GENERATOR_PLATFORMS = ("PrizePicks", "Underdog", "Sleeper")
 CONTEXT_PLATFORMS = ("Ball Don't Lie",)
@@ -571,6 +580,21 @@ SPORT_ALIASES = {
     "MMA": "MMA",
     "UFC": "MMA",
     "NASCAR": "NASCAR",
+    "CS": "CS2",
+    "CS2": "CS2",
+    "COUNTER STRIKE": "CS2",
+    "COUNTER-STRIKE": "CS2",
+    "LOL": "LOL",
+    "LEAGUE OF LEGENDS": "LOL",
+    "VAL": "VALORANT",
+    "VALORANT": "VALORANT",
+    "DOTA": "DOTA2",
+    "DOTA2": "DOTA2",
+    "DOTA 2": "DOTA2",
+    "COD": "COD",
+    "CALL OF DUTY": "COD",
+    "APEX": "APEX",
+    "APEX LEGENDS": "APEX",
 }
 
 
@@ -1275,7 +1299,22 @@ def _import_betting_history_payload(payload: str, source: str) -> dict:
 
 def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
     selected = _selected_platforms(platform)
-    if len(selected) > 1:
+    if sport_filter in ESPORT_SPORTS:
+        # Gaming markets are captured for research, but remain outside the
+        # paid recommendation feed until a verified result source is wired.
+        if len(selected) > 1:
+            with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+                list(pool.map(_fetch_platform_props, selected))
+        elif selected:
+            _fetch_platform_props(selected[0])
+        with _PROP_FETCH_LOCK:
+            props = [
+                dict(prop)
+                for platform_name in selected
+                for prop in _RESEARCH_PROP_CACHE.get(_canonical_platform(platform_name), [])
+                if str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter
+            ]
+    elif len(selected) > 1:
         with ThreadPoolExecutor(max_workers=len(selected)) as pool:
             batches = list(pool.map(_fetch_platform_props, selected))
         props = [prop for batch in batches for prop in batch]
@@ -1411,6 +1450,27 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
     ]
     if canonical == "PrizePicks":
         actionable = _enrich_prizepicks_adjusted_lines(actionable)
+    research_rows = []
+    for prop in actionable:
+        if str(prop.get("league") or prop.get("sport") or "").upper() not in ESPORT_SPORTS:
+            continue
+        eligibility = _end_to_end_prop_eligibility(prop)
+        confirmed = bool(eligibility["eligible"])
+        research_rows.append({
+            **prop,
+            "research_only": not confirmed,
+            "end_to_end_confirmed": confirmed,
+            "forecast_paid_eligible": confirmed,
+            "settlement_provider": eligibility.get("provider") or "PandaScore access needed",
+            "settlement_reason": (eligibility.get("reasons") or [""])[0],
+            "data_strength": (
+                ["Provider-backed", "Final stats verified path"]
+                if confirmed
+                else ["Provider-backed", "Final stats unavailable"]
+            ),
+        })
+    with _PROP_FETCH_LOCK:
+        _RESEARCH_PROP_CACHE[canonical] = research_rows
     eligible = [prop for prop in actionable if _end_to_end_prop_eligibility(prop)["eligible"]]
     _record_provider_fetch_status(canonical, attempted_at, row_count=len(eligible))
     return eligible
@@ -1517,7 +1577,7 @@ def _is_actionable_provider_prop(prop: dict) -> bool:
 
 
 def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: bool = True) -> dict:
-    """Return whether a provider prop can be graded from an official ESPN box score."""
+    """Return whether a provider prop has a verified end-to-end settlement path."""
     sport = str(_prop_value(prop, "sport") or _prop_value(prop, "league") or "").strip().upper()
     raw_stat = str(_prop_value(prop, "stat") or "").strip().lower()
     stat = _settlement_stat_key(_prop_value(prop, "stat"))
@@ -1561,8 +1621,14 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
     }
     pitcher_positions = {"p", "sp", "rp", "pitcher", "starting pitcher", "relief pitcher"}
 
+    settlement_provider = ""
     market_supported = False
-    if is_partial_game_market(raw_stat):
+    if sport in ESPORT_SPORTS:
+        esports_support = pandascore.market_support(sport, _prop_value(prop, "stat"))
+        market_supported = bool(esports_support["eligible"])
+        settlement_provider = str(esports_support["provider"])
+        reasons.extend(esports_support["reasons"])
+    elif is_partial_game_market(raw_stat):
         market_supported = False
     elif sport in {"NBA", "WNBA"}:
         market_supported = stat in basketball_stats
@@ -1594,7 +1660,7 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
         reasons.append("named player is required")
     if _prop_value(prop, "line") is not None and not plausibility.valid:
         reasons.append(plausibility.reason)
-    if not market_supported:
+    if not market_supported and sport not in ESPORT_SPORTS:
         reasons.append(f"official final-stat coverage is unavailable for {sport or 'this sport'} {str(_prop_value(prop, 'stat') or 'market')}")
     if require_context:
         if not game:
@@ -1611,7 +1677,7 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
         "eligible": not reasons,
         "sport": sport,
         "stat": stat,
-        "provider": "ESPN official box score" if market_supported else "",
+        "provider": settlement_provider or ("ESPN official box score" if market_supported else ""),
         "reasons": reasons,
         "plausibility": plausibility.as_dict(),
     }
@@ -1682,28 +1748,40 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
     espn_refresh = refresh_final_stats_for_entries(pending_entries)
     sportsdataio_refresh = _sportsdataio_refresh(pending_entries)
     summer_league_refresh = nba_summer_league.refresh_final_stats_for_entries(pending_entries)
+    pandascore_refresh = pandascore.refresh_final_stats_for_entries(pending_entries)
+    if not pandascore_refresh.get("skipped"):
+        _record_provider_fetch_status(
+            "PandaScore",
+            iso_utc(utc_now()),
+            row_count=int(pandascore_refresh.get("fetched_rows") or 0),
+            error="; ".join(pandascore_refresh.get("errors") or []),
+        )
     imported = (
         espn_refresh.get("imported", 0)
         + sportsdataio_refresh.get("imported", 0)
         + summer_league_refresh.get("imported", 0)
+        + pandascore_refresh.get("imported", 0)
     )
     fetched_rows = (
         espn_refresh.get("fetched_rows", 0)
         + sportsdataio_refresh.get("fetched_rows", 0)
         + summer_league_refresh.get("fetched_rows", 0)
+        + pandascore_refresh.get("fetched_rows", 0)
     )
     return {
-        "providers": ["espn", "sportsdataio", "nba_summer_league"],
-        "provider": "espn+sportsdataio+nba_summer_league",
+        "providers": ["espn", "sportsdataio", "nba_summer_league", "pandascore"],
+        "provider": "espn+sportsdataio+nba_summer_league+pandascore",
         "espn": espn_refresh,
         "sportsdataio": sportsdataio_refresh,
         "nba_summer_league": summer_league_refresh,
+        "pandascore": pandascore_refresh,
         "imported": imported,
         "fetched_rows": fetched_rows,
         "errors": (
             espn_refresh.get("errors", [])
             + sportsdataio_refresh.get("errors", [])
             + summer_league_refresh.get("errors", [])
+            + pandascore_refresh.get("errors", [])
         ),
     }
 

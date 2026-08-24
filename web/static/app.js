@@ -326,6 +326,44 @@ function showInitialSkeletons() {
   });
 }
 
+function ensureEsportsOptions() {
+  const sports = [
+    ["CS2", "CS2"],
+    ["LOL", "League of Legends"],
+    ["VALORANT", "Valorant"],
+    ["DOTA2", "Dota 2"],
+    ["COD", "Call of Duty"],
+    ["APEX", "Apex Legends"],
+  ];
+  const supportedSelects = [
+    "trending-props-sport", "watch-sport", "props-sport", "prop-sport",
+    "prizepicks-generator-sport", "underdog-generator-sport",
+    "research-context-sport", "research-sport",
+  ];
+  supportedSelects.forEach((id) => {
+    const select = $(id);
+    if (!select) return;
+    sports.forEach(([value, label]) => {
+      if ([...select.options].some((option) => option.value === value)) return;
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    });
+  });
+  const statOptions = $("stat-options");
+  [
+    "Kills on Map 1", "Kills on Maps 1+2", "Kills on Maps 1+2+3",
+    "Headshots on Map 1", "Headshots on Maps 1+2", "Assists on Maps 1+2",
+    "Fantasy Points on Maps 1+2", "Series K/D",
+  ].forEach((value) => {
+    if (!statOptions || [...statOptions.options].some((option) => option.value === value)) return;
+    const option = document.createElement("option");
+    option.value = value;
+    statOptions.append(option);
+  });
+}
+
 function syncDefaultInputs() {
   const defaults = JSON.parse(localStorage.getItem("edgeiq.onboarding") || "{}");
   if (defaults.platform && $("props-platform")) $("props-platform").value = defaults.platform;
@@ -1735,17 +1773,17 @@ async function loadTrendingProps() {
   $("trending-props-count").textContent = `Top ${data.count || 0}`;
   $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
   $("trending-props-list").innerHTML = state.trendingProps.map((prop, index) => `
-    <div class="trending-prop-row">
-      <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" />
+    <div class="trending-prop-row ${prop.research_only ? "research-only-market" : ""}">
+      <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" ${prop.research_only ? "disabled" : ""} />
       <span class="trending-rank">#${Number(prop.rank || index + 1)}</span>
-      <span class="grade-chip" title="Grade combines model confidence and data quality">${escapeHtml(prop.grade || "-")}</span>
+      <span class="grade-chip" title="${prop.research_only ? "Live provider market; model grade unavailable" : "Grade combines model confidence and data quality"}">${escapeHtml(prop.research_only ? "Live" : (prop.grade || "-"))}</span>
       <strong>${escapeHtml(prop.player || "Player")}<small>${escapeHtml(prop.platform || platform)} · ${escapeHtml(prop.game || "Matchup")}</small></strong>
       <span class="trending-stat">${escapeHtml(prop.stat || "Stat")} ${prop.line ?? "-"}</span>
-      <span>${directionBadge(prop.direction || "Over")}</span>
-      <span class="trending-count">Score ${Number(prop.grade_score || 0).toFixed(1)}</span>
-      <button class="secondary" type="button" data-add-trending-prop="${index}">Add</button>
+      <span class="trending-direction">${directionBadge(prop.direction || "Over")}</span>
+      <span class="trending-count">${prop.research_only ? "Provider market · results source needed" : `Score ${Number(prop.grade_score || 0).toFixed(1)}`}</span>
+      <button class="secondary" type="button" data-add-trending-prop="${index}" ${prop.research_only ? 'disabled title="Automatic result verification is not connected yet"' : ""}>${prop.research_only ? "View only" : "Add"}</button>
     </div>
-  `).join("") || `<div class="suggestion compact-suggestion">No end-to-end trackable ${escapeHtml(sport)} props are trending right now.</div>`;
+  `).join("") || `<div class="suggestion compact-suggestion">No ${escapeHtml(sport)} provider markets are available right now.</div>`;
   document.querySelectorAll("[data-select-trending-prop]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => toggleTrendingPropSelection(checkbox));
   });
@@ -2949,77 +2987,84 @@ function renderAnalysis(data) {
   }).join("");
   $("entry-analysis").classList.remove("muted-card");
   $("entry-analysis").innerHTML = `
-    <div class="grade">${escapeHtml(release.verdict || rec.verdict || rec.action || "Review")}</div>
-    <h2>${escapeHtml(release.verdict || rec.action || "Review")} Verdict</h2>
-    <p>${escapeHtml(release.summary || rec.reason || "")}</p>
-    <div class="stats-grid" style="margin-top:14px">
-      <div class="stat-card"><div class="stat-value">${Number(rec.score ?? 0).toFixed(1)}</div><div class="stat-label">Entry Score</div></div>
-      <div class="stat-card"><div class="stat-value">${pct(risk.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
-      <div class="stat-card"><div class="stat-value">${Number(risk.average_edge).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
-      <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
+    <div class="entry-analysis-summary">
+      <div>
+        <div class="grade">${escapeHtml(release.verdict || rec.verdict || rec.action || "Review")}</div>
+        <p class="eyebrow">EdgeIQ decision</p>
+        <h2>${escapeHtml(release.verdict || rec.action || "Review")}</h2>
+        <p class="entry-analysis-lead">${escapeHtml(release.summary || rec.reason || "EdgeIQ reviewed the entry against its current evidence.")}</p>
+      </div>
+      <div class="entry-analysis-risk">
+        <strong>${escapeHtml(risk.level || "Unknown")}</strong>
+        <span>risk level</span>
+      </div>
     </div>
-    <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
-    <div class="analysis-card correction-plan" style="margin-top:14px">
+    <div class="entry-analysis-metrics">
+      <span><strong>${Number(rec.score ?? 0).toFixed(0)}/100</strong><small>Model score</small></span>
+      <span><strong>${pct(risk.average_confidence)}</strong><small>Average leg confidence</small></span>
+      <span><strong>${Number(risk.average_edge || 0).toFixed(2)}</strong><small>Average projection cushion</small></span>
+    </div>
+    ${warnings.length ? `<div class="entry-analysis-alert"><strong>Before you continue</strong><p>${warnings.map((warning) => escapeHtml(warning)).join(" ")}</p></div>` : ""}
+    <section class="entry-analysis-section correction-plan">
       <div class="suggestion-top">
-        <h3>Suggested Corrections</h3>
+        <h3>${Number(corrections.change_count || 0) ? "Recommended changes" : "Leg review"}</h3>
         <span class="status-pill ${Number(corrections.change_count || 0) ? "status-warning" : "status-positive"}">${Number(corrections.change_count || 0)} changes</span>
       </div>
       <p>${escapeHtml(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}</p>
       <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <div class="suggestion-top">
-        <h3>${payoutVerified ? "Verified Payout Economics" : "Estimated Payout Economics"}</h3>
-        <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Payout confirmation needed"}</span>
+    </section>
+    <details class="entry-analysis-details">
+      <summary><span>Payout and sportsbook value</span><small>${payoutVerified ? "Payout verified" : "Confirm the payout before using expected value"}</small></summary>
+      <div class="entry-analysis-detail-body">
+        <div class="suggestion-top">
+          <h3>${payoutVerified ? "Payout outlook" : "Estimated payout outlook"}</h3>
+          <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Needs confirmation"}</span>
+        </div>
+        ${payoutVerified ? "" : '<p class="subtle">The connection confirms lines and market odds, but the sportsbook does not provide the exact Pick’em card payout. Enter the displayed payout before relying on expected value.</p>'}
+        <div class="metric-strip">
+          <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Not verified"}</strong><small>Expected value</small></span>
+          <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected return</small></span>
+          <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Chance of profit</small></span>
+          <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Chance needed to break even</small></span>
+        </div>
+        <p class="subtle">${escapeHtml(payout.message || "Confirm the final displayed payout before placing.")}</p>
+        <h3>Best sportsbook value</h3>
+        <p>${escapeHtml(platformValue.recommendation || "No cross-platform value comparison was available.")}</p>
+        ${platformValue.recommended_platform ? `<p class="subtle">Best match: ${escapeHtml(platformValue.recommended_platform)} · line advantage ${Number(platformValue.value_delta || 0) >= 0 ? "+" : ""}${Number(platformValue.value_delta || 0).toFixed(2)}</p>` : ""}
+        ${platformEconomicsRows}
+        ${platformValueRows || `<p class="subtle">No matching PrizePicks or Underdog legs were found.</p>`}
       </div>
-      ${payoutVerified ? "" : '<p class="subtle">Your sportsbook connection verifies available lines and market odds, but it does not expose the exact Pick’em card payout. Enter the payout shown in the provider app to verify EV.</p>'}
-      <div class="metric-strip">
-        <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Unverified"}</strong><small>Expected Value</small></span>
-        <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected Return</small></span>
-        <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Profit Chance</small></span>
-        <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Provider Break-Even</small></span>
+    </details>
+    <details class="entry-analysis-details">
+      <summary><span>Safety checks</span><small>${guardrails.length} safeguards · ${checklist.length} final checks</small></summary>
+      <div class="entry-analysis-detail-body">
+        ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${escapeHtml(guard.message || "")}</p>`).join("") || '<p class="subtle">No additional placement warnings.</p>'}
+        <div class="checklist-grid">
+          ${checklist.map((item) => `
+            <div class="checklist-item status-${String(item.status || "").replaceAll(" ", "-")}">
+              <strong>${escapeHtml(item.label || "Check")}</strong>
+              <span>${escapeHtml(item.status || "Review")}</span>
+              <p>${escapeHtml(item.detail || "")}</p>
+            </div>
+          `).join("")}
+        </div>
       </div>
-      <p class="subtle">${escapeHtml(release.authoritative_platform || payout.platform || "Provider")} is authoritative for this verdict.</p>
-      <p class="subtle">${escapeHtml(payout.message || "Confirm the final displayed payout before placing.")}</p>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Best App Value</h3>
-      <p>${escapeHtml(platformValue.recommendation || "No cross-platform value check was available.")}</p>
-      ${platformValue.recommended_platform ? `<p class="subtle">Recommended platform: ${escapeHtml(platformValue.recommended_platform)} · value delta ${Number(platformValue.value_delta || 0) >= 0 ? "+" : ""}${Number(platformValue.value_delta || 0).toFixed(2)}</p>` : ""}
-      ${platformEconomicsRows}
-      ${platformValueRows || `<p class="subtle">No matching PrizePicks/Underdog legs were found for comparison.</p>`}
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Placement Guardrails</h3>
-      ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${guard.message}</p>`).join("")}
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Final Checklist</h3>
-      <div class="checklist-grid">
-        ${checklist.map((item) => `
-          <div class="checklist-item status-${String(item.status || "").replaceAll(" ", "-")}">
-            <strong>${item.label}</strong>
-            <span>${item.status}</span>
-            <p>${item.detail}</p>
-          </div>
-        `).join("")}
+    </details>
+    <details class="entry-analysis-details">
+      <summary><span>Model evidence</span><small>Data quality, player history, and supporting sources</small></summary>
+      <div class="entry-analysis-detail-body">
+        <p class="subtle">Model score uses leg confidence, projection cushion, and source support. These are estimates, not guarantees.</p>
+        <p class="subtle">Confidence ${pct(components.average_confidence)} · projection cushion ${Number(components.average_edge || 0).toFixed(2)} · source strength ${Number(components.average_source_score || 0).toFixed(1)}</p>
+        <h3>Data quality</h3>
+        ${qualityRows}
+        <h3>Recent player history</h3>
+        <p>${espn.props_with_history || 0} legs have verified game history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% average hit rate` : ""}</p>
+        ${espnRows || `<p class="subtle">No matching final-stat history yet. Settled entries will strengthen this section.</p>`}
+        <h3>Other supporting sources</h3>
+        <p>${fusion.signal_count || 0} additional signals${fusion.sources && fusion.sources.length ? ` from ${fusion.sources.map((source) => escapeHtml(source)).join(", ")}` : ""}</p>
+        ${signalRows || `<p class="subtle">No additional source signals were available for this entry.</p>`}
       </div>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Data Quality</h3>
-      ${qualityRows}
-    </div>
-    <div class="analysis-card ${espn.props_with_history ? "" : "muted-card"}" style="margin-top:14px">
-      <h3>ESPN Form Assist</h3>
-      <p>${espn.props_with_history || 0} props with ESPN history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% avg hit rate` : ""}</p>
-      ${espnRows || `<p class="subtle">No matching ESPN final-stat history yet. Auto-check completed entries to import more box scores.</p>`}
-    </div>
-    <div class="analysis-card ${fusion.signal_count ? "" : "muted-card"}" style="margin-top:14px">
-      <h3>Source Fusion</h3>
-      <p>${fusion.signal_count || 0} signals${fusion.sources && fusion.sources.length ? ` · ${fusion.sources.join(", ")}` : ""}</p>
-      ${signalRows || `<p class="subtle">No extra source signals found for this entry yet.</p>`}
-    </div>
-    ${warnings.length ? `<p class="warning">${warnings.join(" · ")}</p>` : ""}
+    </details>
   `;
   document.querySelectorAll("[data-correction-action]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -5620,6 +5665,7 @@ async function loadAll(options = {}) {
   }
 }
 
+ensureEsportsOptions();
 registerPwa();
 bindEvents();
 applyViewFromUrl();

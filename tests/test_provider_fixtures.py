@@ -212,6 +212,16 @@ def test_nfl_august_game_is_labeled_preseason_when_feed_omits_label() -> None:
     assert underdog._season_type("NFL", {"scheduled_at": "2026-08-07T00:00:00Z"}, {}) == "preseason"
 
 
+def test_provider_gaming_leagues_are_normalized() -> None:
+    assert prizepicks._normalize_league("CS2") == "CS2"
+    assert prizepicks._normalize_league("LoL") == "LOL"
+    assert prizepicks._normalize_league("Dota2") == "DOTA2"
+    assert prizepicks._normalize_league("APEX") == "APEX"
+    assert underdog._normalize_league("CS") == "CS2"
+    assert underdog._normalize_league("LOL") == "LOL"
+    assert underdog._normalize_league("VAL") == "VALORANT"
+
+
 def test_espn_refresh_dates_use_the_eastern_slate_day() -> None:
     entries = [{
         "placed_at": datetime(2026, 8, 7, 2, 0),

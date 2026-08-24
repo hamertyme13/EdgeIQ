@@ -110,6 +110,14 @@ _CONTRACTS = {
         "Summer League final statistics",
         "Settlement with identity and game checks",
     ),
+    "PandaScore": ProviderContract(
+        "official_authenticated_api",
+        "pandascore-v2-match-player-stats",
+        True,
+        "https://developers.pandascore.co/docs/introduction",
+        "Esports match identity and final player statistics",
+        "Settlement for supported fields with Historical plan access and exact map scope",
+    ),
 }
 
 _UNKNOWN = ProviderContract(

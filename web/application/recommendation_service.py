@@ -6,6 +6,7 @@ from contextlib import AbstractContextManager
 from copy import deepcopy
 from threading import Lock
 
+from data.providers import pandascore
 from utils.entity_normalization import canonical_person_key
 
 
@@ -16,6 +17,7 @@ class RecommendationRequestError(ValueError):
 _ENTRY_GENERATOR_CACHE: dict[tuple, tuple[float, dict]] = {}
 _ENTRY_GENERATOR_LOCK = Lock()
 _ENTRY_GENERATOR_TTL_SECONDS = 45.0
+_ESPORT_SPORTS = frozenset({"CS2", "LOL", "VALORANT", "DOTA2", "COD", "APEX"})
 
 
 def top_props_payload(
@@ -63,9 +65,18 @@ def trending_props_payload(
         ):
             raw = {**raw, "direction": "Over", "allowed_directions": ["Over"]}
         eligibility = end_to_end_eligibility(raw)
-        if not eligibility.get("eligible"):
+        research_only = sport_filter in _ESPORT_SPORTS and bool(raw.get("research_only"))
+        if not eligibility.get("eligible") and not research_only:
             excluded += 1
             continue
+        if research_only:
+            raw = {
+                **raw,
+                "research_only": True,
+                "settlement_reason": (eligibility.get("reasons") or [
+                    "A verified esports result source is not connected."
+                ])[0],
+            }
         key = (
             canonical_person_key(raw.get("player")),
             str(raw.get("stat") or "").strip().lower(),
@@ -80,6 +91,24 @@ def trending_props_payload(
     eligible.sort(key=_trending_prefilter_key, reverse=True)
     analyzed_rows: list[dict] = []
     for raw in eligible[:candidate_limit]:
+        if raw.get("research_only"):
+            activity_score = min(100.0, max(0.0, float(raw.get("trending_count") or 0)) / 1000.0)
+            analyzed_rows.append({
+                **raw,
+                "direction": raw.get("direction") or "Over",
+                "allowed_directions": raw.get("allowed_directions") or ["Over", "Under"],
+                "projection": None,
+                "confidence": None,
+                "grade": "Watch",
+                "grade_score": round(activity_score, 1),
+                "data_quality": {"label": "Provider market", "score": 0, "flags": ["Final stats source needed"]},
+                "data_strength": ["Provider-backed", "Final stats unavailable"],
+                "history_sample": 0,
+                "forecast_paid_eligible": False,
+                "end_to_end_confirmed": False,
+                "settlement_provider": "Not connected",
+            })
+            continue
         analyzed = analyze_prop(raw)
         confidence = float(analyzed.get("confidence") or 0.0)
         quality_score = float((analyzed.get("data_quality") or {}).get("score") or 0.0)
@@ -125,6 +154,7 @@ def trending_props_payload(
     selected = analyzed_rows[:requested_limit]
     for rank, row in enumerate(selected, start=1):
         row["rank"] = rank
+    research_mode = sport_filter in _ESPORT_SPORTS and any(row.get("research_only") for row in selected)
     return {
         "props": selected,
         "platform": platform,
@@ -133,8 +163,13 @@ def trending_props_payload(
         "evaluated_count": min(len(eligible), candidate_limit),
         "eligible_count": len(eligible),
         "excluded": excluded,
-        "mode": "graded_shortlist",
-        "note": f"Top {len(selected)} graded props from {min(len(eligible), candidate_limit)} fully analyzed candidates. Verify live lines before entry.",
+        "mode": "provider_market_research" if research_mode else "graded_shortlist",
+        "research_only": research_mode,
+        "note": (
+            f"Showing {len(selected)} live gaming markets for research. Automatic projections, paid recommendations, and settlement stay off until a verified esports results source is connected."
+            if research_mode
+            else f"Top {len(selected)} graded props from {min(len(eligible), candidate_limit)} fully analyzed candidates. Verify live lines before entry."
+        ),
     }
 
 
@@ -220,6 +255,26 @@ def entry_suggestions_payload(
         raise RecommendationRequestError(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
+    if sport_filter in _ESPORT_SPORTS and (
+        sport_filter not in pandascore.supported_sports() or not pandascore.configured()
+    ):
+        return {
+            "suggestions": [],
+            "mode": "esports_research_only",
+            "platform": entry_platform,
+            "sport": sport_filter,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "message": (
+                f"{sport_filter} markets are available in Trending Props for live provider research. "
+                "Entry generation remains off until EdgeIQ can verify player results automatically, preventing stuck entries and unmeasured recommendations."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": "provider_market_research",
+            },
+        }
     briefing = cached_briefing(entry_platform, sport_filter)
     raw_props = _briefing_generator_props(briefing, entry_platform, sport_filter)
     source = "daily_briefing_snapshot"
