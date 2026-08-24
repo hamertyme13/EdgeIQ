@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from sqlalchemy import func
+
 from utils.stat_normalization import canonical_stat_label
 
 ROLE_STATS = {
@@ -24,9 +26,15 @@ def attach_opportunity_context(session, history: list[dict], identity: dict | No
     else:
         player_key = canonical_person_key(player)
         matching_ids = [
-            row.id for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
-            if canonical_person_key(row.player) == player_key
+            row.id for row in session.query(FinalPlayerStatModel.id).filter(
+                func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
+            ).all()
         ]
+        if not matching_ids:
+            matching_ids = [
+                row.id for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
+                if canonical_person_key(row.player) == player_key
+            ]
         query = query.filter(FinalPlayerStatModel.id.in_(matching_ids))
     if sport:
         query = query.filter(FinalPlayerStatModel.sport == sport.upper())

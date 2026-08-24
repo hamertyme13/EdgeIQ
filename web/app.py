@@ -475,7 +475,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260822-v245-runtime-ux"
+STATIC_ASSET_VERSION = "20260823-v246-builder-reliability"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -509,10 +509,12 @@ _PREDICTION_EVIDENCE_CACHE: tuple[float, list[dict]] = (0.0, [])
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
 _MODEL_HEALTH_CACHE: tuple[float, dict] = (0.0, {})
 _MODEL_HEALTH_LOCK = threading.RLock()
-_SEGMENT_DASHBOARD_CACHE: tuple[float, dict] = (0.0, {})
+_SEGMENT_DASHBOARD_CACHE: tuple[float, object | None, dict] = (0.0, None, {})
 _SEGMENT_DASHBOARD_LOCK = threading.RLock()
 _TRUST_CLV_CACHE: tuple[float, dict] = (0.0, {})
 _TRUST_CLV_LOCK = threading.RLock()
+_LOSS_PROTECTION_CACHE: tuple[float, tuple[object, ...], dict] = (0.0, (), {})
+_LOSS_PROTECTION_LOCK = threading.RLock()
 _ENDPOINT_TIMINGS: dict[str, list[dict]] = {}
 _ENDPOINT_TIMING_LOCK = threading.RLock()
 ENDPOINT_SLOW_THRESHOLD_MS = 1000.0
@@ -1300,6 +1302,24 @@ def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
         },
         "props": snapshot_rows,
     })
+    return rows
+
+
+def _cached_props(platform: str, sport_filter: str | None) -> list[dict]:
+    """Return already-loaded provider offers without starting network work."""
+    rows: list[dict] = []
+    with _PROP_FETCH_LOCK:
+        for platform_name in _selected_platforms(platform):
+            canonical = _canonical_platform(platform_name)
+            cache_key = f"{canonical}:{_platform_fetcher_cache_token(canonical)}"
+            cached = _PROP_FETCH_CACHE.get(cache_key)
+            if cached:
+                rows.extend(dict(prop) for prop in cached[1])
+    if sport_filter:
+        rows = [
+            row for row in rows
+            if str(row.get("league") or row.get("sport") or "").upper() == sport_filter
+        ]
     return rows
 
 
@@ -3782,7 +3802,7 @@ def _command_center_payload(
     *,
     fast: bool = False,
 ) -> dict:
-    dashboard_stats = get_dashboard()
+    dashboard_stats = _cached_dashboard_stats()
     prefs = _user_preferences()
     model = _model_health_payload()
     props = _fetch_props(platform, sport_filter)
@@ -7154,15 +7174,20 @@ def _matching_market_props(
     ]
 
 
-def _platform_value_check(payload: EntryPayload) -> dict:
+def _platform_value_check(payload: EntryPayload, *, live_refresh: bool = False) -> dict:
     selected_platform = _canonical_platform(payload.platform)
     props_by_sport = {
-        sport: _fetch_props("Both", sport)
+        sport: (_fetch_props("Both", sport) if live_refresh else _cached_props("Both", sport))
         for sport in {prop.sport for prop in payload.props}
     }
     if len(payload.props) <= 1:
         legs = [
-            _platform_value_for_prop(prop, selected_platform, props_by_sport.get(prop.sport, []))
+            _platform_value_for_prop(
+                prop,
+                selected_platform,
+                props_by_sport.get(prop.sport, []),
+                include_live_consensus=live_refresh,
+            )
             for prop in payload.props
         ]
     else:
@@ -7172,11 +7197,24 @@ def _platform_value_check(payload: EntryPayload) -> dict:
                     prop,
                     selected_platform,
                     props_by_sport.get(prop.sport, []),
+                    include_live_consensus=live_refresh,
                 ),
                 payload.props,
             ))
-    analyzed_entry = _entry_from_payload(payload)
-    fallback_probabilities = [max(0.01, min(0.99, float(prop.confidence or 0.0) / 100.0)) for prop in analyzed_entry.props]
+    fallback_probabilities = []
+    for prop in payload.props:
+        if prop.confidence is not None:
+            confidence = float(prop.confidence)
+        elif prop.projection is not None:
+            edge = calculate_directional_edge(
+                float(prop.line),
+                float(prop.projection),
+                _normalize_direction(prop.direction or "Over"),
+            )
+            confidence = calculate_confidence(edge, prop.stat, prop.sport)
+        else:
+            confidence = 50.0
+        fallback_probabilities.append(max(0.01, min(0.99, confidence / 100.0)))
     platform_totals: dict[str, dict] = {}
     for leg in legs:
         for row in leg.get("platforms", []):
@@ -7274,6 +7312,8 @@ def _platform_value_for_prop(
     prop: PropPayload,
     selected_platform: str,
     source_props: list[dict] | None = None,
+    *,
+    include_live_consensus: bool = True,
 ) -> dict:
     direction = prop.direction or "Over"
     matches = [
@@ -7295,7 +7335,7 @@ def _platform_value_for_prop(
         prop.line,
         direction,
         prop.team,
-    )
+    ) if include_live_consensus else {"available": False, "dfs_offers": []}
     platform_rows: dict[str, list[dict]] = {}
     for row in matches:
         platform_rows.setdefault(_canonical_platform(row.get("platform", "")), []).append(row)
@@ -7317,7 +7357,7 @@ def _platform_value_for_prop(
                 direction,
                 prop.team,
             )
-        )
+        ) if include_live_consensus else market
         dfs_offer = next(
             (
                 offer for offer in line_market.get("dfs_offers", [])
@@ -7401,7 +7441,7 @@ def _platform_value_recommendation(
 
 def _entry_handoff_payload(payload: EntryPayload) -> dict:
     analysis = _entry_analysis(_entry_from_payload(payload), payload)
-    platform_value = analysis.get("platform_value") or _platform_value_check(payload)
+    platform_value = _platform_value_check(payload, live_refresh=True)
     recommended_platform = platform_value.get("recommended_platform") or _canonical_platform(payload.platform)
     release_blocks = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
     release_warnings = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") != "danger"]
@@ -8176,8 +8216,22 @@ def _compact_grading_pending(entry: dict) -> dict:
 
 
 def _loss_protection_payload() -> dict:
+    global _LOSS_PROTECTION_CACHE
+    now = time.monotonic()
+    dependency_token = (
+        SettingsRepository.get, get_dashboard, clv_report, EntryRepository.all,
+    )
+    with _LOSS_PROTECTION_LOCK:
+        if _LOSS_PROTECTION_CACHE[0] > now and _LOSS_PROTECTION_CACHE[1] == dependency_token:
+            return dict(_LOSS_PROTECTION_CACHE[2])
+        payload = _build_loss_protection_payload()
+        _LOSS_PROTECTION_CACHE = (now + 15.0, dependency_token, dict(payload))
+        return payload
+
+
+def _build_loss_protection_payload() -> dict:
     enabled = str(SettingsRepository.get("loss_protection_enabled", "true")).strip().lower() not in {"0", "false", "no", "off"}
-    dashboard_stats = get_dashboard()
+    dashboard_stats = _cached_dashboard_stats()
     monthly = dashboard_stats.get("monthly_profit", {})
     current_month = monthly.get("current_month", monthly) if isinstance(monthly, dict) else monthly
     monthly_profit = _money_value(current_month if isinstance(current_month, dict) else monthly)
@@ -9233,13 +9287,13 @@ def _active_line_for_player_stat(player_name: str, stat: str, platform: str) -> 
     return float(props[0]["line"])
 
 
-def _entry_from_payload(payload: EntryPayload) -> Entry:
+def _entry_from_payload(payload: EntryPayload, *, hydrate_provider: bool = True) -> Entry:
     if len(payload.props) <= 1:
-        props = [_prop_from_payload(prop, payload.platform) for prop in payload.props]
+        props = [_prop_from_payload(prop, payload.platform, hydrate_provider=hydrate_provider) for prop in payload.props]
     else:
         with ThreadPoolExecutor(max_workers=min(3, len(payload.props))) as pool:
             props = list(pool.map(
-                lambda prop: _prop_from_payload(prop, payload.platform),
+                lambda prop: _prop_from_payload(prop, payload.platform, hydrate_provider=hydrate_provider),
                 payload.props,
             ))
     return Entry(
@@ -9745,9 +9799,12 @@ def _reject_combined_player_props(props: list[PropPayload]) -> None:
         )
 
 
-def _prop_from_payload(payload: PropPayload, entry_platform: str) -> Prop:
-    provider_context = _provider_context_for_payload_prop(payload, entry_platform)
-    projection, auto_projected, projection_source, espn_context, source_context = _analysis_projection(payload)
+def _prop_from_payload(payload: PropPayload, entry_platform: str, *, hydrate_provider: bool = True) -> Prop:
+    provider_context = _provider_context_for_payload_prop(payload, entry_platform) if hydrate_provider else {}
+    projection, auto_projected, projection_source, espn_context, source_context = _analysis_projection(
+        payload,
+        live_sources=hydrate_provider,
+    )
     direction = _prop_direction(payload.line, projection, payload.direction)
     edge = calculate_directional_edge(payload.line, projection, direction)
     confidence, confidence_adjustment = _analysis_confidence(edge, source_context, payload.stat, payload.sport, auto_projected)
@@ -9824,7 +9881,7 @@ def _provider_context_for_payload_prop(payload: PropPayload, entry_platform: str
         return {}
 
 
-def _analysis_projection(payload: PropPayload) -> tuple[float, bool, str, dict, dict]:
+def _analysis_projection(payload: PropPayload, *, live_sources: bool = True) -> tuple[float, bool, str, dict, dict]:
     if payload.projection is not None:
         direction = _prop_direction(payload.line, payload.projection, payload.direction)
         hit_rate = estimate_hit_rate(
@@ -9837,7 +9894,10 @@ def _analysis_projection(payload: PropPayload) -> tuple[float, bool, str, dict, 
             direction=direction,
         )
         espn_context = _espn_context(hit_rate)
-        source_context = _source_context(payload, payload.projection, espn_context, apply_projection_delta=False)
+        source_context = _source_context(
+            payload, payload.projection, espn_context,
+            apply_projection_delta=False, live_sources=live_sources,
+        )
         auto_projected = bool(payload.auto_projected)
         projection_source = payload.projection_source or ("line_model" if auto_projected else "user")
         return payload.projection, auto_projected, projection_source, espn_context, source_context
@@ -9869,7 +9929,10 @@ def _analysis_projection(payload: PropPayload) -> tuple[float, bool, str, dict, 
         direction=resolved_direction,
     )
     context = _espn_context(hit_rate)
-    source_context = _source_context(payload, model_projection, context, apply_projection_delta=False)
+    source_context = _source_context(
+        payload, model_projection, context,
+        apply_projection_delta=False, live_sources=live_sources,
+    )
     source_context["forecast"] = forecast.snapshot()
     source_context["model_probability"] = round(model_probability, 2)
     return model_projection, True, forecast.source, context, source_context
@@ -9884,13 +9947,6 @@ def _espn_context(hit_rate) -> dict:
             "note": hit_rate.note,
         }
 
-    history = _played_history(hit_rate.player, hit_rate.stat, sport=None, limit=10)
-    recent = history[:5]
-    recent_average = (
-        round(sum(float(row["actual"]) for row in recent) / len(recent), 2)
-        if recent
-        else None
-    )
     return {
         "source": "espn_final_stats",
         "sample_size": hit_rate.sample_size,
@@ -9898,7 +9954,7 @@ def _espn_context(hit_rate) -> dict:
         "last_5": hit_rate.last_5,
         "last_10": hit_rate.last_10,
         "season": hit_rate.season,
-        "recent_average": recent_average,
+        "recent_average": None,
         "note": hit_rate.note,
     }
 
@@ -9922,18 +9978,20 @@ def _source_context(
     base_projection: float,
     espn_context: dict,
     apply_projection_delta: bool,
+    live_sources: bool = True,
 ) -> dict:
     signals: list[dict] = []
     signals.extend(_espn_form_signals(payload, base_projection, espn_context))
     signals.extend(_summer_league_signals(payload, espn_context))
-    signals.extend(_injury_signals(payload))
     signals.extend(_matchup_signals(payload))
     signals.extend(_line_movement_signals(payload))
-    signals.extend(_platform_consensus_signals(payload))
-    signals.extend(_sleeper_trending_signals(payload))
-    signals.extend(_balldontlie_stat_signals(payload))
-    signals.extend(_news_context_signals(payload))
-    signals.extend(_weather_signals(payload))
+    signals.extend(_platform_consensus_signals(payload, live_refresh=live_sources))
+    if live_sources:
+        signals.extend(_injury_signals(payload))
+        signals.extend(_sleeper_trending_signals(payload))
+        signals.extend(_balldontlie_stat_signals(payload))
+        signals.extend(_news_context_signals(payload))
+        signals.extend(_weather_signals(payload))
     signals = _apply_provider_weights(signals)
 
     projection_delta = sum(float(signal.get("projection_delta", 0.0)) for signal in signals) if apply_projection_delta else 0.0
@@ -10065,11 +10123,14 @@ def _line_movement_signals(payload: PropPayload) -> list[dict]:
     )]
 
 
-def _platform_consensus_signals(payload: PropPayload) -> list[dict]:
+def _platform_consensus_signals(payload: PropPayload, *, live_refresh: bool = True) -> list[dict]:
     try:
         matches = [
             prop
-            for prop in _fetch_props("Both", payload.sport.upper())
+            for prop in (
+                _fetch_props("Both", payload.sport.upper())
+                if live_refresh else _cached_props("Both", payload.sport.upper())
+            )
             if canonical_person_key(prop.get("player")) == canonical_person_key(payload.player)
             and prop.get("stat", "").strip().lower() == payload.stat.strip().lower()
             and prop.get("line") is not None
@@ -10565,15 +10626,20 @@ def _prop_data_quality(prop: Prop) -> dict:
     return {"score": round(score, 1), "label": label, "flags": flags[:4]}
 
 
-def _entry_segment_flags(props: list[dict | Prop], platform: str = "") -> list[dict]:
+def _cached_dashboard_stats() -> dict:
     global _SEGMENT_DASHBOARD_CACHE
     now = time.monotonic()
+    dependency_token = get_dashboard
     with _SEGMENT_DASHBOARD_LOCK:
-        if _SEGMENT_DASHBOARD_CACHE[0] > now:
-            dashboard_stats = _SEGMENT_DASHBOARD_CACHE[1]
-        else:
-            dashboard_stats = get_dashboard()
-            _SEGMENT_DASHBOARD_CACHE = (now + 15.0, dashboard_stats)
+        if _SEGMENT_DASHBOARD_CACHE[0] > now and _SEGMENT_DASHBOARD_CACHE[1] == dependency_token:
+            return _SEGMENT_DASHBOARD_CACHE[2]
+        dashboard_stats = get_dashboard()
+        _SEGMENT_DASHBOARD_CACHE = (now + 15.0, dependency_token, dashboard_stats)
+        return dashboard_stats
+
+
+def _entry_segment_flags(props: list[dict | Prop], platform: str = "") -> list[dict]:
+    dashboard_stats = _cached_dashboard_stats()
     flags: list[dict] = []
 
     def prop_value(prop: dict | Prop, name: str, default: str = "") -> str:
@@ -10632,7 +10698,7 @@ def _risk_guardrails(
 ) -> list[dict]:
     prefs = _user_preferences()
     strategy = _bankroll_strategy()
-    dashboard_stats = get_dashboard()
+    dashboard_stats = _cached_dashboard_stats()
     bankroll = float(dashboard_stats.get("bankroll") or get_starting_bankroll() or 0)
     wager = float(payload.wager if payload else 0.0)
     guards: list[dict] = []
@@ -12327,7 +12393,7 @@ configure_entry_router(
         analyze=lambda payload: build_analyze_entry_payload(
             payload,
             lambda props: _reject_combined_player_props(props),
-            lambda value: _entry_from_payload(value),
+            lambda value: _entry_from_payload(value, hydrate_provider=False),
             lambda entry, value: _entry_analysis(entry, value),
         ),
         payout_analysis=lambda payload: build_entry_payout_analysis_payload(
@@ -12343,7 +12409,7 @@ configure_entry_router(
         platform_value_check=lambda payload: validated_call(
             payload.props,
             lambda props: _reject_combined_player_props(props),
-            lambda: _platform_value_check(payload),
+            lambda: _platform_value_check(payload, live_refresh=True),
         ),
         handoff=lambda payload: validated_call(
             payload.props,

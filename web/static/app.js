@@ -3057,7 +3057,18 @@ async function analyzeEntry() {
     return;
   }
   const payload = entryPayload();
-  const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
+  $("entry-status").textContent = "Checking projections, player history, and calibration...";
+  let data;
+  try {
+    data = await api("/api/entries/analyze", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: 20000,
+    });
+  } catch (error) {
+    $("entry-status").textContent = `Analysis could not finish: ${humanizeErrorText(error.message)} Your entry is still in the builder.`;
+    return;
+  }
   state.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
@@ -3432,7 +3443,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
         <button class="secondary" data-explain-provider-suggestion="${index}">Why?</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion">No ${escapeHtml(platform)} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.</div>`;
+  `).join("") || `<div class="suggestion"><strong>${data.mode === "waiting_for_same_day_lines" ? "No same-day card available." : "No card cleared the safeguards."}</strong><p>${escapeHtml(data.message || `No ${platform} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.`)}</p></div>`;
   list.querySelectorAll("[data-load-provider-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadProviderSuggestion)];

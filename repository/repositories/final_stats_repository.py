@@ -4,6 +4,7 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from repository.database import SessionLocal
@@ -159,9 +160,16 @@ class FinalStatsRepository:
                     player_key = canonical_person_key(player)
                     candidate_ids = [
                         row.id
-                        for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
-                        if canonical_person_key(row.player) == player_key
+                        for row in session.query(FinalPlayerStatModel.id).filter(
+                            func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
+                        ).all()
                     ]
+                    if not candidate_ids:
+                        candidate_ids = [
+                            row.id
+                            for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
+                            if canonical_person_key(row.player) == player_key
+                        ]
                     if not candidate_ids:
                         return []
                     query = query.filter(FinalPlayerStatModel.id.in_(candidate_ids))

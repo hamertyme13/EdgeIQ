@@ -246,6 +246,10 @@ def entry_suggestions_payload(
             }
             return payload
     platform_pairs = props_by_platform(entry_platform, raw_props)
+    if not platform_pairs and source == "daily_briefing_snapshot":
+        raw_props = fetch_props(entry_platform, sport_filter)
+        platform_pairs = props_by_platform(entry_platform, raw_props)
+        source = "live_provider_fallback"
     if sport_filter == "NFL" and not platform_pairs:
         future = []
         for prop in raw_props:
@@ -265,19 +269,38 @@ def entry_suggestions_payload(
                 + "EdgeIQ keeps future and season-long offers out of today's entry generator and waits for a confirmed matchup and kickoff."
             ),
         }
-    suggestions = []
-    for platform_model, raw_props in platform_pairs:
-        suggestions.extend(
-            suggest(
-                raw_props,
-                sport,
-                platform_model,
-                limit=5,
-                leg_count=leg_count,
-                apply_feedback=True,
-                diversify=True,
-                avoid_prop_keys=avoid_prop_keys or set(),
-            )
+    if not platform_pairs:
+        next_slate = min(
+            (str(prop.get("game_time") or "").strip() for prop in raw_props if prop.get("game_time")),
+            default="",
+        )
+        return {
+            "suggestions": [],
+            "mode": "waiting_for_same_day_lines",
+            "platform": entry_platform,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "next_available_slate": next_slate,
+            "message": (
+                f"No same-day {entry_platform} card is available for this filter. "
+                + (f"The next posted slate begins {next_slate}. " if next_slate else "")
+                + "EdgeIQ does not mix tomorrow's props into today's entry."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": source,
+            },
+        }
+    suggestions = _generate_entry_suggestions(
+        platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
+    )
+    if not suggestions and source == "daily_briefing_snapshot":
+        raw_props = fetch_props(entry_platform, sport_filter)
+        platform_pairs = props_by_platform(entry_platform, raw_props)
+        source = "live_provider_fallback"
+        suggestions = _generate_entry_suggestions(
+            platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
         )
     serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
     seen_keys: set[str] = set()
@@ -310,6 +333,10 @@ def entry_suggestions_payload(
             "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "source": source,
         },
+        "message": (
+            "Same-day lines were found, but no card cleared the current evidence, correlation, and diversification filters. Try fewer legs or a paper entry."
+            if not serialized else ""
+        ),
     }
     with _ENTRY_GENERATOR_LOCK:
         _ENTRY_GENERATOR_CACHE[cache_key] = (now + _ENTRY_GENERATOR_TTL_SECONDS, deepcopy(payload))
@@ -318,6 +345,30 @@ def entry_suggestions_payload(
             for key in expired or list(_ENTRY_GENERATOR_CACHE)[:16]:
                 _ENTRY_GENERATOR_CACHE.pop(key, None)
     return payload
+
+
+def _generate_entry_suggestions(
+    platform_pairs: list[tuple],
+    sport: str,
+    leg_count: int,
+    suggest: Callable[..., list],
+    avoid_prop_keys: set[str],
+) -> list:
+    suggestions = []
+    for platform_model, props in platform_pairs:
+        suggestions.extend(
+            suggest(
+                props,
+                sport,
+                platform_model,
+                limit=5,
+                leg_count=leg_count,
+                apply_feedback=True,
+                diversify=True,
+                avoid_prop_keys=avoid_prop_keys,
+            )
+        )
+    return suggestions
 
 
 def _briefing_generator_props(briefing: dict, platform: str, sport_filter: str | None) -> list[dict]:

@@ -56,12 +56,46 @@ def test_entry_generator_prefers_fresh_briefing_snapshot() -> None:
         fetch_props=fetch,
         props_by_platform=lambda platform, rows: [(object(), rows)],
         mixed_risk=lambda *args: [],
-        suggest=lambda *args, **kwargs: [],
-        serialize_suggestion=lambda value: value,
+        suggest=lambda *args, **kwargs: [object()],
+        serialize_suggestion=lambda value: {"entry": {"props": []}},
     )
 
     assert calls["fetch"] == 0
     assert result["performance"]["source"] == "daily_briefing_snapshot"
+
+
+def test_entry_generator_retries_live_board_when_briefing_cannot_build_card() -> None:
+    calls = {"fetch": 0, "suggest": 0}
+    briefing_props = [
+        {"platform": "PrizePicks", "player": player, "sport": "WNBA", "stat": "Points", "line": 10.5}
+        for player in ("A", "B", "C")
+    ]
+
+    def fetch(*args):
+        calls["fetch"] += 1
+        return [{**row, "projection": 12.0} for row in briefing_props]
+
+    def suggest(*args, **kwargs):
+        calls["suggest"] += 1
+        return [] if calls["suggest"] == 1 else [object()]
+
+    result = entry_suggestions_payload(
+        "WNBA", "PrizePicks", 3,
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks"},
+        cached_briefing=lambda *args: {
+            "platform": "PrizePicks", "cache": {"stale": False},
+            "top_opportunities": briefing_props,
+        },
+        fetch_props=fetch,
+        props_by_platform=lambda platform, rows: [(object(), rows)],
+        mixed_risk=lambda *args: [],
+        suggest=suggest,
+        serialize_suggestion=lambda value: {"entry": {"props": []}},
+    )
+
+    assert calls == {"fetch": 1, "suggest": 2}
+    assert result["performance"]["source"] == "live_provider_fallback"
 
 
 def test_entry_generator_falls_back_when_briefing_has_too_few_players() -> None:

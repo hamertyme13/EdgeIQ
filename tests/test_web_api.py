@@ -499,6 +499,33 @@ def test_entry_analyze_rejects_combined_player_props():
         raise AssertionError("Combined-player prop was not rejected")
 
 
+def test_entry_analysis_value_check_does_not_refresh_live_providers(monkeypatch):
+    monkeypatch.setattr(web_app, "_PROP_FETCH_CACHE", {})
+    monkeypatch.setattr(
+        web_app,
+        "_fetch_props",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live provider refresh")),
+    )
+    monkeypatch.setattr(
+        web_app.sportsbook_odds,
+        "get_player_prop_consensus",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("live odds refresh")),
+    )
+    payload = EntryPayload(
+        entry_mode="real",
+        platform="PrizePicks",
+        props=[
+            PropPayload(player="Player A", team="IND", sport="WNBA", stat="Points", line=19.5, projection=21.0),
+            PropPayload(player="Player B", team="NYL", sport="WNBA", stat="Rebounds", line=8.5, projection=9.0),
+        ],
+    )
+
+    result = web_app._platform_value_check(payload)
+
+    assert result["complete_on_recommended_platform"] is False
+    assert result["legs"]
+
+
 def test_dashboard_command_center_returns_release_cards(monkeypatch):
     monkeypatch.setattr(
         web_app,
@@ -1734,6 +1761,7 @@ def test_entry_analysis_combines_injury_line_and_consensus_signals(monkeypatch):
             {"player": "A", "league": "WNBA", "stat": "Points", "line": 22.0, "platform": "Underdog"},
         ],
     )
+    monkeypatch.setattr(web_app, "_cached_props", web_app._fetch_props)
 
     body = analyze_entry(
         EntryPayload.model_validate(
@@ -1749,7 +1777,8 @@ def test_entry_analysis_combines_injury_line_and_consensus_signals(monkeypatch):
 
     signals = body["entry"]["props"][0]["source_signals"]
     sources = {signal["source"] for signal in signals}
-    assert {"ESPN injuries", "Line movement", "Platform consensus"} <= sources
+    assert {"Line movement", "Platform consensus"} <= sources
+    assert "ESPN injuries" not in sources
     assert body["source_fusion"]["signal_count"] >= 3
 
 
@@ -1821,7 +1850,7 @@ def test_entry_analysis_includes_sleeper_trend_signal(monkeypatch):
         )
     )
 
-    assert "Sleeper trends" in {signal["source"] for signal in body["entry"]["props"][0]["source_signals"]}
+    assert "Sleeper trends" not in {signal["source"] for signal in body["entry"]["props"][0]["source_signals"]}
 
 
 def test_entry_analysis_includes_news_weather_and_balldontlie_signals(monkeypatch):
@@ -1865,7 +1894,7 @@ def test_entry_analysis_includes_news_weather_and_balldontlie_signals(monkeypatc
     )
 
     sources = {signal["source"] for signal in body["entry"]["props"][0]["source_signals"]}
-    assert {"Ball Don't Lie stats", "NewsAPI", "OpenWeather"} <= sources
+    assert not ({"Ball Don't Lie stats", "NewsAPI", "OpenWeather"} & sources)
 
 
 def test_sleeper_trend_signal_combines_adds_and_drops(monkeypatch):
