@@ -90,8 +90,10 @@ class SettlementAuditRepository:
                 .all()
             )
             latest: dict[int, SettlementAuditModel] = {}
+            history: dict[int, list[SettlementAuditModel]] = {}
             for row in rows:
                 latest.setdefault(row.entry_prop_id, row)
+                history.setdefault(row.entry_prop_id, []).append(row)
             entry_ids = {row.entry_id for row in latest.values()}
             entry_statuses = {
                 row.id: row.status
@@ -102,6 +104,7 @@ class SettlementAuditRepository:
             all_items = []
             for row in latest.values():
                 item = _serialize(row)
+                item["provider_attempts"] = _provider_attempts(history.get(row.entry_prop_id, []))
                 entry_status = str(entry_statuses.get(row.entry_id) or "")
                 item["entry_status"] = entry_status
                 item["scope"] = "current" if entry_status in {"", "Pending"} else "historical"
@@ -255,10 +258,18 @@ def _serialize(row: SettlementAuditModel) -> dict:
         details = {}
     confidence = _match_confidence(row)
     next_retry = None
-    if row.status in {"scheduled", "waiting", "blocked"} and row.attempted_at:
+    retryable = row.status in {"scheduled", "waiting"}
+    if row.status == "scheduled":
+        game_time = _datetime_value(details.get("game_time"))
+        if game_time is not None:
+            delays = {"NBA": 3.25, "WNBA": 3.25, "NFL": 4.0, "MLB": 4.5, "NHL": 3.0}
+            next_retry = game_time + timedelta(hours=delays.get(str(details.get("sport") or "").upper(), 4.0))
+    elif retryable and row.attempted_at:
         attempted = row.attempted_at.replace(tzinfo=UTC) if row.attempted_at.tzinfo is None else row.attempted_at
         delay_minutes = min(360, 15 * (2 ** max(0, int(row.attempt_count or 1) - 1)))
         next_retry = attempted + timedelta(minutes=delay_minutes)
+    current = utc_now()
+    current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
     return {
         "id": row.id,
         "entry_id": row.entry_id,
@@ -278,7 +289,20 @@ def _serialize(row: SettlementAuditModel) -> dict:
         "attempted_at": row.attempted_at.isoformat() if row.attempted_at else "",
         "match_confidence": confidence,
         "next_retry_at": next_retry.isoformat() if next_retry else "",
+        "retry_state": {
+            "active": retryable,
+            "stopped": row.status == "blocked",
+            "due": bool(next_retry and next_retry <= current),
+            "label": (
+                "Waiting for confirmed game time" if row.status == "scheduled" and next_retry is None
+                else "Automatic retry scheduled" if retryable
+                else "Verified" if row.status == "verified"
+                else "Automatic retries stopped"
+            ),
+        },
         "blocking_reason": _blocking_reason(row.reason_code, row.message),
+        "match_checks": _match_checks(row),
+        "resolution_action": _resolution_action(row),
         "details": details,
     }
 
@@ -303,8 +327,108 @@ def _blocking_reason(reason_code: str, message: str) -> str:
         "game_mismatch": "The saved matchup does not match the provider's final game.",
         "stat_unavailable": "The provider final does not contain this stat market.",
         "provider_unavailable": "The final-stat provider is temporarily unavailable.",
+        "game_not_started": "The game has not started; no final result should exist yet.",
+        "official_final_not_available": "The official box score is not final or does not contain a matching player and stat yet.",
+        "official_final_retry_window_expired": "The automatic retry window ended without verified player-stat evidence.",
+        "unsupported_settlement_path": "This market does not have a verified automatic settlement source.",
     }
     return labels.get(str(reason_code or "").lower(), str(message or "Waiting for verified final data."))
+
+
+def _match_checks(row: SettlementAuditModel) -> dict:
+    if row.status == "scheduled":
+        return {
+            "identity": {"status": "pending", "label": "Player check begins after game"},
+            "game": {"status": "pending", "label": "Game check begins after game"},
+            "stat": {"status": "pending", "label": "Final stat not expected yet"},
+        }
+    player_exact = bool(
+        row.matched_player
+        and canonical_person_key(row.requested_player) == canonical_person_key(row.matched_player)
+    )
+    game_exact = bool(
+        row.matched_game
+        and canonical_matchup_key(row.requested_game) == canonical_matchup_key(row.matched_game)
+    )
+    return {
+        "identity": {
+            "status": "matched" if row.matched_identity_id or player_exact else "missing",
+            "label": "Player identity matched" if row.matched_identity_id or player_exact else "Player identity not matched",
+        },
+        "game": {
+            "status": "matched" if game_exact else "partial" if row.matched_game else "missing",
+            "label": "Exact game matched" if game_exact else "Different game candidate found" if row.matched_game else "Game not matched",
+        },
+        "stat": {
+            "status": "matched" if row.actual is not None or row.status == "verified" else "missing",
+            "label": "Final stat verified" if row.actual is not None or row.status == "verified" else "Final stat unavailable",
+        },
+    }
+
+
+def _resolution_action(row: SettlementAuditModel) -> dict:
+    reason = str(row.reason_code or "").lower()
+    if row.status == "verified":
+        return {"code": "none", "label": "No action needed", "description": "This leg has verified final evidence."}
+    if reason == "game_not_started":
+        return {"code": "wait", "label": "Wait for the game", "description": "EdgeIQ will begin checking after the expected completion window."}
+    if reason == "official_final_not_available":
+        return {"code": "retry", "label": "Retry automatically", "description": "No manual action is needed unless the retry window expires."}
+    if reason == "official_final_retry_window_expired":
+        return {"code": "recheck", "label": "Recheck final stats", "description": "Run a fresh provider check, then review the player and matchup if it remains blocked."}
+    if reason == "unsupported_settlement_path":
+        return {"code": "import", "label": "Import a verified result", "description": "Connect a supported results feed or import provider-backed final evidence."}
+    return {"code": "review", "label": "Review leg details", "description": "Confirm the player, matchup, game time, stat, and provider."}
+
+
+def _provider_attempts(rows: list[SettlementAuditModel]) -> list[dict]:
+    attempts: dict[str, dict] = {}
+    planned: list[str] = []
+    for row in rows:
+        try:
+            details = json.loads(row.details or "{}")
+        except (TypeError, ValueError):
+            details = {}
+        for provider in details.get("provider_plan") or []:
+            label = _provider_label(provider)
+            if label and label not in planned:
+                planned.append(label)
+        provider = _provider_label(row.provider)
+        current = attempts.setdefault(provider, {
+            "provider": provider,
+            "attempts": 0,
+            "last_status": "not_tried",
+            "last_attempt_at": "",
+            "message": "No attempt recorded yet.",
+        })
+        provider_calls = 0 if row.status == "scheduled" else int(row.attempt_count or 1)
+        current.update({
+            "attempts": int(current["attempts"]) + provider_calls,
+            "last_status": row.status,
+            "last_attempt_at": row.attempted_at.isoformat() if row.attempted_at else "",
+            "message": row.message,
+        })
+    for provider in planned:
+        attempts.setdefault(provider, {
+            "provider": provider,
+            "attempts": 0,
+            "last_status": "not_tried",
+            "last_attempt_at": "",
+            "message": "Available as a settlement source; no distinct attempt was recorded.",
+        })
+    return list(attempts.values())
+
+
+def _provider_label(value: object) -> str:
+    label = str(value or "Provider pending").strip()
+    aliases = {
+        "espn": "ESPN official box score",
+        "espn_final_stats": "ESPN official box score",
+        "espn_live": "ESPN official box score",
+        "sportsdataio": "SportsDataIO cross-check",
+        "pandascore_verified": "PandaScore",
+    }
+    return aliases.get(label.lower(), label)
 
 
 def _final_evidence_key(player: object, game: object, provider: object, actual: object) -> tuple:
@@ -328,6 +452,17 @@ def _date_value(value: object) -> date | None:
         return date.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _datetime_value(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 
 
 def _game_time_date(value: object) -> date | None:

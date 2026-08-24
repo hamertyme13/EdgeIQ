@@ -41,6 +41,8 @@ def test_settlement_audit_deduplicates_retries(monkeypatch):
     assert queue["items"][0]["match_confidence"] == 0
     assert queue["items"][0]["next_retry_at"]
     assert queue["items"][0]["blocking_reason"] == "Waiting for a verified final box score."
+    assert queue["items"][0]["retry_state"]["active"] is True
+    assert queue["items"][0]["resolution_action"]["code"] == "review"
 
 
 def test_settlement_audit_separates_historical_blocks_from_current_queue(monkeypatch):
@@ -78,6 +80,40 @@ def test_settlement_audit_separates_historical_blocks_from_current_queue(monkeyp
     assert queue["historical_review"] == 1
     assert queue["items"][0]["scope"] == "historical"
     assert queue["items"][0]["entry_status"] == "Settled"
+    assert queue["items"][0]["next_retry_at"] == ""
+    assert queue["items"][0]["retry_state"]["stopped"] is True
+
+
+def test_settlement_audit_explains_provider_plan_and_match_checks(monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(audit_module, "SessionLocal", sessionmaker(bind=engine))
+    monkeypatch.setattr(audit_module, "initialize_database", lambda: None)
+    SettlementAuditRepository.record({
+        "entry_id": 8,
+        "entry_prop_id": 21,
+        "status": "waiting",
+        "provider": "ESPN official box score",
+        "matched_identity_id": 91,
+        "requested_player": "Azura Stevens",
+        "matched_player": "Azurá Stevens",
+        "requested_game": "LVA @ LAS",
+        "matched_game": "LVA @ LAS",
+        "reason_code": "official_final_not_available",
+        "message": "Waiting for a verified final box score.",
+        "details": {"provider_plan": ["ESPN official box score", "SportsDataIO cross-check"]},
+    })
+
+    item = SettlementAuditRepository.queue()["items"][0]
+
+    assert item["match_checks"]["identity"]["status"] == "matched"
+    assert item["match_checks"]["game"]["status"] == "matched"
+    assert item["match_checks"]["stat"]["status"] == "missing"
+    assert [row["provider"] for row in item["provider_attempts"]] == [
+        "ESPN official box score", "SportsDataIO cross-check",
+    ]
+    assert item["provider_attempts"][1]["attempts"] == 0
+    assert item["resolution_action"]["code"] == "retry"
 
 
 def test_latest_settlement_evidence_includes_matched_final_date(monkeypatch):

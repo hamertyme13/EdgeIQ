@@ -476,7 +476,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260824-v248-model-evidence"
+STATIC_ASSET_VERSION = "20260824-v249-settlement-diagnostics"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -1156,6 +1156,7 @@ def _record_settlement_audit(
     final_status: str,
 ) -> None:
     eligible = _supports_automatic_final_stat(prop)
+    provider_plan = _settlement_provider_plan(prop)
     if actual is not None or final_status == "dnp":
         status = "verified"
         reason_code = "final_stat_matched"
@@ -1184,7 +1185,7 @@ def _record_settlement_audit(
             "entry_id": entry.get("id"),
             "entry_prop_id": prop.get("entry_prop_id"),
             "status": status,
-            "provider": source if source != "unmatched" else "ESPN",
+            "provider": source if source != "unmatched" else (provider_plan[0] if provider_plan else "Provider pending"),
             "matched_identity_id": (final_stat or {}).get("player_identity_id"),
             "requested_player": prop.get("player"),
             "matched_player": (final_stat or {}).get("player", ""),
@@ -1199,8 +1200,23 @@ def _record_settlement_audit(
                 "line": prop.get("line"),
                 "direction": prop.get("direction", "Over"),
                 "final_status": final_status,
+                "provider_plan": provider_plan,
+                "sport": prop.get("sport", ""),
+                "game_time": prop.get("game_time", ""),
             },
         })
+
+
+def _settlement_provider_plan(prop: dict) -> list[str]:
+    sport = str(prop.get("sport") or "").upper()
+    if sport in ESPORT_SPORTS:
+        return ["PandaScore"] if sport in pandascore.supported_sports() else []
+    providers = ["ESPN official box score"]
+    if sport == "NBA":
+        providers.append("NBA Stats Summer League")
+    if sport in {"NBA", "NFL", "NHL"} and os.getenv("SPORTSDATAIO_API_KEY", "").strip():
+        providers.append("SportsDataIO cross-check")
+    return providers
 
 
 def _game_has_not_started(prop: dict, now: datetime | None = None) -> bool:

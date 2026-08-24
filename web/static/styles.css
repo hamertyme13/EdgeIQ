@@ -5577,3 +5577,55 @@ td,
   .evidence-comparison-grid { grid-template-columns: 1fr; }
   .evidence-segments { grid-template-columns: 1fr; }
 }
+.settlement-diagnostic {
+  display: grid;
+  gap: 10px;
+}
+
+.settlement-checks,
+.provider-attempt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settlement-checks span {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.settlement-checks .check-matched { border-color: rgba(57, 255, 136, .45); color: var(--primary); }
+.settlement-checks .check-partial { border-color: rgba(248, 193, 74, .5); color: var(--warn); }
+.settlement-checks .check-pending { border-color: rgba(25, 230, 255, .35); color: var(--secondary); }
+
+.provider-attempt-list span {
+  display: grid;
+  gap: 2px;
+  min-width: min(190px, 100%);
+  padding: 8px 10px;
+  border-left: 2px solid var(--secondary);
+  background: var(--surface);
+}
+
+.provider-attempt-list small,
+.settlement-resolution small { color: var(--muted); overflow-wrap: anywhere; }
+
+.settlement-resolution {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.settlement-resolution > div { display: grid; gap: 3px; min-width: 0; }
+
+@media (max-width: 620px) {
+  .settlement-resolution { align-items: stretch; flex-direction: column; }
+  .settlement-resolution button { width: 100%; }
+}

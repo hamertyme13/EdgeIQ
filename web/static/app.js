@@ -4082,17 +4082,29 @@ async function loadSettlementAudit() {
       <div class="stat-card"><div class="stat-value">${data.historical_review || 0}</div><div class="stat-label">Historical Review</div></div>
     </div>
     ${(data.items || []).slice(0, 30).map((item) => `
-      <div class="suggestion compact-suggestion insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
+      <div class="suggestion compact-suggestion settlement-diagnostic insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
         <div class="suggestion-top">
           <strong>Entry #${item.entry_id} · ${escapeHtml(item.requested_player || "Unknown player")}</strong>
           <span class="pill">${escapeHtml(item.status || "waiting")}</span>
         </div>
         ${item.scope === "historical" ? `<p class="subtle">Historical record · entry ${escapeHtml(item.entry_status || "archived")}</p>` : ""}
         <p>${escapeHtml(item.details?.stat || "Stat")} ${item.details?.line ?? ""} · ${escapeHtml(item.result || "Pending")} ${item.actual == null ? "" : `· Final ${item.actual}`}</p>
-        <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · ${item.attempt_count || 1} attempt${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
-        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : "No retry scheduled"}</p>
+        <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · checked ${item.attempt_count || 1} time${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
+        <div class="settlement-checks">
+          ${Object.values(item.match_checks || {}).map((check) => `<span class="check-${escapeHtml(check.status || "missing")}">${escapeHtml(check.label || "Evidence pending")}</span>`).join("")}
+        </div>
+        <div class="provider-attempt-list">
+          ${(item.provider_attempts || []).map((attempt) => `
+            <span><strong>${escapeHtml(attempt.provider || "Provider")}</strong><small>${Number(attempt.attempts || 0)} attempt${Number(attempt.attempts || 0) === 1 ? "" : "s"} · ${escapeHtml(String(attempt.last_status || "not tried").replaceAll("_", " "))}</small></span>
+          `).join("") || `<span><strong>Provider pending</strong><small>No attempt recorded</small></span>`}
+        </div>
+        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.retry_state?.due ? "Retry due now" : item.retry_state?.active && item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : escapeHtml(item.retry_state?.label || "No retry scheduled")}</p>
         ${item.status !== "verified" ? `<p class="human-error">${escapeHtml(item.blocking_reason || "Waiting for verified final data.")}</p>` : ""}
         ${item.matched_player ? `<p class="subtle">Matched ${escapeHtml(item.matched_player)} · ${escapeHtml(item.matched_game || "game unavailable")}</p>` : ""}
+        <div class="settlement-resolution">
+          <div><strong>${escapeHtml(item.resolution_action?.label || "Review leg")}</strong><small>${escapeHtml(item.resolution_action?.description || "Confirm the saved player, game, and stat.")}</small></div>
+          ${item.resolution_action?.code === "recheck" ? `<button class="secondary compact-button recheck-final-stats" type="button">Recheck</button>` : ""}
+        </div>
       </div>
     `).join("") || `<div class="suggestion">No settlement attempts have been recorded yet. Recheck final stats to populate the audit.</div>`}
   `;
