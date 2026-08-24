@@ -384,6 +384,8 @@ def _opportunity_rate_projection(rows: list[dict], policy: dict) -> dict:
     pairs: list[tuple[float, float]] = []
     for row in rows[:20]:
         opportunity = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        if opportunity is None:
+            continue
         try:
             actual = float(row["actual"])
             volume = float(opportunity)

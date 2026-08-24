@@ -476,7 +476,7 @@ from web.schemas import (
 load_dotenv()
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260824-v249-settlement-diagnostics"
+STATIC_ASSET_VERSION = "20260824-v250-today-provider-refresh"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -11390,20 +11390,27 @@ def _refresh_schedule_payload() -> dict:
 
 
 def _run_daily_refresh_now() -> dict:
-    return build_run_daily_refresh_payload(
-        run_sync=lambda: run_sync(),
-        now=lambda: utc_now(),
-        iso_time=lambda value: iso_utc(value),
-        save_setting=lambda key, value: SettingsRepository.set(key, value),
-        user_preferences=lambda: _user_preferences(),
-        run_scan=lambda platform, sport_filter, sync_result: _run_daily_briefing_scan(
-            platform,
-            sport_filter,
-            trigger="daily_refresh",
-            sync_result=sync_result,
-        ),
-        refresh_schedule=lambda: _refresh_schedule_payload(),
-    )
+    with named_operation_lock("daily-provider-refresh") as acquired:
+        if not acquired:
+            return {
+                "accepted": True,
+                "skipped": True,
+                "message": "A provider refresh is already running.",
+            }
+        return build_run_daily_refresh_payload(
+            run_sync=lambda: run_sync(),
+            now=lambda: utc_now(),
+            iso_time=lambda value: iso_utc(value),
+            save_setting=lambda key, value: SettingsRepository.set(key, value),
+            user_preferences=lambda: _user_preferences(),
+            run_scan=lambda platform, sport_filter, sync_result: _run_daily_briefing_scan(
+                platform,
+                sport_filter,
+                trigger="daily_refresh",
+                sync_result=sync_result,
+            ),
+            refresh_schedule=lambda: _refresh_schedule_payload(),
+        )
 
 
 def _run_due_daily_operations() -> dict:

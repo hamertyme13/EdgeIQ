@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from web.schemas import (
     AlertDeliveryPayload,
@@ -105,6 +105,15 @@ def update_refresh_schedule(payload: RefreshSchedulePayload) -> dict:
 @router.post("/api/automation/run-daily-refresh")
 def run_daily_refresh() -> dict:
     return _deps().run_daily_refresh()
+
+
+@router.post("/api/automation/start-daily-refresh", status_code=202)
+def start_daily_refresh(background_tasks: BackgroundTasks) -> dict:
+    background_tasks.add_task(_deps().run_daily_refresh)
+    return {
+        "accepted": True,
+        "message": "Provider refresh started. You can keep using EdgeIQ while it finishes.",
+    }
 
 
 @router.get("/api/settings/alert-delivery")

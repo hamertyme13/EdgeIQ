@@ -368,7 +368,9 @@ function syncDefaultInputs() {
   const defaults = JSON.parse(localStorage.getItem("edgeiq.onboarding") || "{}");
   if (defaults.platform && $("props-platform")) $("props-platform").value = defaults.platform;
   if (defaults.platform && $("entry-platform")) $("entry-platform").value = defaults.platform;
+  if (defaults.platform && $("optimizer-platform")) $("optimizer-platform").value = defaults.platform;
   if (defaults.sport && $("props-sport")) $("props-sport").value = defaults.sport;
+  if (defaults.sport && $("optimizer-sport")) $("optimizer-sport").value = defaults.sport;
   if (defaults.defaultWager && $("entry-wager")) $("entry-wager").value = defaults.defaultWager;
   if ((defaults.risk === "conservative" || defaults.risk === "paper_first") && $("entry-multiplier")) $("entry-multiplier").value = "2";
   if (defaults.risk === "aggressive" && $("entry-multiplier")) $("entry-multiplier").value = "5";
@@ -1503,6 +1505,7 @@ async function loadRuntimeStatus() {
 async function loadDataHealth() {
   const data = await api("/api/data-health");
   const providers = sortProviderHealth(data.providers);
+  renderTodayProviderStatus(providers, data.summary || {});
   const usage = data.api_usage || {};
   const totals = usage.totals || {};
   const endpointPerformance = data.endpoint_performance || {};
@@ -1568,6 +1571,25 @@ async function loadDataHealth() {
       </div>
     </div>
   `;
+  return data;
+}
+
+function renderTodayProviderStatus(providers = [], summary = {}) {
+  const status = $("today-provider-status");
+  if (!status) return;
+  const relevant = providers.filter((provider) => provider.configured !== false);
+  const stale = relevant.filter((provider) => ["stale", "degraded", "error", "unavailable"].includes(String(provider.status || "").toLowerCase()));
+  status.classList.toggle("needs-refresh", stale.length > 0);
+  status.classList.toggle("is-fresh", stale.length === 0 && relevant.length > 0);
+  if (stale.length) {
+    status.textContent = `${stale.length} provider${stale.length === 1 ? "" : "s"} need${stale.length === 1 ? "s" : ""} a refresh`;
+  } else if (relevant.length) {
+    status.textContent = "Providers are fresh";
+  } else if (summary.last_daily_refresh) {
+    status.textContent = `Last refreshed ${formatDateTime(summary.last_daily_refresh)}`;
+  } else {
+    status.textContent = "Provider status unavailable";
+  }
 }
 
 async function loadNotifications() {
@@ -1640,9 +1662,30 @@ async function loadRefreshSchedule() {
 }
 
 async function runDailyRefresh() {
-  $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
+  if ($("refresh-schedule-list")) $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
   await api("/api/automation/run-daily-refresh", { method: "POST" });
-  await Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadEntryProgress({ autoCheck: true, refreshProviders: true })]);
+  return Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus(), loadEntryProgress({ autoCheck: true, refreshProviders: true })]);
+}
+
+async function refreshTodayProviders() {
+  const status = $("today-provider-status");
+  if (status) {
+    status.textContent = "Refreshing provider lines and final results...";
+    status.classList.remove("is-fresh", "needs-refresh");
+  }
+  try {
+    const result = await api("/api/automation/start-daily-refresh", { method: "POST" });
+    if (status) status.textContent = result.message || "Provider refresh started. You can keep using EdgeIQ.";
+    window.setTimeout(() => {
+      Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus()]);
+    }, 15000);
+  } catch (error) {
+    if (status) {
+      status.textContent = "Provider refresh did not finish. Try again.";
+      status.classList.add("needs-refresh");
+    }
+    throw error;
+  }
 }
 
 async function loadAdvantageCenter() {
@@ -3568,7 +3611,9 @@ async function runOptimizer(portfolioBatch = false) {
     apply_feedback: $("optimizer-apply-feedback").checked ? "true" : "false",
     limit: portfolioBatch ? "5" : "5",
   });
-  const data = await api(`/api/entries/optimizer?${params.toString()}`);
+  const data = await api(`/api/entries/optimizer?${params.toString()}`, {
+    timeoutMs: sport === "All Sports" ? 60000 : 30000,
+  });
   const suggestionsHtml = data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
@@ -5408,6 +5453,7 @@ function bindEvents() {
     $("install-hint").hidden = true;
   });
   $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan));
+  $("refresh-today-providers")?.addEventListener("click", () => withButtonBusy("refresh-today-providers", "Refreshing...", refreshTodayProviders));
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));

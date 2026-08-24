@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260824-v249-settlement-diagnostics";
+const CACHE_NAME = "edgeiq-shell-20260824-v250-today-provider-refresh";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
