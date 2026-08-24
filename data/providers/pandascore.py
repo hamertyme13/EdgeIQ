@@ -37,6 +37,12 @@ _STAT_ALIASES = {
 
 
 def configured() -> bool:
+    return bool(os.getenv("PANDASCORE_API_KEY", "").strip()) and _env_enabled(
+        "PANDASCORE_HISTORICAL_STATS_ENABLED"
+    )
+
+
+def key_configured() -> bool:
     return bool(os.getenv("PANDASCORE_API_KEY", "").strip())
 
 
@@ -346,3 +352,7 @@ def _result(**values: Any) -> dict[str, Any]:
         "errors": [],
         **values,
     }
+
+
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}

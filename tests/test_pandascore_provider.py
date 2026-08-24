@@ -6,11 +6,13 @@ from data.providers import pandascore
 
 def test_market_support_requires_key_and_documented_stat(monkeypatch):
     monkeypatch.delenv("PANDASCORE_API_KEY", raising=False)
+    monkeypatch.delenv("PANDASCORE_HISTORICAL_STATS_ENABLED", raising=False)
     support = pandascore.market_support("CS2", "Maps 1-2 Kills")
     assert support["eligible"] is False
     assert "not configured" in support["reasons"][-1]
 
     monkeypatch.setenv("PANDASCORE_API_KEY", "test-token")
+    monkeypatch.setenv("PANDASCORE_HISTORICAL_STATS_ENABLED", "true")
     assert pandascore.market_support("CS2", "Maps 1-2 Kills")["eligible"] is True
     assert pandascore.market_support("CS2", "Fantasy Score")["eligible"] is False
     assert pandascore.market_support("COD", "Kills")["eligible"] is False
@@ -32,6 +34,7 @@ def test_map_scoped_market_uses_only_requested_maps():
 
 def test_refresh_imports_exact_finished_match_player_stat(monkeypatch):
     monkeypatch.setenv("PANDASCORE_API_KEY", "test-token")
+    monkeypatch.setenv("PANDASCORE_HISTORICAL_STATS_ENABLED", "true")
     match = {
         "id": 91,
         "status": "finished",
@@ -83,6 +86,7 @@ def test_refresh_imports_exact_finished_match_player_stat(monkeypatch):
 
 def test_stale_pandascore_payload_is_never_used_for_settlement(monkeypatch):
     monkeypatch.setenv("PANDASCORE_API_KEY", "test-token")
+    monkeypatch.setenv("PANDASCORE_HISTORICAL_STATS_ENABLED", "true")
     monkeypatch.setattr(
         pandascore,
         "get_json",

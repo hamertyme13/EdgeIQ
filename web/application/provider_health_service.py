@@ -5,7 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from data.providers import sleeper
+from data.providers import pandascore, sleeper
 from data.providers.cache import cache_metrics
 from repository.repositories.settings_repository import SettingsRepository
 from utils.time import utc_now
@@ -79,13 +79,7 @@ def build_data_health_payload(
             key_env="",
             settlement_status_key=settlement_status_key,
         ),
-        provider_health_row(
-            "PandaScore",
-            "verified CS2, League of Legends, Dota 2, and Valorant final player stats",
-            configured=bool(os.getenv("PANDASCORE_API_KEY")),
-            key_env="PANDASCORE_API_KEY",
-            settlement_status_key=settlement_status_key,
-        ),
+        pandascore_health_row(settlement_status_key),
     ]
     providers = [enrich_provider_health(provider) for provider in providers]
     api_usage = dict(cache_metrics())
@@ -285,6 +279,27 @@ def age_minutes(value: object) -> int | None:
 def provider_status_key(name: object) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", str(name or "").strip().lower()).strip("_") or "unknown"
     return f"provider_fetch_status:{slug}"
+
+
+def pandascore_health_row(settlement_status_key: str) -> dict:
+    row = provider_health_row(
+        "PandaScore",
+        "verified CS2, League of Legends, Dota 2, and Valorant final player stats",
+        configured=pandascore.configured(),
+        key_env="PANDASCORE_API_KEY",
+        settlement_status_key=settlement_status_key,
+    )
+    if pandascore.key_configured() and not pandascore.configured():
+        row.update({
+            "status": "degraded",
+            "configured": False,
+            "has_key": True,
+            "message": (
+                "The PandaScore key is valid, but Historical player-stat access is not confirmed. "
+                "Upgrade the plan, then set PANDASCORE_HISTORICAL_STATS_ENABLED=true."
+            ),
+        })
+    return row
 
 
 def sleeper_health_row() -> dict:

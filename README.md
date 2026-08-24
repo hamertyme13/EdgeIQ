@@ -65,6 +65,7 @@ NEWSAPI_KEY=your_newsapi_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 SPORTSDATAIO_API_KEY=your_sportsdataio_api_key
 PANDASCORE_API_KEY=your_pandascore_api_key
+PANDASCORE_HISTORICAL_STATS_ENABLED=true  # only after the player-stat endpoint succeeds
 # Optional alert delivery. Email uses SMTP; SMS uses Twilio.
 EDGEIQ_SMTP_HOST=smtp.example.com
 EDGEIQ_SMTP_PORT=587
