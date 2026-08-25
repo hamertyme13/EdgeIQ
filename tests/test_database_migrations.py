@@ -7,17 +7,24 @@ from repository.models.recommendation_snapshot_model import RecommendationSnapsh
 from repository.models.shadow_prediction_model import ShadowPredictionModel
 
 
-def test_lightweight_migrations_upgrade_legacy_entries_table(tmp_path, monkeypatch) -> None:
+def test_lightweight_migrations_is_noop(tmp_path, monkeypatch) -> None:
+    """_run_lightweight_migrations is now a documented no-op.
+
+    Schema migrations are exclusively managed by Alembic.  This test confirms
+    the function exists, can be called without error, and does NOT mutate a
+    legacy table (i.e. it truly is a no-op).
+    """
     engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE entries (id INTEGER PRIMARY KEY, platform TEXT)"))
 
     monkeypatch.setattr(database, "engine", engine)
     monkeypatch.setattr(database, "DATABASE_URL", f"sqlite:///{tmp_path / 'legacy.db'}")
-    database._run_lightweight_migrations()
+    database._run_lightweight_migrations()  # must not raise
 
+    # The table must remain unchanged — no columns should have been added.
     columns = {column["name"] for column in inspect(engine).get_columns("entries")}
-    assert {"status", "result", "audit_snapshot", "entry_mode", "expected_value"} <= columns
+    assert columns == {"id", "platform"}
 
 
 def test_prediction_ledger_schema_has_immutable_prediction_and_outcome_fields() -> None:

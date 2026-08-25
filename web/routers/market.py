@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from services import odds as sportsbook_odds
 from web.schemas import BoostAnalysisPayload, HedgeCalculatorPayload, MiddleCalculatorPayload
@@ -23,18 +24,23 @@ class MarketDependencies:
     clv_report: Callable[[], dict]
 
 
-_dependencies: MarketDependencies | None = None
+_deps_store: list[MarketDependencies] = []
 
 
 def configure_market_router(dependencies: MarketDependencies) -> None:
-    global _dependencies
-    _dependencies = dependencies
+    if _deps_store:
+        _deps_store[0] = dependencies
+    else:
+        _deps_store.append(dependencies)
 
 
-def _deps() -> MarketDependencies:
-    if _dependencies is None:
+def get_deps() -> MarketDependencies:
+    if not _deps_store:
         raise HTTPException(status_code=503, detail="Market analysis is still starting. Please try again.")
-    return _dependencies
+    return _deps_store[0]
+
+
+DepsMark = Annotated[MarketDependencies, Depends(get_deps)]
 
 
 @router.get("/line-shop")
@@ -45,9 +51,11 @@ def line_shop(
     platform: str = "Both",
     over_odds: int | None = None,
     under_odds: int | None = None,
+    deps: DepsMark = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
-    return _deps().line_shop(player, stat, sport_filter, platform, over_odds, under_odds)
+    return _deps.line_shop(player, stat, sport_filter, platform, over_odds, under_odds)
 
 
 @router.get("/sharp-consensus")
@@ -58,9 +66,11 @@ def sharp_consensus(
     platform: str = "Both",
     over_odds: int | None = None,
     under_odds: int | None = None,
+    deps: DepsMark = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
-    return _deps().sharp_consensus(player, stat, sport_filter, platform, over_odds, under_odds)
+    return _deps.sharp_consensus(player, stat, sport_filter, platform, over_odds, under_odds)
 
 
 @router.get("/player-odds")
@@ -85,18 +95,21 @@ def player_market_odds(
 
 
 @router.post("/hedge-calculator")
-def hedge_calculator(payload: HedgeCalculatorPayload) -> dict:
-    return _deps().hedge_calculator(payload)
+def hedge_calculator(payload: HedgeCalculatorPayload, deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    return _deps.hedge_calculator(payload)
 
 
 @router.post("/middle-calculator")
-def middle_calculator(payload: MiddleCalculatorPayload) -> dict:
-    return _deps().middle_calculator(payload)
+def middle_calculator(payload: MiddleCalculatorPayload, deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    return _deps.middle_calculator(payload)
 
 
 @router.post("/boost-analysis")
-def boost_analysis(payload: BoostAnalysisPayload) -> dict:
-    return _deps().boost_analysis(payload)
+def boost_analysis(payload: BoostAnalysisPayload, deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    return _deps.boost_analysis(payload)
 
 
 @router.get("/ev-scanner")
@@ -106,9 +119,11 @@ def ev_scanner(
     min_ev: float = 0.0,
     limit: int = 25,
     odds: int = -110,
+    deps: DepsMark = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
-    rows = _deps().ev_scanner(platform, sport_filter, min_ev, limit, odds)
+    rows = _deps.ev_scanner(platform, sport_filter, min_ev, limit, odds)
     return {
         "props": rows,
         "platform": platform,
@@ -129,9 +144,11 @@ def market_timing_alerts(
     min_ev: float = -25.0,
     alert_type: str = "All",
     hide_outliers: bool = False,
+    deps: DepsMark = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
-    rows = _deps().timing_alerts(
+    rows = _deps.timing_alerts(
         platform,
         sport_filter,
         limit,
@@ -150,5 +167,6 @@ def market_timing_alerts(
 
 
 @router.get("/clv")
-def clv_report() -> dict:
-    return _deps().clv_report()
+def clv_report(deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    return _deps.clv_report()

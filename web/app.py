@@ -5,6 +5,7 @@ import base64
 import csv
 import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -15,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from io import StringIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -100,13 +103,29 @@ from services.operation_lock import named_operation_lock
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.market_validation import is_partial_game_market
 from utils.prop_plausibility import prop_line_plausibility
+from utils.sports import (
+    CONTEXT_PLATFORMS,
+    ENTRY_PLATFORMS,
+    ESPORT_SPORTS,
+    GENERATOR_PLATFORMS,
+    PLATFORM_FILTERS,
+    PROP_PLATFORMS,
+    SPORT_ALIASES,
+    SUPPORTED_SPORTS,
+)
 from utils.stat_normalization import canonical_stat_label, stat_type_from_text
 from utils.stat_normalization import stat_key as canonical_stat_key
 from utils.time import iso_utc, utc_now
+from utils.ttl_cache import TTLCache
 from web.application.advantage_service import advantage_center_payload as build_advantage_center_payload
 from web.application.advantage_service import advantage_game_contexts as build_advantage_game_contexts
+from web.application.alert_delivery_service import alert_channels as build_alert_channels
+from web.application.alert_delivery_service import alert_delivery_settings as build_alert_delivery_settings
 from web.application.alert_delivery_service import deliver_alert as deliver_configured_alert
 from web.application.alert_delivery_service import delivery_hooks as configured_delivery_hooks
+from web.application.alert_delivery_service import (
+    update_alert_delivery_settings as build_update_alert_delivery_settings,
+)
 from web.application.bankroll_service import (
     bankroll_transactions_payload as build_bankroll_transactions_payload,
 )
@@ -171,8 +190,10 @@ from web.application.intelligence_service import parlay_chat_payload as build_pa
 from web.application.intelligence_service import projection_assist_payload as build_projection_assist_payload
 from web.application.intelligence_service import trending_games_response as build_trending_games_response
 from web.application.operations_service import delete_watchlist_payload as build_delete_watchlist_payload
+from web.application.operations_service import deploy_readiness_payload as build_deploy_readiness_payload
 from web.application.operations_service import run_daily_refresh_payload as build_run_daily_refresh_payload
 from web.application.operations_service import save_watchlist_payload as build_save_watchlist_payload
+from web.application.operations_service import sportsbook_integrations_payload as build_sportsbook_integrations_payload
 from web.application.operations_service import sync_payload as build_sync_payload
 from web.application.operations_service import update_dnp_payload as build_update_dnp_payload
 from web.application.operations_service import update_preferences_payload as build_update_preferences_payload
@@ -475,6 +496,8 @@ from web.schemas import (
 
 load_dotenv()
 
+_log = logging.getLogger(__name__)
+
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_ASSET_VERSION = "20260824-v250-today-provider-refresh"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
@@ -503,101 +526,23 @@ _COMMAND_CENTER_CACHE: dict[tuple, tuple[float, dict]] = {}
 _COMMAND_CENTER_LOCK = threading.RLock()
 _OPPORTUNITY_FEED_CACHE: dict[tuple, tuple[float, dict]] = {}
 _OPPORTUNITY_FEED_LOCK = threading.RLock()
-_BACKTEST_CACHE: tuple[float, tuple[object, object], dict] = (0.0, (None, None), {})
+_BACKTEST_CACHE: TTLCache[tuple[tuple[object, object], dict]] = TTLCache()
 _BACKTEST_LOCK = threading.RLock()
 _TRENDING_PROPS_CACHE: dict[tuple, tuple[float, dict]] = {}
 _TRENDING_PROPS_LOCK = threading.RLock()
-_PREDICTION_EVIDENCE_CACHE: tuple[float, list[dict]] = (0.0, [])
+_PREDICTION_EVIDENCE_CACHE: TTLCache[list[dict]] = TTLCache()
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
-_MODEL_HEALTH_CACHE: tuple[float, dict] = (0.0, {})
+_MODEL_HEALTH_CACHE: TTLCache[dict] = TTLCache()
 _MODEL_HEALTH_LOCK = threading.RLock()
-_SEGMENT_DASHBOARD_CACHE: tuple[float, object | None, dict] = (0.0, None, {})
+_SEGMENT_DASHBOARD_CACHE: TTLCache[tuple[object | None, dict]] = TTLCache()
 _SEGMENT_DASHBOARD_LOCK = threading.RLock()
-_TRUST_CLV_CACHE: tuple[float, dict] = (0.0, {})
+_TRUST_CLV_CACHE: TTLCache[dict] = TTLCache()
 _TRUST_CLV_LOCK = threading.RLock()
-_LOSS_PROTECTION_CACHE: tuple[float, tuple[object, ...], dict] = (0.0, (), {})
+_LOSS_PROTECTION_CACHE: TTLCache[tuple[tuple[object, ...], dict]] = TTLCache()
 _LOSS_PROTECTION_LOCK = threading.RLock()
 _ENDPOINT_TIMINGS: dict[str, list[dict]] = {}
 _ENDPOINT_TIMING_LOCK = threading.RLock()
 ENDPOINT_SLOW_THRESHOLD_MS = 1000.0
-SUPPORTED_SPORTS = (
-    "WNBA",
-    "NBA",
-    "NFL",
-    "MLB",
-    "NHL",
-    "NCAAF",
-    "NCAAM",
-    "NCAAW",
-    "MLS",
-    "EPL",
-    "UCL",
-    "TENNIS",
-    "PGA",
-    "MMA",
-    "NASCAR",
-    "CS2",
-    "LOL",
-    "VALORANT",
-    "DOTA2",
-    "COD",
-    "APEX",
-)
-ESPORT_SPORTS = frozenset({"CS2", "LOL", "VALORANT", "DOTA2", "COD", "APEX"})
-ENTRY_PLATFORMS = ("PrizePicks", "Underdog", "DraftKings Pick6", "Sleeper")
-GENERATOR_PLATFORMS = ("PrizePicks", "Underdog", "Sleeper")
-CONTEXT_PLATFORMS = ("Ball Don't Lie",)
-PROP_PLATFORMS = (*ENTRY_PLATFORMS, *CONTEXT_PLATFORMS)
-PLATFORM_FILTERS = (*PROP_PLATFORMS, "Both")
-SPORT_ALIASES = {
-    "ALL SPORTS": None,
-    "WNBA": "WNBA",
-    "NBA": "NBA",
-    "NFL": "NFL",
-    "MLB": "MLB",
-    "NHL": "NHL",
-    "HOCKEY": "NHL",
-    "COLLEGE FOOTBALL": "NCAAF",
-    "NCAAF": "NCAAF",
-    "CFB": "NCAAF",
-    "COLLEGE BASKETBALL": "NCAAM",
-    "NCAAM": "NCAAM",
-    "CBB": "NCAAM",
-    "NCAAW": "NCAAW",
-    "WOMENS COLLEGE BASKETBALL": "NCAAW",
-    "WOMEN'S COLLEGE BASKETBALL": "NCAAW",
-    "MLS": "MLS",
-    "EPL": "EPL",
-    "PREMIER LEAGUE": "EPL",
-    "UCL": "UCL",
-    "CHAMPIONS LEAGUE": "UCL",
-    "SOCCER": "MLS",
-    "TENNIS": "TENNIS",
-    "ATP": "TENNIS",
-    "WTA": "TENNIS",
-    "PGA": "PGA",
-    "GOLF": "PGA",
-    "MMA": "MMA",
-    "UFC": "MMA",
-    "NASCAR": "NASCAR",
-    "CS": "CS2",
-    "CS2": "CS2",
-    "COUNTER STRIKE": "CS2",
-    "COUNTER-STRIKE": "CS2",
-    "LOL": "LOL",
-    "LEAGUE OF LEGENDS": "LOL",
-    "VAL": "VALORANT",
-    "VALORANT": "VALORANT",
-    "DOTA": "DOTA2",
-    "DOTA2": "DOTA2",
-    "DOTA 2": "DOTA2",
-    "COD": "COD",
-    "CALL OF DUTY": "COD",
-    "APEX": "APEX",
-    "APEX LEGENDS": "APEX",
-}
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
@@ -636,6 +581,7 @@ async def _settlement_refresh_loop() -> None:
                 "message": "Pending entries checked against official final stats.",
             }
         except Exception:
+            _log.exception("Settlement refresh loop failed")
             status = {
                 "ok": False,
                 "ran_at": iso_utc(started_at),
@@ -645,8 +591,10 @@ async def _settlement_refresh_loop() -> None:
                 "imported": 0,
                 "message": "The automatic final-stat check could not finish. EdgeIQ will try again.",
             }
-        with suppress(Exception):
+        try:
             SettingsRepository.set(SETTLEMENT_REFRESH_STATUS_KEY, json.dumps(status))
+        except Exception:
+            _log.warning("Failed to persist settlement-refresh status", exc_info=True)
         await asyncio.sleep(SETTLEMENT_REFRESH_SECONDS)
 
 
@@ -657,6 +605,7 @@ async def _daily_operations_scheduler_loop() -> None:
         try:
             await asyncio.to_thread(_run_due_daily_operations)
         except Exception:
+            _log.exception("Daily operations scheduler loop failed")
             SettingsRepository.set("daily_scheduler_status", json.dumps({
                 "ok": False,
                 "ran_at": iso_utc(utc_now()),
@@ -665,10 +614,15 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-app = FastAPI(title="EdgeIQ Web", version="2.4.1", lifespan=lifespan)
+try:
+    _APP_VERSION = _pkg_version("edgeiq")
+except PackageNotFoundError:
+    _APP_VERSION = "0.0.0+dev"
+app = FastAPI(title="EdgeIQ Web", version=_APP_VERSION, lifespan=lifespan)
+_DEFAULT_ORIGINS = "http://127.0.0.1:8000,http://localhost:8000"
 allowed_origins = [
     origin.strip()
-    for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", "*").split(",")
+    for origin in os.getenv("EDGEIQ_ALLOWED_ORIGINS", _DEFAULT_ORIGINS).split(",")
     if origin.strip()
 ]
 app.add_middleware(
@@ -1180,7 +1134,7 @@ def _record_settlement_audit(
         status = "blocked"
         reason_code = "unsupported_settlement_path"
         message = "This legacy market does not have a supported automatic final-stat path."
-    with suppress(Exception):
+    try:
         SettlementAuditRepository.record({
             "entry_id": entry.get("id"),
             "entry_prop_id": prop.get("entry_prop_id"),
@@ -1205,6 +1159,8 @@ def _record_settlement_audit(
                 "game_time": prop.get("game_time", ""),
             },
         })
+    except Exception:
+        _log.warning("Failed to write settlement audit record for entry %s", entry.get("id"), exc_info=True)
 
 
 def _settlement_provider_plan(prop: dict) -> list[str]:
@@ -1232,16 +1188,17 @@ def _performance_payload() -> dict:
 
 
 def _backtest_payload() -> dict:
-    global _BACKTEST_CACHE
     now = time.monotonic()
     source_key = (EntryRepository.all, BetRepository.get_all)
     with _BACKTEST_LOCK:
-        expires_at, cached_source_key, cached = _BACKTEST_CACHE
-        if cached and cached_source_key == source_key and expires_at > now:
-            return {**cached, "cache": {"hit": True, "ttl_seconds": BACKTEST_CACHE_SECONDS}}
+        cached_val = _BACKTEST_CACHE.get_or_none()
+        if cached_val is not None:
+            cached_source_key, cached = cached_val
+            if cached and cached_source_key == source_key:
+                return {**cached, "cache": {"hit": True, "ttl_seconds": BACKTEST_CACHE_SECONDS}}
     payload = build_backtest_payload(clv_report())
     with _BACKTEST_LOCK:
-        _BACKTEST_CACHE = (now + BACKTEST_CACHE_SECONDS, source_key, payload)
+        _BACKTEST_CACHE.set((source_key, payload), ttl=BACKTEST_CACHE_SECONDS)
     return {**payload, "cache": {"hit": False, "ttl_seconds": BACKTEST_CACHE_SECONDS}}
 
 
@@ -1461,8 +1418,10 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
         prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
     # Capture the provider's complete board before recommendation and
     # settlement filters introduce selection bias.
-    with suppress(Exception):
+    try:
         BoardOfferRepository.record_many(props, canonical)
+    except Exception:
+        _log.warning("Failed to record board offers for platform %s", canonical, exc_info=True)
     actionable = [
         prop for prop in props
         if _is_actionable_provider_prop(prop)
@@ -1505,8 +1464,10 @@ def _record_provider_fetch_status(platform: str, attempted_at: str, row_count: i
         "last_error": error,
         "row_count": int(row_count if not error else previous.get("row_count", 0) or 0),
     }
-    with suppress(Exception):
+    try:
         SettingsRepository.set(key, json.dumps(payload))
+    except Exception:
+        _log.warning("Failed to persist provider fetch status for %s", platform, exc_info=True)
 
 
 def _enrich_prizepicks_adjusted_lines(props: list[dict]) -> list[dict]:
@@ -1919,6 +1880,7 @@ def _import_file_if_configured(env_name: str, importer) -> dict:
         result = importer(payload, path.stem)
         return {"configured": True, "message": f"Imported {path.name}.", **result}
     except Exception as exc:
+        _log.warning("Could not import file %s: %s", path.name, exc, exc_info=True)
         return {
             "configured": True,
             "imported": 0,
@@ -3027,6 +2989,7 @@ def _match_ocr_text_to_live_props(text: str, platform: str) -> list[dict]:
     try:
         active_props = _fetch_props(platform, None)
     except Exception:
+        _log.warning("OCR prop matching could not fetch live props for platform %s", platform, exc_info=True)
         return []
     known_players = sorted({str(prop.get("player") or "").strip() for prop in active_props if prop.get("player")})
     matches: list[dict] = []
@@ -3196,6 +3159,7 @@ def _verified_screenshot_props(
     try:
         active_props = _fetch_props(platform, None)
     except Exception:
+        _log.warning("Screenshot prop verification could not fetch live props for platform %s", platform, exc_info=True)
         return [], len(props)
 
     verified = []
@@ -3245,6 +3209,7 @@ def _analysis_from_uploaded_props(props: list[dict]) -> dict | None:
             "props": props,
         })
     except Exception:
+        _log.warning("Could not build EntryPayload from uploaded props", exc_info=True)
         return None
     return analyze_entry(payload)
 
@@ -4717,6 +4682,7 @@ def _daily_game_card(
     try:
         weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport)) if sport in {"NFL", "MLB"} else None
     except Exception:
+        _log.debug("Weather fetch failed for game %s sport %s", game, sport, exc_info=True)
         weather_signal = None
     return {
         "game": game,
@@ -4884,6 +4850,7 @@ def _game_injury_summary(props: list[dict]) -> str:
         try:
             availability = _player_availability_payload(prop.get("player", ""), prop.get("sport", ""), prop.get("team", ""), prop.get("game", ""))
         except Exception:
+            _log.debug("Availability check failed for player %s", prop.get("player"), exc_info=True)
             continue
         if float(availability.get("availability_score") or 100) < 70:
             risky.append(f"{availability.get('player')} {availability.get('status')}")
@@ -5390,14 +5357,11 @@ def _trust_score_for_props(props: list[dict], warnings: list[str] | None = None)
     })
     line_edges = [_best_line_edge_for_prop(prop) for prop in props]
     line_score = 50.0 + min(25.0, sum(line_edges) * 4.0)
-    global _TRUST_CLV_CACHE
-    now = time.monotonic()
     with _TRUST_CLV_LOCK:
-        if _TRUST_CLV_CACHE[0] > now:
-            clv = _TRUST_CLV_CACHE[1]
-        else:
+        clv = _TRUST_CLV_CACHE.get_or_none()
+        if clv is None:
             clv = clv_report()
-            _TRUST_CLV_CACHE = (now + 30.0, clv)
+            _TRUST_CLV_CACHE.set(clv, ttl=30.0)
     avg_clv = float(clv.get("average_clv") or 0.0)
     clv_penalty = min(12.0, abs(avg_clv) * 1.8) if avg_clv < 0 else 0.0
     correlation_penalty = min(18.0, len(warnings) * 6.0)
@@ -5586,13 +5550,12 @@ def _prop_risk_profile(prop: dict) -> dict:
 
 
 def _model_health_payload() -> dict:
-    global _MODEL_HEALTH_CACHE
-    now = time.monotonic()
     with _MODEL_HEALTH_LOCK:
-        if _MODEL_HEALTH_CACHE[0] > now:
-            return dict(_MODEL_HEALTH_CACHE[1])
+        cached = _MODEL_HEALTH_CACHE.get_or_none()
+        if cached is not None:
+            return dict(cached)
         payload = build_model_health_payload(ai_status())
-        _MODEL_HEALTH_CACHE = (now + 30.0, dict(payload))
+        _MODEL_HEALTH_CACHE.set(dict(payload), ttl=30.0)
         return payload
 
 
@@ -5616,71 +5579,7 @@ def _advantage_center_payload(platform: str, sport_filter: str | None) -> dict:
 
 
 def _sportsbook_integrations_payload() -> dict:
-    bet_file = os.getenv("EDGEIQ_BET_HISTORY_FILE", "").strip()
-    final_stats_file = os.getenv("EDGEIQ_FINAL_STATS_FILE", "").strip()
-    odds_connected = bool(os.getenv("ODDS_API_KEY", "").strip())
-    import_ready = bool(bet_file or final_stats_file)
-    connected = odds_connected
-    connectors = [
-        {
-            "name": "The Odds API",
-            "status": "configured" if odds_connected else "not_configured",
-            "capabilities": (
-                [
-                    "multi-book player prop odds",
-                    "exact-line no-vig probability",
-                    "PrizePicks/Underdog DFS offer evidence",
-                    "quota-aware cached refresh",
-                ]
-                if odds_connected
-                else ["game and player market odds"]
-            ),
-            "missing": [] if odds_connected else ["Set ODDS_API_KEY to enable live market consensus."],
-        },
-        {
-            "name": "PrizePicks",
-            "status": "manual_handoff",
-            "capabilities": ["provider lines", "copy slip", "screenshot/file import", "manual result recheck"],
-            "missing": ["read-only account sync", "official slip deep link"],
-        },
-        {
-            "name": "Underdog",
-            "status": "manual_handoff",
-            "capabilities": ["provider lines", "copy slip", "screenshot/file import", "manual result recheck"],
-            "missing": ["read-only account sync", "official slip deep link"],
-        },
-        {
-            "name": "DraftKings Pick6",
-            "status": "manual_import",
-            "capabilities": ["manual entry builder", "copy slip", "screenshot/file import", "ESPN final-stat tracking"],
-            "missing": ["verified live Pick6 offer feed", "provider-specific payout feed", "read-only account sync"],
-        },
-        {
-            "name": "Local Imports",
-            "status": "configured" if import_ready else "not_configured",
-            "capabilities": ["CSV/JSON betting history import", "final-stat file import"] if import_ready else ["CSV/JSON upload inside Tools"],
-            "missing": [] if import_ready else ["Set EDGEIQ_BET_HISTORY_FILE or EDGEIQ_FINAL_STATS_FILE for scheduled sync."],
-        },
-    ]
-    return {
-        "connected": connected,
-        "market_data_connected": odds_connected,
-        "import_ready": import_ready,
-        "connectors": connectors,
-        "headline": (
-            "Multi-book market data connected; provider account handoff remains manual."
-            if odds_connected
-            else "Manual handoff active; multi-book market data is not connected."
-        ),
-        "next_step": (
-            "Review exact-line book count and freshness before using market probability."
-            if odds_connected
-            else "Configured import files will be synced by Run Sync."
-            if import_ready
-            else "Use screenshot/CSV upload now; official read-only provider sync can plug into this connector layer later."
-        ),
-        "privacy_note": "EdgeIQ does not store sportsbook credentials or place entries automatically.",
-    }
+    return build_sportsbook_integrations_payload()
 
 
 def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: float, limit: int, odds: int) -> dict:
@@ -5905,6 +5804,7 @@ def _game_context_payload(game: str, sport_filter: str | None, platform: str) ->
         try:
             weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport_filter))
         except Exception:
+            _log.debug("Weather fetch failed for game context game=%s sport=%s", game, sport_filter, exc_info=True)
             weather_signal = None
         if weather_signal:
             context_flags.append(weather_signal.get("message", "Weather may add variance."))
@@ -6343,8 +6243,10 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     row["data_quality"] = _feed_data_quality(row, movement)
     row["data_strength"] = _data_strength_labels(row)
     row["risk_profile"] = _prop_risk_profile(row)
-    with suppress(Exception):
+    try:
         BoardOfferRepository.attach_analysis(row)
+    except Exception:
+        _log.warning("Failed to attach board analysis for prop %s", row.get("player"), exc_info=True)
     return row
 
 
@@ -6680,47 +6582,20 @@ def _line_shop_payload(
 
 
 def _alert_delivery_settings() -> dict:
-    defaults = {
-        "browser_enabled": True,
-        "email_enabled": False,
-        "email_address": "",
-        "sms_enabled": False,
-        "sms_number": "",
-        "webhook_enabled": False,
-        "webhook_url": os.getenv("EDGEIQ_ALERT_WEBHOOK_URL", ""),
-        "min_priority": 65.0,
-        "channels": ["browser"],
-    }
-    stored = _safe_json_loads(SettingsRepository.get("alert_delivery_settings", ""))
-    settings = {**defaults, **stored}
-    settings["channels"] = _alert_channels(settings)
-    return {
-        "settings": settings,
-        "delivery_hooks": configured_delivery_hooks(settings),
-    }
+    return build_alert_delivery_settings(
+        load_setting=lambda key, default: SettingsRepository.get(key, default),
+        load_json=lambda value: _safe_json_loads(value),
+    )
 
 
 def _update_alert_delivery_settings(payload: AlertDeliveryPayload) -> dict:
-    settings = payload.model_dump()
-    settings["email_address"] = settings["email_address"].strip()
-    settings["sms_number"] = settings["sms_number"].strip()
-    settings["webhook_url"] = settings["webhook_url"].strip()
-    settings["channels"] = _alert_channels(settings)
-    SettingsRepository.set("alert_delivery_settings", json.dumps(settings))
-    return _alert_delivery_settings()
-
-
-def _alert_channels(settings: dict) -> list[str]:
-    channels = []
-    if settings.get("browser_enabled"):
-        channels.append("browser")
-    if settings.get("email_enabled") and str(settings.get("email_address") or "").strip():
-        channels.append("email")
-    if settings.get("sms_enabled") and str(settings.get("sms_number") or "").strip():
-        channels.append("sms")
-    if settings.get("webhook_enabled") and str(settings.get("webhook_url") or "").strip():
-        channels.append("webhook")
-    return channels
+    return build_update_alert_delivery_settings(
+        payload.model_dump(),
+        save_setting=lambda key, value: SettingsRepository.set(key, value),
+        serialize=lambda value: json.dumps(value),
+        load_setting=lambda key, default: SettingsRepository.get(key, default),
+        load_json=lambda value: _safe_json_loads(value),
+    )
 
 
 def _deliver_alert(alert: dict) -> dict:
@@ -6731,86 +6606,7 @@ def _deliver_alert(alert: dict) -> dict:
 
 
 def _deploy_readiness_payload() -> dict:
-    database_url = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
-    allowed_origins = os.getenv("EDGEIQ_ALLOWED_ORIGINS", "").strip()
-    configured_mode = os.getenv("EDGEIQ_DEPLOYMENT_MODE", "auto").strip().lower()
-    hosted = configured_mode == "hosted" or (
-        configured_mode != "local"
-        and (not database_url.startswith("sqlite") or bool(allowed_origins))
-    )
-    mode = "hosted" if hosted else "local"
-    checks = [
-        _readiness_check("PWA manifest", (STATIC_DIR / "manifest.webmanifest").exists(), "Phone install metadata is present."),
-        _readiness_check("Service worker", (STATIC_DIR / "sw.js").exists(), "Offline app shell support is present."),
-        _readiness_check("Static asset version", bool(STATIC_ASSET_VERSION), f"Current asset version {STATIC_ASSET_VERSION}."),
-        _readiness_check(
-            "App database" if not hosted else "Production database",
-            not hosted or not database_url.startswith("sqlite"),
-            (
-                "Local SQLite storage is ready. A hosted SQL database is only needed for multi-device sync."
-                if not hosted
-                else "Set DATABASE_URL to Postgres or another hosted SQL database."
-            ),
-            status="local ready" if not hosted else None,
-        ),
-        _readiness_check(
-            "Allowed origins",
-            bool(allowed_origins),
-            (
-                "Not required while EdgeIQ runs only on this device."
-                if not hosted
-                else "Set EDGEIQ_ALLOWED_ORIGINS to the hosted app domain."
-            ),
-            required=hosted,
-            status="local only" if not hosted else None,
-        ),
-        _readiness_check(
-            "OpenAI key",
-            bool(os.getenv("OPENAI_API_KEY")),
-            "Optional. Adds enhanced screenshot and language review.",
-            required=False,
-        ),
-        _readiness_check("Final stat provider", True, "Official ESPN box scores grade every prop allowed onto the board."),
-        _readiness_check(
-            "Alert webhook",
-            bool(os.getenv("EDGEIQ_ALERT_WEBHOOK_URL")),
-            "Optional. Connect a webhook only when external alerts are wanted.",
-            required=False,
-        ),
-    ]
-    required_checks = [check for check in checks if check["required"]]
-    passed = sum(1 for check in required_checks if check["ok"])
-    score = round((passed / len(required_checks)) * 100, 1) if required_checks else 100.0
-    ready = all(check["ok"] for check in required_checks)
-    return {
-        "mode": mode,
-        "score": score,
-        "status": f"{mode} ready" if ready else f"{mode} needs setup",
-        "checks": checks,
-        "next_steps": [
-            check["action"]
-            for check in checks
-            if check["required"] and not check["ok"]
-        ][:5],
-    }
-
-
-def _readiness_check(
-    label: str,
-    ok: bool,
-    action: str,
-    *,
-    required: bool = True,
-    status: str | None = None,
-) -> dict:
-    resolved_status = status or ("pass" if ok else "needs setup" if required else "optional")
-    return {
-        "label": label,
-        "ok": bool(ok),
-        "required": required,
-        "status": resolved_status,
-        "action": action,
-    }
+    return build_deploy_readiness_payload(STATIC_DIR, STATIC_ASSET_VERSION)
 
 
 def _player_research_payload(
@@ -8328,16 +8124,17 @@ def _compact_grading_pending(entry: dict) -> dict:
 
 
 def _loss_protection_payload() -> dict:
-    global _LOSS_PROTECTION_CACHE
-    now = time.monotonic()
     dependency_token = (
         SettingsRepository.get, get_dashboard, clv_report, EntryRepository.all,
     )
     with _LOSS_PROTECTION_LOCK:
-        if _LOSS_PROTECTION_CACHE[0] > now and _LOSS_PROTECTION_CACHE[1] == dependency_token:
-            return dict(_LOSS_PROTECTION_CACHE[2])
+        cached_val = _LOSS_PROTECTION_CACHE.get_or_none()
+        if cached_val is not None:
+            cached_dep, cached_payload = cached_val
+            if cached_dep == dependency_token:
+                return dict(cached_payload)
         payload = _build_loss_protection_payload()
-        _LOSS_PROTECTION_CACHE = (now + 15.0, dependency_token, dict(payload))
+        _LOSS_PROTECTION_CACHE.set((dependency_token, dict(payload)), ttl=15.0)
         return payload
 
 
@@ -9814,6 +9611,7 @@ def _official_game_context_for_payload_prop(prop: PropPayload) -> dict:
         try:
             candidates.extend(fetch_game_times(sport, local_date + timedelta(days=offset)))
         except Exception:
+            _log.debug("fetch_game_times failed for sport=%s offset=%d", sport, offset, exc_info=True)
             continue
     unique_candidates: dict[tuple[str, str], dict] = {}
     for row in candidates:
@@ -9990,6 +9788,7 @@ def _provider_context_for_payload_prop(payload: PropPayload, entry_platform: str
     try:
         return _hydrate_payload_prop_context(payload, platform) or {}
     except Exception:
+        _log.warning("Could not hydrate prop context for player=%s stat=%s platform=%s", payload.player, payload.stat, platform, exc_info=True)
         return {}
 
 
@@ -10169,6 +9968,7 @@ def _injury_signals(payload: PropPayload) -> list[dict]:
     try:
         injury = is_injured(payload.player, fetch_injuries(payload.sport))
     except Exception:
+        _log.debug("Injury feed fetch failed for player=%s sport=%s", payload.player, payload.sport, exc_info=True)
         injury = None
     if not injury:
         return []
@@ -10248,6 +10048,7 @@ def _platform_consensus_signals(payload: PropPayload, *, live_refresh: bool = Tr
             and prop.get("line") is not None
         ]
     except Exception:
+        _log.debug("Platform consensus signal fetch failed for player=%s stat=%s", payload.player, payload.stat, exc_info=True)
         matches = []
     unique_platforms = {prop.get("platform", "") for prop in matches}
     if len(unique_platforms) < 2:
@@ -10279,6 +10080,7 @@ def _sleeper_trending_signals(payload: PropPayload) -> list[dict]:
     try:
         trend = sleeper.player_trend_signal(payload.player, payload.sport)
     except Exception:
+        _log.debug("Sleeper trending signal failed for player=%s sport=%s", payload.player, payload.sport, exc_info=True)
         trend = None
     if not trend:
         return []
@@ -10304,6 +10106,7 @@ def _balldontlie_stat_signals(payload: PropPayload) -> list[dict]:
     try:
         signal = balldontlie.stat_signal(payload.player, payload.stat, payload.sport)
     except Exception:
+        _log.debug("Ball Don't Lie stat signal failed for player=%s stat=%s", payload.player, payload.stat, exc_info=True)
         signal = None
     if not signal or signal.get("sample_size", 0) < 2:
         return []
@@ -10327,6 +10130,7 @@ def _news_context_signals(payload: PropPayload) -> list[dict]:
     try:
         articles = newsapi.fetch_context(query, days=7, page_size=5)
     except Exception:
+        _log.debug("NewsAPI context fetch failed for query=%r", query, exc_info=True)
         articles = []
     if not articles:
         return []
@@ -10356,6 +10160,7 @@ def _weather_signals(payload: PropPayload) -> list[dict]:
         weather = openweather.fetch_weather_for_game(payload.game, payload.sport)
         weather_risk = openweather.weather_signal(weather)
     except Exception:
+        _log.debug("Weather signal failed for game=%s sport=%s", payload.game, payload.sport, exc_info=True)
         weather_risk = None
     if not weather_risk:
         return []
@@ -10427,21 +10232,19 @@ def _historical_calibration_rows(payload: PropPayload) -> list[dict]:
 
 
 def _versioned_calibration_rows() -> list[dict]:
-    global _PREDICTION_EVIDENCE_CACHE
-    now = time.monotonic()
-    cached_at, cached_rows = _PREDICTION_EVIDENCE_CACHE
-    if cached_at and now - cached_at < 60:
+    cached_rows = _PREDICTION_EVIDENCE_CACHE.get_or_none()
+    if cached_rows is not None:
         return cached_rows
     with _PREDICTION_EVIDENCE_LOCK:
-        cached_at, cached_rows = _PREDICTION_EVIDENCE_CACHE
-        if cached_at and now - cached_at < 60:
+        cached_rows = _PREDICTION_EVIDENCE_CACHE.get_or_none()
+        if cached_rows is not None:
             return cached_rows
         rows = [
             row
             for row in PredictionLedgerRepository.evidence_rows()
             if row.get("result") in {"Win", "Loss"}
         ]
-        _PREDICTION_EVIDENCE_CACHE = (now, rows)
+        _PREDICTION_EVIDENCE_CACHE.set(rows, ttl=60.0)
         return rows
 
 
@@ -10739,14 +10542,15 @@ def _prop_data_quality(prop: Prop) -> dict:
 
 
 def _cached_dashboard_stats() -> dict:
-    global _SEGMENT_DASHBOARD_CACHE
-    now = time.monotonic()
     dependency_token = get_dashboard
     with _SEGMENT_DASHBOARD_LOCK:
-        if _SEGMENT_DASHBOARD_CACHE[0] > now and _SEGMENT_DASHBOARD_CACHE[1] == dependency_token:
-            return _SEGMENT_DASHBOARD_CACHE[2]
+        cached_val = _SEGMENT_DASHBOARD_CACHE.get_or_none()
+        if cached_val is not None:
+            cached_dep, cached_stats = cached_val
+            if cached_dep == dependency_token:
+                return cached_stats
         dashboard_stats = get_dashboard()
-        _SEGMENT_DASHBOARD_CACHE = (now + 15.0, dependency_token, dashboard_stats)
+        _SEGMENT_DASHBOARD_CACHE.set((dependency_token, dashboard_stats), ttl=15.0)
         return dashboard_stats
 
 
@@ -11477,6 +11281,7 @@ def _run_due_daily_operations_locked() -> dict:
             SettingsRepository.set(run_key, minute_key)
             completed.append({"job": name, "result": result})
         except Exception as exc:
+            _log.exception("Scheduled job %r raised an unhandled exception", name)
             failures.append({"job": name, "message": str(exc) or "Scheduled job failed."})
     status = {
         "ran_at": iso_utc(utc_now()),
@@ -11572,6 +11377,7 @@ def _cached_briefing_timing_alerts() -> list[dict]:
             cached_only=True,
         )
     except Exception:
+        _log.warning("Could not load cached briefing for notification timing alerts", exc_info=True)
         return []
 
     alerts: list[dict] = []
@@ -11598,6 +11404,7 @@ def _entry_progress_payloads_for_notifications() -> list[dict]:
     try:
         return [_entry_progress_payload(entry) for entry in EntryRepository.pending()]
     except Exception:
+        _log.warning("Could not build entry progress payloads for notifications", exc_info=True)
         return []
 
 
@@ -11606,11 +11413,13 @@ def _player_availability_payload(player: str, sport: str, team: str = "", game: 
     try:
         injury = is_injured(player, fetch_injuries(sport))
     except Exception:
+        _log.debug("Injury feed failed for player=%s sport=%s", player, sport, exc_info=True)
         injury = None
     news_terms = []
     try:
         news_terms = newsapi.risk_terms(newsapi.fetch_context(f'"{player}" {sport} {team}', days=7, page_size=5))
     except Exception:
+        _log.debug("NewsAPI availability fetch failed for player=%s", player, exc_info=True)
         news_terms = []
     score = 86.0
     status = "Likely Active"
@@ -11636,6 +11445,7 @@ def _player_availability_payload(player: str, sport: str, team: str = "", game: 
         try:
             weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport))
         except Exception:
+            _log.debug("Weather fetch failed for availability check game=%s sport=%s", game, sport, exc_info=True)
             weather_signal = None
         if weather_signal:
             factors.append(weather_signal.get("message", "Weather may add variance."))

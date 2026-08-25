@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 
 from web.application.entry_creation_service import EntryCreationError
@@ -25,63 +26,77 @@ class EntryDependencies:
     place: Callable[[EntryPayload], dict]
 
 
-_dependencies: EntryDependencies | None = None
+_deps_store: list[EntryDependencies] = []
 
 
 def configure_entry_router(dependencies: EntryDependencies) -> None:
-    global _dependencies
-    _dependencies = dependencies
+    if _deps_store:
+        _deps_store[0] = dependencies
+    else:
+        _deps_store.append(dependencies)
 
 
-def _deps() -> EntryDependencies:
-    if _dependencies is None:
+def get_deps() -> EntryDependencies:
+    if not _deps_store:
         raise HTTPException(status_code=503, detail="Entry tools are still starting. Please try again.")
-    return _dependencies
+    return _deps_store[0]
+
+
+DepsEntry = Annotated[EntryDependencies, Depends(get_deps)]
 
 
 @router.post("/api/entries/analyze")
-def analyze_entry(payload: EntryPayload) -> dict:
-    return _deps().analyze(payload)
+def analyze_entry(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.analyze(payload)
 
 
 @router.post("/api/entries/payout-analysis")
-def entry_payout_analysis(payload: EntryPayload) -> dict:
-    return _deps().payout_analysis(payload)
+def entry_payout_analysis(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.payout_analysis(payload)
 
 
 @router.post("/api/entries/placement-check")
-def placement_check(payload: EntryPayload) -> dict:
-    return _deps().placement_check(payload)
+def placement_check(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.placement_check(payload)
 
 
 @router.post("/api/entries/platform-value-check")
-def platform_value_check(payload: EntryPayload) -> dict:
-    return _deps().platform_value_check(payload)
+def platform_value_check(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.platform_value_check(payload)
 
 
 @router.post("/api/entries/handoff")
-def entry_handoff(payload: EntryPayload) -> dict:
-    return _deps().handoff(payload)
+def entry_handoff(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.handoff(payload)
 
 
 @router.post("/api/entries/share")
-def share_entry(payload: ShareSlipPayload) -> dict:
-    return _deps().share(payload)
+def share_entry(payload: ShareSlipPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.share(payload)
 
 
 @router.get("/api/share/{share_id}")
-def shared_entry(share_id: str) -> dict:
-    return _deps().shared_entry(share_id)
+def shared_entry(share_id: str, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.shared_entry(share_id)
 
 
 @router.get("/share/{share_id}")
-def shared_entry_page(share_id: str) -> HTMLResponse:
-    return HTMLResponse(_deps().shared_entry_html(share_id))
+def shared_entry_page(share_id: str, deps: DepsEntry = None) -> HTMLResponse:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return HTMLResponse(_deps.shared_entry_html(share_id))
 
 
 @router.post("/api/entries/place")
-def place_entry(payload: EntryPayload) -> dict:
+def place_entry(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
     try:
-        return _deps().place(payload)
+        return _deps.place(payload)
     except EntryCreationError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc

@@ -8,6 +8,7 @@ from threading import Lock
 
 from data.providers import pandascore
 from utils.entity_normalization import canonical_person_key
+from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
 
 
 class RecommendationRequestError(ValueError):
@@ -17,7 +18,6 @@ class RecommendationRequestError(ValueError):
 _ENTRY_GENERATOR_CACHE: dict[tuple, tuple[float, dict]] = {}
 _ENTRY_GENERATOR_LOCK = Lock()
 _ENTRY_GENERATOR_TTL_SECONDS = 45.0
-_ESPORT_SPORTS = frozenset({"CS2", "LOL", "VALORANT", "DOTA2", "COD", "APEX"})
 
 
 def top_props_payload(

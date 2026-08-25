@@ -1,8 +1,11 @@
 import os
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 def _float_env(name: str, default: float) -> float:
     try:
@@ -17,10 +20,11 @@ API_KEY = os.getenv("ODDS_API_KEY")
 
 SPORT = "basketball_wnba"
 
-DATA_FILE = "data/bets.csv"
-
 APP_NAME = "EdgeIQ"
 
 APP_SUBTITLE = "Player Prop Intelligence Platform"
 
-APP_VERSION = "V2.0 Alpha"
+try:
+    APP_VERSION: str = _pkg_version("edgeiq")
+except PackageNotFoundError:
+    APP_VERSION = "0.0.0+dev"

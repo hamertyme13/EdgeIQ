@@ -6,8 +6,6 @@ import time
 from utils.entity_normalization import canonical_matchup_key
 from utils.stat_normalization import canonical_stat_label
 
-_cache: tuple[float, dict[tuple, dict]] = (0.0, {})
-
 
 def empirical_pair_correlation(first, second, minimum_pairs: int = 8) -> dict | None:
     segments = _learned_segments()
@@ -18,11 +16,15 @@ def empirical_pair_correlation(first, second, minimum_pairs: int = 8) -> dict | 
     return learned
 
 
+_cache_dict: dict[tuple, dict] = {}
+_cache_expires: float = 0.0
+
+
 def _learned_segments() -> dict[tuple, dict]:
-    global _cache
+    global _cache_expires, _cache_dict
     now = time.monotonic()
-    if _cache[0] > now:
-        return _cache[1]
+    if _cache_expires > now:
+        return _cache_dict
     from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 
     rows = [row for row in PredictionLedgerRepository.evidence_rows() if row.get("result") in {"Win", "Loss"}]
@@ -42,7 +44,8 @@ def _learned_segments() -> dict[tuple, dict]:
         for key, pairs in observations.items()
         if (value := _phi(pairs)) is not None
     }
-    _cache = (now + 300.0, learned)
+    _cache_expires = now + 300.0
+    _cache_dict = learned
     return learned
 
 

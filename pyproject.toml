@@ -70,6 +70,10 @@ select = ["E9", "F63", "F7", "F82", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true
-follow_imports = "skip"
+follow_imports = "silent"
 ignore_missing_imports = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = "analytics.*"
+disallow_untyped_defs = true

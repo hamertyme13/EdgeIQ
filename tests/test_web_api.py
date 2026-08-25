@@ -852,8 +852,10 @@ def test_trust_score_uses_captured_line_evidence_without_provider_reload(monkeyp
 
 
 def test_model_health_reuses_short_lived_result(monkeypatch) -> None:
+    from utils.ttl_cache import TTLCache
+
     calls = {"count": 0}
-    monkeypatch.setattr(web_app, "_MODEL_HEALTH_CACHE", (0.0, {}))
+    monkeypatch.setattr(web_app, "_MODEL_HEALTH_CACHE", TTLCache())  # starts expired
     monkeypatch.setattr(web_app, "ai_status", lambda: {"configured": False})
 
     def build(_ai):
