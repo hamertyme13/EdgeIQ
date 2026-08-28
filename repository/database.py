@@ -10,6 +10,13 @@ _ENGINE_ARGS: dict[str, Any] = {"echo": False}
 
 if DATABASE_URL.startswith("sqlite"):
     _ENGINE_ARGS["connect_args"] = {"check_same_thread": False, "timeout": 30}
+else:
+    _ENGINE_ARGS.update({
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+        "pool_size": int(os.getenv("EDGEIQ_DB_POOL_SIZE", "5")),
+        "max_overflow": int(os.getenv("EDGEIQ_DB_MAX_OVERFLOW", "10")),
+    })
 
 engine = create_engine(DATABASE_URL, **_ENGINE_ARGS)
 
@@ -56,15 +63,3 @@ def initialize_database():
     from repository.models.shadow_prediction_model import ShadowPredictionModel
 
     Base.metadata.create_all(bind=engine)
-    _run_lightweight_migrations()
-
-
-def _run_lightweight_migrations() -> None:
-    """No-op: all schema migrations are now managed exclusively by Alembic.
-
-    The per-column ALTER TABLE statements that previously lived here have been
-    superseded by the Alembic baseline revision (f638c5b72379) and its
-    subsequent revisions.  Fresh databases should be created with
-    ``alembic upgrade head``; existing databases that pre-date Alembic should
-    be adopted with ``alembic stamp head`` after a manual backup.
-    """

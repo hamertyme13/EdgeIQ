@@ -27,7 +27,7 @@ _HEADERS = {
     "Accept": "application/json",
 }
 _SLATE_TIME_ZONE = ZoneInfo("America/New_York")
-_TEAM_ALIASES = {"GSV": "GS", "LAS": "LV", "LVA": "LV", "NYL": "NY", "PHO": "PHX"}
+_TEAM_ALIASES = {"GSV": "GS", "LAS": "LA", "LVA": "LA", "NYL": "NY", "PHO": "PHX"}
 
 
 def refresh_final_stats_for_entries(entries: list[dict], lookback_days: int = 2) -> dict:
@@ -934,6 +934,9 @@ def _entry_date(entry: dict) -> date:
 def _entry_dates(entries: list[dict]) -> list[date]:
     dates: set[date] = set()
     for entry in entries:
+        # Placement time is an immutable anchor. A provider rematch can otherwise
+        # overwrite game_time and make every later refresh search only the wrong date.
+        dates.add(_entry_date(entry))
         prop_dates: set[date] = set()
         for prop in entry.get("props", []):
             game_time = str(prop.get("game_time") or "").strip()
@@ -946,7 +949,7 @@ def _entry_dates(entries: list[dict]) -> list[date]:
                 prop_dates.add(parsed.astimezone(_SLATE_TIME_ZONE).date())
             except ValueError:
                 continue
-        dates.update(prop_dates or {_entry_date(entry)})
+        dates.update(prop_dates)
     return sorted(dates)
 
 

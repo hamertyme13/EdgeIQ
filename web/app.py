@@ -16,8 +16,6 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 from io import StringIO
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -30,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import data.providers.balldontlie as balldontlie
+import data.providers.draftkings_pick6 as draftkings_pick6
 import data.providers.nba_summer_league as nba_summer_league
 import data.providers.newsapi as newsapi
 import data.providers.openweather as openweather
@@ -59,6 +58,7 @@ from analytics.prop_metrics import calculate_confidence, calculate_directional_e
 from analytics.push_risk import push_risk
 from analytics.recommendation import recommendation as ev_recommendation
 from analytics.risk import calculate_entry_risk
+from config import APP_VERSION
 from data.providers.espn import (
     fetch_game_times,
     refresh_final_stats_for_entries,
@@ -76,7 +76,7 @@ from models.player import Player
 from models.prop import Prop
 from models.stat_type import StatType
 from repository.bet_repository import BetRepository
-from repository.database import initialize_database
+from repository.database import DATABASE_URL, initialize_database
 from repository.repositories.bankroll_transaction_repository import BankrollTransactionRepository
 from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.entry_repository import EntryRepository
@@ -93,6 +93,7 @@ from services import odds as sportsbook_odds
 from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
+from services.final_stats_archive import archive_final_stats
 from services.ollama_client import (
     ollama_chat,
     ollama_model,
@@ -101,22 +102,26 @@ from services.ollama_client import (
 )
 from services.operation_lock import named_operation_lock
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
+from utils.logging_config import configure_logging
 from utils.market_validation import is_partial_game_market
-from utils.prop_plausibility import prop_line_plausibility
-from utils.sports import (
+from utils.platforms import (
     CONTEXT_PLATFORMS,
     ENTRY_PLATFORMS,
-    ESPORT_SPORTS,
     GENERATOR_PLATFORMS,
     PLATFORM_FILTERS,
     PROP_PLATFORMS,
+    canonical_platform,
+)
+from utils.prop_plausibility import prop_line_plausibility
+from utils.sports import (
+    ESPORT_SPORTS,
     SPORT_ALIASES,
     SUPPORTED_SPORTS,
 )
 from utils.stat_normalization import canonical_stat_label, stat_type_from_text
 from utils.stat_normalization import stat_key as canonical_stat_key
 from utils.time import iso_utc, utc_now
-from utils.ttl_cache import TTLCache
+from utils.ttl_cache import TTLCache, TTLMap
 from web.application.advantage_service import advantage_center_payload as build_advantage_center_payload
 from web.application.advantage_service import advantage_game_contexts as build_advantage_game_contexts
 from web.application.alert_delivery_service import alert_channels as build_alert_channels
@@ -175,6 +180,7 @@ from web.application.entry_creation_service import (
     place_entry_payload as build_place_entry_payload,
 )
 from web.application.entry_creation_service import (
+    prepare_entry_analysis,
     validated_call,
 )
 from web.application.import_service import analyze_upload_payload as build_analyze_upload_payload
@@ -495,11 +501,12 @@ from web.schemas import (
 )
 
 load_dotenv()
+configure_logging()
 
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260824-v250-today-provider-refresh"
+STATIC_ASSET_VERSION = "20260828-v255-workflow-audit"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -522,14 +529,15 @@ _RESEARCH_PROP_CACHE: dict[str, list[dict]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
 _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
-_COMMAND_CENTER_CACHE: dict[tuple, tuple[float, dict]] = {}
-_COMMAND_CENTER_LOCK = threading.RLock()
-_OPPORTUNITY_FEED_CACHE: dict[tuple, tuple[float, dict]] = {}
-_OPPORTUNITY_FEED_LOCK = threading.RLock()
+_PROVIDER_ARCHIVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-provider-archive")
+_SETTLEMENT_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-settlement")
+_SETTLEMENT_JOB_GUARD = threading.Lock()
+_SETTLEMENT_JOB_FUTURE = None
+_COMMAND_CENTER_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
+_OPPORTUNITY_FEED_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
 _BACKTEST_CACHE: TTLCache[tuple[tuple[object, object], dict]] = TTLCache()
 _BACKTEST_LOCK = threading.RLock()
-_TRENDING_PROPS_CACHE: dict[tuple, tuple[float, dict]] = {}
-_TRENDING_PROPS_LOCK = threading.RLock()
+_TRENDING_PROPS_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
 _PREDICTION_EVIDENCE_CACHE: TTLCache[list[dict]] = TTLCache()
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
 _MODEL_HEALTH_CACHE: TTLCache[dict] = TTLCache()
@@ -538,6 +546,8 @@ _SEGMENT_DASHBOARD_CACHE: TTLCache[tuple[object | None, dict]] = TTLCache()
 _SEGMENT_DASHBOARD_LOCK = threading.RLock()
 _TRUST_CLV_CACHE: TTLCache[dict] = TTLCache()
 _TRUST_CLV_LOCK = threading.RLock()
+_CLV_REPORT_CACHE: TTLCache[dict] = TTLCache()
+_CLV_REPORT_LOCK = threading.RLock()
 _LOSS_PROTECTION_CACHE: TTLCache[tuple[tuple[object, ...], dict]] = TTLCache()
 _LOSS_PROTECTION_LOCK = threading.RLock()
 _ENDPOINT_TIMINGS: dict[str, list[dict]] = {}
@@ -614,11 +624,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
-try:
-    _APP_VERSION = _pkg_version("edgeiq")
-except PackageNotFoundError:
-    _APP_VERSION = "0.0.0+dev"
-app = FastAPI(title="EdgeIQ Web", version=_APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="EdgeIQ Web", version=APP_VERSION, lifespan=lifespan)
 _DEFAULT_ORIGINS = "http://127.0.0.1:8000,http://localhost:8000"
 allowed_origins = [
     origin.strip()
@@ -745,7 +751,7 @@ def _clv_report_payload() -> dict:
     clv_values = [leg["clv"] for entry in tracked for leg in entry["legs"] if leg["clv"] is not None]
     quarantined = [leg for entry in tracked for leg in entry["legs"] if leg.get("clv") is None]
     positive = sum(1 for value in clv_values if value > 0)
-    return {
+    payload = {
         "entries": tracked,
         "average_clv": round(sum(clv_values) / len(clv_values), 2) if clv_values else 0.0,
         "positive_clv_rate": round((positive / len(clv_values) * 100), 1) if clv_values else 0.0,
@@ -753,6 +759,21 @@ def _clv_report_payload() -> dict:
         "quarantined_legs": len(quarantined),
         "quarantine_reasons": _count_values(leg.get("reliability_reason", "unverified") for leg in quarantined),
     }
+    with _TRUST_CLV_LOCK:
+        _TRUST_CLV_CACHE.set(dict(payload), ttl=600.0)
+    return payload
+
+
+def _cached_clv_report_payload(*, force: bool = False) -> dict:
+    if not force:
+        with _CLV_REPORT_LOCK:
+            cached = _CLV_REPORT_CACHE.get_or_none()
+            if cached is not None:
+                return dict(cached)
+    payload = _clv_report_payload()
+    with _CLV_REPORT_LOCK:
+        _CLV_REPORT_CACHE.set(dict(payload), ttl=120.0)
+    return payload
 
 
 def _portfolio_intelligence_payload() -> dict:
@@ -828,6 +849,20 @@ def _entries_needing_final_stat_refresh(entries: list[dict]) -> list[dict]:
 
 
 def _auto_check_pending_entries(allow_estimates: bool = False, refresh_providers: bool = True) -> dict:
+    with named_operation_lock("settlement-refresh") as acquired:
+        if not acquired:
+            return {
+                "checked": 0,
+                "settled": 0,
+                "entries": [],
+                "estimated": False,
+                "skipped": True,
+                "message": "A final-stat refresh is already running. EdgeIQ will reuse its results when it finishes.",
+            }
+        return _auto_check_pending_entries_locked(allow_estimates, refresh_providers)
+
+
+def _auto_check_pending_entries_locked(allow_estimates: bool = False, refresh_providers: bool = True) -> dict:
     reopened = _reopen_recent_partial_settlements()
     pending_entries = EntryRepository.pending()
     excluded = _exclude_stale_unverifiable_paper_entries(pending_entries)
@@ -862,6 +897,160 @@ def _auto_check_pending_entries(allow_estimates: bool = False, refresh_providers
         "reopened_partial_settlements": reopened,
         "game_time_recovery": game_time_recovery,
     }
+
+
+def _recheck_final_stats_with_lock(allow_estimates: bool) -> dict:
+    with named_operation_lock("settlement-refresh") as acquired:
+        if not acquired:
+            return {
+                "skipped": True,
+                "message": "A final-stat refresh is already running. Wait for it to finish instead of starting a duplicate.",
+            }
+        pending = EntryRepository.pending()
+        game_time_recovery = _backfill_missing_game_times(pending) if pending else {
+            "provider": "espn", "skipped": True, "updated": 0, "fetched_rows": 0, "errors": [],
+        }
+        payload = build_recheck_final_stats_payload(
+            allow_estimates=allow_estimates,
+            unknown_leg_count=lambda entries: _unknown_entry_leg_count(entries),
+            entries_needing_refresh=lambda entries: _entries_needing_final_stat_refresh(entries),
+            refresh_final_stats=lambda entries: _refresh_final_stats(entries),
+            backfill_settled_results=lambda entries: _backfill_settled_entry_leg_results(entries),
+            auto_check_pending=lambda **kwargs: _auto_check_pending_entries_locked(**kwargs),
+            recheck_results=lambda entries, **kwargs: _recheck_entry_results(entries, **kwargs),
+            quarantine_mismatched_evidence=lambda: _quarantine_mismatched_settlement_evidence(),
+        )
+        payload["game_time_recovery"] = game_time_recovery
+        return payload
+
+
+def _settlement_job_status() -> dict:
+    raw = SettingsRepository.get("settlement_recheck_job", "")
+    status = _safe_json_loads(raw)
+    return status or {
+        "job_id": "",
+        "status": "idle",
+        "progress": 0,
+        "phase": "No final-stat refresh is running.",
+        "started_at": "",
+        "completed_at": "",
+    }
+
+
+def _save_settlement_job(status: dict) -> dict:
+    SettingsRepository.set("settlement_recheck_job", json.dumps(status))
+    return status
+
+
+def _start_settlement_recheck_job(allow_estimates: bool = False) -> dict:
+    global _SETTLEMENT_JOB_FUTURE
+    with _SETTLEMENT_JOB_GUARD:
+        if _SETTLEMENT_JOB_FUTURE is not None and not _SETTLEMENT_JOB_FUTURE.done():
+            return {**_settlement_job_status(), "reused": True}
+        job_id = utc_now().strftime("settlement-%Y%m%dT%H%M%S%fZ")
+        status = _save_settlement_job({
+            "job_id": job_id,
+            "status": "queued",
+            "progress": 5,
+            "phase": "Waiting for the settlement worker.",
+            "started_at": iso_utc(utc_now()),
+            "completed_at": "",
+            "result": {},
+            "error": "",
+        })
+
+        def run() -> None:
+            _save_settlement_job({
+                **status,
+                "status": "running",
+                "progress": 20,
+                "phase": "Repairing game identity and retrieving official final stats.",
+            })
+            try:
+                result = _recheck_final_stats_with_lock(allow_estimates)
+                _save_settlement_job({
+                    **status,
+                    "status": "complete" if not result.get("skipped") else "waiting",
+                    "progress": 100 if not result.get("skipped") else 20,
+                    "phase": result.get("message") or "Final-stat refresh complete.",
+                    "completed_at": iso_utc(utc_now()) if not result.get("skipped") else "",
+                    "result": result,
+                    "error": "",
+                })
+            except Exception as exc:
+                _log.exception("Background settlement recheck failed")
+                _save_settlement_job({
+                    **status,
+                    "status": "failed",
+                    "progress": 100,
+                    "phase": "The final-stat refresh failed.",
+                    "completed_at": iso_utc(utc_now()),
+                    "result": {},
+                    "error": str(exc) or "Final-stat refresh failed.",
+                })
+
+        _SETTLEMENT_JOB_FUTURE = _SETTLEMENT_JOB_EXECUTOR.submit(run)
+        return status
+
+
+def _settlement_health_payload() -> dict:
+    pending = EntryRepository.pending()
+    now = utc_now().replace(tzinfo=UTC)
+    by_sport: dict[str, dict] = {}
+    overdue = 0
+    for entry in pending:
+        for prop in entry.get("props", []):
+            sport = str(prop.get("sport") or "Unknown").upper()
+            row = by_sport.setdefault(sport, {"pending_legs": 0, "overdue_legs": 0, "paid_entries": set()})
+            row["pending_legs"] += 1
+            if str(entry.get("entry_mode") or "real").lower() == "real":
+                row["paid_entries"].add(int(entry.get("id") or 0))
+            if _leg_settlement_sla(prop, prop.get("actual"), now).get("overdue"):
+                row["overdue_legs"] += 1
+                overdue += 1
+    serialized_sports = {
+        sport: {
+            "pending_legs": row["pending_legs"],
+            "overdue_legs": row["overdue_legs"],
+            "paid_entries": len(row["paid_entries"]),
+        }
+        for sport, row in sorted(by_sport.items())
+    }
+    sqlite_path = Path(DATABASE_URL.removeprefix("sqlite:///")) if DATABASE_URL.startswith("sqlite:///") else None
+    size_bytes = sqlite_path.stat().st_size if sqlite_path and sqlite_path.exists() else 0
+    production = os.getenv("EDGEIQ_ENV", "desktop").strip().lower() in {"production", "prod"}
+    database = {
+        "backend": "sqlite" if DATABASE_URL.startswith("sqlite") else "postgresql" if DATABASE_URL.startswith("postgres") else "other",
+        "size_bytes": size_bytes,
+        "size_gb": round(size_bytes / (1024 ** 3), 2),
+        "production_ready": not DATABASE_URL.startswith("sqlite") or not production,
+        "message": (
+            "PostgreSQL is active for concurrent production workloads."
+            if DATABASE_URL.startswith("postgres")
+            else "SQLite is appropriate for this local desktop install; configure PostgreSQL before hosted multi-user launch."
+        ),
+    }
+    queue = SettlementAuditRepository.queue(limit=25)
+    suspicious_repairs = _safe_json_loads(SettingsRepository.get("suspicious_game_time_repairs", ""))
+    return {
+        "status": "attention" if overdue or queue.get("blocked") or suspicious_repairs.get("count") else "healthy",
+        "pending_entries": len(pending),
+        "paid_pending_entries": sum(1 for entry in pending if str(entry.get("entry_mode") or "real").lower() == "real"),
+        "overdue_legs": overdue,
+        "by_sport": serialized_sports,
+        "queue": {key: queue.get(key, 0) for key in ("waiting", "scheduled", "blocked", "historical_review")},
+        "job": _settlement_job_status(),
+        "database": database,
+        "suspicious_game_time_repairs": suspicious_repairs,
+        "last_refresh": _safe_json_loads(SettingsRepository.get(SETTLEMENT_REFRESH_STATUS_KEY, "")),
+    }
+
+
+def _archive_final_stats_payload(retention_days: int, dry_run: bool) -> dict:
+    with named_operation_lock("final-stats-archive") as acquired:
+        if not acquired:
+            return {"skipped": True, "message": "A final-stat archive is already running."}
+        return archive_final_stats(retention_days=retention_days, dry_run=dry_run)
 
 
 def _entries_due_for_automatic_final_refresh(
@@ -1157,6 +1346,8 @@ def _record_settlement_audit(
                 "provider_plan": provider_plan,
                 "sport": prop.get("sport", ""),
                 "game_time": prop.get("game_time", ""),
+                "provider_event_id": prop.get("provider_event_id", ""),
+                "provider_offer_id": prop.get("provider_offer_id", ""),
             },
         })
     except Exception:
@@ -1356,11 +1547,21 @@ def _fetch_platform_props(platform: str, *, force_refresh: bool = False) -> list
             if not force_refresh and cached and cached[0] > now:
                 _increment_prop_fetch_metric(canonical, "coalesced_hits")
                 return [dict(prop) for prop in cached[1]]
-        props = _fetch_platform_props_uncached(canonical, fetcher)
+        if canonical == "DraftKings Pick6":
+            fetcher = lambda: draftkings_pick6.fetch_projections(refresh=force_refresh)
+        props = (
+            _fetch_platform_props_uncached(canonical, fetcher, archive_full_board=True)
+            if force_refresh
+            else _fetch_platform_props_uncached(canonical, fetcher)
+        )
         with _PROP_FETCH_LOCK:
             _increment_prop_fetch_metric(canonical, "provider_fetches")
             _PROP_FETCH_CACHE[cache_key] = (now + PROP_FETCH_CACHE_SECONDS, [dict(prop) for prop in props])
-        _record_line_snapshots(props, force_snapshot=force_refresh)
+        _PROVIDER_ARCHIVE_EXECUTOR.submit(
+            _record_line_snapshots,
+            [dict(prop) for prop in props],
+            force_snapshot=force_refresh,
+        )
         return [dict(prop) for prop in props]
 
 
@@ -1374,6 +1575,7 @@ def _platform_prop_fetcher(platform: str):
     providers = {
         "PrizePicks": _fetch_prizepicks_platform_props,
         "Underdog": underdog.fetch_projections,
+        "DraftKings Pick6": draftkings_pick6.fetch_projections,
         "Sleeper": sleeper.fetch_projections,
         "Ball Don't Lie": _fetch_balldontlie_platform_props,
     }
@@ -1397,13 +1599,19 @@ def _platform_fetcher_cache_token(platform: str) -> int:
     tokens = {
         "PrizePicks": token(prizepicks.fetch_projections),
         "Underdog": token(underdog.fetch_projections),
+        "DraftKings Pick6": token(draftkings_pick6.fetch_projections),
         "Sleeper": token(sleeper.fetch_projections),
         "Ball Don't Lie": token(balldontlie.fetch_props),
     }
     return tokens.get(canonical, 0)
 
 
-def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
+def _fetch_platform_props_uncached(
+    platform: str,
+    fetcher,
+    *,
+    archive_full_board: bool = False,
+) -> list[dict]:
     canonical = _canonical_platform(platform)
     attempted_at = iso_utc(utc_now())
     try:
@@ -1411,19 +1619,22 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
     except Exception as exc:
         _record_provider_fetch_status(canonical, attempted_at, error=str(exc))
         return []
-    for prop in props:
+    # Capture the provider's complete board before recommendation and
+    # settlement filters introduce selection bias.
+    if archive_full_board:
+        _PROVIDER_ARCHIVE_EXECUTOR.submit(_record_board_offers, [dict(prop) for prop in props], canonical)
+    current_props = [
+        prop for prop in props
+        if str(prop.get("league") or prop.get("sport") or "").upper() in SUPPORTED_SPORTS
+        and (len(props) <= 1000 or _is_prop_on_entry_day(prop))
+    ]
+    for prop in current_props:
         prop.setdefault("platform", canonical)
         eligibility = _end_to_end_prop_eligibility(prop)
         prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
         prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
-    # Capture the provider's complete board before recommendation and
-    # settlement filters introduce selection bias.
-    try:
-        BoardOfferRepository.record_many(props, canonical)
-    except Exception:
-        _log.warning("Failed to record board offers for platform %s", canonical, exc_info=True)
     actionable = [
-        prop for prop in props
+        prop for prop in current_props
         if _is_actionable_provider_prop(prop)
     ]
     if canonical == "PrizePicks":
@@ -1452,6 +1663,21 @@ def _fetch_platform_props_uncached(platform: str, fetcher) -> list[dict]:
     eligible = [prop for prop in actionable if _end_to_end_prop_eligibility(prop)["eligible"]]
     _record_provider_fetch_status(canonical, attempted_at, row_count=len(eligible))
     return eligible
+
+
+def _record_board_offers(props: list[dict], platform: str) -> None:
+    try:
+        batch_size = 500
+        for start in range(0, len(props), batch_size):
+            batch = props[start:start + batch_size]
+            for prop in batch:
+                prop.setdefault("platform", platform)
+                eligibility = _end_to_end_prop_eligibility(prop)
+                prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
+                prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
+            BoardOfferRepository.record_many(batch, platform)
+    except Exception:
+        _log.warning("Failed to record board offers for platform %s", platform, exc_info=True)
 
 
 def _record_provider_fetch_status(platform: str, attempted_at: str, row_count: int = 0, error: str = "") -> None:
@@ -1713,15 +1939,8 @@ def _entry_platform_from_text(value: str) -> Platform:
 
 
 def _canonical_platform(value: str) -> str:
-    normalized = (value or "").strip().lower()
-    if normalized in {"both", "all", "all platforms"}:
-        return "Both"
-    if normalized in {"draftkings", "draft kings", "draftkings pick6", "dk pick6", "pick6"}:
-        return "DraftKings Pick6"
-    for platform in PROP_PLATFORMS:
-        if platform.lower() == normalized:
-            return platform
-    return "PrizePicks"
+    canonical = canonical_platform(value, "PrizePicks")
+    return canonical if canonical in PLATFORM_FILTERS else "PrizePicks"
 
 
 def _refresh_final_stats(pending_entries: list[dict]) -> dict:
@@ -2272,7 +2491,14 @@ def _create_standard_calibration_batch(
     for leg_count in plan:
         slot_payload = payload.model_copy(update={"leg_count": leg_count, "max_entries": 1})
         fresh_targets = [target for target in ordered_targets if _calibration_target_key(target) not in used_targets]
-        candidate_targets = fresh_targets + [target for target in ordered_targets if target not in fresh_targets]
+        coverage_targets = [target for target in ordered_targets if target.get("type") == "Coverage"]
+        candidate_targets: list[dict] = []
+        # A missing confidence segment should not force dozens of repeated
+        # combination searches. Try the three highest-priority fresh targets,
+        # then the verified-board fallback for this card size.
+        for target in fresh_targets[:3] + coverage_targets:
+            if target not in candidate_targets:
+                candidate_targets.append(target)
         created_for_slot = False
         for target in candidate_targets:
             suggestions = _paper_calibration_suggestions(slot_payload, target, prop_pool_cache, analyzed_cache)
@@ -2327,14 +2553,23 @@ def _append_calibration_entry(
     audit = _paper_calibration_audit(serialized, target, backtest_data, payload)
     entry_id = None
     if not payload.dry_run:
+        audit_json = json.dumps(audit)
+        payout, analysis = prepare_entry_analysis(
+            suggestion.entry,
+            payout_type="standard",
+            multiplier=1.0,
+            audit_snapshot=audit_json,
+        )
         entry_id = EntryRepository.save(
             suggestion.entry,
             status="Pending",
             wager=0.0,
             multiplier=1.0,
             recommended_by_app=True,
-            audit_snapshot=json.dumps(audit),
+            audit_snapshot=audit_json,
             entry_mode="paper",
+            payout=payout,
+            analysis=analysis,
         )
     existing_signatures.add(signature)
     created.append({
@@ -2599,7 +2834,7 @@ def _paper_calibration_suggestions_for_props(
     return suggestions
 
 
-def _paper_calibration_prop_pool(raw_props: list[dict], sport: str | None, limit: int = 300) -> list[dict]:
+def _paper_calibration_prop_pool(raw_props: list[dict], sport: str | None, limit: int = 20) -> list[dict]:
     eligible = [
         prop for prop in raw_props
         if _end_to_end_prop_eligibility(prop)["eligible"]
@@ -2627,7 +2862,7 @@ def _paper_calibration_prop_pool(raw_props: list[dict], sport: str | None, limit
 
 def _cached_paper_prop_analysis(prop: dict, cache: dict[tuple, dict] | None) -> dict:
     if cache is None:
-        return _analyzed_feed_prop(prop)
+        return _analyzed_feed_prop(prop, persist_evidence=False)
     key = (
         canonical_person_key(prop.get("player")),
         _settlement_stat_key(prop.get("stat")),
@@ -2635,7 +2870,7 @@ def _cached_paper_prop_analysis(prop: dict, cache: dict[tuple, dict] | None) -> 
         round(float(prop.get("line") or 0.0), 2),
     )
     if key not in cache:
-        cache[key] = _analyzed_feed_prop(prop)
+        cache[key] = _analyzed_feed_prop(prop, persist_evidence=False)
     return cache[key]
 
 
@@ -3505,6 +3740,11 @@ def _assistant_parlay_response(
         if text and _unsupported_ollama_matchup_claim(text):
             text = None
             ollama_error = "Ollama added unsupported matchup context, so EdgeIQ used its grounded rules-based answer."
+    if text and _ollama_card_identity_mismatch(text, suggestions):
+        text = None
+        ollama_error = (
+            "Ollama changed or omitted a selected player identity, so EdgeIQ used its exact-card rules-based answer."
+        )
     if text:
         return text, None, "Ollama", ollama_model()
     text, openai_error = _openai_parlay_response(message, suggestions, request)
@@ -3523,6 +3763,16 @@ def _unsupported_ollama_matchup_claim(text: str) -> bool:
             "defensive record", "defensive matchup", "struggled to contain", "weaker defense",
             "stronger defense", "team weakness", "opponent's performance", "opponent performance",
         )
+    )
+
+
+def _ollama_card_identity_mismatch(text: str, suggestions: list[dict]) -> bool:
+    normalized_text = canonical_person_key(text)
+    selected_props = ((suggestions[0].get("entry") or {}).get("props") or []) if suggestions else []
+    return any(
+        canonical_person_key(prop.get("player")) not in normalized_text
+        for prop in selected_props
+        if canonical_person_key(prop.get("player"))
     )
 
 
@@ -4792,11 +5042,18 @@ def _data_strength_labels(prop: dict) -> list[dict]:
     quality = prop.get("data_quality") or {}
     hit_rate = prop.get("hit_rate") or {}
     espn = prop.get("espn") or {}
-    sample_size = int(hit_rate.get("sample_size") or espn.get("sample_size") or 0)
-    if sample_size < 5 or quality.get("label") in {"thin data", "low reliability"}:
+    forecast_sample = (
+        forecast.get("effective_sample_size")
+        or (forecast.get("features") or {}).get("verified_games")
+        or 0
+    )
+    sample_size = int(hit_rate.get("sample_size") or espn.get("sample_size") or forecast_sample or 0)
+    if sample_size < 5:
         labels.append({"label": "Thin history", "status": "warning"})
     elif hit_rate.get("source") == "final_stats" or sample_size:
         labels.append({"label": "Final stats verified", "status": "good"})
+    if quality.get("label") in {"thin data", "low reliability"} and len(labels) < 4:
+        labels.append({"label": "Limited market context", "status": "warning"})
     return labels[:4]
 
 
@@ -5358,10 +5615,10 @@ def _trust_score_for_props(props: list[dict], warnings: list[str] | None = None)
     line_edges = [_best_line_edge_for_prop(prop) for prop in props]
     line_score = 50.0 + min(25.0, sum(line_edges) * 4.0)
     with _TRUST_CLV_LOCK:
-        clv = _TRUST_CLV_CACHE.get_or_none()
-        if clv is None:
-            clv = clv_report()
-            _TRUST_CLV_CACHE.set(clv, ttl=30.0)
+        # Recommendation serialization must not trigger a full historical CLV
+        # report. Results refreshes populate this cache; a cold generator uses
+        # a neutral CLV component until that report is available.
+        clv = _TRUST_CLV_CACHE.get_or_none() or {}
     avg_clv = float(clv.get("average_clv") or 0.0)
     clv_penalty = min(12.0, abs(avg_clv) * 1.8) if avg_clv < 0 else 0.0
     correlation_penalty = min(18.0, len(warnings) * 6.0)
@@ -5590,14 +5847,12 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
         max(1, min(int(limit), 50)),
         int(odds),
     )
-    now = time.monotonic()
-    with _OPPORTUNITY_FEED_LOCK:
-        expires_at, cached = _OPPORTUNITY_FEED_CACHE.get(cache_key, (0.0, {}))
-        if cached and expires_at > now:
-            return {
-                **cached,
-                "cache": {"hit": True, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
-            }
+    cached = _OPPORTUNITY_FEED_CACHE.get(cache_key)
+    if cached is not None:
+        return {
+            **cached,
+            "cache": {"hit": True, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
+        }
     ev_rows = _ev_scanner_rows(platform, sport_filter, min_ev=min_ev, limit=max(limit * 2, 20), odds=odds)
     timing_rows = _market_timing_alert_rows(
         platform,
@@ -5674,8 +5929,7 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
         payload["opportunities"],
         model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2",
     )
-    with _OPPORTUNITY_FEED_LOCK:
-        _OPPORTUNITY_FEED_CACHE[cache_key] = (time.monotonic() + OPPORTUNITY_FEED_CACHE_SECONDS, payload)
+    _OPPORTUNITY_FEED_CACHE.set(cache_key, payload, ttl=OPPORTUNITY_FEED_CACHE_SECONDS)
     return {
         **payload,
         "cache": {"hit": False, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
@@ -5868,10 +6122,19 @@ def _optimized_entries(
         props = [prop for prop in props if _is_prop_on_entry_day(prop)]
         sports = [sport_filter] if sport_filter else sorted({prop.get("league", "").upper() for prop in props if prop.get("league")})
         for sport in sports:
+            sport_props = [prop for prop in props if str(prop.get("league") or "").upper() == sport]
+            sport_props.sort(
+                key=lambda prop: (
+                    float(prop.get("source_score") or 0.0),
+                    int(prop.get("trending_count") or 0),
+                ),
+                reverse=True,
+            )
+            sport_props = sport_props[:40]
             for leg_count in range(min_legs, max_legs + 1):
                 ranked.extend(
                     suggest_entries(
-                        props,
+                        sport_props,
                         sport,
                         platform_model,
                         limit=limit,
@@ -6124,13 +6387,21 @@ def _player_detail_payload(player_name: str, props: list[dict]) -> dict:
     }
 
 
-def _analyzed_feed_prop(raw: dict) -> dict:
+def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
     line = float(raw.get("line") or 0)
     baseline_line = float(raw.get("baseline_line") or raw.get("standard_line") or line)
     trending_count = int(raw.get("trending_count") or 0)
     raw_projection = raw.get("projection")
     auto_projected = raw_projection in (None, "")
     initial_direction = _normalize_direction(raw.get("direction") or "Over")
+    history = FinalStatsRepository.history(
+        raw.get("player", ""),
+        raw.get("stat", ""),
+        sport=raw.get("league", ""),
+        limit=100,
+        team=raw.get("team", ""),
+        include_opportunity_context=persist_evidence,
+    )
     forecast = forecast_prop(
         raw.get("player", ""),
         raw.get("league", ""),
@@ -6140,6 +6411,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         game_time=raw.get("game_time", ""),
         team=raw.get("team", ""),
         game=raw.get("game", ""),
+        history=history,
     )
     projection = forecast.projection if auto_projected else float(str(raw_projection))
     direction = _prop_direction(line, projection, raw.get("direction"))
@@ -6177,6 +6449,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
             platform,
             game=str(raw.get("game") or "") or None,
             line_offer_type=str(raw.get("line_offer_type") or raw.get("odds_type") or "standard"),
+            allow_identity_fallback=persist_evidence,
         ),
         current_line=baseline_line,
     )
@@ -6189,6 +6462,7 @@ def _analyzed_feed_prop(raw: dict) -> dict:
         raw.get("league", ""),
         direction=direction,
         team=raw.get("team", ""),
+        history=history,
     )
     row = {
         "player": raw.get("player", ""),
@@ -6243,10 +6517,11 @@ def _analyzed_feed_prop(raw: dict) -> dict:
     row["data_quality"] = _feed_data_quality(row, movement)
     row["data_strength"] = _data_strength_labels(row)
     row["risk_profile"] = _prop_risk_profile(row)
-    try:
-        BoardOfferRepository.attach_analysis(row)
-    except Exception:
-        _log.warning("Failed to attach board analysis for prop %s", row.get("player"), exc_info=True)
+    if persist_evidence:
+        try:
+            BoardOfferRepository.attach_analysis(row)
+        except Exception:
+            _log.warning("Failed to attach board analysis for prop %s", row.get("player"), exc_info=True)
     return row
 
 
@@ -6268,7 +6543,7 @@ def _confirmed_props_payload(
     pool_limit = (
         max(1, int(analysis_limit))
         if analysis_limit is not None
-        else max(120, min(400, max(1, limit) * 4))
+        else max(24, min(80, max(1, limit) * 2))
     )
 
     for raw in eligible[:pool_limit]:
@@ -8134,7 +8409,7 @@ def _loss_protection_payload() -> dict:
             if cached_dep == dependency_token:
                 return dict(cached_payload)
         payload = _build_loss_protection_payload()
-        _LOSS_PROTECTION_CACHE.set((dependency_token, dict(payload)), ttl=15.0)
+        _LOSS_PROTECTION_CACHE.set((dependency_token, dict(payload)), ttl=300.0)
         return payload
 
 
@@ -8146,7 +8421,10 @@ def _build_loss_protection_payload() -> dict:
     monthly_profit = _money_value(current_month if isinstance(current_month, dict) else monthly)
     roi = float(dashboard_stats.get("roi") or 0.0)
     profit = float(dashboard_stats.get("profit") or 0.0)
-    clv = clv_report()
+    with _TRUST_CLV_LOCK:
+        # Entry analysis must stay interactive. Results and scheduled reports
+        # refresh this snapshot; a cold start uses neutral CLV until then.
+        clv = dict(_TRUST_CLV_CACHE.get_or_none() or {})
     grading = _grading_report_payload_minimal(clv)
     metrics = {
         "profit": round(profit, 2),
@@ -8676,11 +8954,27 @@ def _backfill_missing_game_times(entries: list[dict]) -> dict:
         pending_only=True,
         overwrite=True,
     )
+    suspicious = [
+        repair for repair in result.get("repairs", [])
+        if (
+            (before := _parse_game_time(repair.get("previous_game_time"))) is not None
+            and (after := _parse_game_time(repair.get("game_time"))) is not None
+            and abs((after - before).total_seconds()) > 36 * 3600
+        )
+    ]
+    if suspicious:
+        SettingsRepository.set("suspicious_game_time_repairs", json.dumps({
+            "detected_at": iso_utc(utc_now()),
+            "count": len(suspicious),
+            "repairs": suspicious[:50],
+            "message": "Large game-date corrections were applied only after exact team and matchup recovery.",
+        }))
     return {
         "provider": sync.get("provider", "espn"),
         "updated": result.get("updated", 0),
         "fetched_rows": sync.get("fetched_rows", 0),
         "errors": sync.get("errors", []),
+        "suspicious_repairs": suspicious,
     }
 
 
@@ -9767,6 +10061,8 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str, *, hydrate_pro
         player_identity_id=payload.player_identity_id,
         player_provider=payload.player_provider or str(provider_context.get("platform") or payload.platform or entry_platform),
         provider_player_id=payload.provider_player_id or str(provider_context.get("player_id") or ""),
+        provider_event_id=payload.provider_event_id or str(provider_context.get("game_id") or provider_context.get("event_id") or ""),
+        provider_offer_id=payload.provider_offer_id or str(provider_context.get("projection_id") or provider_context.get("offer_id") or ""),
         model_version=str(forecast_snapshot.get("model_version") or payload.model_version or EDGEIQ_LOCAL_MODEL_VERSION),
         feature_as_of=str(forecast_snapshot.get("feature_as_of") or payload.feature_as_of or ""),
         forecast_snapshot={
@@ -11218,7 +11514,8 @@ def _run_daily_refresh_now() -> dict:
 
 
 def _run_due_daily_operations() -> dict:
-    with named_operation_lock("daily-maintenance") as acquired:
+    lock_name = "daily-maintenance-test" if os.getenv("PYTEST_CURRENT_TEST") else "daily-maintenance"
+    with named_operation_lock(lock_name) as acquired:
         if not acquired:
             return {
                 "ok": True,
@@ -11519,6 +11816,8 @@ def _serialize_prop(prop: Prop) -> dict:
         "player_provider": prop.player_provider,
         "provider_player_id": prop.provider_player_id,
         "provider_projection_id": prop.provider_projection_id,
+        "provider_event_id": prop.provider_event_id,
+        "provider_offer_id": prop.provider_offer_id,
         "provider_offer_verified": prop.provider_offer_verified,
         "team": prop.player.team,
         "position": prop.position,
@@ -12139,7 +12438,6 @@ configure_recommendation_router(
             sport,
             False,
             cache=_TRENDING_PROPS_CACHE,
-            lock=_TRENDING_PROPS_LOCK,
             ttl_seconds=PROP_FETCH_CACHE_SECONDS,
             canonical_platform=_canonical_platform,
             selected_platforms=_selected_platforms,
@@ -12174,7 +12472,6 @@ configure_recommendation_router(
             sport,
             refresh,
             cache=_COMMAND_CENTER_CACHE,
-            lock=_COMMAND_CENTER_LOCK,
             ttl_seconds=COMMAND_CENTER_CACHE_SECONDS,
             canonical_platform=lambda value: _canonical_platform(value),
             selected_platforms=lambda value: _selected_platforms(value),
@@ -12230,6 +12527,7 @@ configure_recommendation_router(
                 selected_platform,
                 sport_filter,
                 limit,
+                analysis_limit=24,
             ),
             entry_platform=lambda value: _entry_platform_from_text(value),
             mixed_risk=lambda props, selected_sport, platform_model: _mixed_risk_suggestions(
@@ -12289,7 +12587,7 @@ configure_market_router(
         boost_analysis=lambda payload: _boost_analysis_payload(payload),
         ev_scanner=lambda *args: _ev_scanner_rows(*args),
         timing_alerts=lambda *args: _market_timing_alert_rows(*args),
-        clv_report=lambda: _clv_report_payload(),
+        clv_report=lambda: _cached_clv_report_payload(),
     )
 )
 app.include_router(market_router)
@@ -12367,6 +12665,7 @@ configure_entry_router(
                 analysis,
                 blocks,
             ),
+            save_entry=lambda *args, **kwargs: EntryRepository.save(*args, **kwargs),
         ),
     )
 )
@@ -12409,16 +12708,11 @@ configure_settlement_router(
             entries_needing_refresh=lambda entries: _entries_needing_final_stat_refresh(entries),
             preview_leg=lambda entry, prop: _preview_entry_leg_repair(entry, prop),
         ),
-        recheck_final_stats=lambda allow_estimates: build_recheck_final_stats_payload(
-            allow_estimates=allow_estimates,
-            unknown_leg_count=lambda entries: _unknown_entry_leg_count(entries),
-            entries_needing_refresh=lambda entries: _entries_needing_final_stat_refresh(entries),
-            refresh_final_stats=lambda entries: _refresh_final_stats(entries),
-            backfill_settled_results=lambda entries: _backfill_settled_entry_leg_results(entries),
-            auto_check_pending=lambda **kwargs: _auto_check_pending_entries(**kwargs),
-            recheck_results=lambda entries, **kwargs: _recheck_entry_results(entries, **kwargs),
-            quarantine_mismatched_evidence=lambda: _quarantine_mismatched_settlement_evidence(),
-        ),
+        recheck_final_stats=lambda allow_estimates: _recheck_final_stats_with_lock(allow_estimates),
+        start_recheck_job=lambda allow_estimates: _start_settlement_recheck_job(allow_estimates),
+        recheck_job_status=lambda: _settlement_job_status(),
+        settlement_health=lambda: _settlement_health_payload(),
+        archive_final_stats=lambda retention_days, dry_run: _archive_final_stats_payload(retention_days, dry_run),
         classify_default_wagers=lambda: build_classify_default_wagers_payload(
             lambda: get_dashboard()
         ),

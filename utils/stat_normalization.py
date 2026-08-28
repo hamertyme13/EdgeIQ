@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from models.stat_type import StatType
 
 _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
@@ -101,6 +103,7 @@ _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
     StatType.PITCHES: ("pitch count", "pitches thrown", "pitches"),
     StatType.AT_BATS: ("at bat", "at bats", "ab"),
     StatType.PLATE_APPEARANCES: ("plate appearance", "plate appearances", "pa"),
+    StatType.TOTAL_BASES: ("total base", "total bases", "tb"),
 }
 
 
@@ -130,7 +133,12 @@ def stat_key(value: object) -> str:
 
 
 def _matched_stat_type(value: object) -> StatType | None:
-    text = _stat_text(value)
+    return _matched_stat_type_text(str(value or ""))
+
+
+@lru_cache(maxsize=1024)
+def _matched_stat_type_text(raw_value: str) -> StatType | None:
+    text = _stat_text(raw_value)
     if not text:
         return None
 
@@ -138,20 +146,11 @@ def _matched_stat_type(value: object) -> StatType | None:
         if text == _stat_text(stat.value):
             return stat
 
-    alias_candidates = sorted(
-        (
-            (_stat_text(alias), stat)
-            for stat, aliases in _STAT_ALIASES.items()
-            for alias in aliases
-        ),
-        key=lambda candidate: len(candidate[0]),
-        reverse=True,
-    )
-    for alias_text, stat in alias_candidates:
+    for alias_text, stat in _alias_candidates():
         if _alias_matches(text, alias_text):
             return stat
 
-    if "+" in str(value or ""):
+    if "+" in raw_value:
         return None
 
     if "pitcher" in text and ("strikeout" in text or text == "ks"):
@@ -191,6 +190,19 @@ def _matched_stat_type(value: object) -> StatType | None:
     if "assist" in text or "ast" in text:
         return StatType.ASSISTS
     return None
+
+
+@lru_cache(maxsize=1)
+def _alias_candidates() -> tuple[tuple[str, StatType], ...]:
+    return tuple(sorted(
+        (
+            (_stat_text(alias), stat)
+            for stat, aliases in _STAT_ALIASES.items()
+            for alias in aliases
+        ),
+        key=lambda candidate: len(candidate[0]),
+        reverse=True,
+    ))
 
 
 def _alias_matches(text: str, alias: str) -> bool:

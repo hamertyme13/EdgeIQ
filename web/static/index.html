@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260824-v250-today-provider-refresh" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260828-v255-workflow-audit" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -522,6 +522,9 @@
         </section>
 
         <section id="entries" class="view">
+          <div id="settlement-health" class="settlement-health muted-card" aria-live="polite">
+            Checking settlement worker, provider queue, and database readiness...
+          </div>
           <div class="two-col">
             <div class="stack">
               <details class="panel tool-group">
@@ -816,6 +819,8 @@
                     <select id="confirmed-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>DraftKings Pick6</option>
+                      <option>Sleeper</option>
                     </select>
                     <button id="generate-confirmed-entries">Generate Confirmed Top 5</button>
                   </div>
@@ -865,6 +870,40 @@
                       </div>
                       <div id="underdog-suggestions-list" class="suggestion-list"></div>
                     </section>
+                    <section class="provider-generator" aria-labelledby="draftkings-generator-title">
+                      <div>
+                        <span class="pill">DraftKings Pick6</span>
+                        <h3 id="draftkings-generator-title">DraftKings Pick6 Generator</h3>
+                        <p>Uses a cached Apify board and standard lines. Provider refreshes may start a billable actor run.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="draftkings-generator-sport" aria-label="DraftKings Pick6 sport">
+                          <option>All Sports</option><option>NBA</option><option>MLB</option><option>NHL</option><option>MLS</option><option>EPL</option><option>UCL</option><option>PGA</option><option>MMA</option><option>NASCAR</option><option>CS2</option><option>LOL</option><option>VALORANT</option><option>COD</option>
+                        </select>
+                        <select id="draftkings-generator-legs" aria-label="DraftKings Pick6 legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option>
+                        </select>
+                        <button id="generate-draftkings">Generate Pick6</button>
+                      </div>
+                      <div id="draftkings-suggestions-list" class="suggestion-list"></div>
+                    </section>
+                    <section class="provider-generator" aria-labelledby="sleeper-generator-title">
+                      <div>
+                        <span class="pill">Sleeper</span>
+                        <h3 id="sleeper-generator-title">Sleeper Generator</h3>
+                        <p>Builds cards only from a connected Sleeper Pick'em line feed. Public NFL trends remain supporting context.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="sleeper-generator-sport" aria-label="Sleeper sport">
+                          <option>NFL</option><option>All Sports</option><option>WNBA</option><option>NBA</option><option>MLB</option><option>NHL</option><option>NCAAF</option><option>NCAAM</option><option>NCAAW</option><option>MLS</option><option>EPL</option><option>UCL</option><option>TENNIS</option><option>PGA</option><option>MMA</option><option>NASCAR</option>
+                        </select>
+                        <select id="sleeper-generator-legs" aria-label="Sleeper legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option>
+                        </select>
+                        <button id="generate-sleeper">Generate Sleeper</button>
+                      </div>
+                      <div id="sleeper-suggestions-list" class="suggestion-list"></div>
+                    </section>
                   </div>
                 </div>
               </details>
@@ -896,6 +935,7 @@
                     <select id="optimizer-platform" aria-label="Optimizer platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>DraftKings Pick6</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
                       <option>Both</option>
@@ -1552,6 +1592,7 @@
                           <option value="Both" selected>Balanced providers</option>
                           <option>PrizePicks</option>
                           <option>Underdog</option>
+                          <option>DraftKings Pick6</option>
                         </select>
                       </label>
                       <label class="field-label">Sport
@@ -1675,7 +1716,7 @@
     </script>
     <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
     <script src="/static/js/model-version-evaluation.js?v=20260824-v249-settlement-diagnostics"></script>
-    <script src="/static/app.js?v=20260824-v250-today-provider-refresh"></script>
+    <script src="/static/app.js?v=20260828-v255-workflow-audit"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

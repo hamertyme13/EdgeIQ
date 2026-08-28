@@ -51,6 +51,24 @@ def test_gaming_entry_generator_prevents_unsettleable_cards() -> None:
     assert "preventing stuck entries" in result["message"]
 
 
+def test_sleeper_generator_explains_missing_pickem_feed() -> None:
+    result = entry_suggestions_payload(
+        "NFL", "Sleeper", 3,
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks", "Underdog", "Sleeper"},
+        cached_briefing=lambda *args: {},
+        fetch_props=lambda *args: [],
+        props_by_platform=lambda *args: [],
+        mixed_risk=lambda *args: [],
+        suggest=lambda *args, **kwargs: [],
+        serialize_suggestion=lambda value: value,
+    )
+
+    assert result["suggestions"] == []
+    assert result["mode"] == "sleeper_feed_unavailable"
+    assert "not current Pick'em lines" in result["message"]
+
+
 def test_entry_generator_reuses_identical_short_lived_result() -> None:
     calls = {"suggest": 0}
     props = [

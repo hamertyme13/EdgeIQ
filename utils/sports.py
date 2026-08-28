@@ -31,12 +31,6 @@ SUPPORTED_SPORTS: tuple[str, ...] = (
 
 ESPORT_SPORTS: frozenset[str] = frozenset({"CS2", "LOL", "VALORANT", "DOTA2", "COD", "APEX"})
 
-ENTRY_PLATFORMS: tuple[str, ...] = ("PrizePicks", "Underdog", "DraftKings Pick6", "Sleeper")
-GENERATOR_PLATFORMS: tuple[str, ...] = ("PrizePicks", "Underdog", "Sleeper")
-CONTEXT_PLATFORMS: tuple[str, ...] = ("Ball Don't Lie",)
-PROP_PLATFORMS: tuple[str, ...] = (*ENTRY_PLATFORMS, *CONTEXT_PLATFORMS)
-PLATFORM_FILTERS: tuple[str, ...] = (*PROP_PLATFORMS, "Both")
-
 SPORT_ALIASES: dict[str, str | None] = {
     "ALL SPORTS": None,
     "WNBA": "WNBA",
@@ -84,3 +78,16 @@ SPORT_ALIASES: dict[str, str | None] = {
     "APEX": "APEX",
     "APEX LEGENDS": "APEX",
 }
+
+
+def canonical_sport(value: object, default: str | None = None) -> str | None:
+    """Normalize user/provider sport text to an EdgeIQ sport code."""
+    text = " ".join(str(value or "").strip().upper().split())
+    if not text:
+        return default
+    return SPORT_ALIASES.get(text, text if text in SUPPORTED_SPORTS else default)
+
+
+def sport_filter(value: object) -> str | None:
+    """Normalize an API sport filter; All Sports becomes ``None``."""
+    return canonical_sport(value)

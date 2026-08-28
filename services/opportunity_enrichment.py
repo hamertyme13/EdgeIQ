@@ -38,11 +38,17 @@ def attach_opportunity_context(session, history: list[dict], identity: dict | No
         query = query.filter(FinalPlayerStatModel.id.in_(matching_ids))
     if sport:
         query = query.filter(FinalPlayerStatModel.sport == sport.upper())
-    if team:
-        query = query.filter(FinalPlayerStatModel.team == team.upper())
+    game_dates = {
+        str(row.get("game_date") or "").strip()
+        for row in history
+        if str(row.get("game_date") or "").strip()
+    }
+    if game_dates:
+        query = query.filter(FinalPlayerStatModel.game_date.in_(game_dates))
 
     context: dict[tuple[str, str], dict[str, float]] = {}
-    for row in query.all():
+    context_limit = max(100, min(2000, len(history) * len(ROLE_STATS)))
+    for row in query.limit(context_limit).all():
         context.setdefault((str(row.game_date or ""), _game_key(row.game)), {})[row.stat] = float(row.actual)
     for row in history:
         values = context.get((str(row.get("game_date") or ""), _game_key(row.get("game"))), {})

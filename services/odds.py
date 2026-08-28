@@ -332,9 +332,9 @@ def summarize_player_prop_market(
     market_key = prop_market_key(stat)
     player_key = canonical_person_key(player)
     target_line = float(line)
-    sportsbook_rows = []
-    dfs_offers = []
-    last_updates = []
+    sportsbook_rows: list[dict[str, Any]] = []
+    dfs_offers: list[dict[str, Any]] = []
+    last_updates: list[str] = []
     for bookmaker in event.get("bookmakers") or []:
         book_key = str(bookmaker.get("key") or "")
         title = str(bookmaker.get("title") or book_key)

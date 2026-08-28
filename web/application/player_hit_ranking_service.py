@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from analytics.probabilistic_forecast import forecast_prop
 from repository.repositories.final_stats_repository import FinalStatsRepository
@@ -17,7 +18,7 @@ def player_stat_hit_leaderboard(
     for prop in _prefer_standard_offers(player_props):
         if prop.get("line") is not None and prop.get("stat"):
             by_stat.setdefault(canonical_stat_label(prop["stat"]), []).append(prop)
-    rows = []
+    rows: list[dict[str, Any]] = []
     for stat_label, offers in by_stat.items():
         offer = max(offers, key=lambda row: (
             int(str(row.get("line_offer_type") or row.get("odds_type") or "standard").lower() == "standard"),

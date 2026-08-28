@@ -2358,6 +2358,7 @@ async function loadEntryProgress(options = {}) {
       ${renderProgressTimeGroups(entry)}
     </div>
   `).join("") || `<div class="suggestion">No active placed entries.</div>`;
+  await loadSettlementHealth();
   if (data.auto_check && data.auto_check.settled) {
     Promise.allSettled([
       loadDashboard(),
@@ -2369,6 +2370,41 @@ async function loadEntryProgress(options = {}) {
       const failure = results.find((result) => result.status === "rejected");
       if (failure) console.warn("Post-settlement panel refresh failed", failure.reason);
     });
+  }
+}
+
+async function loadSettlementHealth() {
+  const target = $("settlement-health");
+  if (!target) return;
+  try {
+    const data = await api("/api/entries/settlement-health");
+    const queue = data.queue || {};
+    const job = data.job || {};
+    const database = data.database || {};
+    const suspicious = data.suspicious_game_time_repairs || {};
+    const sportRows = Object.entries(data.by_sport || {}).map(([sport, row]) =>
+      `<span class="status-pill ${Number(row.overdue_legs || 0) ? "status-warning" : "status-connected"}">${escapeHtml(sport)}: ${Number(row.pending_legs || 0)} waiting${Number(row.overdue_legs || 0) ? ` · ${Number(row.overdue_legs)} overdue` : ""}</span>`,
+    ).join("");
+    const needsAttention = data.status === "attention";
+    target.classList.toggle("attention", needsAttention);
+    target.innerHTML = `
+      <div class="settlement-health-heading">
+        <strong>Settlement health</strong>
+        <span class="status-pill ${needsAttention ? "status-warning" : "status-connected"}">${needsAttention ? "Needs attention" : "Healthy"}</span>
+      </div>
+      <div class="metric-strip compact-metrics">
+        <span><strong>${Number(data.paid_pending_entries || 0)}</strong><small>Paid Pending</small></span>
+        <span><strong>${Number(data.overdue_legs || 0)}</strong><small>SLA Overdue</small></span>
+        <span><strong>${Number(queue.blocked || 0)}</strong><small>Blocked</small></span>
+      </div>
+      <div class="settlement-health-tags">${sportRows || '<span class="subtle">No legs are waiting for final stats.</span>'}</div>
+      ${job.status && job.status !== "idle" ? `<p class="subtle">Worker: ${escapeHtml(job.phase || job.status)}${job.status === "running" ? ` · ${Number(job.progress || 0)}%` : ""}</p>` : ""}
+      ${Number(suspicious.count || 0) ? `<p class="danger-text">${Number(suspicious.count)} large game-date correction${Number(suspicious.count) === 1 ? "" : "s"} require review.</p>` : ""}
+      <p class="subtle">${escapeHtml(database.message || "Database status unavailable.")}${Number(database.size_gb || 0) ? ` · ${Number(database.size_gb).toFixed(2)} GB` : ""}</p>
+    `;
+  } catch (error) {
+    target.classList.add("attention");
+    target.textContent = `Settlement health could not be loaded: ${humanizeErrorText(error.message)}`;
   }
 }
 
@@ -2943,6 +2979,15 @@ function parsePayoutSchedule(value) {
   return schedule;
 }
 
+function analysisBulletList(values, className = "analysis-bullet-list") {
+  const items = (Array.isArray(values) ? values : [values])
+    .flatMap((value) => String(value || "").trim().split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!items.length) return "";
+  return `<ul class="${className}">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
 function renderAnalysis(data) {
   const rec = data.recommendation;
   const risk = data.risk;
@@ -2967,8 +3012,11 @@ function renderAnalysis(data) {
             <strong>${escapeHtml(leg.player)} · ${escapeHtml(leg.stat)} ${Number(leg.line).toFixed(1)}</strong>
             <span class="status-pill status-${action === "keep" ? "positive" : action === "flip" ? "warning" : "danger"}">${escapeHtml(actionLabel)}</span>
           </div>
-          <p>${escapeHtml(leg.message || "")}</p>
-          <p class="subtle">${escapeHtml(leg.reason || "")} · ${Number(leg.confidence || 0).toFixed(1)}% confidence</p>
+          ${analysisBulletList([
+            leg.message || "",
+            leg.reason || "",
+            `${Number(leg.confidence || 0).toFixed(1)}% model confidence`,
+          ], "analysis-bullet-list compact-analysis-bullets")}
         </div>
         ${action === "flip" || action === "remove"
           ? `<button class="secondary compact-action" data-correction-action="${escapeHtml(action)}" data-correction-index="${Number(leg.index)}">${escapeHtml(actionLabel)}</button>`
@@ -3035,7 +3083,10 @@ function renderAnalysis(data) {
         <div class="grade">${escapeHtml(release.verdict || rec.verdict || rec.action || "Review")}</div>
         <p class="eyebrow">EdgeIQ decision</p>
         <h2>${escapeHtml(release.verdict || rec.action || "Review")}</h2>
-        <p class="entry-analysis-lead">${escapeHtml(release.summary || rec.reason || "EdgeIQ reviewed the entry against its current evidence.")}</p>
+        ${analysisBulletList(
+          release.summary || rec.reason || "EdgeIQ reviewed the entry against its current evidence.",
+          "analysis-bullet-list entry-analysis-lead",
+        )}
       </div>
       <div class="entry-analysis-risk">
         <strong>${escapeHtml(risk.level || "Unknown")}</strong>
@@ -3047,13 +3098,13 @@ function renderAnalysis(data) {
       <span><strong>${pct(risk.average_confidence)}</strong><small>Average leg confidence</small></span>
       <span><strong>${Number(risk.average_edge || 0).toFixed(2)}</strong><small>Average projection cushion</small></span>
     </div>
-    ${warnings.length ? `<div class="entry-analysis-alert"><strong>Before you continue</strong><p>${warnings.map((warning) => escapeHtml(warning)).join(" ")}</p></div>` : ""}
+    ${warnings.length ? `<div class="entry-analysis-alert"><strong>Before you continue</strong>${analysisBulletList(warnings)}</div>` : ""}
     <section class="entry-analysis-section correction-plan">
       <div class="suggestion-top">
         <h3>${Number(corrections.change_count || 0) ? "Recommended changes" : "Leg review"}</h3>
         <span class="status-pill ${Number(corrections.change_count || 0) ? "status-warning" : "status-positive"}">${Number(corrections.change_count || 0)} changes</span>
       </div>
-      <p>${escapeHtml(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}</p>
+      ${analysisBulletList(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}
       <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
     </section>
     <details class="entry-analysis-details">
@@ -5243,15 +5294,34 @@ async function recheckFinalStats() {
     $("entry-history-status").textContent = "Final stat recheck canceled. No records were changed.";
     return;
   }
-  $("entry-history-status").textContent = "Checking previous entries against final stat providers...";
-  const data = await api("/api/entries/recheck-final-stats", { method: "POST" });
+  $("entry-history-status").textContent = "Starting the final-stat worker...";
+  let job = await api("/api/entries/recheck-final-stats/jobs", { method: "POST" });
+  for (let attempt = 0; attempt < 120 && ["queued", "running", "waiting"].includes(job.status); attempt += 1) {
+    $("entry-history-status").textContent = `${job.phase || "Checking official final stats..."} ${Number(job.progress || 0)}%`;
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    job = await api("/api/entries/recheck-final-stats/jobs/current");
+    if (job.status === "waiting" && attempt >= 4) break;
+  }
+  if (job.status === "failed") {
+    throw new Error(job.error || "The final-stat refresh failed. Review Settlement Health for details.");
+  }
+  if (job.status !== "complete") {
+    $("entry-history-status").textContent = job.phase || "The final-stat refresh is continuing in the background.";
+    await loadSettlementHealth();
+    return;
+  }
+  const data = job.result || {};
+  if (data.skipped) {
+    $("entry-history-status").textContent = data.message || "A final stat refresh is already running.";
+    return;
+  }
   const imported = data.provider_refresh?.imported || 0;
   const linked = data.backfill?.provider_rows || 0;
   const settled = data.auto_check?.settled || 0;
   const corrected = data.result_review?.corrected || 0;
   const reviewed = data.result_review?.reviewed || 0;
   $("entry-history-status").textContent = `Final stat recheck complete: ${data.cleared_unknowns || 0} unknown legs cleared, ${data.unknown_after || 0} still unknown. ${imported} provider rows imported, ${linked} leg results linked, ${settled} pending settled, ${corrected}/${reviewed} previous results corrected.`;
-  await Promise.allSettled([loadBets(), loadEntryProgress({ autoCheck: false, refreshProviders: false }), loadPerformance(), loadBacktest(), loadSettlementAudit(), loadAccuracyLab(), loadNotifications()]);
+  await Promise.allSettled([loadBets(), loadEntryProgress({ autoCheck: false, refreshProviders: false }), loadPerformance(), loadBacktest(), loadSettlementAudit(), loadAccuracyLab(), loadNotifications(), loadSettlementHealth()]);
 }
 
 async function createAutoPaperCalibrationEntries() {
@@ -5574,6 +5644,16 @@ function bindEvents() {
     "generate-underdog",
     "Building...",
     () => loadProviderSuggestions("Underdog", "underdog-generator-sport", "underdog-generator-legs", "underdog-suggestions-list"),
+  ));
+  $("generate-draftkings").addEventListener("click", () => withButtonBusy(
+    "generate-draftkings",
+    "Building...",
+    () => loadProviderSuggestions("DraftKings Pick6", "draftkings-generator-sport", "draftkings-generator-legs", "draftkings-suggestions-list"),
+  ));
+  $("generate-sleeper").addEventListener("click", () => withButtonBusy(
+    "generate-sleeper",
+    "Building...",
+    () => loadProviderSuggestions("Sleeper", "sleeper-generator-sport", "sleeper-generator-legs", "sleeper-suggestions-list"),
   ));
   $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", () => runOptimizer(false)));
   $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));

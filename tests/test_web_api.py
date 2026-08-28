@@ -1247,7 +1247,7 @@ def test_daily_briefing_scan_writes_status_and_run_log(monkeypatch):
     store = {}
     monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
     monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
-    monkeypatch.setattr(web_app, "_daily_briefing_payload", lambda platform, sport: {
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda platform, sport, **_kwargs: {
         "as_of": "scan-test",
         "platform": platform,
         "sport": sport or "All Sports",
@@ -1662,7 +1662,8 @@ def test_data_health_schedule_notifications_and_availability(monkeypatch):
     assert "requests_avoided" in health_body["api_usage"]
     sleeper_health = next(provider for provider in health_body["providers"] if provider["name"] == "Sleeper")
     assert "api_usage" in sleeper_health
-    assert sleeper_health["status"] == "available"
+    assert sleeper_health["status"] == "context_only"
+    assert sleeper_health["configured"] is False
     assert sleeper_health["auth_required"] is False
     assert sleeper_health["key_env"] == ""
     assert sleeper_body["auth_required"] is False
@@ -1721,7 +1722,7 @@ def test_web_entry_analysis_uses_espn_history_for_auto_projection(monkeypatch):
         {"actual": 26.0, "status": "played"},
         {"actual": 0.0, "status": "dnp"},
     ]
-    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda player, stat, sport=None, limit=100, team="": history[:limit])
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda player, stat, sport=None, limit=100, team="", **kwargs: history[:limit])
 
     body = analyze_entry(
         EntryPayload.model_validate(
@@ -2075,13 +2076,13 @@ def test_end_to_end_eligibility_requires_matchup_and_valid_start_time():
     assert "confirmed game time is missing" in eligibility["reasons"]
 
 
-def test_espn_refresh_uses_eastern_scheduled_game_date_over_placement_date():
+def test_espn_refresh_uses_scheduled_and_placement_dates_as_recovery_anchors():
     dates = espn._entry_dates([{
         "placed_at": datetime(2026, 7, 18),
         "props": [{"game_time": "2026-07-21T01:00:00Z"}],
     }])
 
-    assert [day.isoformat() for day in dates] == ["2026-07-20"]
+    assert [day.isoformat() for day in dates] == ["2026-07-17", "2026-07-20"]
 
 
 def test_stale_unverifiable_paper_entry_is_removed_from_pending_calibration(monkeypatch):
@@ -2886,14 +2887,17 @@ def test_ai_entry_review_falls_back_without_key(monkeypatch):
 
 def test_place_entry_saves_wager_and_multiplier(monkeypatch):
     saved = {}
-    monkeypatch.setattr(
-        web_app.EntryRepository,
-        "save",
-        lambda entry, status="Draft", result="", wager=0.0, multiplier=1.0, recommended_by_app=False, audit_snapshot="", entry_mode="real", payout_type="standard": saved.setdefault(
-            "payload",
-            {"status": status, "wager": wager, "multiplier": multiplier, "recommended_by_app": recommended_by_app, "audit_snapshot": audit_snapshot, "entry_mode": entry_mode},
-        ) or 11,
-    )
+    def _fake_save(entry, status="Draft", result="", wager=0.0, multiplier=1.0,
+                   recommended_by_app=False, audit_snapshot="", entry_mode="real",
+                   payout_type="standard", **kwargs):
+        saved["payload"] = {
+            "status": status, "wager": wager, "multiplier": multiplier,
+            "recommended_by_app": recommended_by_app, "audit_snapshot": audit_snapshot,
+            "entry_mode": entry_mode,
+        }
+        return 11
+
+    monkeypatch.setattr(web_app.EntryRepository, "save", _fake_save)
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 90.0})
     monkeypatch.setattr(web_app, "_placement_check", lambda payload, platform_value=None: {
         "ok": True,
@@ -3162,14 +3166,17 @@ def test_placement_check_includes_loss_protection_audit(monkeypatch):
 
 def test_place_paper_entry_does_not_require_wager(monkeypatch):
     saved = {}
-    monkeypatch.setattr(
-        web_app.EntryRepository,
-        "save",
-        lambda entry, status="Draft", result="", wager=0.0, multiplier=1.0, recommended_by_app=False, audit_snapshot="", entry_mode="real", payout_type="standard": saved.setdefault(
-            "payload",
-            {"status": status, "wager": wager, "multiplier": multiplier, "entry_mode": entry_mode, "audit_snapshot": audit_snapshot},
-        ) or 12,
-    )
+
+    def _fake_save(entry, status="Draft", result="", wager=0.0, multiplier=1.0,
+                   recommended_by_app=False, audit_snapshot="", entry_mode="real",
+                   payout_type="standard", **kwargs):
+        saved["payload"] = {
+            "status": status, "wager": wager, "multiplier": multiplier,
+            "entry_mode": entry_mode, "audit_snapshot": audit_snapshot,
+        }
+        return 12
+
+    monkeypatch.setattr(web_app.EntryRepository, "save", _fake_save)
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 90.0})
 
     body = place_entry(
@@ -3263,7 +3270,8 @@ def test_auto_paper_calibration_creates_zero_wager_paper_entries(monkeypatch):
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {"entries": {"paper": {"pending": 1}}})
     monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: _verified_rows(raw_props))
 
-    def fake_save(entry, status="Draft", result="", wager=0.0, multiplier=1.0, recommended_by_app=False, audit_snapshot="", entry_mode="real"):
+    def fake_save(entry, status="Draft", result="", wager=0.0, multiplier=1.0,
+                  recommended_by_app=False, audit_snapshot="", entry_mode="real", **kwargs):
         saved["payload"] = {
             "status": status,
             "wager": wager,
@@ -3385,7 +3393,7 @@ def test_auto_paper_confidence_target_filters_actual_candidate_bucket(monkeypatc
     ])
     confidence_by_player = {"Low": 42.0, "Target A": 84.0, "Target B": 89.9}
 
-    monkeypatch.setattr(web_app, "_analyzed_feed_prop", lambda prop: {
+    monkeypatch.setattr(web_app, "_analyzed_feed_prop", lambda prop, **kwargs: {
         **prop,
         "confidence": confidence_by_player[prop["player"]],
         "projection": float(prop["line"]) + 1,
@@ -3788,9 +3796,9 @@ def test_confirmed_props_bounds_expensive_analysis_for_large_feeds(monkeypatch):
 
     body = web_app._confirmed_props_payload("PrizePicks", "WNBA", limit=20)
 
-    assert len(analyzed_calls) == 120
+    assert len(analyzed_calls) == 40
     assert body["analyzed_count"] == 1000
-    assert body["count"] == 120
+    assert body["count"] == 40
 
 
 def test_confirmed_entry_suggestions_use_confirmed_pool(monkeypatch):
@@ -4477,7 +4485,11 @@ def test_prizepicks_adjusted_lines_use_standard_baseline(monkeypatch):
     assert analyzed["is_discounted_line"] is True
     assert analyzed["edge"] == 2
     assert any(label["label"] == "Discounted line" for label in analyzed["data_strength"])
-    assert captured_history_scope == {"game": "AAA@BBB", "line_offer_type": "goblin"}
+    assert captured_history_scope == {
+        "game": "AAA@BBB",
+        "line_offer_type": "goblin",
+        "allow_identity_fallback": True,
+    }
 
 
 def test_prizepicks_adjusted_lines_infer_premium_side_from_standard_line() -> None:
@@ -4533,6 +4545,7 @@ def test_market_timing_alerts_detect_steam_move(monkeypatch):
 
 
 def test_clv_report_compares_placed_line_to_current_line(monkeypatch):
+    web_app._CLV_REPORT_CACHE.clear()
     monkeypatch.setattr(
         web_app.EntryRepository,
         "all",
@@ -4581,6 +4594,7 @@ def test_clv_report_compares_placed_line_to_current_line(monkeypatch):
 
 
 def test_clv_report_quarantines_legacy_lines_without_offer_provenance(monkeypatch):
+    web_app._CLV_REPORT_CACHE.clear()
     monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [{
         "id": 1,
         "status": "Settled",
@@ -5588,6 +5602,34 @@ def test_game_time_backfill_requires_team_and_opponent_match():
     assert matched == "2026-07-12T23:00Z"
 
 
+def test_game_time_backfill_normalizes_underdog_las_to_espn_la():
+    indexed = EntryRepository._index_game_times([
+        {"sport": "WNBA", "game": "ATL@LA", "game_time": "2026-08-25T02:00Z"},
+        {"sport": "WNBA", "game": "WSH@LA", "game_time": "2026-08-29T02:00Z"},
+    ])
+    prop = SimpleNamespace(sport="WNBA", team="LAS", game="ATL @ LAS")
+
+    matched = EntryRepository._matching_game_time(
+        prop,
+        indexed,
+        datetime(2026, 8, 24, 6, 44),
+    )
+
+    assert matched == "2026-08-25T02:00Z"
+
+
+def test_espn_entry_dates_keep_placement_anchor_after_bad_rematch_time():
+    entries = [{
+        "placed_at": datetime(2026, 8, 24, 6, 44, tzinfo=UTC),
+        "props": [{"game_time": "2026-08-29T02:00:00Z"}],
+    }]
+
+    dates = espn._entry_dates(entries)
+
+    assert datetime(2026, 8, 24).date() in dates
+    assert datetime(2026, 8, 28).date() in dates
+
+
 def test_entry_progress_endpoint_can_run_local_auto_check(monkeypatch):
     calls = {}
 
@@ -6367,7 +6409,7 @@ def test_recheck_entry_final_stats_refreshes_backfills_and_settles_unknowns(monk
     monkeypatch.setattr(web_app.EntryRepository, "all", fake_all)
     monkeypatch.setattr(web_app, "_refresh_final_stats", lambda rows: {"provider": "espn+sportsdataio", "imported": 2, "fetched_rows": 2, "errors": []})
     monkeypatch.setattr(web_app, "_backfill_settled_entry_leg_results", lambda rows: {"entries": 1, "backfilled": 1, "leg_rows": 2, "provider_rows": 1})
-    monkeypatch.setattr(web_app, "_auto_check_pending_entries", fake_auto_check)
+    monkeypatch.setattr(web_app, "_auto_check_pending_entries_locked", fake_auto_check)
     monkeypatch.setattr(
         web_app,
         "_quarantine_mismatched_settlement_evidence",
@@ -6405,7 +6447,7 @@ def test_recheck_entry_final_stats_corrects_completed_entry_result(monkeypatch):
     monkeypatch.setattr(web_app.EntryRepository, "all", lambda: entries)
     monkeypatch.setattr(web_app, "_refresh_final_stats", lambda rows: {"provider": "test", "imported": 0, "fetched_rows": 0, "errors": []})
     monkeypatch.setattr(web_app, "_backfill_settled_entry_leg_results", lambda rows: {"entries": 1, "backfilled": 1, "leg_rows": 2, "provider_rows": 2})
-    monkeypatch.setattr(web_app, "_auto_check_pending_entries", lambda allow_estimates=False, refresh_providers=True: {"checked": 0, "settled": 0, "entries": []})
+    monkeypatch.setattr(web_app, "_auto_check_pending_entries_locked", lambda allow_estimates=False, refresh_providers=True: {"checked": 0, "settled": 0, "entries": []})
     monkeypatch.setattr(web_app, "_quarantine_mismatched_settlement_evidence", lambda: {"detected": 0, "quarantined": 0, "entries": 0, "items": []})
     monkeypatch.setattr(
         web_app,
@@ -6623,3 +6665,34 @@ def test_player_stat_hit_leaderboard_ranks_current_lines_by_verified_results(mon
     assert rows[0]["direction"] == "Over"
     assert rows[0]["season_hit_rate"] == 90.0
     assert rows[0]["sample_size"] == 10
+
+
+def test_background_settlement_refresh_reuses_active_job(monkeypatch):
+    from threading import Event
+
+    store = {}
+    started = Event()
+    release = Event()
+
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(web_app, "_SETTLEMENT_JOB_FUTURE", None)
+
+    def refresh(_allow_estimates):
+        started.set()
+        assert release.wait(timeout=2)
+        return {"cleared_unknowns": 2, "unknown_after": 0}
+
+    monkeypatch.setattr(web_app, "_recheck_final_stats_with_lock", refresh)
+
+    first = web_app._start_settlement_recheck_job(False)
+    assert started.wait(timeout=2)
+    second = web_app._start_settlement_recheck_job(False)
+
+    assert second["job_id"] == first["job_id"]
+    assert second["reused"] is True
+    release.set()
+    web_app._SETTLEMENT_JOB_FUTURE.result(timeout=2)
+    status = web_app._settlement_job_status()
+    assert status["status"] == "complete"
+    assert status["result"]["cleared_unknowns"] == 2

@@ -5,9 +5,7 @@ from datetime import UTC, datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from analytics.correlation import estimate_correlation_matrix
-from analytics.entry_recommendation import recommendation as entry_recommendation
-from analytics.pickem_payouts import payout_analysis, payout_schedule, settlement_return_multiplier
+from analytics.pickem_payouts import payout_schedule, settlement_return_multiplier
 from models.entry import Entry
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
@@ -30,8 +28,8 @@ class EntryRepository:
         6: 37.5,
     }
     TEAM_ALIASES = {
-        "LAS": "LV",
-        "LVA": "LV",
+        "LAS": "LA",
+        "LVA": "LA",
         "NYL": "NY",
         "PHO": "PHX",
         "GSV": "GS",
@@ -55,41 +53,35 @@ class EntryRepository:
         audit_snapshot: str = "",
         entry_mode: str = "real",
         payout_type: str = "standard",
+        *,
+        payout: dict | None = None,
+        analysis: dict | None = None,
     ) -> int:
+        """Persist an entry.
+
+        When ``payout`` and ``analysis`` are supplied (pre-computed by the
+        service layer via ``entry_creation_service.prepare_entry_analysis``),
+        the repository skips recomputing them.  CLI / GUI callers that omit
+        these kwargs trigger the internal fallback so they keep working unchanged.
+        """
 
         EntryRepository._ensure_schema()
         session: Session = SessionLocal()
 
         try:
-            checked_props = [(prop, prop_line_plausibility(prop)) for prop in entry.props]
-            invalid_props = [(prop, result) for prop, result in checked_props if not result.valid]
-            if invalid_props:
-                _, validation = invalid_props[0]
-                raise ValueError(f"Entry contains an invalid market: {validation.reason}")
+            if payout is None or analysis is None:
+                from web.application.entry_creation_service import prepare_entry_analysis
+
+                payout, analysis = prepare_entry_analysis(
+                    entry,
+                    payout_type=payout_type,
+                    multiplier=multiplier,
+                    audit_snapshot=audit_snapshot,
+                )
             wager = round(float(wager or 0), 2)
             multiplier = round(float(multiplier or 1), 2)
             potential_payout = round(wager * multiplier, 2)
             entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
-            audit_payload = {}
-            try:
-                audit_payload = json.loads(audit_snapshot or "{}")
-            except (TypeError, ValueError):
-                audit_payload = {}
-            audited_payout = audit_payload.get("payout_analysis") or {}
-            exact_schedule = (
-                audited_payout.get("payouts")
-                if audited_payout.get("source") == "exact_offer_snapshot"
-                else None
-            )
-            payout = payout_analysis(
-                [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
-                entry.platform.value,
-                payout_type,
-                displayed_multiplier=multiplier,
-                correlation_matrix=estimate_correlation_matrix(entry.props),
-                exact_schedule=exact_schedule,
-            )
-            analysis = entry_recommendation(entry, payout)
             identities = [
                 PlayerIdentityRepository.resolve(
                     prop.player.name,
@@ -134,6 +126,8 @@ class EntryRepository:
                     player_identity_id=identity["id"] if identity else getattr(prop, "player_identity_id", None),
                     player_provider=getattr(prop, "player_provider", "") or prop.platform.value,
                     provider_player_id=getattr(prop, "provider_player_id", "") or "",
+                    provider_event_id=getattr(prop, "provider_event_id", "") or "",
+                    provider_offer_id=getattr(prop, "provider_offer_id", "") or "",
                     team=prop.player.team,
                     sport=prop.player.sport,
                     stat=prop.stat.value,
@@ -308,6 +302,8 @@ class EntryRepository:
                             "player_identity_id": getattr(prop, "player_identity_id", None),
                             "player_provider": getattr(prop, "player_provider", "") or "",
                             "provider_player_id": getattr(prop, "provider_player_id", "") or "",
+                            "provider_event_id": getattr(prop, "provider_event_id", "") or "",
+                            "provider_offer_id": getattr(prop, "provider_offer_id", "") or "",
                             "team": prop.team,
                             "sport": prop.sport,
                             "stat": prop.stat,
@@ -990,6 +986,8 @@ class EntryRepository:
                     "player_identity_id": getattr(prop, "player_identity_id", None),
                     "player_provider": getattr(prop, "player_provider", "") or "",
                     "provider_player_id": getattr(prop, "provider_player_id", "") or "",
+                    "provider_event_id": getattr(prop, "provider_event_id", "") or "",
+                    "provider_offer_id": getattr(prop, "provider_offer_id", "") or "",
                     "team": prop.team,
                     "sport": prop.sport,
                     "stat": prop.stat,

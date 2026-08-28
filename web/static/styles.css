@@ -556,7 +556,13 @@ p { color: var(--muted); margin: 5px 0 0; }
   margin-right: 14px;
 }
 .daily-briefing-summary {
+  width: 100%;
+  min-width: 0;
   padding: 14px;
+}
+.daily-briefing-summary > * {
+  min-width: 0;
+  max-width: 100%;
 }
 .command-welcome {
   display: grid;
@@ -2151,6 +2157,29 @@ tr.sport-group-row:hover td {
   margin-top: 7px !important;
   color: var(--text) !important;
   font-size: 15px;
+}
+
+.analysis-bullet-list {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.analysis-bullet-list li {
+  padding-left: 3px;
+}
+
+.analysis-bullet-list li::marker {
+  color: var(--primary);
+}
+
+.compact-analysis-bullets {
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 13px;
 }
 
 .entry-analysis-risk {
@@ -4250,6 +4279,34 @@ tr:hover td {
   margin-top: 0;
 }
 
+.settlement-health {
+  margin: 10px 0 14px;
+  padding: 12px;
+}
+
+.settlement-health.attention {
+  border-color: rgba(255, 190, 76, .55);
+}
+
+.settlement-health-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.settlement-health-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settlement-health p:last-child {
+  margin-bottom: 0;
+}
+
 .provider-generator .toolbar > * {
   min-width: 0;
 }
@@ -5016,6 +5073,16 @@ td {
 
   .main {
     padding-inline: 14px;
+  }
+
+  .daily-briefing-panel,
+  .daily-briefing-summary,
+  .daily-briefing-summary > *,
+  .opportunity-board,
+  .games-today-panel {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 
   .form-grid,

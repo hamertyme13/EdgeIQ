@@ -29,6 +29,10 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
             row[1]
             for row in connection.execute("PRAGMA table_info(bets)")
         }
+        entry_prop_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(entry_props)")
+        }
 
     assert {
         "alembic_version",
@@ -41,6 +45,7 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "research_evidence",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
+    assert {"provider_event_id", "provider_offer_id"} <= entry_prop_columns
 
 
 def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None:
@@ -73,7 +78,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'board_offer_observations'"
         ).fetchone()[0]
 
-    assert revision == "b72a19f6c441"
+    assert revision == "d94e7f31a205"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1

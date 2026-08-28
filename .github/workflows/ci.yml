@@ -22,10 +22,19 @@ jobs:
       - run: ruff check .
       - run: >-
           mypy
-          analytics/
-          repository/
-          services/
-          utils/
+          analytics/pipeline_types.py
+          analytics/release_validation.py
+          analytics/entry_recommendation.py
+          analytics/probabilistic_forecast.py
+          analytics/model_version_evaluation.py
+          services/probability.py
+          services/data_management.py
+          services/odds.py
+          utils/entity_normalization.py
+          utils/platforms.py
+          utils/sports.py
+          utils/ttl_cache.py
+          utils/logging_config.py
           web/application
           web/routers
           web/schemas

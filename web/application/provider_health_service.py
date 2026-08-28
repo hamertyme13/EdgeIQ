@@ -5,7 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from data.providers import pandascore, sleeper
+from data.providers import draftkings_pick6, pandascore, sleeper
 from data.providers.cache import cache_metrics
 from repository.repositories.settings_repository import SettingsRepository
 from utils.time import utc_now
@@ -22,6 +22,7 @@ def build_data_health_payload(
     providers = [
         provider_health_row("PrizePicks", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
         provider_health_row("Underdog", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
+        draftkings_pick6_health_row(settlement_status_key),
         sleeper_health_row(),
         provider_health_row(
             "OpenAI",
@@ -159,6 +160,7 @@ def provider_api_usage(name: str, usage: dict) -> dict:
     host_fragments = {
         "PrizePicks": ("prizepicks.com",),
         "Underdog": ("underdogfantasy.com",),
+        "DraftKings Pick6": ("apify.com",),
         "Sleeper": ("sleeper.app",),
         "OpenAI": ("openai.com",),
         "SportsDataIO": ("sportsdata.io",),
@@ -233,6 +235,28 @@ def provider_health_row(
         "row_count": int(runtime.get("row_count") or 0),
         "message": provider_health_message(name, status, key_env, runtime),
     }
+
+
+def draftkings_pick6_health_row(settlement_status_key: str) -> dict:
+    status = draftkings_pick6.cache_status()
+    row = provider_health_row(
+        "DraftKings Pick6",
+        "Pick6 player props through Apify",
+        configured=bool(status["configured"]),
+        key_env="APIFY_TOKEN",
+        settlement_status_key=settlement_status_key,
+    )
+    if status["cached"]:
+        row.update({
+            "status": "fresh" if status["fresh"] else "stale",
+            "age_minutes": int(status["age_seconds"] or 0) // 60,
+            "row_count": int(status["row_count"] or 0),
+            "message": (
+                f"DraftKings Pick6 has {status['row_count']} cached offers. "
+                "Apify actor runs are limited and are reused for one hour."
+            ),
+        })
+    return row
 
 
 def provider_health_message(
@@ -311,8 +335,8 @@ def sleeper_health_row() -> dict:
     return {
         "name": "Sleeper",
         "purpose": "public NFL player metadata/trends; optional prop-feed import",
-        "status": "available",
-        "configured": True,
+        "status": "available" if status["props_configured"] else "context_only",
+        "configured": status["props_configured"],
         "key_env": "",
         "has_key": False,
         "auth_required": False,
@@ -322,7 +346,7 @@ def sleeper_health_row() -> dict:
         "message": (
             "No API key needed. Public read-only trends are available; "
             f"player cache is {cache_label}. "
-            f"{'Prop feed configured.' if status['props_configured'] else 'Configure a Sleeper prop feed only if you want Sleeper lines.'}"
+            f"{'Pick em prop feed configured.' if status['props_configured'] else 'Pick em lines are not connected; configure EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE to enable its generator.'}"
         ),
     }
 

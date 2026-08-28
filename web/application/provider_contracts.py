@@ -31,11 +31,11 @@ _CONTRACTS = {
         "Not for settlement",
     ),
     "DraftKings Pick6": ProviderContract(
-        "manual_import",
-        "draftkings-pick6-manual-v1",
+        "authenticated_marketplace_actor",
+        "apify-draftkings-pick6-v1",
         False,
-        "",
-        "Manual entry tracking and imported Pick6 offers",
+        "https://console.apify.com/actors/zen-studio~draftkings-pick6-player-props",
+        "Current Pick6 entry lines supplied by a third-party Apify actor",
         "Not for settlement; ESPN verifies final player stats",
     ),
     "Sleeper": ProviderContract(

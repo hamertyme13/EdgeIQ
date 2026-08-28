@@ -2,12 +2,16 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from utils.platforms import canonical_platform, maximum_entry_legs
+
 
 class PropPayload(BaseModel):
     player: str
     player_identity_id: int | None = None
     player_provider: str = ""
     provider_player_id: str = ""
+    provider_event_id: str = ""
+    provider_offer_id: str = ""
     team: str = ""
     position: str = ""
     sport: str
@@ -51,25 +55,8 @@ class EntryPayload(BaseModel):
 
     @model_validator(mode="after")
     def detect_source_platform(self):
-        aliases = {
-            "prizepicks": "PrizePicks",
-            "prize picks": "PrizePicks",
-            "underdog": "Underdog",
-            "underdog fantasy": "Underdog",
-            "draftkings": "DraftKings Pick6",
-            "draftkings pick6": "DraftKings Pick6",
-            "dk pick6": "DraftKings Pick6",
-            "sleeper": "Sleeper",
-            "ball don't lie": "Ball Don't Lie",
-            "balldontlie": "Ball Don't Lie",
-        }
-
-        def canonical(value: str) -> str:
-            text = str(value or "").strip()
-            return aliases.get(text.lower(), text)
-
         explicit_sources = {
-            canonical(prop.platform)
+            canonical_platform(prop.platform)
             for prop in self.props
             if "platform" in prop.model_fields_set and str(prop.platform or "").strip()
         }
@@ -79,11 +66,11 @@ class EntryPayload(BaseModel):
                 f"This entry contains props from multiple sportsbooks ({sources}). "
                 "Build one entry per sportsbook."
             )
-        detected = next(iter(explicit_sources), canonical(self.platform) or "PrizePicks")
-        maximum_legs = 8 if detected == "Underdog" else 6 if detected in {"PrizePicks", "DraftKings Pick6"} else 5
-        if len(self.props) > maximum_legs:
+        detected = next(iter(explicit_sources), canonical_platform(self.platform, "PrizePicks"))
+        max_legs = maximum_entry_legs(detected)
+        if len(self.props) > max_legs:
             raise ValueError(
-                f"{detected} entries support at most {maximum_legs} legs."
+                f"{detected} entries support at most {max_legs} legs."
             )
         self.platform = detected
         for prop in self.props:

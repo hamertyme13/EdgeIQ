@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from threading import Lock
 
@@ -55,16 +56,22 @@ def suggest_entries(
     recommendation_props = _prefilter_raw_markets(
         [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)],
         sport,
-        limit=max(12, leg_count * 2),
+        limit=max(8, leg_count * 2),
     )
-    forecast_cache: dict[tuple, PropForecast] = {}
     candidates = []
+    eligible_props = []
     for prop in recommendation_props:
         if prop.get("line") is None or (
             sport.upper() != "ALL SPORTS" and prop.get("league", "").upper() != sport.upper()
         ):
             continue
-        candidates.extend(_props_from_feed(prop, platform, forecast_cache))
+        eligible_props.append(prop)
+    if len(eligible_props) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(eligible_props))) as pool:
+            for rows in pool.map(lambda prop: _props_from_feed(prop, platform, {}), eligible_props):
+                candidates.extend(rows)
+    elif eligible_props:
+        candidates.extend(_props_from_feed(eligible_props[0], platform, {}))
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
     candidates = _top_markets_per_player(candidates, per_player=2, limit=48)
@@ -390,6 +397,8 @@ def _prop_from_side(raw: dict, platform: Platform, line: float, trending_count: 
         player_provider=str(raw.get("player_provider") or raw.get("platform") or platform.value),
         provider_player_id=str(raw.get("provider_player_id") or raw.get("player_id") or ""),
         provider_projection_id=str(raw.get("projection_id") or raw.get("provider_projection_id") or ""),
+        provider_event_id=str(raw.get("game_id") or raw.get("event_id") or raw.get("provider_event_id") or ""),
+        provider_offer_id=str(raw.get("projection_id") or raw.get("provider_offer_id") or raw.get("offer_id") or ""),
         provider_offer_verified=bool(raw.get("projection_id") or raw.get("provider_projection_id")),
         model_version=str(forecast_snapshot.get("model_version") or ""),
         feature_as_of=str(forecast_snapshot.get("feature_as_of") or ""),

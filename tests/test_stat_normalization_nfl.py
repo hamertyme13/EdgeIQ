@@ -34,3 +34,4 @@ def test_fantasy_and_baseball_settlement_aliases_are_canonical() -> None:
     assert stat_type_from_text("Pitching Outs") == StatType.OUTS_RECORDED
     assert stat_type_from_text("Walks Allowed") == StatType.PITCHING_WALKS
     assert stat_type_from_text("Pitch Count") == StatType.PITCHES
+    assert canonical_stat_label("TB") == "Total Bases"

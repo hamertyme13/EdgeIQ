@@ -47,6 +47,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.9",
 ]
+production = [
+    "psycopg[binary]>=3.2,<4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

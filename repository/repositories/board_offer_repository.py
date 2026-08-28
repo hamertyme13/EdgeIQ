@@ -34,8 +34,12 @@ class BoardOfferRepository:
         BoardOfferRepository._ensure_schema()
         captured = captured_at or utc_now()
         bucket = captured.astimezone(UTC).replace(second=0, microsecond=0).isoformat()
-        prepared = [_prepared_row(row, provider, bucket) for row in rows]
-        prepared = [row for row in prepared if row is not None]
+        prepared_by_key: dict[str, dict] = {}
+        for raw in rows:
+            row = _prepared_row(raw, provider, bucket)
+            if row is not None:
+                prepared_by_key.setdefault(row["observation_key"], row)
+        prepared = list(prepared_by_key.values())
         if not prepared:
             return 0
         keys = [row["observation_key"] for row in prepared]
@@ -64,6 +68,7 @@ class BoardOfferRepository:
             for row in prepared:
                 if row["observation_key"] in existing:
                     continue
+                existing.add(row["observation_key"])
                 row["opening_line"] = openings.get(row["market_key"], row["line"])
                 session.add(BoardOfferObservationModel(**row, captured_at=captured))
                 created += 1

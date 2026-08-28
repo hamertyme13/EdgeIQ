@@ -2,21 +2,19 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from contextlib import AbstractContextManager
 from copy import deepcopy
-from threading import Lock
 
-from data.providers import pandascore
+from data.providers import pandascore, sleeper
 from utils.entity_normalization import canonical_person_key
 from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
+from utils.ttl_cache import TTLMap
 
 
 class RecommendationRequestError(ValueError):
     pass
 
 
-_ENTRY_GENERATOR_CACHE: dict[tuple, tuple[float, dict]] = {}
-_ENTRY_GENERATOR_LOCK = Lock()
+_ENTRY_GENERATOR_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
 _ENTRY_GENERATOR_TTL_SECONDS = 45.0
 
 
@@ -202,8 +200,7 @@ def cached_command_center_payload(
     sport: str,
     refresh: bool,
     *,
-    cache: dict,
-    lock: AbstractContextManager,
+    cache: TTLMap[tuple, dict],
     ttl_seconds: float,
     canonical_platform: Callable[[str], str],
     selected_platforms: Callable[[str], list[str]],
@@ -220,14 +217,12 @@ def cached_command_center_payload(
         payload_token,
         tuple((canonical_platform(name), fetcher_token(name)) for name in selected_platforms(platform)),
     )
-    now = time.monotonic()
-    with lock:
-        cached = cache.get(cache_key)
-        if not refresh and cached and cached[0] > now:
-            return cached[1]
-        payload = build_payload(platform, sport_filter)
-        cache[cache_key] = (now + ttl_seconds, payload)
-        return payload
+    cached = cache.get(cache_key)
+    if not refresh and cached is not None:
+        return cached
+    payload = build_payload(platform, sport_filter)
+    cache.set(cache_key, payload, ttl=ttl_seconds)
+    return payload
 
 
 def entry_suggestions_payload(
@@ -255,6 +250,25 @@ def entry_suggestions_payload(
         raise RecommendationRequestError(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
+    if entry_platform == "Sleeper" and not sleeper.public_api_status()["props_configured"]:
+        return {
+            "suggestions": [],
+            "mode": "sleeper_feed_unavailable",
+            "platform": entry_platform,
+            "sport": sport_filter,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "message": (
+                "Sleeper's public API provides NFL player and trend context, but not current Pick'em lines. "
+                "Configure EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE with a current line feed "
+                "before EdgeIQ builds Sleeper cards. This prevents recommendations from using invented or stale offers."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": "provider_configuration",
+            },
+        }
     if sport_filter in _ESPORT_SPORTS and (
         sport_filter not in pandascore.supported_sports() or not pandascore.configured()
     ):
@@ -289,17 +303,15 @@ def entry_suggestions_payload(
             for prop in raw_props[:150]
         ),
     )
-    now = time.monotonic()
-    with _ENTRY_GENERATOR_LOCK:
-        cached = _ENTRY_GENERATOR_CACHE.get(cache_key)
-        if cached and cached[0] > now:
-            payload = deepcopy(cached[1])
-            payload["performance"] = {
-                "cache_hit": True,
-                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
-                "source": source,
-            }
-            return payload
+    cached = _ENTRY_GENERATOR_CACHE.get(cache_key)
+    if cached is not None:
+        payload = deepcopy(cached)
+        payload["performance"] = {
+            "cache_hit": True,
+            "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "source": source,
+        }
+        return payload
     platform_pairs = props_by_platform(entry_platform, raw_props)
     if not platform_pairs and source == "daily_briefing_snapshot":
         raw_props = fetch_props(entry_platform, sport_filter)
@@ -329,6 +341,24 @@ def entry_suggestions_payload(
             (str(prop.get("game_time") or "").strip() for prop in raw_props if prop.get("game_time")),
             default="",
         )
+        if entry_platform == "DraftKings Pick6":
+            return {
+                "suggestions": [],
+                "mode": "draftkings_feed_unavailable",
+                "platform": entry_platform,
+                "leg_count": leg_count,
+                "maximum_legs": maximum_legs,
+                "message": (
+                    "No usable DraftKings Pick6 snapshot is available. Add APIFY_TOKEN, then use Refresh Providers once. "
+                    "EdgeIQ reuses that actor result for one hour to avoid unnecessary pay-per-event runs. "
+                    "The current actor supports MLB, NBA, NHL, soccer, PGA, UFC, CS, LOL, VAL, COD, and NASCAR; it does not advertise NFL or WNBA."
+                ),
+                "performance": {
+                    "cache_hit": False,
+                    "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                    "source": source,
+                },
+            }
         return {
             "suggestions": [],
             "mode": "waiting_for_same_day_lines",
@@ -393,12 +423,7 @@ def entry_suggestions_payload(
             if not serialized else ""
         ),
     }
-    with _ENTRY_GENERATOR_LOCK:
-        _ENTRY_GENERATOR_CACHE[cache_key] = (now + _ENTRY_GENERATOR_TTL_SECONDS, deepcopy(payload))
-        if len(_ENTRY_GENERATOR_CACHE) > 64:
-            expired = [key for key, value in _ENTRY_GENERATOR_CACHE.items() if value[0] <= now]
-            for key in expired or list(_ENTRY_GENERATOR_CACHE)[:16]:
-                _ENTRY_GENERATOR_CACHE.pop(key, None)
+    _ENTRY_GENERATOR_CACHE.set(cache_key, deepcopy(payload), ttl=_ENTRY_GENERATOR_TTL_SECONDS)
     return payload
 
 
@@ -411,9 +436,17 @@ def _generate_entry_suggestions(
 ) -> list:
     suggestions = []
     for platform_model, props in platform_pairs:
+        bounded_props = sorted(
+            props,
+            key=lambda prop: (
+                float(prop.get("source_score") or 0.0),
+                int(prop.get("trending_count") or 0),
+            ),
+            reverse=True,
+        )[:40]
         suggestions.extend(
             suggest(
-                props,
+                bounded_props,
                 sport,
                 platform_model,
                 limit=5,
@@ -494,11 +527,11 @@ def crazy_six_payload(
 ) -> dict:
     sport_filter = _sport_filter(sport)
     requested_platforms = selected_entry_platforms(platform)
-    platform_names = list(dict.fromkeys([*requested_platforms, "PrizePicks", "Underdog"]))
+    platform_names = list(dict.fromkeys(requested_platforms))
     candidates: list[dict] = []
     available_sports: set[str] = set()
     for platform_name in platform_names:
-        raw_props = feed_pool(fetch_platform_props(platform_name), sport_filter)
+        raw_props = feed_pool(fetch_platform_props(platform_name), sport_filter)[:24]
         confirmed_rows: list[dict] = []
         for raw in raw_props:
             raw_sport = str(raw.get("league") or "").upper()

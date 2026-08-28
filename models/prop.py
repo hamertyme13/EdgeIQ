@@ -76,6 +76,10 @@ class Prop:
 
     provider_projection_id: str = ""
 
+    provider_event_id: str = ""
+
+    provider_offer_id: str = ""
+
     provider_offer_verified: bool = False
 
     model_version: str = ""

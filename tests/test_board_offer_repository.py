@@ -52,6 +52,13 @@ def test_complete_board_capture_is_idempotent_within_minute(tmp_path, monkeypatc
         assert row.provider_payload
 
 
+def test_complete_board_capture_deduplicates_same_offer_inside_batch(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    offer = _offer()
+
+    assert BoardOfferRepository.record_many([offer, dict(offer)], "PrizePicks") == 1
+
+
 def test_analysis_enriches_board_without_removing_unselected_offers(tmp_path, monkeypatch):
     session_local = _isolated_database(tmp_path, monkeypatch)
     BoardOfferRepository.record_many([_offer(), {**_offer(18.5), "id": "offer-2", "stat": "Rebounds"}], "PrizePicks")

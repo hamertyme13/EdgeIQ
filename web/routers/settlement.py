@@ -23,6 +23,10 @@ class SettlementDependencies:
     backfill_final_stats: Callable[[bool], dict]
     recheck_final_stats_preview: Callable[[], dict]
     recheck_final_stats: Callable[[bool], dict]
+    start_recheck_job: Callable[[bool], dict]
+    recheck_job_status: Callable[[], dict]
+    settlement_health: Callable[[], dict]
+    archive_final_stats: Callable[[int, bool], dict]
     classify_default_wagers: Callable[[], dict]
     import_final_stats: Callable[[FinalStatsPayload], dict]
 
@@ -114,6 +118,30 @@ def preview_entry_final_stats_recheck(deps: DepsSettlement = None) -> dict:  # t
 def recheck_entry_final_stats(allow_estimates: bool = False, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
     return _deps.recheck_final_stats(allow_estimates)
+
+
+@router.post("/api/entries/recheck-final-stats/jobs")
+def start_entry_final_stats_recheck(allow_estimates: bool = False, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.start_recheck_job(allow_estimates)
+
+
+@router.get("/api/entries/recheck-final-stats/jobs/current")
+def current_entry_final_stats_recheck(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.recheck_job_status()
+
+
+@router.get("/api/entries/settlement-health")
+def settlement_health(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.settlement_health()
+
+
+@router.post("/api/final-stats/archive")
+def archive_final_stats(retention_days: int = 730, dry_run: bool = True, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.archive_final_stats(retention_days, dry_run)
 
 
 @router.post("/api/entries/classify-default-wagers")
