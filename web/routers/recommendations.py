@@ -21,6 +21,7 @@ class RecommendationDependencies:
     command_center: Callable[[str, str, bool], dict]
     opportunity_feed: Callable[[str, str, float, int, int], dict]
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
+    start_auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
     paper_calibration_status: Callable[[], dict]
     entry_suggestions: Callable[[str, str, int, set[str]], dict]
     confirmed_suggestions: Callable[[str, str], dict]
@@ -106,6 +107,12 @@ def opportunity_feed(
 def auto_paper_calibration(payload: AutoPaperCalibrationPayload, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
     return _deps.auto_paper(payload)
+
+
+@router.post("/api/entries/auto-paper-calibration/jobs", status_code=202)
+def start_auto_paper_calibration(payload: AutoPaperCalibrationPayload, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.start_auto_paper(payload)
 
 
 @router.get("/api/entries/paper-calibration-status")

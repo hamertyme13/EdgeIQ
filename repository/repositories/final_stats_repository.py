@@ -93,6 +93,11 @@ class FinalStatsRepository:
                     session.flush()
                     existing_index[key] = existing
                 saved += 1
+            # Imported locally because the feature repository reads this
+            # repository while rebuilding a segment.
+            from repository.repositories.player_feature_repository import PlayerFeatureRepository
+
+            PlayerFeatureRepository.expire_segments(session, prepared)
             session.commit()
         return saved
 

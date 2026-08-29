@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from web.schemas import (
     AlertDeliveryPayload,
@@ -31,6 +31,9 @@ class OperationsDependencies:
     refresh_schedule: Callable[[], dict]
     update_refresh_schedule: Callable[[RefreshSchedulePayload], dict]
     run_daily_refresh: Callable[[], dict]
+    start_daily_refresh: Callable[[], dict]
+    start_feature_refresh: Callable[[], dict]
+    feature_status: Callable[[], dict]
     alert_delivery: Callable[[], dict]
     update_alert_delivery: Callable[[AlertDeliveryPayload], dict]
     test_alert_delivery: Callable[[AlertDeliveryTestPayload], dict]
@@ -124,13 +127,21 @@ def run_daily_refresh(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
 
 
 @router.post("/api/automation/start-daily-refresh", status_code=202)
-def start_daily_refresh(background_tasks: BackgroundTasks, deps: DepsOps = None) -> dict:  # type: ignore[assignment]
+def start_daily_refresh(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, OperationsDependencies) else get_deps()
-    background_tasks.add_task(_deps.run_daily_refresh)
-    return {
-        "accepted": True,
-        "message": "Provider refresh started. You can keep using EdgeIQ while it finishes.",
-    }
+    return _deps.start_daily_refresh()
+
+
+@router.post("/api/player-features/jobs", status_code=202)
+def start_player_feature_refresh(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, OperationsDependencies) else get_deps()
+    return _deps.start_feature_refresh()
+
+
+@router.get("/api/player-features/status")
+def player_feature_status(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, OperationsDependencies) else get_deps()
+    return _deps.feature_status()
 
 
 @router.get("/api/settings/alert-delivery")

@@ -1661,9 +1661,25 @@ async function loadRefreshSchedule() {
   `).join("");
 }
 
+async function waitForBackgroundJob(job, onProgress, { maxAttempts = 300 } = {}) {
+  let current = job;
+  for (let attempt = 0; attempt < maxAttempts && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
+    if (onProgress) onProgress(current);
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    current = await api(`/api/jobs/${encodeURIComponent(current.job_id)}`);
+  }
+  if (onProgress) onProgress(current);
+  if (current.status === "failed") throw new Error(current.error || `${current.label || "Background job"} could not finish.`);
+  if (current.status === "canceled") throw new Error(`${current.label || "Background job"} was canceled.`);
+  return current;
+}
+
 async function runDailyRefresh() {
   if ($("refresh-schedule-list")) $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
-  await api("/api/automation/run-daily-refresh", { method: "POST" });
+  const started = await api("/api/automation/start-daily-refresh", { method: "POST" });
+  await waitForBackgroundJob(started, (job) => {
+    if ($("refresh-schedule-list")) $("refresh-schedule-list").innerHTML = `<div class="suggestion">${escapeHtml(job.phase || "Refreshing providers...")} ${Number(job.progress || 0)}%</div>`;
+  });
   return Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus(), loadEntryProgress({ autoCheck: true, refreshProviders: true })]);
 }
 
@@ -1675,10 +1691,21 @@ async function refreshTodayProviders() {
   }
   try {
     const result = await api("/api/automation/start-daily-refresh", { method: "POST" });
-    if (status) status.textContent = result.message || "Provider refresh started. You can keep using EdgeIQ.";
-    window.setTimeout(() => {
-      Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus()]);
-    }, 15000);
+    if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
+    waitForBackgroundJob(result, (job) => {
+      if (status) status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
+    }).then(() => {
+      if (status) {
+        status.textContent = "Provider data refreshed.";
+        status.classList.add("is-fresh");
+      }
+      return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus()]);
+    }).catch((error) => {
+      if (status) {
+        status.textContent = humanErrorMessage(error, "Provider refresh did not finish. Try again.");
+        status.classList.add("needs-refresh");
+      }
+    });
   } catch (error) {
     if (status) {
       status.textContent = "Provider refresh did not finish. Try again.";
@@ -5330,7 +5357,7 @@ async function createAutoPaperCalibrationEntries() {
   $("auto-paper-calibration-status").textContent = sport === "All Sports"
     ? "Building five $0-risk calibration cards for every sport with verified offers..."
     : `Building five $0-risk ${sport} calibration cards from weak confidence buckets...`;
-  const data = await api("/api/entries/auto-paper-calibration", {
+  const started = await api("/api/entries/auto-paper-calibration/jobs", {
     method: "POST",
     body: JSON.stringify({
       platform,
@@ -5342,6 +5369,10 @@ async function createAutoPaperCalibrationEntries() {
       dry_run: false,
     }),
   });
+  const job = await waitForBackgroundJob(started, (current) => {
+    $("auto-paper-calibration-status").textContent = `${current.phase || "Building calibration cards..."} ${Number(current.progress || 0)}%`;
+  });
+  const data = job.result || {};
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
   const diagnostics = data.board_diagnostics || {};

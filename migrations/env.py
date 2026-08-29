@@ -6,12 +6,14 @@ from sqlalchemy import engine_from_config, pool
 
 from repository.database import Base
 from repository.entities import BetEntity  # noqa: F401
+from repository.models.background_job_model import BackgroundJobModel  # noqa: F401
 from repository.models.bankroll_transaction_model import BankrollTransactionModel  # noqa: F401
 from repository.models.board_offer_observation_model import BoardOfferObservationModel  # noqa: F401
 from repository.models.entry_model import EntryModel  # noqa: F401
 from repository.models.entry_prop_model import EntryPropModel  # noqa: F401
 from repository.models.final_player_stat_model import FinalPlayerStatModel  # noqa: F401
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel  # noqa: F401
+from repository.models.player_feature_model import PlayerFeatureModel  # noqa: F401
 from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel  # noqa: F401
 from repository.models.prediction_record_model import PredictionRecordModel  # noqa: F401
 from repository.models.product_event_model import ProductEventModel  # noqa: F401

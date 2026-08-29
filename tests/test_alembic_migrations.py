@@ -43,6 +43,8 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "player_identities",
         "player_aliases",
         "research_evidence",
+        "player_features",
+        "background_jobs",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
     assert {"provider_event_id", "provider_offer_id"} <= entry_prop_columns
@@ -77,9 +79,17 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
         board_observations_exist = connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'board_offer_observations'"
         ).fetchone()[0]
+        player_features_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'player_features'"
+        ).fetchone()[0]
+        background_jobs_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'background_jobs'"
+        ).fetchone()[0]
 
-    assert revision == "d94e7f31a205"
+    assert revision == "f7c91d2a4e60"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1
     assert board_observations_exist == 1
+    assert player_features_exist == 1
+    assert background_jobs_exist == 1

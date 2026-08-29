@@ -137,14 +137,14 @@ def test_thin_high_uncertainty_forecast_shrinks_probability_toward_even() -> Non
 def test_forecast_requests_team_specific_history(monkeypatch) -> None:
     captured = {}
 
-    def history(player, stat, sport=None, limit=100, team=""):
+    def history(player, sport, stat, limit=100, team=""):
         captured.update({"player": player, "sport": sport, "team": team})
         rows = _history([1, 2, 1, 0, 1] * 4)
         for row in rows:
             row["team"] = team
         return rows
 
-    monkeypatch.setattr("analytics.probabilistic_forecast.FinalStatsRepository.history", history)
+    monkeypatch.setattr("analytics.probabilistic_forecast.PlayerFeatureRepository.history", history)
     forecast_prop("Max Muncy", "MLB", "Hits", 0.5, team="LAD", game="LAD@COL")
 
     assert captured == {"player": "Max Muncy", "sport": "MLB", "team": "LAD"}

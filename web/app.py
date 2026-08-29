@@ -85,12 +85,14 @@ from repository.repositories.line_history_repository import LineHistoryRepositor
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.plausibility_rejection_repository import PlausibilityRejectionRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services import odds as sportsbook_odds
 from services.betting import potential_profit
+from services.background_jobs import JobContext, background_jobs
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
 from services.final_stats_archive import archive_final_stats
@@ -344,6 +346,7 @@ from web.routers.intelligence import (
     trending_games,
 )
 from web.routers.intelligence import router as intelligence_router
+from web.routers.jobs import router as jobs_router
 from web.routers.market import (
     MarketDependencies,
     boost_analysis,
@@ -506,7 +509,7 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260828-v255-workflow-audit"
+STATIC_ASSET_VERSION = "20260829-v256-jobs-feature-store"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -2222,6 +2225,34 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
         "skipped": skipped,
         "board_diagnostics": board_diagnostics,
         "dashboard": get_dashboard() if not payload.dry_run else None,
+    }
+
+
+def _start_auto_paper_calibration_job(payload: AutoPaperCalibrationPayload) -> dict:
+    sport = str(payload.sport or "All Sports")
+    platform = str(payload.platform or "Both")
+
+    def run(context: JobContext) -> dict:
+        context.update(10, "Loading verified same-day provider offers.")
+        context.update(30, "Scoring weak calibration segments.")
+        result = _auto_paper_calibration(payload)
+        context.update(90, "Saving the selected zero-risk calibration cards.")
+        return {
+            **result,
+            "message": (
+                f"Created {result.get('created_count', 0)} of {result.get('requested_count', 0)} "
+                "paper calibration cards."
+            ),
+        }
+
+    return {
+        **background_jobs.submit(
+            "auto_paper",
+            run,
+            dedupe_key=f"auto-paper:{platform.lower()}:{sport.lower()}",
+            label=f"{sport} paper calibration",
+        ),
+        "accepted": True,
     }
 
 
@@ -6394,14 +6425,23 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
     raw_projection = raw.get("projection")
     auto_projected = raw_projection in (None, "")
     initial_direction = _normalize_direction(raw.get("direction") or "Over")
-    history = FinalStatsRepository.history(
+    history = PlayerFeatureRepository.history(
         raw.get("player", ""),
+        raw.get("league", ""),
         raw.get("stat", ""),
-        sport=raw.get("league", ""),
         limit=100,
         team=raw.get("team", ""),
-        include_opportunity_context=persist_evidence,
+        materialize_missing=persist_evidence,
     )
+    if not history:
+        history = FinalStatsRepository.history(
+            raw.get("player", ""),
+            raw.get("stat", ""),
+            sport=raw.get("league", ""),
+            limit=100,
+            team=raw.get("team", ""),
+            include_opportunity_context=persist_evidence,
+        )
     forecast = forecast_prop(
         raw.get("player", ""),
         raw.get("league", ""),
@@ -11383,6 +11423,7 @@ def _data_health_payload() -> dict:
             "research_memory": ResearchEvidenceRepository.summary(),
             "complete_board": BoardOfferRepository.summary(),
             "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
+            "background_jobs": background_jobs.list(limit=20),
         },
     )
 
@@ -11402,6 +11443,8 @@ def _runtime_status_payload() -> dict:
     settlement = _safe_json_loads(SettingsRepository.get(SETTLEMENT_REFRESH_STATUS_KEY, ""))
     provider_summary = data_health.get("summary") or {}
     paid_enabled = model_health.get("paid_entry_mode") == "enabled"
+    feature_status = PlayerFeatureRepository.status()
+    active_jobs = [job for job in background_jobs.list(limit=20) if job.get("status") in {"queued", "running", "canceling"}]
     return {
         "overall": "ready" if not provider_summary.get("warnings") and paid_enabled else "attention",
         "items": [
@@ -11435,6 +11478,18 @@ def _runtime_status_payload() -> dict:
                 "value": "Paid enabled" if paid_enabled else "Paper first",
                 "detail": f"Trust {float(model_health.get('trust_score') or 0):.0f}/100 · {model_health.get('status') or 'Status unavailable'}.",
             },
+            {
+                "key": "features", "label": "Player Features",
+                "status": "ready" if feature_status.get("segments") else "attention",
+                "value": f"{feature_status.get('segments', 0)} segments",
+                "detail": f"Last materialized {feature_status.get('last_materialized_at') or 'not yet'}.",
+            },
+            {
+                "key": "jobs", "label": "Background Work",
+                "status": "ready",
+                "value": f"{len(active_jobs)} active",
+                "detail": active_jobs[0].get("phase") if active_jobs else "No long-running job is blocking the app.",
+            },
         ],
         "updated_at": iso_utc(utc_now()),
     }
@@ -11461,6 +11516,7 @@ def _refresh_schedule_payload() -> dict:
         "nightly_calibration": "02:00",
         "shadow_cohort": "08:15",
         "auto_paper_samples": "08:30",
+        "player_features": "03:15",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -11472,9 +11528,10 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
         {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
+        {"name": "Player feature store", "time": schedule["player_features"], "action": "Materialize season, recent-form, role, and opponent features for active props."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples")
+    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -11513,6 +11570,60 @@ def _run_daily_refresh_now() -> dict:
         )
 
 
+def _start_daily_refresh_job() -> dict:
+    def run(context: JobContext) -> dict:
+        context.update(10, "Refreshing provider boards and final-result sources.")
+        result = _run_daily_refresh_now()
+        context.update(85, "Rebuilding the Daily Briefing from fresh provider data.")
+        return {
+            **result,
+            "message": result.get("message") or "Provider refresh complete.",
+        }
+
+    return {
+        **background_jobs.submit(
+            "provider_refresh",
+            run,
+            dedupe_key="daily-provider-refresh",
+            label="Provider refresh",
+        ),
+        "accepted": True,
+    }
+
+
+def _materialize_player_features(context: JobContext | None = None) -> dict:
+    if context:
+        context.update(10, "Loading the current provider board.")
+    offers = _fetch_props("Both", None)
+    if context:
+        context.update(25, "Materializing season, role, and opponent features.")
+    result = PlayerFeatureRepository.materialize_offers(
+        offers,
+        limit=250,
+        progress=(lambda completed, total: context.update(
+                25 + int(70 * completed / max(1, total)),
+                f"Materializing player features {completed} of {total}.",
+            )) if context else None,
+    )
+    return {
+        **result,
+        **PlayerFeatureRepository.status(),
+        "message": f"Materialized {result['materialized']} player/stat feature segments.",
+    }
+
+
+def _start_player_feature_job() -> dict:
+    return {
+        **background_jobs.submit(
+            "player_features",
+            lambda context: _materialize_player_features(context),
+            dedupe_key="player-feature-refresh",
+            label="Player feature refresh",
+        ),
+        "accepted": True,
+    }
+
+
 def _run_due_daily_operations() -> dict:
     lock_name = "daily-maintenance-test" if os.getenv("PYTEST_CURRENT_TEST") else "daily-maintenance"
     with named_operation_lock(lock_name) as acquired:
@@ -11546,6 +11657,7 @@ def _run_due_daily_operations_locked() -> dict:
         "nightly_calibration": lambda: _backtest_payload(),
         "shadow_cohort": _queue_daily_shadow_cohort,
         "auto_paper_samples": _run_automatic_paper_samples,
+        "player_features": _materialize_player_features,
     }
     for name, callback in timed_jobs.items():
         scheduled_time = str(schedule.get(name) or "")
@@ -12302,6 +12414,9 @@ configure_operations_router(
             serialize=lambda value: json.dumps(value),
         ),
         run_daily_refresh=lambda: _run_daily_refresh_now(),
+        start_daily_refresh=lambda: _start_daily_refresh_job(),
+        start_feature_refresh=lambda: _start_player_feature_job(),
+        feature_status=lambda: PlayerFeatureRepository.status(),
         alert_delivery=lambda: _alert_delivery_settings(),
         update_alert_delivery=lambda payload: _update_alert_delivery_settings(payload),
         test_alert_delivery=lambda payload: _deliver_alert(payload.model_dump()),
@@ -12415,6 +12530,7 @@ configure_intelligence_router(
     )
 )
 app.include_router(intelligence_router)
+app.include_router(jobs_router)
 
 
 configure_recommendation_router(
@@ -12491,6 +12607,7 @@ configure_recommendation_router(
             odds,
         ),
         auto_paper=lambda payload: _auto_paper_calibration(payload),
+        start_auto_paper=lambda payload: _start_auto_paper_calibration_job(payload),
         paper_calibration_status=lambda: _paper_calibration_status_payload(),
         entry_suggestions=lambda sport, platform, leg_count, avoid_prop_keys: build_entry_suggestions_payload(
             sport,

@@ -1,5 +1,7 @@
+from repository.models.background_job_model import BackgroundJobModel
 from repository.models.entry_prop_model import EntryPropModel
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
+from repository.models.player_feature_model import PlayerFeatureModel
 from repository.models.prediction_record_model import PredictionRecordModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
@@ -46,3 +48,13 @@ def test_entry_leg_schema_preserves_exact_provider_identity() -> None:
     columns = set(EntryPropModel.__table__.columns.keys())
 
     assert {"provider_event_id", "provider_offer_id"} <= columns
+
+
+def test_player_feature_schema_materializes_verified_history() -> None:
+    columns = set(PlayerFeatureModel.__table__.columns.keys())
+    assert {"feature_key", "normalized_player_key", "history_json", "summary_json", "materialized_at"} <= columns
+
+
+def test_background_job_schema_preserves_restart_safe_progress() -> None:
+    columns = set(BackgroundJobModel.__table__.columns.keys())
+    assert {"job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error"} <= columns

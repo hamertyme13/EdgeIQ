@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timezone
 from statistics import median
 
-from repository.repositories.final_stats_repository import FinalStatsRepository
+from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
@@ -46,7 +46,11 @@ def forecast_prop(
     game: str = "",
 ) -> PropForecast:
     policy = _league_stat_policy(sport, stat)
-    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
+    rows = (
+        list(history)
+        if history is not None
+        else PlayerFeatureRepository.history(player, sport, stat, limit=100, team=team)
+    )
     trailing_rows = _eligible_history(rows, game_time)
     rows = _current_season_history(trailing_rows, sport, game_time)
     actuals = [float(row["actual"]) for row in rows]
