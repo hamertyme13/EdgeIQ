@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-ui-focus" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-ui-simplification" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -27,7 +27,7 @@
           <button class="nav-item active" data-view="dashboard">Today</button>
           <button class="nav-item" data-view="entries">Entries</button>
           <button class="nav-item" data-view="performance">Results</button>
-          <button class="nav-item" data-view="analysis">Research</button>
+          <button class="nav-item" data-view="analysis" data-advanced-only>Research</button>
         </nav>
       </aside>
 
@@ -38,11 +38,20 @@
             <h1 id="view-title">Today</h1>
           </div>
           <div class="topbar-actions">
+            <div class="display-mode-toggle" role="group" aria-label="Interface detail level">
+              <button class="display-mode-button active" type="button" data-display-mode="basic">Basic</button>
+              <button class="display-mode-button" type="button" data-display-mode="advanced">Advanced</button>
+            </div>
             <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
         </header>
+        <div id="global-health-strip" class="global-health-strip" role="status" aria-live="polite">
+          <span><i class="global-health-dot status-waiting"></i>Checking providers</span>
+          <span id="global-settlement-status">Settlement checking</span>
+          <span id="global-model-status">Model checking</span>
+        </div>
         <aside id="notification-center-drawer" class="notification-center-drawer" hidden aria-label="EdgeIQ alerts">
           <div class="panel-header"><div><p class="eyebrow">Notification Center</p><h2>Needs Attention</h2></div><button id="notification-center-close" class="secondary" type="button">Close</button></div>
           <div id="notification-center-list" class="suggestion-list"></div>
@@ -130,7 +139,7 @@
             </details>
           </section>
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
-          <section class="runtime-status-panel" aria-labelledby="runtime-status-title">
+          <section class="runtime-status-panel" aria-labelledby="runtime-status-title" data-advanced-only>
             <div class="runtime-status-heading">
               <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
               <button id="refresh-runtime-status" class="secondary" type="button">Refresh</button>
@@ -139,7 +148,7 @@
               <div class="runtime-status-loading">Checking Ollama, automation, settlement, providers, and model release...</div>
             </div>
           </section>
-          <details class="dashboard-support-drawer">
+          <details class="dashboard-support-drawer" data-advanced-only>
             <summary>
               <span>System + Settings</span>
               <small>Providers, automation, preferences, alerts, and imports</small>
@@ -208,7 +217,7 @@
             </div>
           </div>
           </details>
-          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk">
+          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk" data-advanced-only>
             <summary>
               <span>Tools + Signals</span>
               <small>Watchlists, alerts, custom analysis, and raw provider lines</small>
@@ -538,12 +547,12 @@
         </section>
 
         <section id="entries" class="view">
-          <div id="settlement-health" class="settlement-health muted-card" aria-live="polite">
+          <div id="settlement-health" class="settlement-health muted-card" aria-live="polite" data-entry-track-only hidden>
             Checking settlement worker, provider queue, and database readiness...
           </div>
           <div class="entry-mode-nav workspace-tab-strip" role="tablist" aria-label="Entry workspace">
             <button class="workspace-tab active" type="button" data-entry-mode="build">Build</button>
-            <button class="workspace-tab" type="button" data-entry-mode="generate">Generate</button>
+            <button class="workspace-tab" type="button" data-entry-mode="generate" data-advanced-only>Generate</button>
             <button class="workspace-tab" type="button" data-entry-mode="track">Track</button>
           </div>
           <div class="entries-mode-layout">
@@ -602,10 +611,10 @@
                   <label class="field-label">Player
                     <input id="prop-player" placeholder="Player" />
                   </label>
-                  <label class="field-label">Team
+                  <label class="field-label entry-advanced-field">Team
                     <input id="prop-team" placeholder="Team" />
                   </label>
-                  <label class="field-label">Sport
+                  <label class="field-label entry-advanced-field">Sport
                     <select id="prop-sport">
                       <option>WNBA</option>
                       <option>NBA</option>
@@ -723,7 +732,7 @@
                   <label class="field-label">Line
                     <input id="prop-line" type="number" step="0.1" placeholder="Line" />
                   </label>
-                  <label class="field-label">Projection
+                  <label class="field-label entry-advanced-field">Projection
                     <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
                   </label>
                   <label class="field-label">Pick
@@ -732,6 +741,7 @@
                       <option>Under</option>
                     </select>
                   </label>
+                  <div class="entry-form-divider"><strong>Entry settings</strong><span>Saved for every leg in this card</span></div>
                   <label class="field-label">Platform
                     <select id="entry-platform">
                       <option>PrizePicks</option>
@@ -753,15 +763,16 @@
                   <label class="field-label">Multiplier
                     <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
                   </label>
-                  <label class="field-label">Payout Format
+                  <label class="field-label entry-advanced-field">Payout Format
                     <select id="entry-payout-type">
                       <option value="standard">Standard / Power</option>
                       <option value="flex">Flex</option>
                     </select>
                   </label>
+                  <button id="toggle-entry-options" type="button" class="secondary entry-options-toggle" aria-expanded="false">More Options</button>
                   <button type="submit" class="add-prop-submit">Add Prop</button>
                 </form>
-                <details class="entry-payout-details">
+                <details class="entry-payout-details entry-advanced-field">
                   <summary>Exact provider payout</summary>
                   <label class="field-label">Flex payout table
                     <input id="entry-payout-schedule" type="text" placeholder="Example: 3:3, 2:1" />
@@ -1050,8 +1061,8 @@
             </div>
             <div class="workspace-tab-strip" role="tablist" aria-label="Research sections">
               <button class="workspace-tab active" type="button" data-workspace-tab="prop">Prop Research</button>
-              <button class="workspace-tab" type="button" data-workspace-tab="market">Market + Risk</button>
-              <button class="workspace-tab" type="button" data-workspace-tab="imports">Import Center</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="market" data-advanced-only>Market + Risk</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="imports" data-advanced-only>Import Center</button>
             </div>
           </div>
           <form id="research-context-form" class="panel research-context-bar">
@@ -1060,8 +1071,10 @@
               <h3>Enter The Prop Once</h3>
             </div>
             <div class="form-grid compact-controls">
-              <input id="research-context-player" placeholder="Player" />
-              <input id="research-context-stat" placeholder="Stat" />
+              <input id="research-context-player" list="research-player-options" autocomplete="off" placeholder="Search player" />
+              <datalist id="research-player-options"></datalist>
+              <input id="research-context-stat" list="research-stat-options" autocomplete="off" placeholder="Select a supported stat" />
+              <datalist id="research-stat-options"></datalist>
               <select id="research-context-sport" aria-label="Research sport">
                 <option>WNBA</option>
                 <option>NBA</option>
@@ -1089,6 +1102,7 @@
               <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Research line" />
               <button type="submit">Run Full Research</button>
             </div>
+            <div id="research-selection-preview" class="research-selection-preview" hidden></div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
             <div class="recent-research-heading">
               <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Sync a league once, then EdgeIQ keeps the verified game history.</span></div>
@@ -1559,8 +1573,8 @@
           </div>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="model">Model Validation</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="settlement">Settlement</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="model" data-advanced-only>Model Validation</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="settlement" data-advanced-only>Settlement</button>
             <button class="workspace-tab" type="button" data-view-shortcut="bets">Ledger</button>
           </div>
           <div class="panel" data-workspace-pane="settlement" hidden>
@@ -1594,6 +1608,7 @@
                 <div id="monthly-profit-log" class="suggestion-list"></div>
               </div>
             </div>
+            <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
           </div>
           <div class="two-col" data-workspace-pane="performance">
             <div class="panel">
@@ -1752,7 +1767,7 @@
     </script>
     <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
     <script src="/static/js/model-version-evaluation.js?v=20260831-v243-priority-completion"></script>
-    <script src="/static/app.js?v=20260831-v243-ui-focus"></script>
+    <script src="/static/app.js?v=20260831-v243-ui-simplification"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');
