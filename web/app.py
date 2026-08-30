@@ -514,7 +514,7 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260830-v243-evidence-repair"
+STATIC_ASSET_VERSION = "20260831-v243-priority-completion"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12

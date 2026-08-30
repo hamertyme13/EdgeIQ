@@ -64,6 +64,20 @@ def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them()
     assert result.distribution["opportunity_evidence_games"] == 20
 
 
+def test_opportunity_challenger_can_win_walk_forward_but_remains_paper_only() -> None:
+    history = _history([value * 2 for value in range(20, 0, -1)])
+    for value, row in zip(range(20, 0, -1), history, strict=True):
+        row["opportunities"] = value
+        row["minutes"] = 30
+
+    result = forecast_prop("Player", "WNBA", "Points", 30.5, history=history)
+
+    assert result.features["model_selection"]["method"] == "opportunity_aware"
+    assert result.features["opportunity_walk_forward_validation"]["leakage_free"] is True
+    assert result.paid_eligible is False
+    assert "paper-only" in result.reason
+
+
 def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
     history = _history([0, 0, 0, 1, 0, 0, 2, 0, 0, 1] * 2)
 

@@ -4,8 +4,13 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timezone
 from statistics import median
+from typing import cast
 
-from analytics.model_registry import MARKET_BASELINE_VERSION, PRODUCT_MODEL_VERSION
+from analytics.model_registry import (
+    MARKET_BASELINE_VERSION,
+    OPPORTUNITY_CHALLENGER_VERSION,
+    PRODUCT_MODEL_VERSION,
+)
 from analytics.model_selection import select_projection_champion
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
@@ -156,18 +161,38 @@ def forecast_prop(
         contextual_mean = max(min(lower, upper), min(max(lower, upper), blended))
         raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
         over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
-    selection = select_projection_champion(actuals, contextual_mean)
+    opportunity_validation = _opportunity_walk_forward_validation(rows, policy)
+    opportunity_projection_value = opportunity_projection.get("projection")
+    challenger_center = (
+        float(cast(float, opportunity_projection_value))
+        if opportunity_projection.get("verified")
+        and isinstance(opportunity_projection_value, (int, float))
+        else contextual_mean
+    )
+    selection = select_projection_champion(
+        actuals,
+        challenger_center,
+        opportunity_validation=opportunity_validation,
+    )
     contextual_mean = float(selection["projection"])
     raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
     role_required = bool(policy["requires_role_evidence"])
     role_verified = bool(workload["verified"])
-    paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
+    selected_model_paid_eligible = selection["model_version"] != OPPORTUNITY_CHALLENGER_VERSION
+    paid_eligible = (
+        len(actuals) >= MIN_HISTORY_FOR_PAID
+        and effective_n >= 8
+        and (not role_required or role_verified)
+        and selected_model_paid_eligible
+    )
     uncertainty_drivers = _uncertainty_drivers(
         len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
     )
     if role_required and not role_verified:
         uncertainty_drivers.append("Verified workload coverage is below the paid-entry threshold")
+    if not selected_model_paid_eligible:
+        uncertainty_drivers.append("Opportunity-aware challenger remains in shadow evaluation")
     evidence_strength = min(1.0, effective_n / MIN_HISTORY_FOR_PAID)
     if expected_minutes is None and expected_opportunities is None:
         evidence_strength *= 0.85
@@ -187,6 +212,8 @@ def forecast_prop(
         reason=(
             "Verified history clears the minimum paid-model evidence threshold."
             if paid_eligible
+            else "The opportunity-aware model won this player's walk-forward test but remains paper-only until release gates pass."
+            if not selected_model_paid_eligible
             else "Forecast available, but verified minutes or opportunity evidence is required for paid mode."
             if role_required and not role_verified
             else f"Forecast available, but paid mode requires {MIN_HISTORY_FOR_PAID} verified games."
@@ -224,6 +251,7 @@ def forecast_prop(
             "role_evidence_verified": role_verified,
             "workload_evidence": workload,
             "opportunity_projection": opportunity_projection,
+            "opportunity_walk_forward_validation": opportunity_validation,
             "model_selection": selection,
             "opportunity_source": opportunity_projection["source"],
             "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
@@ -436,6 +464,43 @@ def _opportunity_rate_projection(rows: list[dict], policy: dict) -> dict:
         "production_rate": round(production_rate, 4),
         "projection": round(production_rate * expected_volume, 3),
         "reason": "Projection uses verified production per opportunity and recent expected workload.",
+    }
+
+
+def _opportunity_walk_forward_validation(rows: list[dict], policy: dict) -> dict:
+    """Evaluate workload-rate forecasts using only information available before each game."""
+    descending: list[tuple[float, float]] = []
+    for row in rows:
+        opportunity = next(
+            (row.get(key) for key in policy["opportunity_keys"] if row.get(key) is not None),
+            None,
+        )
+        if opportunity is None:
+            continue
+        try:
+            actual = float(row["actual"])
+            volume = float(cast(float | str, opportunity))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if volume > 0:
+            descending.append((actual, volume))
+    chronological = list(reversed(descending))
+    errors: list[float] = []
+    for index in range(5, len(chronological)):
+        train = chronological[:index]
+        actual = chronological[index][0]
+        total_volume = sum(volume for _, volume in train)
+        if total_volume <= 0:
+            continue
+        production_rate = sum(result for result, _ in train) / total_volume
+        expected_volume = sum(volume for _, volume in train[-5:]) / len(train[-5:])
+        errors.append(abs((production_rate * expected_volume) - actual))
+    return {
+        "key": "opportunity_aware",
+        "samples": len(errors),
+        "mae": round(sum(errors) / len(errors), 4) if errors else None,
+        "leakage_free": True,
+        "method": "prior production per opportunity multiplied by prior-five expected workload",
     }
 
 

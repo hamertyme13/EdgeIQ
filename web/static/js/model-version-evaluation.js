@@ -8,6 +8,7 @@
     const model = boardEvidence?.model || {};
     const baseline = boardEvidence?.baseline || {};
     const segments = boardEvidence?.by_sport || [];
+    const modelSegments = evaluation?.segments || [];
     const metric = (value, digits = 1) => value == null ? "-" : Number(value).toFixed(digits);
     return `
       <div class="suggestion evidence-dashboard ${comparison.ready && Number(comparison.brier_improvement) > 0 ? "insight-positive" : "insight-warning"}">
@@ -26,6 +27,14 @@
           ${versions.slice(-3).map((row) => `<span><strong>${Number(row.brier_score).toFixed(3)}</strong><small>${escapeHtml(row.model_version.replace("edgeiq-", ""))} · ${Number(row.settled_predictions)} finals</small></span>`).join("")}
         </div>
         ${segments.length ? `<div class="evidence-segments">${segments.slice(0, 6).map((row) => `<span><strong>${escapeHtml(row.name)}</strong><small>${Number(row.samples)} finals · ${metric(row.hit_rate)}% hit · ${metric(row.calibration_gap)} pt gap</small></span>`).join("")}</div>` : ""}
+        ${modelSegments.length ? `
+          <div class="evidence-segments">
+            ${modelSegments.slice(0, 8).map((row) => `<span>
+              <strong>${escapeHtml(row.sport === "NCAAF" ? "College Football" : row.sport)} · ${escapeHtml(row.stat)}</strong>
+              <small>${escapeHtml(row.provider)} · ${Number(row.samples)} finals · ${metric(row.brier_score, 3)} Brier · ${escapeHtml(row.maturity === "paper_only" ? "Paper only" : row.maturity)}</small>
+            </span>`).join("")}
+          </div>
+        ` : ""}
         <p class="subtle">${escapeHtml(comparison.message || (comparison.ready ? `v2.4 Brier improvement versus v2.3: ${Number(comparison.brier_improvement).toFixed(4)}.` : evaluation?.message || "Waiting for settled versioned outcomes."))}</p>
         <p class="subtle">${history.ready ? `${Number(history.samples)} paired outcomes · ${escapeHtml(history.preferred)} currently has the lower Brier score.` : escapeHtml(history.message || "Current-season versus trailing-history comparison is collecting outcomes.")}</p>
         <p class="subtle">${escapeHtml(boardEvidence?.message || "Complete-board outcomes will appear after provider offers settle.")}</p>

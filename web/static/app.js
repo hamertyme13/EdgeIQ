@@ -447,6 +447,50 @@ function setupWorkspaces() {
   });
 }
 
+function setupEntryModes() {
+  const tabs = [...document.querySelectorAll("[data-entry-mode]")];
+  const sections = [...document.querySelectorAll("[data-entry-mode-section]")];
+  if (!tabs.length || !sections.length) return;
+  const activate = (mode) => {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.entryMode === mode;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    sections.forEach((section) => {
+      const sectionMode = section.dataset.entryModeSection;
+      section.hidden = mode === "build" ? sectionMode !== "build" : sectionMode !== "generate";
+    });
+    const generator = document.querySelector('[data-workspace="entry-generator"]');
+    if (mode === "generate") activateWorkspace(generator, "best", { load: false });
+    if (mode === "track") activateWorkspace(generator, "custom");
+    window.sessionStorage.setItem("edgeiq.entries.mode", mode);
+  };
+  tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.entryMode)));
+  const stored = window.sessionStorage.getItem("edgeiq.entries.mode");
+  activate(tabs.some((tab) => tab.dataset.entryMode === stored) ? stored : "build");
+}
+
+function setupProviderGeneratorTabs() {
+  const tabs = [...document.querySelectorAll("[data-provider-generator-tab]")];
+  const generators = [...document.querySelectorAll("[data-provider-generator]")];
+  if (!tabs.length || !generators.length) return;
+  const activate = (provider) => {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.providerGeneratorTab === provider;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    generators.forEach((generator) => {
+      generator.hidden = generator.dataset.providerGenerator !== provider;
+    });
+    window.sessionStorage.setItem("edgeiq.generator.provider", provider);
+  };
+  tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.providerGeneratorTab)));
+  const stored = window.sessionStorage.getItem("edgeiq.generator.provider");
+  activate(tabs.some((tab) => tab.dataset.providerGeneratorTab === stored) ? stored : "prizepicks");
+}
+
 function jumpToWorkspace(button) {
   const [workspaceId, paneName] = String(button?.dataset.workspaceJump || "").split(":");
   const root = document.querySelector(`[data-workspace="${workspaceId}"]`);
@@ -585,7 +629,8 @@ function renderStats(stats) {
     { label: "Current Streak", value: stats.current_streak > 0 ? `W${stats.current_streak}` : stats.current_streak < 0 ? `L${Math.abs(stats.current_streak)}` : "-", icon: "↕", tone: stats.current_streak >= 0 ? "positive" : "negative" },
     { label: "Max Drawdown", value: money(stats.max_drawdown), icon: "↓", tone: Number(stats.max_drawdown || 0) > 0 ? "negative" : "neutral" },
   ];
-  $("dashboard-stats").innerHTML = items.map((item) => `
+  const primaryLabels = new Set(["Bankroll", "Pending Entry Exposure", "Record", "Current Streak"]);
+  const renderItem = (item) => `
     <div class="stat-card stat-${item.tone}">
       <span class="stat-icon">${item.icon}</span>
       <div>
@@ -593,7 +638,11 @@ function renderStats(stats) {
         <div class="stat-value">${item.value}</div>
       </div>
     </div>
-  `).join("");
+  `;
+  $("dashboard-stats").innerHTML = items.filter((item) => primaryLabels.has(item.label)).map(renderItem).join("");
+  if ($("dashboard-stats-detail")) {
+    $("dashboard-stats-detail").innerHTML = items.filter((item) => !primaryLabels.has(item.label)).map(renderItem).join("");
+  }
   $("recommendation-accuracy").innerHTML = `
     <div class="recommendation-accuracy-header">
       <div>
@@ -1548,6 +1597,9 @@ async function loadDataHealth() {
           ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
           Contract ${escapeHtml(provider.contract_version || "unversioned")}
         </p>
+        <p class="subtle">Sports: ${(provider.supported_sports || []).length
+          ? (provider.supported_sports || []).map((sport) => escapeHtml(sport === "NCAAF" ? "College Football" : sport)).join(" · ")
+          : "Coverage not declared"}</p>
         <p class="subtle">${provider.api_usage?.used_this_session
           ? `${Number(provider.api_usage.requests_avoided || 0)} calls avoided · ${Number(provider.api_usage.network_requests || 0)} network requests this session`
           : "Not requested in this session yet"}</p>
@@ -2954,6 +3006,20 @@ function renderEntryProps() {
       renderEntryProps();
     });
   });
+  if ($("entry-card-summary")) {
+    const legs = state.entryProps.length;
+    const platform = entrySourcePlatforms()[0] || $("entry-platform")?.value || "Sportsbook";
+    const score = Number(state.lastAnalysis?.recommendation?.score ?? state.lastAnalysis?.score ?? 0);
+    const risk = state.lastAnalysis?.risk?.level || "";
+    $("entry-card-summary").innerHTML = `
+      <strong>${legs} ${legs === 1 ? "leg" : "legs"} · ${escapeHtml(platform)}</strong>
+      <span>${legs < 2
+        ? "Add at least two props to begin."
+        : state.lastAnalysis
+          ? `${score.toFixed(0)}/100 model score${risk ? ` · ${escapeHtml(risk)} risk` : ""}`
+          : "Ready for analysis."}</span>
+    `;
+  }
   syncMobileSlip();
 }
 
@@ -4244,26 +4310,26 @@ async function loadLossProtection() {
   $("entry-loss-protection").classList.toggle("protection-active", active);
   $("entry-loss-protection").classList.toggle("protection-clear", !active);
   $("entry-loss-protection").innerHTML = `
-    <div class="suggestion-top">
-      <div>
-        <span class="pill">${escapeHtml(data.mode || "normal")}</span>
-        <strong>${escapeHtml(data.label || "Paid Entries Enabled")}</strong>
-      </div>
+    <details class="protection-disclosure">
+      <summary>
+        <div><span class="status-dot ${active ? "status-dot-warning" : "status-dot-ready"}" aria-hidden="true"></span><strong>${escapeHtml(data.label || "Paid Entries Enabled")}</strong><small>${escapeHtml((data.reasons || [])[0] || "Recovery checks are clear.")}</small></div>
       <label class="toggle-control" title="Turn Loss Protection enforcement on or off">
         <input id="loss-protection-toggle" type="checkbox" ${enabled ? "checked" : ""} />
         <span class="toggle-track" aria-hidden="true"></span>
         <span>${toggleLabel}</span>
       </label>
-    </div>
-    <p>${escapeHtml((data.reasons || [])[0] || "Recovery checks are clear.")}</p>
-    ${!enabled && data.triggered ? `<p class="warning">Current performance would activate protection if you turn it back on.</p>` : ""}
-    <div class="briefing-metric-row compact-metrics">
-      <span>Month ${money(metrics.monthly_profit || 0)}</span>
-      <span>ROI ${pct(metrics.roi || 0)}</span>
-      <span>CLV ${Number(metrics.average_clv || 0).toFixed(2)}</span>
-      <span>${Number(metrics.positive_clv_rate || 0).toFixed(0)}% +CLV</span>
-    </div>
-    ${(data.paid_rules || []).slice(0, active ? 3 : 1).map((rule) => `<p class="subtle">${escapeHtml(rule)}</p>`).join("")}
+      </summary>
+      <div class="protection-detail-body">
+        ${!enabled && data.triggered ? `<p class="warning">Current performance would activate protection if you turn it back on.</p>` : ""}
+        <div class="briefing-metric-row compact-metrics">
+          <span>Month ${money(metrics.monthly_profit || 0)}</span>
+          <span>ROI ${pct(metrics.roi || 0)}</span>
+          <span>CLV ${Number(metrics.average_clv || 0).toFixed(2)}</span>
+          <span>${Number(metrics.positive_clv_rate || 0).toFixed(0)}% +CLV</span>
+        </div>
+        ${(data.paid_rules || []).slice(0, active ? 3 : 1).map((rule) => `<p class="subtle">${escapeHtml(rule)}</p>`).join("")}
+      </div>
+    </details>
   `;
   $("loss-protection-toggle").addEventListener("change", async (event) => {
     const nextEnabled = Boolean(event.target.checked);
@@ -4976,16 +5042,19 @@ async function mobilePlaceEntry() {
 
 async function loadPerformance() {
   const data = await api("/api/performance");
-  $("performance-summary").innerHTML = [
+  const summaryItems = [
     ["Record", data.summary.record],
     ["Profit", money(data.summary.profit)],
     ["ROI", pct(data.summary.roi)],
     ["Bankroll", money(data.summary.bankroll)],
     ["Entry Profit", money(data.entries.profit)],
     ["Pending Exposure", money(data.entries.pending_exposure)],
-  ].map(([label, value]) => `
+  ];
+  const renderSummaryItem = ([label, value]) => `
     <div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>
-  `).join("");
+  `;
+  $("performance-summary").innerHTML = summaryItems.slice(0, 4).map(renderSummaryItem).join("");
+  if ($("performance-summary-detail")) $("performance-summary-detail").innerHTML = summaryItems.slice(4).map(renderSummaryItem).join("");
   renderGroup("perf-sport", data.by_sport);
   renderGroup("perf-stat", data.by_stat);
   renderGroup("perf-platform", data.by_platform);
@@ -5528,6 +5597,8 @@ async function loadAccuracyLab() {
 
 function bindEvents() {
   setupWorkspaces();
+  setupEntryModes();
+  setupProviderGeneratorTabs();
   setupButtonSounds();
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-workspace-jump]");

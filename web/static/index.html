@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260830-v243-evidence-repair" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-ui-focus" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -55,7 +55,6 @@
         </div>
 
         <section id="dashboard" class="view active">
-          <div class="stats-grid" id="dashboard-stats"></div>
           <div class="panel daily-briefing-panel">
             <div class="panel-header">
               <div>
@@ -116,6 +115,20 @@
               </div>
             </div>
           </div>
+          <section class="today-performance-strip" aria-labelledby="today-performance-title">
+            <div class="section-heading-row">
+              <div>
+                <p class="eyebrow">Performance At A Glance</p>
+                <h2 id="today-performance-title">Bankroll + Recent Form</h2>
+              </div>
+              <button class="secondary compact-button" type="button" data-view-shortcut="performance">View Results</button>
+            </div>
+            <div class="stats-grid dashboard-primary-stats" id="dashboard-stats"></div>
+            <details class="inline-disclosure dashboard-performance-details">
+              <summary><span>More performance metrics</span><small>ROI, deposits, calibration, streak, and drawdown</small></summary>
+              <div id="dashboard-stats-detail" class="stats-grid disclosure-grid"></div>
+            </details>
+          </section>
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
           <section class="runtime-status-panel" aria-labelledby="runtime-status-title">
             <div class="runtime-status-heading">
@@ -528,8 +541,13 @@
           <div id="settlement-health" class="settlement-health muted-card" aria-live="polite">
             Checking settlement worker, provider queue, and database readiness...
           </div>
-          <div class="two-col">
-            <div class="stack">
+          <div class="entry-mode-nav workspace-tab-strip" role="tablist" aria-label="Entry workspace">
+            <button class="workspace-tab active" type="button" data-entry-mode="build">Build</button>
+            <button class="workspace-tab" type="button" data-entry-mode="generate">Generate</button>
+            <button class="workspace-tab" type="button" data-entry-mode="track">Track</button>
+          </div>
+          <div class="entries-mode-layout">
+            <div class="stack" data-entry-mode-section="build">
               <details class="panel tool-group">
                 <summary>
                   <span>Betting Preferences</span>
@@ -766,12 +784,17 @@
                     <tbody id="entry-props"></tbody>
                   </table>
                 </div>
-                <div class="button-row">
+                <div class="entry-action-dock">
+                  <div id="entry-card-summary" class="entry-card-summary" aria-live="polite">
+                    <strong>0 legs</strong><span>Add at least two props to begin.</span>
+                  </div>
+                  <div class="button-row">
                   <button id="analyze-entry">Analyze Entry</button>
                   <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
                   <button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button>
                   <button id="place-entry" class="secondary circuit-action" disabled>Place Entry</button>
                   <button id="clear-entry" class="danger">Clear</button>
+                  </div>
                 </div>
               </div>
 
@@ -782,7 +805,7 @@
               </div>
             </div>
 
-            <div class="stack" data-workspace="entry-generator">
+            <div class="stack" data-workspace="entry-generator" data-entry-mode-section="generate" hidden>
               <div class="workspace-hub">
                 <div>
                   <p class="eyebrow">Entry Generator</p>
@@ -838,8 +861,14 @@
                   <small>Provider-specific rules, lines, and leg limits</small>
                 </summary>
                 <div class="tool-group-body">
+                  <div class="provider-generator-tabs workspace-tab-strip" role="tablist" aria-label="Sportsbook generator">
+                    <button class="workspace-tab active" type="button" data-provider-generator-tab="prizepicks">PrizePicks</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="underdog">Underdog</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="draftkings">Pick6</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="sleeper">Sleeper</button>
+                  </div>
                   <div class="provider-generator-grid">
-                    <section class="provider-generator" aria-labelledby="prizepicks-generator-title">
+                    <section class="provider-generator" data-provider-generator="prizepicks" aria-labelledby="prizepicks-generator-title">
                       <div>
                         <span class="pill">PrizePicks</span>
                         <h3 id="prizepicks-generator-title">PrizePicks Generator</h3>
@@ -856,7 +885,7 @@
                       </div>
                       <div id="prizepicks-suggestions-list" class="suggestion-list"></div>
                     </section>
-                    <section class="provider-generator" aria-labelledby="underdog-generator-title">
+                    <section class="provider-generator" data-provider-generator="underdog" aria-labelledby="underdog-generator-title" hidden>
                       <div>
                         <span class="pill">Underdog</span>
                         <h3 id="underdog-generator-title">Underdog Generator</h3>
@@ -873,7 +902,7 @@
                       </div>
                       <div id="underdog-suggestions-list" class="suggestion-list"></div>
                     </section>
-                    <section class="provider-generator" aria-labelledby="draftkings-generator-title">
+                    <section class="provider-generator" data-provider-generator="draftkings" aria-labelledby="draftkings-generator-title" hidden>
                       <div>
                         <span class="pill">DraftKings Pick6</span>
                         <h3 id="draftkings-generator-title">DraftKings Pick6 Generator</h3>
@@ -890,7 +919,7 @@
                       </div>
                       <div id="draftkings-suggestions-list" class="suggestion-list"></div>
                     </section>
-                    <section class="provider-generator" aria-labelledby="sleeper-generator-title">
+                    <section class="provider-generator" data-provider-generator="sleeper" aria-labelledby="sleeper-generator-title" hidden>
                       <div>
                         <span class="pill">Sleeper</span>
                         <h3 id="sleeper-generator-title">Sleeper Generator</h3>
@@ -1523,6 +1552,10 @@
               </div>
             </div>
             <div id="performance-summary" class="stats-grid"></div>
+            <details class="inline-disclosure performance-summary-details">
+              <summary><span>More account metrics</span><small>Bankroll and pending exposure</small></summary>
+              <div id="performance-summary-detail" class="stats-grid disclosure-grid"></div>
+            </details>
           </div>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
@@ -1693,7 +1726,7 @@
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260824-v247-esports-markets"></script>
+    <script src="/static/ui-utils.js?v=20260831-v243-ui-focus"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
@@ -1718,8 +1751,8 @@
       }
     </script>
     <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
-    <script src="/static/js/model-version-evaluation.js?v=20260824-v249-settlement-diagnostics"></script>
-    <script src="/static/app.js?v=20260830-v243-evidence-repair"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260831-v243-priority-completion"></script>
+    <script src="/static/app.js?v=20260831-v243-ui-focus"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');
