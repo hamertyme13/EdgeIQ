@@ -1,6 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import web.app as web_app
 from web.app import _elapsed_job_due, _scheduled_job_overdue
 from web.application.provider_health_service import build_data_health_payload
 
@@ -11,10 +12,10 @@ def test_elapsed_scheduler_does_not_require_clock_alignment():
     assert _elapsed_job_due("2026-08-09T11:48:00-04:00", now, 30) is False
 
 
-def test_daily_job_is_only_overdue_after_its_scheduled_time():
+def test_daily_job_detects_the_latest_missed_scheduled_occurrence():
     early = datetime(2026, 8, 9, 7, 30, tzinfo=ZoneInfo("America/New_York"))
     late = datetime(2026, 8, 9, 9, 30, tzinfo=ZoneInfo("America/New_York"))
-    assert _scheduled_job_overdue("08:00", "", early) is False
+    assert _scheduled_job_overdue("08:00", "", early) is True
     assert _scheduled_job_overdue("08:00", "", late) is True
     assert _scheduled_job_overdue("08:00", "2026-08-09T08:05", late) is False
 
@@ -39,3 +40,23 @@ def test_data_health_exposes_plausibility_diagnostics(monkeypatch):
     )
 
     assert payload["operations"]["plausibility_rejections"] == [rejection]
+
+
+def test_runtime_status_returns_stale_snapshot_while_refreshing(monkeypatch):
+    started = []
+
+    class FakeThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            started.append(True)
+
+    web_app._RUNTIME_STATUS_CACHE.set({"overall": "stale-safe", "items": []}, ttl=0)
+    monkeypatch.setattr(web_app.threading, "Thread", FakeThread)
+
+    try:
+        assert web_app._runtime_status_payload()["overall"] == "stale-safe"
+        assert started == [True]
+    finally:
+        web_app._RUNTIME_STATUS_CACHE.clear()

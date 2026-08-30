@@ -1,3 +1,4 @@
+import os
 from threading import Event
 
 from services.background_jobs import BackgroundJobManager
@@ -13,10 +14,23 @@ class MemoryJobRepository:
     def recent(self, limit):
         return list(self.jobs.values())[-limit:]
 
+    def get(self, job_id):
+        return self.jobs.get(job_id)
+
+    def active(self, dedupe_key):
+        return next((
+            job for job in reversed(list(self.jobs.values()))
+            if job.get("dedupe_key") == dedupe_key
+            and job.get("status") in {"queued", "running", "canceling"}
+            and int(job.get("_process_id") or 0) == os.getpid()
+        ), None)
+
     def recover_interrupted(self, completed_at):
         recovered = []
         for job in self.jobs.values():
             if job["status"] in {"queued", "running", "canceling"}:
+                if int(job.get("_process_id") or 0) == os.getpid():
+                    continue
                 job.update(
                     status="failed",
                     progress=100,
@@ -106,3 +120,25 @@ def test_background_job_restart_marks_active_work_interrupted():
 
     assert restored["status"] == "failed"
     assert "restarted" in restored["phase"]
+
+
+def test_background_job_deduplicates_across_managers():
+    repository = MemoryJobRepository()
+    first_manager = BackgroundJobManager(max_workers=1, repository=repository)
+    started = Event()
+    release = Event()
+
+    def task(context):
+        started.set()
+        assert release.wait(timeout=2)
+        return {"message": "Finished"}
+
+    first = first_manager.submit("refresh", task, dedupe_key="shared-refresh")
+    assert started.wait(timeout=2)
+    second_manager = BackgroundJobManager(max_workers=1, repository=repository)
+    second = second_manager.submit("refresh", task, dedupe_key="shared-refresh")
+
+    assert second["job_id"] == first["job_id"]
+    assert second["external"] is True
+    release.set()
+    first_manager._futures[first["job_id"]].result(timeout=2)

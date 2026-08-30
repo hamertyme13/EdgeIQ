@@ -134,8 +134,9 @@ def test_segment_requires_one_hundred_independent_results_for_paid_mode():
         {
             "player": f"Player {index}", "sport": "WNBA", "stat": "points",
             "platform": "prizepicks", "direction": "over", "projection_source": "model",
-            "line": float(index), "game": f"A{index} @ B", "game_time": f"2026-08-{(index % 20) + 1:02d}",
-            "result": "Win" if index % 2 else "Loss",
+                "line": float(index), "game": f"A{index} @ B", "game_time": f"2026-08-{(index % 20) + 1:02d}",
+                "result": "Win" if index % 2 else "Loss",
+                "outcome_source": "espn",
         }
         for index in range(100)
     ]

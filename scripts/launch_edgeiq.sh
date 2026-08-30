@@ -94,6 +94,10 @@ find_port() {
   return 1
 }
 
+if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+  "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1
+fi
+
 stop_stale_edgeiq_servers
 PORT="$(find_port)"
 if [[ -z "${PORT:-}" ]]; then

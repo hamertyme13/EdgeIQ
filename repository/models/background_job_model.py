@@ -20,3 +20,6 @@ class BackgroundJobModel(Base):
     cancel_requested = Column(Boolean, default=False)
     result_json = Column(Text, default="{}")
     error = Column(Text, default="")
+    owner_id = Column(String, default="", index=True)
+    process_id = Column(Integer, default=0)
+    heartbeat_at = Column(String, default="", index=True)

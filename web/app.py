@@ -49,6 +49,7 @@ from analytics.ev import decimal_odds, expected_value, sportsbook_probability
 from analytics.hierarchical_calibration import calibrate_probability
 from analytics.hit_rate import estimate_hit_rate
 from analytics.kelly import breakeven_probability, half_kelly, kelly_fraction, suggested_wager
+from analytics.model_registry import OPPORTUNITY_CHALLENGER_VERSION, PRODUCT_MODEL_VERSION, model_registry
 from analytics.outcome_learning import outcome_comparison
 from analytics.pickem_payouts import payout_analysis
 from analytics.prediction_evidence import deduplicate_outcomes
@@ -84,15 +85,15 @@ from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.plausibility_rejection_repository import PlausibilityRejectionRepository
-from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
+from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services import odds as sportsbook_odds
-from services.betting import potential_profit
 from services.background_jobs import JobContext, background_jobs
+from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
 from services.final_stats_archive import archive_final_stats
@@ -235,6 +236,10 @@ from web.application.provider_health_service import (
     provider_status_key as _provider_status_key,
 )
 from web.application.recommendation_policy import recommendation_eligibility
+from web.application.schedule_service import elapsed_job_due, scheduled_job_due, scheduled_job_overdue
+
+_elapsed_job_due = elapsed_job_due
+_scheduled_job_overdue = scheduled_job_overdue
 from web.application.recommendation_service import (
     cached_command_center_payload as build_cached_command_center_payload,
 )
@@ -509,7 +514,7 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260829-v256-jobs-feature-store"
+STATIC_ASSET_VERSION = "20260830-v243-evidence-repair"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -527,6 +532,14 @@ COMMAND_CENTER_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_COMMAND_CENTER_CACH
 OPPORTUNITY_FEED_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_OPPORTUNITY_FEED_CACHE_SECONDS", "120")))
 BACKTEST_CACHE_SECONDS = max(15, int(os.getenv("EDGEIQ_BACKTEST_CACHE_SECONDS", "30")))
 SETTLEMENT_REFRESH_STATUS_KEY = "settlement_refresh_status"
+AUTO_PAPER_CALIBRATION_SPORTS: tuple[str, ...] = (
+    "WNBA",
+    "NBA",
+    "NFL",
+    "NCAAF",
+    "MLB",
+    "NHL",
+)
 _PROP_FETCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _RESEARCH_PROP_CACHE: dict[str, list[dict]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
@@ -545,6 +558,10 @@ _PREDICTION_EVIDENCE_CACHE: TTLCache[list[dict]] = TTLCache()
 _PREDICTION_EVIDENCE_LOCK = threading.RLock()
 _MODEL_HEALTH_CACHE: TTLCache[dict] = TTLCache()
 _MODEL_HEALTH_LOCK = threading.RLock()
+_DATA_HEALTH_CACHE: TTLCache[dict] = TTLCache()
+_DATA_HEALTH_LOCK = threading.RLock()
+_RUNTIME_STATUS_CACHE: TTLCache[dict] = TTLCache()
+_RUNTIME_STATUS_LOCK = threading.RLock()
 _SEGMENT_DASHBOARD_CACHE: TTLCache[tuple[object | None, dict]] = TTLCache()
 _SEGMENT_DASHBOARD_LOCK = threading.RLock()
 _TRUST_CLV_CACHE: TTLCache[dict] = TTLCache()
@@ -562,15 +579,19 @@ async def lifespan(_: FastAPI):
     _recover_interrupted_daily_scan()
     settlement_task = asyncio.create_task(_settlement_refresh_loop())
     scheduler_task = asyncio.create_task(_daily_operations_scheduler_loop())
+    status_warmup_task = asyncio.create_task(asyncio.to_thread(_runtime_status_payload))
     try:
         yield
     finally:
         settlement_task.cancel()
         scheduler_task.cancel()
+        status_warmup_task.cancel()
         with suppress(asyncio.CancelledError):
             await settlement_task
         with suppress(asyncio.CancelledError):
             await scheduler_task
+        with suppress(asyncio.CancelledError):
+            await status_warmup_task
 
 
 async def _settlement_refresh_loop() -> None:
@@ -1850,7 +1871,7 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
                 or "pitcher" in raw_stat
                 or position in pitcher_positions
             )
-    elif sport == "NFL":
+    elif sport in {"NFL", "NCAAF"}:
         market_supported = stat in football_stats
         if any(label in raw_stat for label in ("first td", "first touchdown", "fantasy point")):
             market_supported = False
@@ -2258,7 +2279,8 @@ def _start_auto_paper_calibration_job(payload: AutoPaperCalibrationPayload) -> d
 
 def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
     raw_props = _fetch_props("Both", None)
-    active_sports = _available_prop_sports(raw_props)
+    offered_sports = set(_available_prop_sports(raw_props))
+    active_sports = [sport for sport in AUTO_PAPER_CALIBRATION_SPORTS if sport in offered_sports]
     sport_results: list[dict] = []
     created: list[dict] = []
     skipped: list[dict] = []
@@ -4581,9 +4603,9 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
             },
             "daily_briefing": payload,
         },
-        model_version=EDGEIQ_LOCAL_MODEL_VERSION,
+        model_version=PRODUCT_MODEL_VERSION,
     )
-    _stamp_actionable_snapshot(payload, str(snapshot["snapshot_id"]), EDGEIQ_LOCAL_MODEL_VERSION)
+    _stamp_actionable_snapshot(payload, str(snapshot["snapshot_id"]), PRODUCT_MODEL_VERSION)
     return payload
 
 
@@ -4961,7 +4983,7 @@ def _daily_game_card(
     home_team = teams[1] if len(teams) > 1 else ""
     movement = best_prop.get("line_movement") or {}
     try:
-        weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport)) if sport in {"NFL", "MLB"} else None
+        weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport)) if sport in {"NFL", "NCAAF", "MLB"} else None
     except Exception:
         _log.debug("Weather fetch failed for game %s sport %s", game, sport, exc_info=True)
         weather_signal = None
@@ -4990,7 +5012,7 @@ def _daily_game_card(
         "probability": round(max(0.0, min(100.0, avg_confidence)), 1),
         "line_movement": movement.get("label") or movement.get("direction") or "flat",
         "public_betting": "Unavailable from connected APIs",
-        "weather": weather_signal.get("message") if weather_signal else ("Indoor/no weather edge" if sport not in {"NFL", "MLB"} else "No weather flag"),
+        "weather": weather_signal.get("message") if weather_signal else ("Indoor/no weather edge" if sport not in {"NFL", "NCAAF", "MLB"} else "No weather flag"),
         "generated_entry": {
             "props": [_daily_game_prop(prop) for prop in generated_props] if len(generated_props) >= 2 else [],
             "label": "Generate Entry" if len(generated_props) >= 2 else "Not enough verified props",
@@ -5949,16 +5971,16 @@ def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: f
             },
             "opportunity_feed": payload,
         },
-        model_version=EDGEIQ_LOCAL_MODEL_VERSION,
+        model_version=PRODUCT_MODEL_VERSION,
     )
     payload["recommendation_snapshot_id"] = snapshot["snapshot_id"]
-    payload["model_version"] = EDGEIQ_LOCAL_MODEL_VERSION
+    payload["model_version"] = PRODUCT_MODEL_VERSION
     for opportunity in payload["opportunities"]:
         opportunity["recommendation_snapshot_id"] = snapshot["snapshot_id"]
-        opportunity["model_version"] = EDGEIQ_LOCAL_MODEL_VERSION
+        opportunity["model_version"] = PRODUCT_MODEL_VERSION
     ModelRehabilitationRepository.queue_shadow(
         payload["opportunities"],
-        model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2",
+        model_version=OPPORTUNITY_CHALLENGER_VERSION,
     )
     _OPPORTUNITY_FEED_CACHE.set(cache_key, payload, ttl=OPPORTUNITY_FEED_CACHE_SECONDS)
     return {
@@ -6085,7 +6107,7 @@ def _game_context_payload(game: str, sport_filter: str | None, platform: str) ->
         context_flags.append("High concentration of props in one game; watch correlation and game script.")
     if any(row["availability_score"] < 70 for row in availability):
         context_flags.append("Availability risk exists for at least one ranked player.")
-    if sport_filter in {"NFL", "MLB"}:
+    if sport_filter in {"NFL", "NCAAF", "MLB"}:
         try:
             weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport_filter))
         except Exception:
@@ -7609,6 +7631,9 @@ def _platform_value_for_prop(
             "selection_multiplier": selection.get("multiplier"),
             "selection_price": selection.get("price"),
             "payout_source": "The Odds API" if dfs_offer else "official_base_schedule",
+            "provider_offer_id": best.get("provider_offer_id") or best.get("projection_id") or best.get("offer_id") or "",
+            "provider_event_id": best.get("provider_event_id") or best.get("event_id") or "",
+            "verified_at": iso_utc(utc_now()),
         })
     best_row = max(platform_values, key=lambda row: (row["value_vs_selected"], row["is_discounted_line"]), default=None)
     return {
@@ -7737,12 +7762,18 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
         current_line = float((exact or closest or {}).get("line") or prop.line)
         leg = _handoff_leg(prop, platform)
         age = _age_minutes(prop.feature_as_of)
+        live_offer_id = str((exact or {}).get("provider_offer_id") or (exact or {}).get("projection_id") or (exact or {}).get("offer_id") or "")
+        requested_offer_id = str(prop.provider_offer_id or "")
+        identity_verified = bool(live_offer_id) and (not requested_offer_id or live_offer_id == requested_offer_id)
         leg.update({
             "offer_status": status,
             "requested_line": float(prop.line),
             "current_line": current_line if closest or exact else None,
             "verified_at": verified_at,
             "freshness_status": "unknown" if age is None else "expired" if age > 30 else "fresh",
+            "provider_offer_id": live_offer_id,
+            "provider_event_id": str((exact or {}).get("provider_event_id") or (exact or {}).get("event_id") or ""),
+            "identity_verified": identity_verified,
             "blocking_reason": (
                 "" if status == "current"
                 else f"The live line is now {current_line:g}." if status == "changed"
@@ -7753,7 +7784,9 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
     return {
         "verified_at": verified_at,
         "platform": platform,
-        "all_current": bool(legs) and all(leg["offer_status"] == "current" for leg in legs),
+        "all_current": bool(legs) and all(
+            leg["offer_status"] == "current" and leg.get("identity_verified") for leg in legs
+        ),
         "current": sum(leg["offer_status"] == "current" for leg in legs),
         "changed": sum(leg["offer_status"] == "changed" for leg in legs),
         "unavailable": sum(leg["offer_status"] == "unavailable" for leg in legs),
@@ -9930,7 +9963,7 @@ def _hydrate_payload_prop_context(
 
 def _official_game_context_for_payload_prop(prop: PropPayload) -> dict:
     sport = str(prop.sport or "").upper()
-    if sport not in {"NFL", "WNBA", "NBA", "MLB"}:
+    if sport not in {"NFL", "NCAAF", "WNBA", "NBA", "MLB"}:
         return {}
     parsed_time = _parse_game_time(prop.game_time)
     reference = parsed_time or utc_now()
@@ -11405,30 +11438,66 @@ def _apply_provider_weights(signals: list[dict]) -> list[dict]:
 
 
 def _data_health_payload() -> dict:
-    with _PROP_FETCH_LOCK:
-        platform_memory = {
-            platform: dict(metrics)
-            for platform, metrics in _PROP_FETCH_METRICS.items()
-        }
-    return build_data_health_payload(
-        _provider_weights(),
-        platform_memory,
-        SETTLEMENT_REFRESH_STATUS_KEY,
-        _endpoint_timing_snapshot(),
-        operational_health={
-            "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
-            "schedule": _refresh_schedule_payload(),
-            "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
-            "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
-            "research_memory": ResearchEvidenceRepository.summary(),
-            "complete_board": BoardOfferRepository.summary(),
-            "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
-            "background_jobs": background_jobs.list(limit=20),
-        },
-    )
+    with _DATA_HEALTH_LOCK:
+        cached = _DATA_HEALTH_CACHE.get_or_none()
+        if cached is not None:
+            return dict(cached)
+        with _PROP_FETCH_LOCK:
+            platform_memory = {
+                platform: dict(metrics)
+                for platform, metrics in _PROP_FETCH_METRICS.items()
+            }
+        payload = build_data_health_payload(
+            _provider_weights(),
+            platform_memory,
+            SETTLEMENT_REFRESH_STATUS_KEY,
+            _endpoint_timing_snapshot(),
+            operational_health={
+                "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+                "schedule": _refresh_schedule_payload(),
+                "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
+                "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
+                "research_memory": ResearchEvidenceRepository.summary(),
+                "complete_board": BoardOfferRepository.summary(),
+                "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
+                "background_jobs": background_jobs.list(limit=20),
+                "deployment": _deploy_readiness_payload(),
+            },
+        )
+        _DATA_HEALTH_CACHE.set(dict(payload), ttl=20.0)
+        return payload
 
 
 def _runtime_status_payload() -> dict:
+    with _RUNTIME_STATUS_LOCK:
+        cached = _RUNTIME_STATUS_CACHE.get_or_none()
+        if cached is not None:
+            return dict(cached)
+        stale = _RUNTIME_STATUS_CACHE.peek_or_none()
+        if stale is not None:
+            _RUNTIME_STATUS_CACHE.set(dict(stale), ttl=10.0)
+            threading.Thread(
+                target=_refresh_runtime_status_cache,
+                daemon=True,
+                name="edgeiq-runtime-status-refresh",
+            ).start()
+            return dict(stale)
+        payload = _build_runtime_status_payload()
+        _RUNTIME_STATUS_CACHE.set(dict(payload), ttl=60.0)
+        return payload
+
+
+def _refresh_runtime_status_cache() -> None:
+    try:
+        payload = _build_runtime_status_payload()
+    except Exception:
+        _log.warning("Runtime status refresh failed; keeping the last available snapshot", exc_info=True)
+        return
+    with _RUNTIME_STATUS_LOCK:
+        _RUNTIME_STATUS_CACHE.set(dict(payload), ttl=60.0)
+
+
+def _build_runtime_status_payload() -> dict:
     data_health = _data_health_payload()
     model_health = _model_health_payload()
     ai = build_ai_status_payload(
@@ -11443,7 +11512,9 @@ def _runtime_status_payload() -> dict:
     settlement = _safe_json_loads(SettingsRepository.get(SETTLEMENT_REFRESH_STATUS_KEY, ""))
     provider_summary = data_health.get("summary") or {}
     paid_enabled = model_health.get("paid_entry_mode") == "enabled"
+    registry = model_registry()
     feature_status = PlayerFeatureRepository.status()
+    deployment = _deploy_readiness_payload()
     active_jobs = [job for job in background_jobs.list(limit=20) if job.get("status") in {"queued", "running", "canceling"}]
     return {
         "overall": "ready" if not provider_summary.get("warnings") and paid_enabled else "attention",
@@ -11475,8 +11546,11 @@ def _runtime_status_payload() -> dict:
             {
                 "key": "model", "label": "Model Release",
                 "status": "ready" if paid_enabled else "attention",
-                "value": "Paid enabled" if paid_enabled else "Paper first",
-                "detail": f"Trust {float(model_health.get('trust_score') or 0):.0f}/100 · {model_health.get('status') or 'Status unavailable'}.",
+                "value": "Paid enabled" if paid_enabled else "Champion only · Paper first",
+                "detail": (
+                    f"{registry['router_version']} · Trust {float(model_health.get('trust_score') or 0):.0f}/100 · "
+                    f"{model_health.get('status') or 'Status unavailable'}."
+                ),
             },
             {
                 "key": "features", "label": "Player Features",
@@ -11489,6 +11563,12 @@ def _runtime_status_payload() -> dict:
                 "status": "ready",
                 "value": f"{len(active_jobs)} active",
                 "detail": active_jobs[0].get("phase") if active_jobs else "No long-running job is blocking the app.",
+            },
+            {
+                "key": "deployment", "label": "Launch Readiness",
+                "status": "ready" if deployment.get("status", "").endswith("ready") else "attention",
+                "value": f"{deployment.get('score', 0):.0f}/100 · {deployment.get('mode', 'local').title()}",
+                "detail": deployment.get("status") or "Deployment status unavailable.",
             },
         ],
         "updated_at": iso_utc(utc_now()),
@@ -11536,7 +11616,7 @@ def _refresh_schedule_payload() -> dict:
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
         job["last_run"] = last_run
-        job["overdue"] = _scheduled_job_overdue(str(job["time"]), last_run, now)
+        job["overdue"] = scheduled_job_overdue(str(job["time"]), last_run, now)
     return {
         "schedule": schedule,
         "jobs": jobs,
@@ -11599,7 +11679,8 @@ def _materialize_player_features(context: JobContext | None = None) -> dict:
         context.update(25, "Materializing season, role, and opponent features.")
     result = PlayerFeatureRepository.materialize_offers(
         offers,
-        limit=250,
+        limit=0,
+        refresh=False,
         progress=(lambda completed, total: context.update(
                 25 + int(70 * completed / max(1, total)),
                 f"Materializing player features {completed} of {total}.",
@@ -11643,8 +11724,6 @@ def _run_due_daily_operations_locked() -> dict:
     if not schedule.get("enabled", True):
         return {"ok": True, "message": "Daily scheduler is disabled."}
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    minute_key = now.strftime("%Y-%m-%dT%H:%M")
-    day_key = now.strftime("%Y-%m-%d")
     due: list[tuple[str, object]] = []
     timed_jobs = {
         "morning_scan": _run_daily_refresh_now,
@@ -11663,14 +11742,14 @@ def _run_due_daily_operations_locked() -> dict:
         scheduled_time = str(schedule.get(name) or "")
         run_key = f"daily_scheduler_run:{name}"
         last_run = SettingsRepository.get(run_key, "")
-        if scheduled_time and now.strftime("%H:%M") >= scheduled_time and not str(last_run).startswith(day_key):
+        if scheduled_time and scheduled_job_due(scheduled_time, last_run, now):
             due.append((name, callback))
     snapshot_rule = str(schedule.get("line_snapshots") or "")
     if snapshot_rule.startswith("*/"):
         try:
             interval = max(1, int(snapshot_rule[2:]))
             last_snapshot = SettingsRepository.get("daily_scheduler_run:line_snapshots", "")
-            if _elapsed_job_due(last_snapshot, now, interval):
+            if elapsed_job_due(last_snapshot, now, interval):
                 due.append(("line_snapshots", lambda: {
                     platform: len(_fetch_platform_props(platform, force_refresh=True))
                     for platform in ENTRY_PLATFORMS
@@ -11679,51 +11758,41 @@ def _run_due_daily_operations_locked() -> dict:
             pass
     if _odds_provider_recovery_due(now):
         due.append(("odds_provider_recovery", _verify_odds_provider))
-    completed = []
+    scheduled = []
     failures = []
     for name, callback in due:
         run_key = f"daily_scheduler_run:{name}"
-        if name == "line_snapshots" and SettingsRepository.get(run_key, "") == minute_key:
-            continue
         try:
-            result = callback()
-            SettingsRepository.set(run_key, minute_key)
-            completed.append({"job": name, "result": result})
+            def run_scheduled(context: JobContext, *, job_name=name, job_callback=callback, setting_key=run_key) -> dict:
+                context.update(10, f"Running scheduled {job_name.replace('_', ' ')}.")
+                result = job_callback()
+                SettingsRepository.set(setting_key, iso_utc(utc_now()))
+                return {
+                    "job": job_name,
+                    "result": result,
+                    "message": f"Scheduled {job_name.replace('_', ' ')} complete.",
+                }
+
+            job = background_jobs.submit(
+                f"scheduled_{name}",
+                run_scheduled,
+                dedupe_key=f"scheduled:{name}",
+                label=f"Scheduled {name.replace('_', ' ').title()}",
+            )
+            scheduled.append({"job": name, "job_id": job["job_id"], "reused": bool(job.get("reused"))})
         except Exception as exc:
-            _log.exception("Scheduled job %r raised an unhandled exception", name)
-            failures.append({"job": name, "message": str(exc) or "Scheduled job failed."})
+            _log.exception("Scheduled job %r could not be queued", name)
+            failures.append({"job": name, "message": str(exc) or "Scheduled job could not be queued."})
     status = {
         "ran_at": iso_utc(utc_now()),
-        "jobs_run": [row["job"] for row in completed],
+        "jobs_run": [row["job"] for row in scheduled],
+        "jobs": scheduled,
         "failures": failures,
         "ok": not failures,
-        "message": "Scheduled maintenance completed." if not failures else "Some scheduled maintenance needs attention.",
+        "message": "Scheduled maintenance queued." if not failures else "Some scheduled maintenance needs attention.",
     }
     SettingsRepository.set("daily_scheduler_status", json.dumps(status))
     return status
-
-
-def _elapsed_job_due(last_run: str, now: datetime, interval_minutes: int) -> bool:
-    if not last_run:
-        return True
-    try:
-        previous = datetime.fromisoformat(str(last_run).replace("Z", "+00:00"))
-        if previous.tzinfo is None:
-            previous = previous.replace(tzinfo=now.tzinfo)
-        return (now - previous.astimezone(now.tzinfo)).total_seconds() >= interval_minutes * 60
-    except (TypeError, ValueError):
-        return True
-
-
-def _scheduled_job_overdue(rule: str, last_run: str, now: datetime) -> bool:
-    if rule.startswith("*/"):
-        try:
-            return _elapsed_job_due(last_run, now, max(1, int(rule[2:])) * 2)
-        except ValueError:
-            return False
-    if not rule or now.strftime("%H:%M") < rule:
-        return False
-    return not str(last_run).startswith(now.strftime("%Y-%m-%d"))
 
 
 def _odds_provider_recovery_due(now: datetime) -> bool:
@@ -11733,7 +11802,7 @@ def _odds_provider_recovery_due(now: datetime) -> bool:
     age = _age_minutes(runtime.get("last_success_at"))
     if age is not None and age < 60:
         return False
-    return _elapsed_job_due(SettingsRepository.get("daily_scheduler_run:odds_provider_recovery", ""), now, 60)
+    return elapsed_job_due(SettingsRepository.get("daily_scheduler_run:odds_provider_recovery", ""), now, 60)
 
 
 def _queue_daily_shadow_cohort() -> dict:
@@ -11743,7 +11812,7 @@ def _queue_daily_shadow_cohort() -> dict:
         rows = _fetch_props("All Platforms", None)
     return ModelRehabilitationRepository.queue_shadow(
         rows,
-        model_version=f"{EDGEIQ_LOCAL_MODEL_VERSION}-shadow-v2.2.1",
+        model_version=OPPORTUNITY_CHALLENGER_VERSION,
         target=227,
     )
 
@@ -11850,7 +11919,7 @@ def _player_availability_payload(player: str, sport: str, team: str = "", game: 
         if any(term in news_terms for term in {"injury", "rest"}):
             score -= 18
             status = "Monitor" if status == "Likely Active" else status
-    if sport.upper() in {"MLB", "NFL"} and game:
+    if sport.upper() in {"MLB", "NFL", "NCAAF"} and game:
         try:
             weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport))
         except Exception:

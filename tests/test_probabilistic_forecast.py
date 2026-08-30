@@ -71,7 +71,8 @@ def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
 
     assert result.features["projection_method"] == "zero_inflated_recent_median"
     assert result.features["zero_rate_recent_20"] >= 0.35
-    assert result.projection == 0.17
+    assert result.projection == 0.4
+    assert result.features["model_selection"]["method"] in {"season_average", "recent_10_average"}
 
 
 def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
@@ -84,9 +85,13 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     )
 
     assert result.features["projection_method"] == "recency_weighted_mean"
-    assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
+    validation = result.features["walk_forward_validation"]
+    assert validation["selected_method"] in {"season_average", "recent_10_average"}
+    assert all(row["samples"] == 15 for row in validation["baselines"])
+    assert "chronologically" in validation["note"]
     assert result.features["market_prior_weight"] == 0.35
-    assert result.model_version.endswith("v2.4.2")
+    assert result.model_version.endswith("baseline-v1")
+    assert result.features["model_selection"]["challenger_projection"] is not None
     comparison = result.features["history_filter_comparison"]
     assert comparison["current_season"]["sample_size"] == 20
     assert comparison["trailing_history"]["probability"] is not None

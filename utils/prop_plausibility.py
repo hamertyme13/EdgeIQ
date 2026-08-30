@@ -154,7 +154,8 @@ def prop_line_plausibility(prop: object) -> PlausibilityResult:
     if line < 0:
         return PlausibilityResult(False, sport, stat, line, reason="Market lines cannot be negative.")
 
-    bounds = _SPORT_STAT_RANGES.get(sport, {}).get(stat)
+    range_sport = "NFL" if sport == "NCAAF" else sport
+    bounds = _SPORT_STAT_RANGES.get(range_sport, {}).get(stat)
     if bounds is None:
         return PlausibilityResult(True, sport, stat, line)
     minimum, maximum = bounds

@@ -4,6 +4,7 @@ import json
 
 from analytics.backtesting import backtest_summary
 from analytics.grouped_validation import grouped_rolling_validation
+from analytics.model_registry import model_registry
 from analytics.release_validation import validation_readiness
 from repository.bet_repository import BetRepository
 from repository.repositories.board_offer_repository import BoardOfferRepository
@@ -149,6 +150,7 @@ def model_health_payload(ai: dict) -> dict:
         "holdout_validation": holdout,
         "grouped_validation": grouped_validation,
         "prediction_ledger": PredictionLedgerRepository.summary(),
+        "model_registry": model_registry(),
         "settled_entries": settled_entries,
         "calibrated_picks": calibrated_rows,
         "average_calibration_error": round(avg_error, 1),

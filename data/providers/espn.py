@@ -18,6 +18,7 @@ _SPORT_PATHS = {
     "NBA": "basketball/nba",
     "MLB": "baseball/mlb",
     "NFL": "football/nfl",
+    "NCAAF": "football/college-football",
     "NHL": "hockey/nhl",
 }
 _HEADERS = {
@@ -330,8 +331,8 @@ def _parse_summary(summary: dict, sport: str, game_date: date, row_status: str =
         return _parse_basketball_summary(summary, sport, game_date, row_status=row_status)
     if sport == "MLB":
         return _parse_baseball_summary(summary, game_date, row_status=row_status)
-    if sport == "NFL":
-        return _parse_football_summary(summary, game_date, row_status=row_status)
+    if sport in {"NFL", "NCAAF"}:
+        return _parse_football_summary(summary, game_date, sport=sport, row_status=row_status)
     if sport == "NHL":
         return _parse_hockey_summary(summary, game_date, row_status=row_status)
     return []
@@ -399,7 +400,12 @@ def _hockey_dnp_rows(player: str, team: str, game: str, game_date: date) -> list
     return [_row(player, team, "NHL", stat, game, game_date, 0.0, "dnp") for stat in stats]
 
 
-def _parse_football_summary(summary: dict, game_date: date, row_status: str = "played") -> list[dict]:
+def _parse_football_summary(
+    summary: dict,
+    game_date: date,
+    sport: str = "NFL",
+    row_status: str = "played",
+) -> list[dict]:
     matchup = _matchup(summary)
     players: dict[tuple[str, str], dict] = {}
     for team_group in summary.get("boxscore", {}).get("players", []):
@@ -433,7 +439,7 @@ def _parse_football_summary(summary: dict, game_date: date, row_status: str = "p
         player = record["player"]
         team = record["team"]
         if record["did_not_play"] and not record["categories"]:
-            player_rows = _football_dnp_rows(player, team, matchup, game_date)
+            player_rows = _football_dnp_rows(player, team, matchup, game_date, sport=sport)
         else:
             player_rows = _football_stat_rows(
                 player,
@@ -442,6 +448,7 @@ def _parse_football_summary(summary: dict, game_date: date, row_status: str = "p
                 game_date,
                 record["categories"],
                 row_status,
+                sport=sport,
             )
         rows.extend(_with_athlete_identity(player_rows, record["athlete"]))
     return rows
@@ -454,6 +461,7 @@ def _football_stat_rows(
     game_date: date,
     categories: dict[str, dict],
     status: str,
+    sport: str = "NFL",
 ) -> list[dict]:
     passing = (categories.get("passing") or {}).get("stats", {})
     passing_raw = (categories.get("passing") or {}).get("raw", {})
@@ -550,10 +558,16 @@ def _football_stat_rows(
             "Kicking Points": kicking.get("PTS", 0.0),
         })
 
-    return [_row(player, team, "NFL", stat, game, game_date, actual, status) for stat, actual in values.items()]
+    return [_row(player, team, sport, stat, game, game_date, actual, status) for stat, actual in values.items()]
 
 
-def _football_dnp_rows(player: str, team: str, game: str, game_date: date) -> list[dict]:
+def _football_dnp_rows(
+    player: str,
+    team: str,
+    game: str,
+    game_date: date,
+    sport: str = "NFL",
+) -> list[dict]:
     stats = [
         "Pass Yards", "Passing Yards", "Pass TDs", "Passing TDs", "INT", "INTs Thrown",
         "Interceptions", "Completions", "Pass Completions", "Passing Attempts", "Pass Attempts",
@@ -567,7 +581,7 @@ def _football_dnp_rows(player: str, team: str, game: str, game_date: date) -> li
         "Field Goals Attempted", "Kicking Field Goals Made",
         "Kicking Field Goals Attempted", "Longest Field Goal", "Kicking Points",
     ]
-    return [_row(player, team, "NFL", stat, game, game_date, 0.0, "dnp") for stat in stats]
+    return [_row(player, team, sport, stat, game, game_date, 0.0, "dnp") for stat in stats]
 
 
 def _made_attempted(value: Any) -> tuple[float, float]:

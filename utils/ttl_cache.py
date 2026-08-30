@@ -54,6 +54,10 @@ class TTLCache(Generic[_T]):
         """Return the stored value, or ``None`` when expired / unset."""
         return None if self.expired() else self._value
 
+    def peek_or_none(self) -> _T | None:
+        """Return the stored value even when expired, or ``None`` if never set."""
+        return self._value
+
     def clear(self) -> None:
         """Discard the cached value immediately."""
         self._value = None

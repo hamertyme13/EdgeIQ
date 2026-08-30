@@ -422,7 +422,7 @@ def _rows_allow_extended_date_recovery(rows: list[FinalPlayerStatModel]) -> bool
         sport for row in rows
         if (sport := str(getattr(row, "sport", "") or "").upper())
     }
-    return not sports or sports.issubset({"NBA", "WNBA", "NFL"})
+    return not sports or sports.issubset({"NBA", "WNBA", "NFL", "NCAAF"})
 
 
 def _date_distance(value: object, target: date) -> int:

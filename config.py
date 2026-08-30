@@ -1,6 +1,8 @@
 import os
+import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -24,7 +26,17 @@ APP_NAME = "EdgeIQ"
 
 APP_SUBTITLE = "Player Prop Intelligence Platform"
 
-try:
-    APP_VERSION: str = _pkg_version("edgeiq")
-except PackageNotFoundError:
-    APP_VERSION = "0.0.0+dev"
+def _app_version() -> str:
+    pyproject = Path(__file__).resolve().with_name("pyproject.toml")
+    if pyproject.exists():
+        try:
+            return str(tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"])
+        except (KeyError, OSError, tomllib.TOMLDecodeError):
+            pass
+    try:
+        return _pkg_version("edgeiq")
+    except PackageNotFoundError:
+        return "0.0.0+dev"
+
+
+APP_VERSION = _app_version()

@@ -132,6 +132,10 @@ def test_espn_nfl_final_summary_supports_provider_markets() -> None:
     assert next(row for row in rows if row["player"] == "Test Quarterback")["game"] == "ARI@CAR"
     assert next(row for row in rows if row["player"] == "Test Receiver")["provider_player_id"] == "nfl-2"
 
+    college_rows = espn._parse_summary(summary, "NCAAF", date(2026, 8, 30))
+    assert college_rows
+    assert {row["sport"] for row in college_rows} == {"NCAAF"}
+
 
 def test_espn_nhl_final_summary_supports_skater_and_goalie_markets() -> None:
     summary = {

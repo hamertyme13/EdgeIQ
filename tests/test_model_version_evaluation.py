@@ -8,6 +8,7 @@ def _row(version: str, probability: float, result: str, key: str, current: float
         "feature_snapshot": {"features": {"history_filter_comparison": {
             "current_season": {"probability": current}, "trailing_history": {"probability": trailing},
         }}},
+        "sport": "WNBA", "stat": "Points", "platform": "PrizePicks",
     }
 
 
@@ -26,3 +27,5 @@ def test_evaluation_tracks_brier_by_version_and_history_filter() -> None:
     assert result["v2_4_vs_v2_3"]["brier_improvement"] > 0
     assert result["history_filter_comparison"]["samples"] == 4
     assert result["history_filter_comparison"]["preferred"] == "current-season"
+    assert result["segments"][0]["sport"] == "WNBA"
+    assert result["segments"][0]["maturity"] == "paper_only"

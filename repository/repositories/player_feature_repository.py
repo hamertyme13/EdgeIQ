@@ -118,17 +118,27 @@ class PlayerFeatureRepository:
         *,
         limit: int = 250,
         max_workers: int = 4,
+        refresh: bool = False,
         progress: Callable[[int, int], None] | None = None,
     ) -> dict:
         unique: dict[str, dict] = {}
-        for offer in offers:
+        prioritized = sorted(
+            offers,
+            key=lambda offer: (
+                bool(offer.get("end_to_end_confirmed")),
+                str(offer.get("line_offer_type") or offer.get("odds_type") or "standard").lower() == "standard",
+                int(offer.get("trending_count") or 0),
+            ),
+            reverse=True,
+        )
+        for offer in prioritized:
             player = str(offer.get("player") or "").strip()
             sport = str(offer.get("sport") or offer.get("league") or "").upper()
             stat = str(offer.get("stat") or "").strip()
             if not player or not sport or not stat:
                 continue
             unique.setdefault(PlayerFeatureRepository.feature_key(player, sport, stat), offer)
-            if len(unique) >= max(1, limit):
+            if limit > 0 and len(unique) >= limit:
                 break
         built = 0
         failed = []
@@ -142,7 +152,7 @@ class PlayerFeatureRepository:
                 str(offer.get("sport") or offer.get("league") or ""),
                 str(offer.get("stat") or ""),
                 team=str(offer.get("team") or ""),
-                refresh=True,
+                refresh=refresh,
             )
             return offer
 

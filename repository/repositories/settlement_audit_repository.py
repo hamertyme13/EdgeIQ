@@ -262,7 +262,7 @@ def _serialize(row: SettlementAuditModel) -> dict:
     if row.status == "scheduled":
         game_time = _datetime_value(details.get("game_time"))
         if game_time is not None:
-            delays = {"NBA": 3.25, "WNBA": 3.25, "NFL": 4.0, "MLB": 4.5, "NHL": 3.0}
+            delays = {"NBA": 3.25, "WNBA": 3.25, "NFL": 4.0, "NCAAF": 4.0, "MLB": 4.5, "NHL": 3.0}
             next_retry = game_time + timedelta(hours=delays.get(str(details.get("sport") or "").upper(), 4.0))
     elif retryable and row.attempted_at:
         attempted = row.attempted_at.replace(tzinfo=UTC) if row.attempted_at.tzinfo is None else row.attempted_at

@@ -20,3 +20,5 @@ def test_nfl_markets_use_matching_workload() -> None:
     assert role_opportunities("NFL", "Receiving Yards", values) == 9
     assert role_opportunities("NFL", "Field Goals Made", values) == 3
     assert role_opportunities("NFL", "Extra Points Made", values) == 4
+    assert role_opportunities("NCAAF", "Passing Yards", values) == 31
+    assert role_opportunities("NCAAF", "Receiving Yards", values) == 9

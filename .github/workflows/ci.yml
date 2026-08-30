@@ -27,9 +27,12 @@ jobs:
           analytics/entry_recommendation.py
           analytics/probabilistic_forecast.py
           analytics/model_version_evaluation.py
+          analytics/model_registry.py
+          analytics/model_selection.py
           services/probability.py
           services/data_management.py
           services/odds.py
+          services/background_jobs.py
           utils/entity_normalization.py
           utils/platforms.py
           utils/sports.py

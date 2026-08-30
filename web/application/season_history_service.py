@@ -7,7 +7,7 @@ from data.providers.espn import fetch_final_stats
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from utils.time import utc_now
 
-SUPPORTED_SPORTS = {"WNBA", "NBA", "NFL", "MLB", "NHL"}
+SUPPORTED_SPORTS = {"WNBA", "NBA", "NFL", "NCAAF", "MLB", "NHL"}
 _lock = Lock()
 _status: dict = {
     "state": "idle",
@@ -23,7 +23,7 @@ _status: dict = {
 def start_season_history_sync(sport: str) -> dict:
     sport_key = str(sport or "").upper()
     if sport_key not in SUPPORTED_SPORTS:
-        return {**season_history_status(), "accepted": False, "message": "Choose WNBA, NBA, NFL, MLB, or NHL."}
+        return {**season_history_status(), "accepted": False, "message": "Choose WNBA, NBA, NFL, college football, MLB, or NHL."}
     with _lock:
         if _status["state"] == "running":
             return {**_status, "accepted": False, "message": f"{_status['sport']} season history is already syncing."}
@@ -49,7 +49,7 @@ def season_window(sport: str, today: date | None = None) -> tuple[date, date]:
     if sport in {"NBA", "NHL"}:
         start_year = current.year if current.month >= 9 else current.year - 1
         return date(start_year, 9, 15), current
-    starts = {"WNBA": (5, 1), "NFL": (7, 15), "MLB": (3, 1)}
+    starts = {"WNBA": (5, 1), "NFL": (7, 15), "NCAAF": (7, 15), "MLB": (3, 1)}
     month, day = starts[sport]
     return date(current.year, month, day), current
 

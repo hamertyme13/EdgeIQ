@@ -5,11 +5,13 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timezone
 from statistics import median
 
+from analytics.model_registry import MARKET_BASELINE_VERSION, PRODUCT_MODEL_VERSION
+from analytics.model_selection import select_projection_champion
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-opportunity-aware-distribution-v2.4.2"
+MODEL_VERSION = PRODUCT_MODEL_VERSION
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -65,7 +67,7 @@ def forecast_prop(
             sample_size=len(actuals),
             effective_sample_size=float(len(actuals)),
             source="market_prior",
-            model_version=MODEL_VERSION,
+            model_version=MARKET_BASELINE_VERSION,
             paid_eligible=False,
             reason=f"Only {len(actuals)} verified games; at least {MIN_HISTORY_FOR_FORECAST} are required for a forecast.",
             feature_as_of=feature_as_of,
@@ -154,6 +156,10 @@ def forecast_prop(
         contextual_mean = max(min(lower, upper), min(max(lower, upper), blended))
         raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
         over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    selection = select_projection_champion(actuals, contextual_mean)
+    contextual_mean = float(selection["projection"])
+    raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
+    over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
     role_required = bool(policy["requires_role_evidence"])
     role_verified = bool(workload["verified"])
     paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
@@ -166,6 +172,7 @@ def forecast_prop(
     if expected_minutes is None and expected_opportunities is None:
         evidence_strength *= 0.85
     probability = 0.5 + ((raw_probability - 0.5) * evidence_strength)
+    probability = min(0.85, max(0.15, probability))
     opponent_hits = sum(_value_hits_line(value, float(line), direction) for value in opponent_values)
 
     return PropForecast(
@@ -175,7 +182,7 @@ def forecast_prop(
         sample_size=len(actuals),
         effective_sample_size=round(effective_n, 2),
         source="verified_history_distribution",
-        model_version=MODEL_VERSION,
+        model_version=str(selection["model_version"]),
         paid_eligible=paid_eligible,
         reason=(
             "Verified history clears the minimum paid-model evidence threshold."
@@ -201,12 +208,12 @@ def forecast_prop(
             "projection_method": projection_method,
             "zero_rate_recent_20": round(zero_rate, 3),
             "walk_forward_validation": {
-                "baseline_mae": 1.052,
-                "adaptive_mae": 1.002,
-                "relative_improvement_pct": 4.8,
-                "stored_projection_mae": 6.362,
-                "market_regularized_mae": 5.814,
-                "market_regularization_improvement_pct": 8.6,
+                "selected_method": selection["method"],
+                "selected_model_version": selection["model_version"],
+                "baselines": selection["validation"],
+                "challenger_projection": selection["challenger_projection"],
+                "challenger_delta": selection.get("challenger_delta"),
+                "note": "Metrics are calculated chronologically from this player's pre-game history.",
             },
             "contextual_mean": round(contextual_mean, 3),
             "recent_5_mean": round(sum(recent) / len(recent), 3),
@@ -217,6 +224,7 @@ def forecast_prop(
             "role_evidence_verified": role_verified,
             "workload_evidence": workload,
             "opportunity_projection": opportunity_projection,
+            "model_selection": selection,
             "opportunity_source": opportunity_projection["source"],
             "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
             "evidence_strength": round(evidence_strength, 3),
@@ -435,16 +443,17 @@ def _league_stat_policy(sport: str, stat: str) -> dict:
     """Route forecasts through league/stat-specific opportunity assumptions."""
     league = str(sport or "").upper()
     market = canonical_stat_label(stat).lower()
-    if league == "NFL":
+    if league in {"NFL", "NCAAF"}:
+        prefix = league.lower()
         if any(token in market for token in ("pass", "completion", "interception")):
-            return _policy("nfl_passing", "dropbacks/pass attempts", ("pass_attempts", "attempts", "dropbacks"), 0.40)
+            return _policy(f"{prefix}_passing", "dropbacks/pass attempts", ("pass_attempts", "attempts", "dropbacks"), 0.40)
         if any(token in market for token in ("rush", "carry")):
-            return _policy("nfl_rushing", "carries", ("carries", "rush_attempts", "opportunities"), 0.40)
+            return _policy(f"{prefix}_rushing", "carries", ("carries", "rush_attempts", "opportunities"), 0.40)
         if any(token in market for token in ("reception", "receiving", "target")):
-            return _policy("nfl_receiving", "targets/routes", ("targets", "routes", "route_participation"), 0.40)
+            return _policy(f"{prefix}_receiving", "targets/routes", ("targets", "routes", "route_participation"), 0.40)
         if any(token in market for token in ("field goal", "extra point", "kicking")):
-            return _policy("nfl_kicking", "kicking attempts", ("field_goal_attempts", "extra_point_attempts", "attempts"), 0.45)
-        return _policy("nfl_general", "snaps", ("snaps", "opportunities", "attempts"), 0.45)
+            return _policy(f"{prefix}_kicking", "kicking attempts", ("field_goal_attempts", "extra_point_attempts", "attempts"), 0.45)
+        return _policy(f"{prefix}_general", "snaps", ("snaps", "opportunities", "attempts"), 0.45)
     if league in {"NBA", "WNBA"}:
         return _policy(
             f"{league.lower()}_minutes_usage",
@@ -546,7 +555,7 @@ def _current_season_history(rows: list[dict], sport: str, game_time: object) -> 
         start = datetime(target.year, 3, 1).date().isoformat()
     elif sport_key == "WNBA":
         start = datetime(target.year, 5, 1).date().isoformat()
-    elif sport_key == "NFL":
+    elif sport_key in {"NFL", "NCAAF"}:
         start = datetime(target.year, 7, 15).date().isoformat()
     else:
         return rows

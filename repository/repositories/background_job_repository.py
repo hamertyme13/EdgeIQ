@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from repository.database import SessionLocal, initialize_database
 from repository.models.background_job_model import BackgroundJobModel
@@ -35,7 +36,30 @@ class BackgroundJobRepository:
             row.cancel_requested = bool(job.get("cancel_requested"))
             row.result_json = json.dumps(job.get("result") or {}, default=str, sort_keys=True)
             row.error = str(job.get("error") or "")
+            row.owner_id = str(job.get("_owner_id") or "")
+            row.process_id = int(job.get("_process_id") or 0)
+            row.heartbeat_at = str(job.get("_heartbeat_at") or "")
             session.commit()
+
+    @staticmethod
+    def get(job_id: str) -> dict | None:
+        BackgroundJobRepository._ensure_schema()
+        with SessionLocal() as session:
+            row = session.query(BackgroundJobModel).filter_by(job_id=job_id).first()
+            return _serialize(row) if row else None
+
+    @staticmethod
+    def active(dedupe_key: str) -> dict | None:
+        BackgroundJobRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(BackgroundJobModel)
+                .filter_by(dedupe_key=dedupe_key)
+                .filter(BackgroundJobModel.status.in_(("queued", "running", "canceling")))
+                .order_by(BackgroundJobModel.id.desc())
+                .all()
+            )
+            return next((_serialize(row) for row in rows if _process_alive(row.process_id)), None)
 
     @staticmethod
     def recent(limit: int = 100) -> list[dict]:
@@ -60,6 +84,8 @@ class BackgroundJobRepository:
             )
             recovered = []
             for row in rows:
+                if _process_alive(row.process_id):
+                    continue
                 row.status = "failed"
                 row.progress = 100
                 row.phase = "The app restarted before this job finished. Run it again."
@@ -89,4 +115,17 @@ def _serialize(row: BackgroundJobModel) -> dict:
         "cancel_requested": bool(row.cancel_requested),
         "result": result if isinstance(result, dict) else {},
         "error": row.error,
+        "_owner_id": row.owner_id,
+        "_process_id": row.process_id,
+        "_heartbeat_at": row.heartbeat_at,
     }
+
+
+def _process_alive(process_id: int | None) -> bool:
+    if not process_id or int(process_id) <= 0:
+        return False
+    try:
+        os.kill(int(process_id), 0)
+        return True
+    except (OSError, ValueError):
+        return False

@@ -2,6 +2,7 @@ from analytics.pipeline_types import AnalyzedProp, DataQuality
 from utils.platforms import canonical_platform, maximum_entry_legs
 from utils.sports import canonical_sport, sport_filter
 from utils.ttl_cache import TTLMap
+from web.application.provider_contracts import provider_supports_sport
 
 
 def test_canonical_platform_aliases_and_limits() -> None:
@@ -17,6 +18,9 @@ def test_canonical_sport_aliases_and_all_sports_filter() -> None:
     assert canonical_sport("League of Legends") == "LOL"
     assert canonical_sport("unknown", default="WNBA") == "WNBA"
     assert sport_filter("All Sports") is None
+    assert provider_supports_sport("PrizePicks", "NCAAF") is True
+    assert provider_supports_sport("ESPN public", "NCAAF") is True
+    assert provider_supports_sport("DraftKings Pick6", "NCAAF") is False
 
 
 def test_ttl_map_expires_and_evicts_oldest(monkeypatch) -> None:

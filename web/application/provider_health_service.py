@@ -102,12 +102,12 @@ def build_data_health_payload(
     connected = sum(
         1
         for provider in providers
-        if provider["status"] in {"connected", "available", "fresh"}
+        if provider["status"] in {"connected", "fresh"} and provider.get("producing_data")
     )
     warnings = [
         provider
         for provider in providers
-        if provider["status"] in {"missing_key", "not_configured", "stale", "degraded"}
+        if provider["status"] in {"missing_key", "not_configured", "configured", "empty", "stale", "degraded"}
     ]
     operational_health = operational_health or {}
     scheduler = operational_health.get("scheduler") or {}
@@ -116,6 +116,8 @@ def build_data_health_payload(
     settlement = operational_health.get("shadow_settlement") or {}
     research_memory = operational_health.get("research_memory") or {}
     plausibility_rejections = operational_health.get("plausibility_rejections") or []
+    background_jobs = operational_health.get("background_jobs") or []
+    deployment = operational_health.get("deployment") or {}
     operational_warnings = []
     if scheduler.get("failures"):
         operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
@@ -125,6 +127,11 @@ def build_data_health_payload(
         operational_warnings.append(f"Scheduled maintenance is overdue: {labels}.")
     if int(shadow.get("settlement_failures") or 0) > 0:
         operational_warnings.append("Some shadow predictions could not be matched to verified final stats after repeated attempts.")
+    failed_jobs = [job for job in background_jobs if job.get("status") == "failed"]
+    if failed_jobs:
+        operational_warnings.append(
+            f"{len(failed_jobs)} recent background job(s) failed. Review Background Work for the exact reason."
+        )
     if shadow.get("queued") and not shadow.get("settled") and settlement.get("ran_at"):
         operational_warnings.append("Shadow settlement is running, but no verified outcomes have settled yet.")
     return {
@@ -144,6 +151,8 @@ def build_data_health_payload(
             "shadow_evaluation": shadow,
             "research_memory": research_memory,
             "plausibility_rejections": plausibility_rejections,
+            "background_jobs": background_jobs,
+            "deployment": deployment,
             "warnings": operational_warnings,
             "status": "degraded" if operational_warnings else "healthy",
         },
@@ -215,7 +224,7 @@ def provider_health_row(
     ):
         status = "degraded"
     elif last_success and age is not None:
-        status = "fresh" if age <= 30 else "stale"
+        status = "empty" if int(runtime.get("row_count") or 0) <= 0 else "fresh" if age <= 30 else "stale"
     elif configured and has_key:
         status = "configured" if key_env else "available"
     elif configured and key_env and not has_key:
@@ -233,6 +242,8 @@ def provider_health_row(
         "last_error": str(runtime.get("last_error") or ""),
         "age_minutes": age,
         "row_count": int(runtime.get("row_count") or 0),
+        "producing_data": status == "fresh" and int(runtime.get("row_count") or 0) > 0,
+        "verified_connection": bool(last_success),
         "message": provider_health_message(name, status, key_env, runtime),
     }
 
@@ -251,6 +262,8 @@ def draftkings_pick6_health_row(settlement_status_key: str) -> dict:
             "status": "fresh" if status["fresh"] else "stale",
             "age_minutes": int(status["age_seconds"] or 0) // 60,
             "row_count": int(status["row_count"] or 0),
+            "producing_data": bool(status["fresh"] and int(status["row_count"] or 0) > 0),
+            "verified_connection": True,
             "message": (
                 f"DraftKings Pick6 has {status['row_count']} cached offers. "
                 "Apify actor runs are limited and are reused for one hour."
@@ -268,6 +281,8 @@ def provider_health_message(
     runtime = runtime or {}
     if status == "fresh":
         return f"{name} returned {int(runtime.get('row_count') or 0)} usable rows recently."
+    if status == "empty":
+        return f"{name} completed a refresh but returned no usable rows. Treat it as unavailable until data returns."
     if status == "stale":
         return f"{name} last succeeded at {runtime.get('last_success_at')}; refresh before relying on it."
     if status == "degraded":

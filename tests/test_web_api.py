@@ -3527,7 +3527,7 @@ def test_automatic_paper_samples_balances_providers_across_all_sports(monkeypatc
 def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_sport(monkeypatch):
     monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [
         {"league": league, "platform": platform, "player": f"{league}-{platform}-{index}"}
-        for league in ("WNBA", "NFL")
+        for league in ("WNBA", "NFL", "NCAAF")
         for platform in ("PrizePicks", "Underdog")
         for index in range(6)
     ])
@@ -3554,18 +3554,19 @@ def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_s
         AutoPaperCalibrationPayload(sport="All Sports", standard_batch=True, dry_run=True)
     )
 
-    assert len(observed) == 4
+    assert len(observed) == 6
     assert {(sport, platform) for sport, platform, _plan in observed} == {
         ("WNBA", "PrizePicks"), ("WNBA", "Underdog"),
         ("NFL", "PrizePicks"), ("NFL", "Underdog"),
+        ("NCAAF", "PrizePicks"), ("NCAAF", "Underdog"),
     }
-    for sport in ("WNBA", "NFL"):
+    for sport in ("WNBA", "NFL", "NCAAF"):
         provider_sizes = sorted(len(plan) for row_sport, _platform, plan in observed if row_sport == sport)
         assert provider_sizes == [2, 3]
-    assert result["sports_requested"] == ["WNBA", "NFL"]
-    assert result["requested_count"] == 10
-    assert result["created_count"] == 10
-    assert [row["sport"] for row in result["sport_results"]] == ["WNBA", "NFL"]
+    assert result["sports_requested"] == ["WNBA", "NFL", "NCAAF"]
+    assert result["requested_count"] == 15
+    assert result["created_count"] == 15
+    assert [row["sport"] for row in result["sport_results"]] == ["WNBA", "NFL", "NCAAF"]
     assert all(len(row["providers"]) == 2 for row in result["sport_results"])
 
 
@@ -5486,6 +5487,18 @@ def test_espn_football_rows_track_kicking_and_expanded_markets():
     assert actuals["Field Goals Made"] == 3
     assert actuals["Field Goals Attempted"] == 4
     assert actuals["Longest Field Goal"] == 52
+
+    college_rows = espn._football_stat_rows(
+        "College Kicker",
+        "AAA",
+        "AAA@BBB",
+        datetime(2026, 8, 30).date(),
+        {"kicking": {"stats": {"PTS": 7.0, "LONG": 45.0}, "raw": {"FG": "1/1", "XP": "4/4"}}},
+        "played",
+        sport="NCAAF",
+    )
+    assert college_rows
+    assert {row["sport"] for row in college_rows} == {"NCAAF"}
 
 
 def test_entry_progress_endpoint_uses_pending_entries(monkeypatch):

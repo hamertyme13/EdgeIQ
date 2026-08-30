@@ -23,7 +23,7 @@ def _isolated_database(tmp_path, monkeypatch):
 
 def test_uncalibrated_probability_is_capped_below_extreme_confidence():
     result = calibrate_probability(0.98, sport="WNBA", stat="Points", provider="PrizePicks", direction="Over", projection_source="provider", rows=[])
-    assert result["probability"] == 69.0
+    assert result["probability"] == 65.0
     assert result["paid_eligible"] is False
 
 
@@ -56,6 +56,34 @@ def test_actionable_rows_receive_the_persisted_snapshot_identity(tmp_path, monke
     opportunity = history["payload"]["opportunity_feed"]["opportunities"][0]
     assert opportunity["recommendation_snapshot_id"] == saved["snapshot_id"]
     assert opportunity["model_version"] == "edgeiq-test"
+
+
+def test_snapshot_automatically_queues_complete_props_for_shadow_evidence(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    saved = ModelRehabilitationRepository.save_feed({
+        "feed": {"platform": "PrizePicks", "purpose": "recommendation_feed"},
+        "props": [{
+            "player": "College QB", "team": "AAA", "sport": "NCAAF",
+            "stat": "Passing Yards", "line": 275.5, "direction": "Over",
+            "platform": "PrizePicks", "game": "AAA @ BBB",
+            "game_time": "2026-08-30T20:00:00Z", "confidence": 58,
+        }],
+    }, model_version="edgeiq-test")
+
+    assert saved["evidence_capture"]["eligible_props"] == 1
+    assert saved["evidence_capture"]["created"] == 1
+    assert ModelRehabilitationRepository.shadow_rows()[0]["sport"] == "NCAAF"
+
+    second = ModelRehabilitationRepository.save_feed({
+        "props": [{
+            "player": "College Receiver", "team": "BBB", "sport": "NCAAF",
+            "stat": "Receiving Yards", "line": 72.5, "direction": "Over",
+            "platform": "PrizePicks", "game": "AAA @ BBB",
+            "game_time": "2026-08-30T20:00:00Z", "confidence": 57,
+        }],
+    }, model_version="edgeiq-test")
+    assert second["evidence_capture"]["created"] == 1
+    assert len(ModelRehabilitationRepository.shadow_rows()) == 2
 
 
 def test_shadow_settlement_uses_verified_result_evidence(tmp_path, monkeypatch):

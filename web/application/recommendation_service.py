@@ -317,10 +317,10 @@ def entry_suggestions_payload(
         raw_props = fetch_props(entry_platform, sport_filter)
         platform_pairs = props_by_platform(entry_platform, raw_props)
         source = "live_provider_fallback"
-    if sport_filter == "NFL" and not platform_pairs:
+    if sport_filter in {"NFL", "NCAAF"} and not platform_pairs:
         future = []
         for prop in raw_props:
-            if str(prop.get("league") or prop.get("sport") or "").upper() != "NFL":
+            if str(prop.get("league") or prop.get("sport") or "").upper() != sport_filter:
                 continue
             game_time = str(prop.get("game_time") or "").strip()
             if game_time and str(prop.get("season_type") or "").lower() != "season_long":
@@ -331,8 +331,8 @@ def entry_suggestions_payload(
             "mode": "waiting_for_nfl_lines",
             "next_available_slate": next_slate,
             "message": (
-                "No same-day, full-game NFL player props are posted on the selected platform. "
-                + (f"The next provider-backed NFL slate begins {next_slate}. " if next_slate else "")
+                f"No same-day, full-game {'college football' if sport_filter == 'NCAAF' else 'NFL'} player props are posted on the selected platform. "
+                + (f"The next provider-backed {sport_filter} slate begins {next_slate}. " if next_slate else "")
                 + "EdgeIQ keeps future and season-long offers out of today's entry generator and waits for a confirmed matchup and kickoff."
             ),
         }

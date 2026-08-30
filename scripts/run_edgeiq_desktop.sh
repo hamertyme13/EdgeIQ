@@ -92,6 +92,10 @@ PYTHON_BIN="$(pick_python)" || {
   read -r -p "Press Return to close..."
   exit 1
 }
+if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+  echo "Applying EdgeIQ database migrations..."
+  "$PYTHON_BIN" -m alembic upgrade head
+fi
 REQUIRED_UI_VERSION="$(
   "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
 )"

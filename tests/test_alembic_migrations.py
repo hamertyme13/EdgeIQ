@@ -86,7 +86,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'background_jobs'"
         ).fetchone()[0]
 
-    assert revision == "f7c91d2a4e60"
+    assert revision == "g82d4f1a6b73"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1

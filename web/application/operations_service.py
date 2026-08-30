@@ -13,6 +13,11 @@ def deploy_readiness_payload(static_dir: Path, asset_version: str) -> dict:
         and (not database_url.startswith("sqlite") or bool(allowed_origins))
     )
     mode = "hosted" if hosted else "local"
+    auth_configured = bool(os.getenv("EDGEIQ_AUTH_SECRET") or os.getenv("EDGEIQ_AUTH_PROVIDER"))
+    billing_configured = bool(os.getenv("STRIPE_SECRET_KEY"))
+    worker_configured = bool(os.getenv("EDGEIQ_WORKER_URL") or os.getenv("REDIS_URL"))
+    backups_configured = bool(os.getenv("EDGEIQ_BACKUP_DESTINATION"))
+    legal_configured = bool(os.getenv("EDGEIQ_TERMS_URL") and os.getenv("EDGEIQ_PRIVACY_URL"))
     checks = [
         _readiness_check("PWA manifest", (static_dir / "manifest.webmanifest").exists(), "Phone install metadata is present."),
         _readiness_check("Service worker", (static_dir / "sw.js").exists(), "Offline app shell support is present."),
@@ -37,6 +42,41 @@ def deploy_readiness_payload(static_dir: Path, asset_version: str) -> dict:
             ),
             required=hosted,
             status="local only" if not hosted else None,
+        ),
+        _readiness_check(
+            "User authentication",
+            auth_configured,
+            "Configure EDGEIQ_AUTH_SECRET or an external identity provider before accepting customer accounts.",
+            required=hosted,
+            status="local profile" if not hosted else None,
+        ),
+        _readiness_check(
+            "Background worker",
+            worker_configured,
+            "Configure Redis or a hosted worker so scans and settlement survive web-process replacement.",
+            required=hosted,
+            status="desktop scheduler" if not hosted else None,
+        ),
+        _readiness_check(
+            "Billing isolation",
+            billing_configured,
+            "Configure Stripe and map every subscription to an isolated EdgeIQ user account.",
+            required=hosted,
+            status="not required locally" if not hosted else None,
+        ),
+        _readiness_check(
+            "Off-device backups",
+            backups_configured,
+            "Configure encrypted off-device database backups and test restoration before launch.",
+            required=hosted,
+            status="manual export available" if not hosted else None,
+        ),
+        _readiness_check(
+            "Privacy and terms",
+            legal_configured,
+            "Publish privacy, terms, responsible-gambling, and model-limitation disclosures.",
+            required=hosted,
+            status="pre-launch" if not hosted else None,
         ),
         _readiness_check(
             "OpenAI key",

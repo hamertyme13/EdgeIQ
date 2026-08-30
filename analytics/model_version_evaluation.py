@@ -17,6 +17,7 @@ def evaluate_model_versions(rows: list[dict]) -> dict:
     versions = [_version_metrics(version, version_rows) for version, version_rows in sorted(grouped.items())]
     return {
         "versions": versions,
+        "segments": _segment_metrics(eligible),
         "v2_4_vs_v2_3": _compare_families(versions, "v2.4", "v2.3"),
         "history_filter_comparison": _history_filter_metrics(eligible),
         "message": "Metrics use independent, versioned, provider-settled prop outcomes only.",
@@ -29,15 +30,51 @@ def _version_metrics(version: str, rows: list[dict]) -> dict:
     brier = sum((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes, strict=False)) / len(rows)
     predicted = sum(probabilities) / len(rows)
     actual = sum(outcomes) / len(rows)
+    brier_score = round(brier, 4)
+    calibration_gap = round((actual - predicted) * 100.0, 1)
     return {
         "model_version": version,
         "settled_predictions": len(rows),
-        "brier_score": round(brier, 4),
+        "brier_score": brier_score,
         "predicted_hit_rate": round(predicted * 100.0, 1),
         "actual_hit_rate": round(actual * 100.0, 1),
-        "calibration_gap": round((actual - predicted) * 100.0, 1),
+        "calibration_gap": calibration_gap,
+        "promotion_eligible": len(rows) >= 200 and brier_score <= 0.20 and abs(calibration_gap) <= 7.5,
         "calibration_buckets": _buckets(rows),
     }
+
+
+def _segment_metrics(rows: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str, str], list[dict]] = {}
+    for row in rows:
+        key = (
+            str(row.get("sport") or "Unknown").upper(),
+            str(row.get("stat") or "Unknown"),
+            str(row.get("platform") or "Unknown"),
+        )
+        grouped.setdefault(key, []).append(row)
+    segments = []
+    for (sport, stat, provider), selected in grouped.items():
+        probabilities = [_probability(row) for row in selected]
+        outcomes = [_outcome(row) for row in selected]
+        brier = sum(
+            (probability - outcome) ** 2
+            for probability, outcome in zip(probabilities, outcomes, strict=False)
+        ) / len(selected)
+        predicted = sum(probabilities) / len(selected)
+        actual = sum(outcomes) / len(selected)
+        samples = len(selected)
+        segments.append({
+            "sport": sport,
+            "stat": stat,
+            "provider": provider,
+            "samples": samples,
+            "brier_score": round(brier, 4),
+            "calibration_gap": round((actual - predicted) * 100.0, 1),
+            "maturity": "mature" if samples >= 500 else "evaluating" if samples >= 100 else "paper_only",
+            "paid_eligible": samples >= 100 and brier <= 0.22 and abs(actual - predicted) <= 0.10,
+        })
+    return sorted(segments, key=lambda row: (-row["samples"], row["sport"], row["stat"], row["provider"]))
 
 
 def _buckets(rows: list[dict]) -> list[dict]:

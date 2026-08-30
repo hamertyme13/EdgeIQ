@@ -70,7 +70,7 @@ def role_opportunities(sport: str, stat: str, values: dict[str, float]) -> float
         if any(token in stat_key for token in ("point", "three", "field goal", "free throw")):
             return scoring_attempts or values.get("Field Goals Attempted")
         return values.get("Minutes")
-    if sport_key == "NFL":
+    if sport_key in {"NFL", "NCAAF"}:
         if "pass" in stat_key or "completion" in stat_key or "interception" in stat_key:
             return values.get("Passing Attempts", values.get("Pass Attempts"))
         if "rush" in stat_key or "carr" in stat_key:

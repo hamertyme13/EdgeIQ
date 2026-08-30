@@ -57,4 +57,7 @@ def test_player_feature_schema_materializes_verified_history() -> None:
 
 def test_background_job_schema_preserves_restart_safe_progress() -> None:
     columns = set(BackgroundJobModel.__table__.columns.keys())
-    assert {"job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error"} <= columns
+    assert {
+        "job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error",
+        "owner_id", "process_id", "heartbeat_at",
+    } <= columns
