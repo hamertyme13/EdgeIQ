@@ -486,6 +486,10 @@ function setupDisplayModes() {
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
     localStorage.setItem("edgeiq.displayMode", normalized);
+    document.querySelectorAll(".briefing-explore-drawer").forEach((details) => {
+      details.open = normalized === "advanced";
+    });
+    if (normalized === "basic") $("performance")?.classList.remove("show-performance-details");
     if (normalized === "basic" && $("analysis")?.classList.contains("active")) setView("dashboard");
     if (normalized === "basic") {
       const generateTab = document.querySelector('[data-entry-mode="generate"].active');
@@ -509,6 +513,43 @@ function setupEntryOptions() {
     button.setAttribute("aria-expanded", expanded ? "true" : "false");
     button.textContent = expanded ? "Fewer Options" : "More Options";
   });
+}
+
+function setupEntryBuilderSteps() {
+  const buttons = [...document.querySelectorAll("[data-entry-step]")];
+  const form = $("prop-form");
+  if (!buttons.length || !form) return;
+  const activate = (step) => {
+    const normalized = step === "settings" ? "settings" : "props";
+    form.dataset.activeStep = normalized;
+    buttons.forEach((button) => {
+      const active = button.dataset.entryStep === normalized;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    sessionStorage.setItem("edgeiq.entryBuilder.step", normalized);
+  };
+  buttons.forEach((button) => button.addEventListener("click", () => activate(button.dataset.entryStep)));
+  activate(sessionStorage.getItem("edgeiq.entryBuilder.step") || "props");
+}
+
+function setupPerformanceDetails() {
+  const button = $("toggle-performance-details");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const expanded = !$("performance").classList.contains("show-performance-details");
+    $("performance").classList.toggle("show-performance-details", expanded);
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.textContent = expanded ? "Hide Detailed Performance" : "Show Detailed Performance";
+  });
+}
+
+function renderEmptyEntryAnalysis() {
+  if (!$("entry-analysis")) return;
+  $("entry-analysis").className = "analysis-card muted-card compact-analysis-empty";
+  $("entry-analysis").innerHTML = `
+    <strong>Ready when your card is</strong>
+    <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>`;
 }
 
 function setupProviderGeneratorTabs() {
@@ -662,6 +703,7 @@ function setView(viewId) {
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
   const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
+  if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
   loadViewData(viewId);
   const workspace = $(viewId).matches("[data-workspace]") ? $(viewId) : $(viewId).querySelector("[data-workspace]");
   const activeWorkspaceTab = workspace?.querySelector("[data-workspace-tab].active");
@@ -972,13 +1014,13 @@ function renderDailyBriefing(data) {
         <strong>${protection.active ? Number(protection.score || 0).toFixed(0) : Number(health.trust_score || 0).toFixed(0)}/100</strong>
       </div>
     </div>
-    <div class="command-next-grid">
+    <div class="command-next-grid advanced-briefing-detail">
       ${renderNextActionCard("Review Today's Best Card", betCount ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared` : "No paid card cleared. That can be the right call.", "dashboard", "daily-bet-list")}
       ${renderNextActionCard("Recheck Final Stats", "Clear unknowns before trusting calibration.", "performance", "entry-history-list")}
       ${renderNextActionCard("Create Paper Calibration", `${paperCount} paper idea${paperCount === 1 ? "" : "s"} available`, "dashboard", "daily-paper-list")}
       ${renderNextActionCard("View Loss Review", "See what EdgeIQ will avoid next.", "performance", "loss-review-list")}
     </div>
-    <div class="briefing-terminal">
+    <div class="briefing-terminal advanced-briefing-detail">
       <div class="briefing-terminal-main">
         <div class="briefing-terminal-kicker">Decision-ready board</div>
         <div class="briefing-terminal-number">${Number(data.summary?.confirmed_props || 0).toLocaleString()}</div>
@@ -990,7 +1032,7 @@ function renderDailyBriefing(data) {
         <small>${escapeHtml(health.status || "Model")}</small>
       </div>
     </div>
-    <div class="provider-badge-row">
+    <div class="provider-badge-row advanced-briefing-detail">
       ${providerBadges.map((badge) => `
         <span class="provider-badge provider-${escapeHtml(badge.status || "available")}">
           <strong>${escapeHtml(badge.name)}</strong>
@@ -1007,7 +1049,7 @@ function renderDailyBriefing(data) {
         <span>${escapeHtml(protection.mode || "watch")} · ${Number(protection.score || 0).toFixed(0)}/100</span>
       </div>
     ` : ""}
-    <div class="briefing-market-grid">
+    <div class="briefing-market-grid advanced-briefing-detail">
       <div class="briefing-market-section">
         <div class="briefing-section-title">Today's Slate</div>
         <div class="slate-ticker">
@@ -1046,6 +1088,9 @@ function renderDailyBriefing(data) {
         </div>
       </div>
     </div>
+    <details class="briefing-explore-drawer" ${document.body.dataset.displayMode === "advanced" ? "open" : ""}>
+      <summary><span>Explore Today's Board</span><small>${opportunities.length} ranked props · ${gamesToday.length} games</small></summary>
+      <div class="briefing-explore-body">
     <section id="opportunity-board" class="opportunity-board" aria-labelledby="opportunity-board-title">
       <div class="opportunity-board-header">
         <div>
@@ -1060,10 +1105,11 @@ function renderDailyBriefing(data) {
       </div>
       <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
         <button class="risk-tab active" type="button" data-opportunity-risk="all">All <span>${opportunities.length}</span></button>
-        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative">Conservative <span>${opportunityLaneCounts.conservative}</span></button>
-        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced">Balanced <span>${opportunityLaneCounts.balanced}</span></button>
-        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive">Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
+        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative" ${opportunityLaneCounts.conservative ? "" : "hidden"}>Conservative <span>${opportunityLaneCounts.conservative}</span></button>
+        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced" ${opportunityLaneCounts.balanced ? "" : "hidden"}>Balanced <span>${opportunityLaneCounts.balanced}</span></button>
+        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive" ${opportunityLaneCounts.aggressive ? "" : "hidden"}>Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
       </div>
+      ${opportunities.length && !opportunityLaneCounts.conservative && !opportunityLaneCounts.balanced ? `<div class="research-only-board-notice"><strong>Research-only board</strong><span>Every visible prop carries aggressive uncertainty. Prefer paper tracking until stronger evidence appears.</span></div>` : ""}
       <div class="opportunity-list opportunity-board-list">
         ${opportunities.map((prop, index) => {
           const receipt = prop.decision_receipt || {};
@@ -1131,10 +1177,13 @@ function renderDailyBriefing(data) {
     </div>
     <div class="games-today-panel">
       <div class="briefing-section-title">Games Today</div>
+      <p class="slate-generation-notice">${gamesToday.filter((game) => game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2).length} of ${gamesToday.length} games currently have enough verified props to generate an entry.</p>
       <div class="games-today-list">
         ${gamesToday.map((game, index) => renderDailyGame(game, index)).join("") || `<div class="suggestion compact-suggestion">No game-level slate is available for this filter yet.</div>`}
       </div>
     </div>
+      </div>
+    </details>
   `;
   renderBriefingSection("daily-bet-list", data.sections?.bet || [], data.empty_states?.bet || "No real-money slip cleared this filter yet.");
   renderBriefingSection("daily-paper-list", data.sections?.paper || [], data.empty_states?.paper || "No paper calibration card is needed right now.");
@@ -1158,7 +1207,7 @@ function renderDailyGame(game, index) {
           <strong>${escapeHtml(matchup)}</strong>
           <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${pct(game.probability || 0)}</small>
         </div>
-        <button class="secondary" type="button" data-generate-game-entry="${index}" ${generatorAvailable ? "" : "disabled"}>${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>
+        ${generatorAvailable ? `<button class="secondary" type="button" data-generate-game-entry="${index}">${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>` : ""}
       </summary>
       <div class="daily-game-grid">
         ${renderGameMetric("Projected Winner", game.projected_winner)}
@@ -1666,9 +1715,20 @@ async function loadRuntimeStatus() {
 function renderGlobalHealthStrip(providers = [], summary = {}, operations = {}) {
   const strip = $("global-health-strip");
   if (!strip) return;
-  const preferredNames = ["PrizePicks", "Underdog", "DraftKings Pick6", "Sleeper"];
-  const preferred = preferredNames.map((name) => providers.find((provider) => String(provider.name || "").toLowerCase().includes(name.toLowerCase().split(" ")[0]))).filter(Boolean);
-  const selected = (preferred.length ? preferred : providers).slice(0, 3);
+  const activeView = document.querySelector(".view.active")?.id || "dashboard";
+  const selectedPlatform = activeView === "entries"
+    ? $("entry-platform")?.value
+    : activeView === "analysis"
+      ? $("research-context-platform")?.value
+      : activeView === "dashboard"
+        ? $("props-platform")?.value
+        : "";
+  const platformToken = String(selectedPlatform || "").toLowerCase().split(" ")[0];
+  const contextual = platformToken && !["all", "both"].includes(platformToken)
+    ? providers.filter((provider) => String(provider.name || "").toLowerCase().includes(platformToken))
+    : [];
+  const healthyProviders = providers.filter((provider) => !["empty", "unavailable", "disabled"].includes(String(provider.status || "").toLowerCase()));
+  const selected = (contextual.length ? contextual : healthyProviders).slice(0, activeView === "performance" ? 0 : 2);
   const providerRows = selected.map((provider) => {
     const status = String(provider.status || "unavailable").toLowerCase();
     const tone = ["fresh", "connected", "healthy", "available"].includes(status) ? "ready" : ["stale", "degraded"].includes(status) ? "warning" : "danger";
@@ -1676,7 +1736,13 @@ function renderGlobalHealthStrip(providers = [], summary = {}, operations = {}) 
   }).join("");
   const settlement = operations.shadow_settlement || {};
   const settlementLabel = settlement.ran_at ? `Settlement ${settlement.failures?.length ? "needs attention" : "healthy"}` : "Settlement waiting";
-  strip.innerHTML = `${providerRows || `<span><i class="global-health-dot status-warning"></i>${Number(summary.connected || 0)}/${Number(summary.total || 0)} providers available</span>`}<span id="global-settlement-status">${escapeHtml(settlementLabel)}</span><span id="global-model-status">${escapeHtml($("global-model-status")?.textContent || "Model checking")}</span>`;
+  const systemCount = selected.length + 2;
+  strip.innerHTML = `${providerRows || `<span><i class="global-health-dot status-ready"></i>${Number(summary.connected || 0)} data sources available</span>`}<span id="global-settlement-status">${escapeHtml(settlementLabel)}</span><span id="global-model-status">${escapeHtml($("global-model-status")?.textContent || "Model checking")}</span><button id="global-health-toggle" class="global-health-toggle" type="button" aria-expanded="false">${systemCount} systems</button>`;
+  $("global-health-toggle")?.addEventListener("click", () => {
+    const expanded = strip.classList.toggle("expanded");
+    $("global-health-toggle").setAttribute("aria-expanded", expanded ? "true" : "false");
+    $("global-health-toggle").textContent = expanded ? "Collapse" : `${systemCount} systems`;
+  });
 }
 
 async function loadDataHealth() {
@@ -1692,6 +1758,7 @@ async function loadDataHealth() {
   const shadow = operations.shadow_evaluation || {};
   const shadowSettlement = operations.shadow_settlement || {};
   const researchMemory = operations.research_memory || {};
+  state.providerHealth = { providers, summary: data.summary || {}, operations };
   renderGlobalHealthStrip(providers, data.summary || {}, operations);
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
@@ -5184,6 +5251,20 @@ async function loadPerformance() {
   `;
   $("performance-summary").innerHTML = summaryItems.slice(0, 4).map(renderSummaryItem).join("");
   if ($("performance-summary-detail")) $("performance-summary-detail").innerHTML = summaryItems.slice(4).map(renderSummaryItem).join("");
+  const recordParts = String(data.summary.record || "0-0").split("-").map((value) => Number(value || 0));
+  const settledEntries = recordParts.slice(0, 3).reduce((total, value) => total + value, 0);
+  const sportRows = Array.isArray(data.by_sport) ? data.by_sport : [];
+  const weakSports = sportRows.filter((row) => Number(row.roi || 0) < 0 || Number(row.win_rate || row.win_pct || 0) < 50).slice(0, 2);
+  if ($("performance-recovery-summary")) {
+    $("performance-recovery-summary").innerHTML = `
+      <div><span class="status-dot ${Number(data.summary.roi || 0) >= 0 ? "status-dot-ready" : "status-dot-warning"}"></span><strong>${Number(data.summary.roi || 0) >= 0 ? "Performance is above break-even" : "Recovery mode is active"}</strong></div>
+      <ul>
+        <li>${settledEntries} settled entries currently support the all-time view.</li>
+        <li>${weakSports.length ? `${weakSports.map((row) => escapeHtml(row.group || row.name || row.label || "Weak segment")).join(" and ")} remain under review.` : "No sport-level pause is currently identified in this report."}</li>
+        <li>Negative or thin-evidence segments stay paper-first while fresh outcomes accumulate.</li>
+        <li>Next evidence milestone: 300 fresh, independently settled props before broader paid release.</li>
+      </ul>`;
+  }
   renderGroup("perf-sport", data.by_sport);
   renderGroup("perf-stat", data.by_stat);
   renderGroup("perf-platform", data.by_platform);
@@ -5743,6 +5824,8 @@ function bindEvents() {
   setupEntryModes();
   setupProviderGeneratorTabs();
   setupEntryOptions();
+  setupEntryBuilderSteps();
+  setupPerformanceDetails();
   setupButtonSounds();
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-workspace-jump]");
@@ -5878,6 +5961,7 @@ function bindEvents() {
     $("place-entry").disabled = true;
     $("entry-handoff").classList.add("muted-card");
     $("entry-handoff").textContent = "No handoff prepared yet.";
+    renderEmptyEntryAnalysis();
     renderEntryProps();
   });
   $("generate-confirmed-entries").addEventListener("click", () => withButtonBusy("generate-confirmed-entries", "Building...", loadConfirmedEntries));
@@ -5927,6 +6011,11 @@ function bindEvents() {
   $("research-context-player")?.addEventListener("input", refreshResearchSuggestions);
   $("research-context-player")?.addEventListener("change", refreshResearchSuggestions);
   $("research-context-stat")?.addEventListener("input", refreshResearchSuggestions);
+  ["props-platform", "entry-platform", "research-context-platform"].forEach((id) => {
+    $(id)?.addEventListener("change", () => {
+      if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
+    });
+  });
   $("sharp-consensus-form").addEventListener("submit", loadSharpConsensus);
   $("hedge-form").addEventListener("submit", calculateHedge);
   $("middle-form").addEventListener("submit", calculateMiddle);

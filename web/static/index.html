@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-ui-simplification" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-core-compression" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -39,8 +39,8 @@
           </div>
           <div class="topbar-actions">
             <div class="display-mode-toggle" role="group" aria-label="Interface detail level">
-              <button class="display-mode-button active" type="button" data-display-mode="basic">Basic</button>
-              <button class="display-mode-button" type="button" data-display-mode="advanced">Advanced</button>
+              <button class="display-mode-button active" type="button" data-display-mode="basic">Core</button>
+              <button class="display-mode-button" type="button" data-display-mode="advanced">Model Lab</button>
             </div>
             <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
@@ -138,7 +138,7 @@
               <div id="dashboard-stats-detail" class="stats-grid disclosure-grid"></div>
             </details>
           </section>
-          <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
+          <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel" data-advanced-only></div>
           <section class="runtime-status-panel" aria-labelledby="runtime-status-title" data-advanced-only>
             <div class="runtime-status-heading">
               <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
@@ -607,14 +607,18 @@
                   </div>
                 </div>
                 <div id="entry-loss-protection" class="entry-protection-card muted-card">Checking Loss Protection...</div>
-                <form id="prop-form" class="form-grid">
-                  <label class="field-label">Player
+                <div class="entry-builder-steps" role="tablist" aria-label="Entry Builder steps">
+                  <button class="entry-step-button active" type="button" data-entry-step="props"><span>1</span>Add Props</button>
+                  <button class="entry-step-button" type="button" data-entry-step="settings"><span>2</span>Card Settings</button>
+                </div>
+                <form id="prop-form" class="form-grid" data-active-step="props">
+                  <label class="field-label entry-prop-field">Player
                     <input id="prop-player" placeholder="Player" />
                   </label>
-                  <label class="field-label entry-advanced-field">Team
+                  <label class="field-label entry-advanced-field entry-prop-field">Team
                     <input id="prop-team" placeholder="Team" />
                   </label>
-                  <label class="field-label entry-advanced-field">Sport
+                  <label class="field-label entry-advanced-field entry-prop-field">Sport
                     <select id="prop-sport">
                       <option>WNBA</option>
                       <option>NBA</option>
@@ -633,7 +637,7 @@
                       <option>NASCAR</option>
                     </select>
                   </label>
-                  <label class="field-label">Stat
+                  <label class="field-label entry-prop-field">Stat
                     <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
                   </label>
                   <datalist id="stat-options">
@@ -729,20 +733,20 @@
                     <option value="Laps Led"></option>
                     <option value="Fastest Laps"></option>
                   </datalist>
-                  <label class="field-label">Line
+                  <label class="field-label entry-prop-field">Line
                     <input id="prop-line" type="number" step="0.1" placeholder="Line" />
                   </label>
-                  <label class="field-label entry-advanced-field">Projection
+                  <label class="field-label entry-advanced-field entry-prop-field">Projection
                     <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
                   </label>
-                  <label class="field-label">Pick
+                  <label class="field-label entry-prop-field">Pick
                     <select id="prop-direction">
                       <option>Over</option>
                       <option>Under</option>
                     </select>
                   </label>
-                  <div class="entry-form-divider"><strong>Entry settings</strong><span>Saved for every leg in this card</span></div>
-                  <label class="field-label">Platform
+                  <div class="entry-form-divider entry-config-field"><strong>Card settings</strong><span>Applied to the complete entry</span></div>
+                  <label class="field-label entry-config-field">Platform
                     <select id="entry-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
@@ -751,26 +755,26 @@
                       <option>Ball Don't Lie</option>
                     </select>
                   </label>
-                  <label class="field-label">Entry Type
+                  <label class="field-label entry-config-field">Entry Type
                     <select id="entry-mode">
                       <option value="real">Real entry</option>
                       <option value="paper">Paper entry</option>
                     </select>
                   </label>
-                  <label class="field-label">Wager
+                  <label class="field-label entry-config-field">Wager
                     <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
                   </label>
-                  <label class="field-label">Multiplier
+                  <label class="field-label entry-config-field">Multiplier
                     <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
                   </label>
-                  <label class="field-label entry-advanced-field">Payout Format
+                  <label class="field-label entry-advanced-field entry-config-field">Payout Format
                     <select id="entry-payout-type">
                       <option value="standard">Standard / Power</option>
                       <option value="flex">Flex</option>
                     </select>
                   </label>
                   <button id="toggle-entry-options" type="button" class="secondary entry-options-toggle" aria-expanded="false">More Options</button>
-                  <button type="submit" class="add-prop-submit">Add Prop</button>
+                  <button type="submit" class="add-prop-submit entry-prop-field">Add Prop</button>
                 </form>
                 <details class="entry-payout-details entry-advanced-field">
                   <summary>Exact provider payout</summary>
@@ -811,7 +815,10 @@
 
               <div class="panel">
                 <h2>Entry Intelligence</h2>
-                <div id="entry-analysis" class="analysis-card muted-card">No analysis yet.</div>
+                <div id="entry-analysis" class="analysis-card muted-card compact-analysis-empty">
+                  <strong>Ready when your card is</strong>
+                  <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>
+                </div>
                 <div id="entry-handoff" class="analysis-card muted-card">No handoff prepared yet.</div>
               </div>
             </div>
@@ -1570,6 +1577,7 @@
               <summary><span>More account metrics</span><small>Bankroll and pending exposure</small></summary>
               <div id="performance-summary-detail" class="stats-grid disclosure-grid"></div>
             </details>
+            <div id="performance-recovery-summary" class="performance-recovery-summary"></div>
           </div>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
@@ -1609,8 +1617,9 @@
               </div>
             </div>
             <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
+            <button id="toggle-performance-details" class="secondary performance-detail-toggle" type="button" aria-expanded="false">Show Detailed Performance</button>
           </div>
-          <div class="two-col" data-workspace-pane="performance">
+          <div class="two-col" data-workspace-pane="performance" data-performance-detail>
             <div class="panel">
               <div class="panel-header">
                 <div>
@@ -1701,16 +1710,16 @@
               <div id="calibration-list" class="suggestion-list"></div>
             </div>
           </div>
-          <div class="three-col" data-workspace-pane="performance">
+          <div class="three-col" data-workspace-pane="performance" data-performance-detail>
             <div class="panel"><h2>By Sport</h2><div id="perf-sport"></div></div>
             <div class="panel"><h2>By Stat</h2><div id="perf-stat"></div></div>
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
           </div>
-          <div class="panel" data-workspace-pane="performance">
+          <div class="panel" data-workspace-pane="performance" data-performance-detail>
             <h2>Platform Profitability</h2>
             <div id="entry-platform-profitability" class="suggestion-list"></div>
           </div>
-          <div class="panel" data-workspace-pane="performance">
+          <div class="panel" data-workspace-pane="performance" data-performance-detail>
             <h2>Result Breakdown</h2>
             <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
@@ -1767,7 +1776,7 @@
     </script>
     <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
     <script src="/static/js/model-version-evaluation.js?v=20260831-v243-priority-completion"></script>
-    <script src="/static/app.js?v=20260831-v243-ui-simplification"></script>
+    <script src="/static/app.js?v=20260831-v243-core-compression"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');
