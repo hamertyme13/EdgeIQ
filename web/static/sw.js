@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260831-v253-core-compression";
+const CACHE_NAME = "edgeiq-shell-20260831-v253-usability-audit";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

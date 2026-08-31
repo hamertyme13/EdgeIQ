@@ -2,7 +2,20 @@
   const DISPLAY_TIME_ZONE = "America/New_York";
 
   function friendlyStatus(value) {
-    return String(value || "unknown")
+    const status = String(value || "unknown").toLowerCase();
+    const labels = {
+      empty: "No fresh offers",
+      missing_key: "Setup needed",
+      not_configured: "Setup needed",
+      manual_handoff: "Manual handoff",
+      manual_import: "Manual import",
+      stale: "Cached data",
+      unavailable: "Temporarily unavailable",
+      disabled: "Turned off",
+      degraded: "Needs attention",
+    };
+    if (labels[status]) return labels[status];
+    return status
       .split("_")
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(" ");

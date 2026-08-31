@@ -1731,7 +1731,11 @@ function renderGlobalHealthStrip(providers = [], summary = {}, operations = {}) 
   const selected = (contextual.length ? contextual : healthyProviders).slice(0, activeView === "performance" ? 0 : 2);
   const providerRows = selected.map((provider) => {
     const status = String(provider.status || "unavailable").toLowerCase();
-    const tone = ["fresh", "connected", "healthy", "available"].includes(status) ? "ready" : ["stale", "degraded"].includes(status) ? "warning" : "danger";
+    const tone = ["fresh", "connected", "healthy", "available"].includes(status)
+      ? "ready"
+      : ["empty", "stale", "degraded"].includes(status)
+        ? "warning"
+        : "danger";
     return `<span title="${escapeHtml(provider.message || provider.purpose || "")}"><i class="global-health-dot status-${tone}"></i>${escapeHtml(provider.name)} ${escapeHtml(friendlyStatus(status))}</span>`;
   }).join("");
   const settlement = operations.shadow_settlement || {};
