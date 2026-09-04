@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260831-v253-usability-audit";
+const CACHE_NAME = "edgeiq-shell-20260903-v250-player-directory-2";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -7,6 +7,9 @@ const SHELL_ASSETS = [
   "/static/circuit-audio.js",
   "/static/ui-shell.js",
   "/static/ui-utils.js",
+  "/static/js/api.js",
+  "/static/js/beta.js",
+  "/static/js/state.js",
   "/static/edgeiq-icon.png",
   "/static/manifest.webmanifest"
 ];

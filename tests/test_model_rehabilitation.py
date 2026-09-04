@@ -37,6 +37,21 @@ def test_shadow_ledger_uses_daily_cohorts_and_does_not_release_unsettled(tmp_pat
     assert ModelRehabilitationRepository.shadow_status()["cohorts"] == 2
 
 
+def test_shadow_queue_deduplicates_repeated_provider_markets(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    prop = {"player": "Player One", "sport": "WNBA", "stat": "Points", "line": 20.5, "direction": "Over", "platform": "PrizePicks", "game": "A @ B", "game_time": "2026-08-09T20:00:00Z", "confidence": 62}
+    first = ModelRehabilitationRepository.queue_shadow(
+        [prop, dict(prop)], model_version="shadow-test", target=None, cohort_date="2026-08-09"
+    )
+    second = ModelRehabilitationRepository.queue_shadow(
+        [prop], model_version="shadow-test", target=None, cohort_date="2026-08-09"
+    )
+    assert first["created"] == 1
+    assert first["queued"] == 1
+    assert second["created"] == 0
+    assert second["queued"] == 1
+
+
 def test_recommendation_snapshots_are_immutable(tmp_path, monkeypatch):
     _isolated_database(tmp_path, monkeypatch)
     first = ModelRehabilitationRepository.save_feed({"feed": {"platform": "PrizePicks"}, "props": [{"line": 10.5}]})

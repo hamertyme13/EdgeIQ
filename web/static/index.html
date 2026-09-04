@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260831-v243-usability-audit" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260903-v250-player-directory-2" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -43,6 +43,7 @@
               <button class="display-mode-button" type="button" data-display-mode="advanced">Model Lab</button>
             </div>
             <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
+            <button id="beta-center-toggle" class="secondary beta-center-toggle" type="button" aria-expanded="false" aria-controls="beta-center-drawer">Founding Beta</button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
@@ -55,6 +56,70 @@
         <aside id="notification-center-drawer" class="notification-center-drawer" hidden aria-label="EdgeIQ alerts">
           <div class="panel-header"><div><p class="eyebrow">Notification Center</p><h2>Needs Attention</h2></div><button id="notification-center-close" class="secondary" type="button">Close</button></div>
           <div id="notification-center-list" class="suggestion-list"></div>
+        </aside>
+        <aside id="beta-center-drawer" class="beta-center-drawer" hidden aria-label="Founding Beta center">
+          <div class="panel-header">
+            <div><p class="eyebrow">Founding Beta</p><h2 id="beta-center-title">Beta Account</h2></div>
+            <button id="beta-center-close" class="secondary" type="button">Close</button>
+          </div>
+          <p id="beta-center-status" class="subtle" role="status">Checking beta account...</p>
+          <form id="beta-login-form" class="stack beta-login-form">
+            <label>Email or username<input id="beta-login-identifier" autocomplete="username" required /></label>
+            <label>Password<input id="beta-login-password" type="password" autocomplete="current-password" minlength="10" required /></label>
+            <button type="submit">Sign In</button>
+          </form>
+          <section id="beta-account-panel" hidden>
+            <div class="beta-account-summary">
+              <div><strong id="beta-account-name">Tester</strong><span id="beta-account-meta" class="subtle"></span></div>
+              <button id="beta-logout" class="secondary" type="button">Sign Out</button>
+            </div>
+            <div id="beta-onboarding-panel" class="beta-onboarding-card" hidden>
+              <h3>Welcome to the EdgeIQ Founding Beta</h3>
+              <ul>
+                <li>EdgeIQ provides statistical decision support, not guaranteed outcomes.</li>
+                <li>Your feedback helps evaluate usefulness, usability, and calibration.</li>
+                <li>You remain responsible for every wagering decision.</li>
+              </ul>
+              <label class="check-row"><input id="beta-onboarding-ack" type="checkbox" /> I understand the probabilistic and financial-risk notice.</label>
+              <button id="beta-complete-onboarding" type="button" disabled>Continue to EdgeIQ</button>
+            </div>
+            <details class="beta-drawer-section" open>
+              <summary>Report a Problem</summary>
+              <form id="beta-bug-form" class="stack">
+                <select id="beta-bug-category" aria-label="Problem category">
+                  <option>Wrong player data</option><option>Wrong line</option><option>Prediction seems incorrect</option>
+                  <option>Settlement/result issue</option><option>Page/interface problem</option><option>Performance issue</option><option>Other</option>
+                </select>
+                <textarea id="beta-bug-description" rows="3" maxlength="4000" placeholder="What happened, and what did you expect?" required></textarea>
+                <button type="submit" class="secondary">Submit Problem</button>
+              </form>
+            </details>
+            <details class="beta-drawer-section">
+              <summary>Request a Feature</summary>
+              <form id="beta-feature-form" class="stack">
+                <textarea id="beta-feature-description" rows="3" maxlength="4000" placeholder="What would make EdgeIQ more useful?" required></textarea>
+                <button type="submit" class="secondary">Submit Request</button>
+              </form>
+            </details>
+            <section id="beta-admin-panel" class="beta-admin-panel" hidden>
+              <div class="panel-header"><div><p class="eyebrow">Admin Only</p><h3>Founding Beta Dashboard</h3></div><button id="beta-admin-refresh" class="secondary" type="button">Refresh</button></div>
+              <div id="beta-admin-kpis" class="beta-kpi-grid"></div>
+              <details open><summary>Tester Activity</summary><div id="beta-admin-users" class="beta-admin-list"></div></details>
+              <details><summary>Create Tester</summary>
+                <form id="beta-create-user-form" class="stack">
+                  <input id="beta-new-email" type="email" placeholder="Email" required />
+                  <input id="beta-new-username" placeholder="Username" required />
+                  <input id="beta-new-password" type="password" minlength="10" placeholder="Temporary password" required />
+                  <select id="beta-new-role"><option value="BETA_TESTER">Beta Tester</option><option value="ADMIN">Admin</option></select>
+                  <input id="beta-new-cohort" value="FOUNDING_25" placeholder="Cohort" />
+                  <button type="submit">Create Account</button>
+                </form>
+              </details>
+              <details><summary>Feedback and Requests</summary><div id="beta-admin-feedback" class="beta-admin-list"></div></details>
+              <details><summary>Model and Segment Evidence</summary><div id="beta-admin-model" class="beta-admin-list"></div></details>
+            </section>
+          </section>
+          <p class="responsible-use-copy">EdgeIQ provides statistical analysis for informational and entertainment purposes. Predictions do not guarantee outcomes or financial returns.</p>
         </aside>
         <div id="runtime-notice" class="runtime-notice" hidden></div>
         <div id="install-hint" class="install-hint" hidden>
@@ -612,14 +677,9 @@
                   <button class="entry-step-button" type="button" data-entry-step="settings"><span>2</span>Card Settings</button>
                 </div>
                 <form id="prop-form" class="form-grid" data-active-step="props">
-                  <label class="field-label entry-prop-field">Player
-                    <input id="prop-player" placeholder="Player" />
-                  </label>
-                  <label class="field-label entry-advanced-field entry-prop-field">Team
-                    <input id="prop-team" placeholder="Team" />
-                  </label>
-                  <label class="field-label entry-advanced-field entry-prop-field">Sport
+                  <label class="field-label entry-prop-field">Sport
                     <select id="prop-sport">
+                      <option value="" selected>Select sport</option>
                       <option>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
@@ -636,6 +696,14 @@
                       <option>MMA</option>
                       <option>NASCAR</option>
                     </select>
+                  </label>
+                  <label class="field-label entry-prop-field">Player
+                    <input id="prop-player" list="entry-player-options" placeholder="Select a sport first" autocomplete="off" disabled />
+                    <datalist id="entry-player-options"></datalist>
+                    <small id="entry-player-lookup-status" class="subtle">Choose a sport to load saved players.</small>
+                  </label>
+                  <label class="field-label entry-advanced-field entry-prop-field">Team
+                    <input id="prop-team" placeholder="Team" />
                   </label>
                   <label class="field-label entry-prop-field">Stat
                     <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
@@ -1124,6 +1192,19 @@
                 <small>Projection, hit rate, and complete player context</small>
               </summary>
               <div class="tool-group-body">
+                <section id="beta-analysis-feedback" class="beta-analysis-feedback" hidden>
+                  <div class="beta-feedback-heading"><div><p class="eyebrow">Founding Beta Check-In</p><h3>Capture Your View Before EdgeIQ</h3></div><span id="beta-feedback-context" class="subtle">Choose an initial opinion before running research.</span></div>
+                  <form id="beta-feedback-form" class="beta-feedback-form">
+                    <label>Initial opinion<select id="beta-initial-pick"><option>Unsure</option><option>Over</option><option>Under</option></select></label>
+                    <label>After EdgeIQ<select id="beta-final-pick"><option>Pass</option><option>Over</option><option>Under</option></select></label>
+                    <label>Useful?<select id="beta-useful"><option value="">Not answered</option><option value="true">Yes</option><option value="false">No</option></select></label>
+                    <label>Would you make it?<select id="beta-would-pick"><option>Unsure</option><option>Yes</option><option>No</option></select></label>
+                    <label class="beta-feedback-notes">Anything missing?<textarea id="beta-feedback-text" rows="2" maxlength="2000" placeholder="Optional context"></textarea></label>
+                    <label class="beta-feedback-pricing">Launch preference<select id="beta-would-pay"><option value="">Skip for now</option><option>Free</option><option>$9.99/month</option><option>$19.99/month</option><option>$29.99/month</option><option>$49.99/month</option><option>I would not subscribe</option></select></label>
+                    <button type="submit">Submit Feedback</button>
+                  </form>
+                  <p id="beta-feedback-status" class="subtle" role="status">Feedback is optional and never blocks research.</p>
+                </section>
                 <div id="player-research-result" class="analysis-card muted-card">Enter a player and stat above to load the complete research report.</div>
                 <details class="inline-disclosure">
                   <summary>
@@ -1762,21 +1843,22 @@
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260824-v247-esports-markets"></script>
+    <script src="/static/js/state.js?v=20260903-v250-player-directory-2"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260824-v247-esports-markets"></script>
+    <script src="/static/js/api.js?v=20260903-v250-player-directory-2"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
+    <script src="/static/js/beta.js?v=20260903-v250-player-directory-2"></script>
     <script src="/static/js/player-hit-rankings.js?v=20260822-v245-evaluation"></script>
     <script src="/static/js/model-version-evaluation.js?v=20260831-v243-priority-completion"></script>
-    <script src="/static/app.js?v=20260831-v243-usability-audit"></script>
+    <script src="/static/app.js?v=20260903-v250-player-directory-2"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -8,6 +8,10 @@ from repository.database import Base
 from repository.entities import BetEntity  # noqa: F401
 from repository.models.background_job_model import BackgroundJobModel  # noqa: F401
 from repository.models.bankroll_transaction_model import BankrollTransactionModel  # noqa: F401
+from repository.models.beta_feedback_model import BetaFeedbackModel  # noqa: F401
+from repository.models.beta_issue_model import BetaIssueModel  # noqa: F401
+from repository.models.beta_session_model import BetaSessionModel  # noqa: F401
+from repository.models.beta_user_model import BetaUserModel  # noqa: F401
 from repository.models.board_offer_observation_model import BoardOfferObservationModel  # noqa: F401
 from repository.models.entry_model import EntryModel  # noqa: F401
 from repository.models.entry_prop_model import EntryPropModel  # noqa: F401

@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from web.application.player_service import PlayerLookupError
 from web.application.season_history_service import season_history_status, start_season_history_sync
 
@@ -40,6 +41,20 @@ def get_deps() -> PlayerDependencies:
 
 
 DepsPlayer = Annotated[PlayerDependencies, Depends(get_deps)]
+
+
+@router.get("/api/players/directory")
+def player_directory(sport: str, query: str = "", limit: int = 100) -> dict:
+    sport_key = str(sport or "").strip().upper()
+    if not sport_key:
+        raise HTTPException(status_code=400, detail="Choose a sport before searching for a player.")
+    players = PlayerIdentityRepository.search(sport_key, query, limit)
+    return {
+        "sport": sport_key,
+        "query": query.strip(),
+        "players": players,
+        "count": len(players),
+    }
 
 
 @router.get("/api/players/{player_name}/availability")

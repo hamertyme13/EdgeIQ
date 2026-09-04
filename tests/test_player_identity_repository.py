@@ -5,6 +5,7 @@ import repository.repositories.player_identity_repository as identity_module
 from repository.database import Base
 from repository.models.entry_model import EntryModel  # noqa: F401
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from web.routers.players import player_directory
 
 
 def test_identity_registry_matches_accents_and_keeps_name_only_aliases_distinct(monkeypatch):
@@ -20,3 +21,6 @@ def test_identity_registry_matches_accents_and_keeps_name_only_aliases_distinct(
     assert plain["id"] == accented["id"]
     assert accented["provider_player_id"] == "4433408"
     assert other["id"] != plain["id"]
+    assert [row["canonical_name"] if "canonical_name" in row else row["name"] for row in PlayerIdentityRepository.search("WNBA", "azura")] == ["Azura Stevens"]
+    assert PlayerIdentityRepository.search("NFL", "azura") == []
+    assert player_directory("WNBA", "stevens", 10)["players"][0]["id"] == plain["id"]

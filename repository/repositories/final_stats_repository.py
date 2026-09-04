@@ -21,8 +21,14 @@ class FinalStatsRepository:
 
     @staticmethod
     def upsert_many(rows: list[dict]) -> int:
-        saved = 0
-        prepared = []
+        return FinalStatsRepository.upsert_many_report(rows)["processed"]
+
+    @staticmethod
+    def upsert_many_report(rows: list[dict]) -> dict:
+        inserted = 0
+        updated = 0
+        duplicates_removed = 0
+        prepared_index: dict[tuple[str, str, str, str, str], dict] = {}
         identity_cache: dict[tuple[str, str, str, str, str], dict | None] = {}
         for row in rows:
             normalized = _normalize_row(row)
@@ -45,9 +51,13 @@ class FinalStatsRepository:
                 )
             identity = identity_cache[identity_key]
             normalized["player_identity_id"] = identity["id"] if identity else None
-            prepared.append(normalized)
+            key = _record_key(normalized)
+            current = prepared_index.get(key)
+            if current is None or _prefer_incoming_result(current, normalized):
+                prepared_index[key] = normalized
+        prepared = list(prepared_index.values())
         if not prepared:
-            return 0
+            return {"processed": 0, "inserted": 0, "updated": 0, "duplicates_removed": 0}
         with SessionLocal() as session:
             existing_index: dict[tuple[str, str, str, str, str], FinalPlayerStatModel] = {}
             existing_rows = (
@@ -59,22 +69,19 @@ class FinalStatsRepository:
                 .all()
             )
             for row in existing_rows:
-                key = (
-                    row.sport,
-                    row.stat,
-                    str(row.game_date or ""),
-                    canonical_person_key(row.player),
-                    _game_key(row.game),
-                )
-                existing_index.setdefault(key, row)
+                key = _record_key(row)
+                current = existing_index.get(key)
+                if current is not None:
+                    if _prefer_stored_result(row, current):
+                        session.delete(current)
+                        existing_index[key] = row
+                    else:
+                        session.delete(row)
+                    duplicates_removed += 1
+                else:
+                    existing_index[key] = row
             for normalized in prepared:
-                key = (
-                    normalized["sport"],
-                    normalized["stat"],
-                    normalized["game_date"],
-                    canonical_person_key(normalized["player"]),
-                    _game_key(normalized["game"]),
-                )
+                key = _record_key(normalized)
                 existing = existing_index.get(key)
                 if existing:
                     incoming_is_live = normalized["status"] == "live"
@@ -87,19 +94,63 @@ class FinalStatsRepository:
                         existing.player_identity_id = normalized["player_identity_id"]
                         existing.player_provider = normalized["player_provider"]
                         existing.provider_player_id = normalized["provider_player_id"]
+                        updated += 1
                 else:
                     existing = FinalPlayerStatModel(**normalized)
                     session.add(existing)
                     session.flush()
                     existing_index[key] = existing
-                saved += 1
+                    inserted += 1
             # Imported locally because the feature repository reads this
             # repository while rebuilding a segment.
             from repository.repositories.player_feature_repository import PlayerFeatureRepository
 
             PlayerFeatureRepository.expire_segments(session, prepared)
             session.commit()
-        return saved
+        return {
+            "processed": inserted + updated,
+            "inserted": inserted,
+            "updated": updated,
+            "duplicates_removed": duplicates_removed,
+        }
+
+    @staticmethod
+    def deduplicate_sport(sport: str) -> int:
+        sport_key = str(sport or "").strip().upper()
+        if not sport_key:
+            return 0
+        duplicate_ids: list[int] = []
+        retained: dict[tuple[str, str, str, str, str], object] = {}
+        with SessionLocal() as session:
+            rows = session.query(
+                FinalPlayerStatModel.id,
+                FinalPlayerStatModel.player,
+                FinalPlayerStatModel.player_identity_id,
+                FinalPlayerStatModel.sport,
+                FinalPlayerStatModel.stat,
+                FinalPlayerStatModel.game,
+                FinalPlayerStatModel.game_date,
+                FinalPlayerStatModel.status,
+            ).filter(
+                FinalPlayerStatModel.sport == sport_key
+            ).order_by(FinalPlayerStatModel.id.desc()).yield_per(5000)
+            for row in rows:
+                key = _record_key(row)
+                current = retained.get(key)
+                if current is not None:
+                    if _prefer_stored_result(row, current):
+                        duplicate_ids.append(current.id)
+                        retained[key] = row
+                    else:
+                        duplicate_ids.append(row.id)
+                else:
+                    retained[key] = row
+            for start in range(0, len(duplicate_ids), 1000):
+                session.query(FinalPlayerStatModel).filter(
+                    FinalPlayerStatModel.id.in_(duplicate_ids[start:start + 1000])
+                ).delete(synchronize_session=False)
+            session.commit()
+        return len(duplicate_ids)
 
     @staticmethod
     def find_actual(prop: dict) -> float | None:
@@ -513,6 +564,35 @@ def _last_name(person_key: str) -> str:
 
 def _game_key(value: object) -> str:
     return canonical_matchup_key(value, _TEAM_ALIASES)
+
+
+def _record_key(row: object) -> tuple[str, str, str, str, str]:
+    def value(name: str, default: object = "") -> object:
+        return row.get(name, default) if isinstance(row, dict) else getattr(row, name, default)
+
+    identity_id = value("player_identity_id", None)
+    player_key = f"id:{identity_id}" if identity_id else canonical_person_key(value("player"))
+    return (
+        str(value("sport") or "").upper(),
+        canonical_stat_label(value("stat")),
+        str(value("game_date") or ""),
+        player_key,
+        _game_key(value("game")),
+    )
+
+
+def _prefer_incoming_result(current: dict, incoming: dict) -> bool:
+    current_final = str(current.get("status") or "").lower() in {"played", "dnp"}
+    incoming_final = str(incoming.get("status") or "").lower() in {"played", "dnp"}
+    return incoming_final or not current_final
+
+
+def _prefer_stored_result(candidate: object, current: object) -> bool:
+    candidate_final = str(getattr(candidate, "status", "") or "").lower() in {"played", "dnp"}
+    current_final = str(getattr(current, "status", "") or "").lower() in {"played", "dnp"}
+    if candidate_final != current_final:
+        return candidate_final
+    return int(getattr(candidate, "id", 0) or 0) > int(getattr(current, "id", 0) or 0)
 
 
 _TEAM_ALIASES = {

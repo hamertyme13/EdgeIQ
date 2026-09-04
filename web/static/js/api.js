@@ -71,8 +71,13 @@
       if (signal) signal.addEventListener("abort", abortFromCaller, { once: true });
       const timeout = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 20000));
       try {
+        const betaToken = global.localStorage?.getItem("edgeiq.beta.token") || "";
         const response = await fetch(`${API_BASE}${path}`, {
-          headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+          headers: {
+            "Content-Type": "application/json",
+            ...(betaToken ? { Authorization: `Bearer ${betaToken}` } : {}),
+            ...(fetchOptions.headers || {}),
+          },
           cache: "no-store",
           ...fetchOptions,
           signal: controller.signal,

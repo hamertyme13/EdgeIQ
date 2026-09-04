@@ -16,6 +16,9 @@ _status: dict = {
     "days_checked": 0,
     "days_total": 0,
     "rows_imported": 0,
+    "records_inserted": 0,
+    "records_updated": 0,
+    "duplicates_removed": 0,
     "errors": [],
 }
 
@@ -33,7 +36,8 @@ def start_season_history_sync(sport: str) -> dict:
             "message": f"Collecting completed {sport_key} games from {start:%B %-d} through {end:%B %-d}.",
             "started_at": utc_now().isoformat(), "completed_at": "",
             "days_checked": 0, "days_total": (end - start).days + 1,
-            "rows_imported": 0, "errors": [],
+            "rows_imported": 0, "records_inserted": 0, "records_updated": 0,
+            "duplicates_removed": 0, "errors": [],
         })
     Thread(target=_run_sync, args=(sport_key, start, end), daemon=True, name=f"edgeiq-{sport_key.lower()}-season-sync").start()
     return {**season_history_status(), "accepted": True}
@@ -57,13 +61,20 @@ def season_window(sport: str, today: date | None = None) -> tuple[date, date]:
 def _run_sync(sport: str, start: date, end: date) -> None:
     cursor = start
     imported = 0
+    inserted = 0
+    updated = 0
+    duplicates_removed = 0
     errors: list[str] = []
     consecutive_errors = 0
     while cursor <= end:
         try:
             rows = fetch_final_stats(sport, cursor)
             if rows:
-                imported += FinalStatsRepository.upsert_many(rows)
+                report = FinalStatsRepository.upsert_many_report(rows)
+                imported += report["processed"]
+                inserted += report["inserted"]
+                updated += report["updated"]
+                duplicates_removed += report["duplicates_removed"]
             consecutive_errors = 0
         except Exception:  # Provider failures are reported without exposing transport internals.
             consecutive_errors += 1
@@ -72,8 +83,11 @@ def _run_sync(sport: str, start: date, end: date) -> None:
             _status.update({
                 "days_checked": (cursor - start).days + 1,
                 "rows_imported": imported,
+                "records_inserted": inserted,
+                "records_updated": updated,
+                "duplicates_removed": duplicates_removed,
                 "errors": errors[-8:],
-                "message": f"Checked {(cursor - start).days + 1} of {(end - start).days + 1} calendar days and saved {imported:,} player-stat results.",
+                "message": f"Checked {(cursor - start).days + 1} of {(end - start).days + 1} days: {inserted:,} new and {updated:,} updated player results.",
             })
         cursor += timedelta(days=1)
         if consecutive_errors >= 5:
@@ -85,8 +99,16 @@ def _run_sync(sport: str, start: date, end: date) -> None:
                 })
             return
     with _lock:
+        _status["message"] = f"Finalizing {sport} history and checking for duplicate game records."
+    duplicates_removed += FinalStatsRepository.deduplicate_sport(sport)
+    with _lock:
         _status.update({
             "state": "complete" if not errors else "complete_with_warnings",
             "completed_at": utc_now().isoformat(),
-            "message": f"Season history sync finished with {imported:,} verified player-stat results" + (f" and {len(errors)} provider warnings." if errors else "."),
+            "duplicates_removed": duplicates_removed,
+            "message": (
+                f"Season history sync finished: {inserted:,} new, {updated:,} updated, "
+                f"and {duplicates_removed:,} duplicate records removed"
+                + (f", with {len(errors)} provider warnings." if errors else ".")
+            ),
         })

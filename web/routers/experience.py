@@ -1,17 +1,26 @@
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from repository.repositories.product_experience_repository import ProductExperienceRepository
 from repository.repositories.settings_repository import SettingsRepository
+from web.routers.beta import beta_session_from_request
 from web.schemas.experience import OnboardingPayload, ProductEventPayload, ResearchHistoryPayload
 
 router = APIRouter(prefix="/api/experience", tags=["experience"])
 
 
 @router.post("/events")
-def record_event(payload: ProductEventPayload) -> dict:
-    return ProductExperienceRepository.record_event(payload.event_name, payload.entity_type, payload.entity_id, payload.metadata)
+def record_event(payload: ProductEventPayload, request: Request) -> dict:
+    beta_session = beta_session_from_request(request)
+    return ProductExperienceRepository.record_event(
+        payload.event_name,
+        payload.entity_type,
+        payload.entity_id,
+        payload.metadata,
+        user_id=beta_session["user"]["id"] if beta_session else None,
+        session_id=beta_session["session_id"] if beta_session else None,
+    )
 
 
 @router.get("/analytics")

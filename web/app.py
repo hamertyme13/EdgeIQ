@@ -311,6 +311,7 @@ from web.routers.bankroll import (
     update_loss_protection,
 )
 from web.routers.bankroll import router as bankroll_router
+from web.routers.beta import router as beta_router
 from web.routers.briefing import (
     BriefingDependencies,
     configure_briefing_router,
@@ -514,7 +515,7 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260831-v243-priority-completion"
+STATIC_ASSET_VERSION = "20260903-v250-player-directory-2"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -12857,6 +12858,7 @@ configure_entry_router(
 )
 app.include_router(entry_router)
 app.include_router(experience_router)
+app.include_router(beta_router)
 
 configure_settlement_router(
     SettlementDependencies(

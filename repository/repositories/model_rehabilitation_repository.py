@@ -4,6 +4,8 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
+
 from analytics.grouped_validation import grouped_rolling_validation
 from analytics.model_registry import PRODUCT_MODEL_VERSION
 from analytics.prediction_evidence import independent_market_key
@@ -125,7 +127,7 @@ class ModelRehabilitationRepository:
                 key = independent_market_key(row)
                 if not key or key in existing or row.get("line") is None:
                     continue
-                session.add(ShadowPredictionModel(
+                candidate = ShadowPredictionModel(
                     cohort_date=cohort,
                     model_version=model_version,
                     independent_market_key=key,
@@ -141,7 +143,14 @@ class ModelRehabilitationRepository:
                     projection=_float_or_none(row.get("projection")),
                     probability=float(row.get("confidence") or row.get("probability") or 50.0),
                     feature_snapshot=json.dumps(row, default=str, sort_keys=True),
-                ))
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(candidate)
+                        session.flush()
+                except IntegrityError:
+                    existing.add(key)
+                    continue
                 existing.add(key)
                 created += 1
                 if target is not None and created >= needed:

@@ -3227,6 +3227,7 @@ function propFromForm() {
   const projectionValue = $("prop-projection").value;
   return {
     player: $("prop-player").value.trim(),
+    player_identity_id: state.entrySelectedPlayerIdentityId,
     team: $("prop-team").value.trim(),
     sport: $("prop-sport").value,
     stat: $("prop-stat").value,
@@ -3239,6 +3240,44 @@ function propFromForm() {
     season_type: "",
     trending_count: 0,
   };
+}
+
+let entryPlayerLookupTimer = null;
+
+async function loadEntryPlayerDirectory(query = "") {
+  const sport = $("prop-sport")?.value || "";
+  const playerInput = $("prop-player");
+  const status = $("entry-player-lookup-status");
+  if (!sport) {
+    state.entryPlayerDirectory = [];
+    state.entrySelectedPlayerIdentityId = null;
+    playerInput.disabled = true;
+    playerInput.placeholder = "Select a sport first";
+    $("entry-player-options").innerHTML = "";
+    status.textContent = "Choose a sport to load saved players.";
+    return;
+  }
+  playerInput.disabled = false;
+  playerInput.placeholder = `Search ${sport} players`;
+  status.textContent = `Loading saved ${sport} players...`;
+  const requestedSport = sport;
+  const data = await api(`/api/players/directory?sport=${encodeURIComponent(sport)}&query=${encodeURIComponent(query)}&limit=150`);
+  if ($("prop-sport").value !== requestedSport) return;
+  state.entryPlayerDirectory = data.players || [];
+  $("entry-player-options").innerHTML = state.entryPlayerDirectory.map((player) => (
+    `<option value="${escapeHtml(player.name)}">${escapeHtml(player.team || player.sport)}</option>`
+  )).join("");
+  status.textContent = data.count
+    ? `${data.count} saved ${sport} ${data.count === 1 ? "player" : "players"} available.`
+    : `No saved ${sport} players match yet. You can still enter a name manually.`;
+  applyEntryPlayerSelection();
+}
+
+function applyEntryPlayerSelection() {
+  const playerName = $("prop-player")?.value.trim().toLowerCase() || "";
+  const match = state.entryPlayerDirectory.find((player) => String(player.name).trim().toLowerCase() === playerName);
+  state.entrySelectedPlayerIdentityId = match?.id || null;
+  if (match?.team && !$("prop-team").value.trim()) $("prop-team").value = match.team;
 }
 
 function entryPayload() {
@@ -3295,6 +3334,17 @@ function renderAnalysis(data) {
   const payoutVerified = Boolean(data.platform_value?.payout_verified);
   const release = data.release_verdict || {};
   const corrections = data.corrections || {};
+  const analyzedProp = data.entry?.props?.[0] || {};
+  window.EdgeIQBeta?.setAnalysisContext({
+    prediction_record_id: analyzedProp.prediction_record_id || null,
+    entry_id: data.entry?.id || null,
+    entry_prop_id: analyzedProp.id || analyzedProp.entry_prop_id || null,
+    player: analyzedProp.player || "Entry analysis",
+    stat: analyzedProp.stat || "",
+    sport: analyzedProp.sport || "",
+    platform: analyzedProp.platform || data.entry?.platform || "",
+    line: analyzedProp.line ?? null,
+  });
   const correctionRows = (corrections.legs || []).map((leg) => {
     const action = String(leg.action || "keep");
     const actionLabel = action === "flip" ? `Use ${leg.suggested_direction}` : action === "remove" ? "Remove" : "Keep";
@@ -4188,6 +4238,14 @@ async function loadPlayerResearch(event) {
   const distribution = data.forecast?.distribution || {};
   const sensitivity = data.projection_sensitivity || {};
   const assessment = data.season_assessment || {};
+  window.EdgeIQBeta?.setAnalysisContext({
+    prediction_record_id: data.prediction_record_id || null,
+    player: data.player || player,
+    stat: data.stat || stat,
+    sport: data.sport || $("research-sport").value,
+    platform: $("research-platform").value,
+    line: data.line ?? null,
+  });
   const bestHittingStats = data.best_hitting_stats || [];
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
@@ -5894,9 +5952,35 @@ function bindEvents() {
     });
   });
   $("load-props").addEventListener("click", () => withButtonBusy("load-props", "Loading...", loadProps));
+  $("prop-sport").addEventListener("change", () => {
+    $("prop-player").value = "";
+    $("prop-team").value = "";
+    state.entrySelectedPlayerIdentityId = null;
+    loadEntryPlayerDirectory().catch((error) => {
+      $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
+    });
+  });
+  $("prop-player").addEventListener("input", () => {
+    state.entrySelectedPlayerIdentityId = null;
+    applyEntryPlayerSelection();
+    window.clearTimeout(entryPlayerLookupTimer);
+    const query = $("prop-player").value.trim();
+    entryPlayerLookupTimer = window.setTimeout(() => {
+      if (query.length >= 2) {
+        loadEntryPlayerDirectory(query).catch((error) => {
+          $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
+        });
+      }
+    }, 220);
+  });
+  $("prop-player").addEventListener("change", applyEntryPlayerSelection);
   $("prop-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const prop = propFromForm();
+    if (!prop.sport) {
+      $("entry-status").textContent = "Choose a sport before selecting a player.";
+      return;
+    }
     if (!prop.player || !prop.line) return;
     const maximumLegs = providerMaximumLegs(prop.platform);
     if (state.entryProps.length >= maximumLegs) {
@@ -5910,6 +5994,7 @@ function bindEvents() {
       wager: $("entry-wager").value,
       multiplier: $("entry-multiplier").value,
       payoutType: $("entry-payout-type").value,
+      sport: $("prop-sport").value,
     };
     state.entryProps.push(prop);
     $("prop-form").reset();
@@ -5918,6 +6003,10 @@ function bindEvents() {
     $("entry-wager").value = entryDefaults.wager;
     $("entry-multiplier").value = entryDefaults.multiplier || "3";
     $("entry-payout-type").value = entryDefaults.payoutType || "standard";
+    $("prop-sport").value = entryDefaults.sport;
+    $("prop-player").disabled = false;
+    $("prop-player").placeholder = `Search ${entryDefaults.sport} players`;
+    state.entrySelectedPlayerIdentityId = null;
     renderEntryProps();
   });
   $("entry-platform").addEventListener("change", () => {
