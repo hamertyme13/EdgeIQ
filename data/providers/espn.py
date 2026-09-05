@@ -149,6 +149,87 @@ def fetch_game_times(sport: str, game_date: date) -> list[dict]:
     return rows
 
 
+def fetch_final_game_outcomes(sport: str, game_date: date) -> list[dict]:
+    """Return official final team scores for settling versioned game predictions."""
+    sport_key = sport.upper()
+    path = _SPORT_PATHS.get(sport_key)
+    if path is None:
+        return []
+    rows = []
+    for event in _scoreboard(path, game_date).get("events", []):
+        competition = _first(event.get("competitions", []))
+        status = (competition.get("status", {}) if competition else {}).get("type", {})
+        if not status.get("completed"):
+            continue
+        competitors = competition.get("competitors", []) if competition else []
+        home = next((row for row in competitors if row.get("homeAway") == "home"), None)
+        away = next((row for row in competitors if row.get("homeAway") == "away"), None)
+        try:
+            home_score = float((home or {})["score"])
+            away_score = float((away or {})["score"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        rows.append({
+            "game_id": str(event.get("id") or ""),
+            "sport": sport_key,
+            "game": _event_matchup(event),
+            "game_date": game_date.isoformat(),
+            "home_points": home_score,
+            "away_points": away_score,
+            "source": "espn_official_scoreboard",
+        })
+    return rows
+
+
+def find_game_outcome(prop: dict) -> dict | None:
+    """Return a binary official result for a tracked Game Winner leg."""
+    sport_key = str(prop.get("sport") or "").upper()
+    path = _SPORT_PATHS.get(sport_key)
+    selected_team = str(prop.get("team") or prop.get("player") or "").strip()
+    game = str(prop.get("game") or "").strip()
+    if path is None or not selected_team or not game:
+        return None
+    game_time = str(prop.get("game_time") or "").strip()
+    try:
+        game_date = datetime.fromisoformat(game_time.replace("Z", "+00:00")).astimezone(_SLATE_TIME_ZONE).date()
+    except (TypeError, ValueError):
+        return None
+    requested_game = canonical_matchup_key(game, _TEAM_ALIASES)
+    selected_key = canonical_person_key(selected_team)
+    scoreboard = _scoreboard(path, game_date, ttl_seconds=120)
+    for event in scoreboard.get("events", []):
+        competition = _first(event.get("competitions", []))
+        status = (competition.get("status", {}) if competition else {}).get("type", {})
+        if not status.get("completed") or canonical_matchup_key(_event_matchup(event), _TEAM_ALIASES) != requested_game:
+            continue
+        competitors = competition.get("competitors", []) if competition else []
+        selected = next((row for row in competitors if selected_key in {
+            canonical_person_key((row.get("team") or {}).get(label))
+            for label in ("displayName", "shortDisplayName", "name", "abbreviation")
+            if (row.get("team") or {}).get(label)
+        }), None)
+        if selected is None:
+            selected_tokens = set(selected_key.split())
+            selected = next((row for row in competitors if any(
+                selected_tokens & set(canonical_person_key((row.get("team") or {}).get(label)).split())
+                for label in ("displayName", "shortDisplayName", "name", "abbreviation")
+                if (row.get("team") or {}).get(label)
+            )), None)
+        if selected is None:
+            continue
+        winner = bool(selected.get("winner"))
+        return {
+            "actual": 1.0 if winner else 0.0,
+            "status": "played",
+            "source": "espn_official_scoreboard",
+            "game": _event_matchup(event),
+            "game_date": game_date.isoformat(),
+            "player": selected_team,
+            "player_identity_id": None,
+        }
+    return None
+
+
 def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
     sport_key = sport.upper()
     path = _SPORT_PATHS.get(sport_key)

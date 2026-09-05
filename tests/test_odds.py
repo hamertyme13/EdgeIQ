@@ -5,6 +5,7 @@ from services.odds import (
     get_games,
     get_player_prop_consensus,
     prop_market_key,
+    summarize_game_odds,
     summarize_player_prop_market,
 )
 
@@ -60,6 +61,40 @@ def test_find_game_odds_matches_abbreviated_matchup_and_formats_consensus():
     assert odds["consensus"]["New York Yankees"] == 115
     assert "+115" in format_consensus_line(odds)
     assert "-132" in format_consensus_line(odds)
+
+
+def test_find_game_odds_rejects_single_letter_initial_matches():
+    games = [{
+        "id": "wrong-game",
+        "away_team": "Milwaukee Brewers",
+        "home_team": "Cincinnati Reds",
+        "bookmakers": [],
+    }]
+
+    assert find_game_odds("MIN @ CWS", "MLB", games) is None
+
+
+def test_game_odds_produces_no_vig_winner_probability_and_blowout_risk():
+    game = {
+        "id": "game-2",
+        "away_team": "Minnesota Lynx",
+        "home_team": "Dallas Wings",
+        "commence_time": "2026-09-05T00:00:00Z",
+        "bookmakers": [{
+            "key": "draftkings",
+            "markets": [{"key": "h2h", "outcomes": [
+                {"name": "Minnesota Lynx", "price": -300},
+                {"name": "Dallas Wings", "price": 240},
+            ]}],
+        }],
+    }
+
+    outcome = summarize_game_odds(game)
+
+    assert outcome["predicted_winner"] == "Minnesota Lynx"
+    assert 70 < outcome["win_probability"] < 75
+    assert outcome["blowout_risk"] == "Elevated"
+    assert round(sum(outcome["no_vig_probabilities"].values()), 1) == 100.0
 
 
 def test_player_prop_market_mapping_normalizes_pra_and_mlb_stats():

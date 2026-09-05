@@ -153,6 +153,18 @@ def prop_line_plausibility(prop: object) -> PlausibilityResult:
         return PlausibilityResult(False, sport, stat, None, reason="A numeric market line is required.")
     if line < 0:
         return PlausibilityResult(False, sport, stat, line, reason="Market lines cannot be negative.")
+    if stat == "Game Winner":
+        if abs(line - 0.5) < 0.001:
+            return PlausibilityResult(True, sport, stat, line, 0.5, 0.5)
+        return PlausibilityResult(
+            False,
+            sport,
+            stat,
+            line,
+            0.5,
+            0.5,
+            "Game Winner uses a binary 0.5 tracking line.",
+        )
 
     range_sport = "NFL" if sport == "NCAAF" else sport
     bounds = _SPORT_STAT_RANGES.get(range_sport, {}).get(stat)

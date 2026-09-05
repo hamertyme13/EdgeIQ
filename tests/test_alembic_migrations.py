@@ -53,6 +53,7 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "beta_sessions",
         "beta_feedback",
         "beta_issues",
+        "game_predictions",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
     assert {"provider_event_id", "provider_offer_id"} <= entry_prop_columns
@@ -95,7 +96,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'background_jobs'"
         ).fetchone()[0]
 
-    assert revision == "h31f8a2b7c04"
+    assert revision == "j43a7e91c620"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1
@@ -143,6 +144,6 @@ def test_beta_migration_reconciles_tables_created_before_alembic_upgrade(tmp_pat
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'beta_%'"
         ).fetchone()[0]
 
-    assert revision == "h31f8a2b7c04"
+    assert revision == "j43a7e91c620"
     assert beta_table_count == 4
     assert {"user_id", "session_id"} <= product_event_columns

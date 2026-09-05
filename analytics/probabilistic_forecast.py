@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timezone
 from statistics import median
 from typing import cast
 
+from analytics.game_features import prop_opportunity_context
 from analytics.model_registry import (
     MARKET_BASELINE_VERSION,
     OPPORTUNITY_CHALLENGER_VERSION,
@@ -51,6 +52,7 @@ def forecast_prop(
     game_time: object = None,
     team: str = "",
     game: str = "",
+    game_prediction: dict | None = None,
 ) -> PropForecast:
     policy = _league_stat_policy(sport, stat)
     rows = (
@@ -199,6 +201,22 @@ def forecast_prop(
     probability = 0.5 + ((raw_probability - 0.5) * evidence_strength)
     probability = min(0.85, max(0.15, probability))
     opponent_hits = sum(_value_hits_line(value, float(line), direction) for value in opponent_values)
+    game_context = prop_opportunity_context(
+        sport,
+        stat,
+        team,
+        game_prediction or {},
+        expected_minutes=expected_minutes,
+        expected_opportunities=expected_opportunities,
+    ) if game_prediction else {
+        "model_version": "edgeiq-game-context-prop-distribution-v2.5.0",
+        "shadow_only": True,
+        "confidence_delta": 0.0,
+        "opportunity_factor": 1.0,
+        "adjustments": [],
+        "anti_double_counting": "No game prediction was available; production forecast is unchanged.",
+    }
+    game_aware_shadow_projection = contextual_mean * float(game_context["opportunity_factor"])
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -276,6 +294,8 @@ def forecast_prop(
                 "opponent": not bool(opponent),
                 "rest_days": _rest_days(game_time, rows) is None,
             },
+            "game_intelligence": game_context,
+            "game_aware_shadow_projection": round(game_aware_shadow_projection, 3),
         },
         distribution={
             "expected_result": round(contextual_mean, 2),
@@ -292,6 +312,8 @@ def forecast_prop(
             "opportunity_projection": opportunity_projection.get("projection"),
             "production_per_opportunity": opportunity_projection.get("production_rate"),
             "opportunity_evidence_games": opportunity_projection.get("games", 0),
+            "game_aware_shadow_projection": round(game_aware_shadow_projection, 2),
+            "game_context_shadow_only": True,
             "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
             "uncertainty_drivers": uncertainty_drivers,
         },

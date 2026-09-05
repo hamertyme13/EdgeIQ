@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from analytics.pickem_payouts import payout_schedule, settlement_return_multiplier
 from models.entry import Entry
+from models.stat_type import StatType
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
@@ -83,7 +84,7 @@ class EntryRepository:
             potential_payout = round(wager * multiplier, 2)
             entry_mode = EntryRepository._normalize_entry_mode(entry_mode)
             identities = [
-                PlayerIdentityRepository.resolve(
+                None if prop.stat == StatType.GAME_WINNER else PlayerIdentityRepository.resolve(
                     prop.player.name,
                     prop.player.sport,
                     prop.player.team,

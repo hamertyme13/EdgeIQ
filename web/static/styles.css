@@ -1208,6 +1208,17 @@ p { color: var(--muted); margin: 5px 0 0; }
   font-size: 12px;
   margin-top: 4px;
 }
+.daily-game-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.daily-game-actions button {
+  width: auto;
+  min-height: 38px;
+  white-space: nowrap;
+}
 .daily-game-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4136,6 +4147,12 @@ tr:hover td {
   .daily-game-card summary {
     grid-template-columns: 1fr;
   }
+  .daily-game-actions {
+    justify-content: stretch;
+  }
+  .daily-game-actions button {
+    flex: 1 1 180px;
+  }
   .briefing-terminal-number {
     font-size: 36px;
   }
@@ -6554,4 +6571,49 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
   .beta-admin-row { align-items: stretch; flex-direction: column; }
   .beta-admin-actions { grid-template-columns: 1fr 1fr; }
   .beta-admin-actions input { grid-column: 1 / -1; }
+}
+.game-intelligence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+
+.game-intelligence-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.game-win-bars,
+.game-intelligence-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.game-win-bars > div,
+.game-intelligence-metrics > span {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.game-intelligence-metrics > span { flex-direction: column; }
+.game-intelligence-metrics small { color: var(--muted); }
+.game-intelligence-card details { margin-top: 14px; }
+.game-to-props { width: 100%; margin-top: 12px; }
+.research-game-context { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+
+@media (max-width: 640px) {
+  .game-intelligence-metrics,
+  .game-win-bars { grid-template-columns: 1fr; }
+  .game-intelligence-controls { width: 100%; }
 }

@@ -5,6 +5,7 @@ from functools import lru_cache
 from models.stat_type import StatType
 
 _STAT_ALIASES: dict[StatType, tuple[str, ...]] = {
+    StatType.GAME_WINNER: ("winner", "moneyline", "game outcome", "match winner", "team to win"),
     StatType.PRA: (
         "pra",
         "p+r+a",

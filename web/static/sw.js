@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260903-v250-player-directory-2";
+const CACHE_NAME = "edgeiq-shell-20260904-v250-game-predictions";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -9,6 +9,7 @@ const SHELL_ASSETS = [
   "/static/ui-utils.js",
   "/static/js/api.js",
   "/static/js/beta.js",
+  "/static/js/games.js",
   "/static/js/state.js",
   "/static/edgeiq-icon.png",
   "/static/manifest.webmanifest"

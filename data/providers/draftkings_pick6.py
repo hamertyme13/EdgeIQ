@@ -66,8 +66,17 @@ def normalize_offer(item: dict[str, Any]) -> dict | None:
         return None
 
     alternate = bool(item.get("isAlternateLine") or item.get("alternateLine") or item.get("is_alternate"))
+    event = _mapping(item, "event", "game", "contest", "matchup")
+    away_team = _nested_text(event, "awayTeam", "away_team", "away")
+    home_team = _nested_text(event, "homeTeam", "home_team", "home")
     game = _text(item, "matchup", "game", "gameName", "eventName")
+    if not game:
+        game = _text(event, "matchup", "name", "shortName", "displayName")
+    if not game and away_team and home_team:
+        game = f"{away_team} @ {home_team}"
     game_time = _text(item, "gameTime", "startTime", "start_time", "scheduledAt", "date")
+    if not game_time:
+        game_time = _text(event, "gameTime", "startTime", "start_time", "scheduledAt", "date", "commenceTime")
     provider_player_id = _text(item, "playerId", "player_id", "participantId")
     projection_id = _text(item, "offerId", "projectionId", "id")
     return {
@@ -75,7 +84,7 @@ def normalize_offer(item: dict[str, Any]) -> dict | None:
         "provider_player_id": provider_player_id,
         "player_id": provider_player_id,
         "player": player,
-        "team": _text(item, "team", "teamAbbreviation", "team_name"),
+        "team": _text(item, "team", "teamAbbreviation", "team_name") or _nested_text(item, "team"),
         "league": league,
         "position": _text(item, "position"),
         "stat": stat,
@@ -86,7 +95,9 @@ def normalize_offer(item: dict[str, Any]) -> dict | None:
         "adjusted_line": alternate,
         "game": game,
         "game_time": game_time,
-        "provider_game_id": _text(item, "gameId", "eventId", "event_id"),
+        "provider_game_id": _text(item, "gameId", "eventId", "event_id") or _text(event, "id", "eventId", "gameId"),
+        "provider_event_id": _text(item, "gameId", "eventId", "event_id") or _text(event, "id", "eventId", "gameId"),
+        "provider_offer_id": projection_id,
         "status": "pre_game",
         "platform": "DraftKings Pick6",
         "provider": "DraftKings Pick6 via Apify",
@@ -149,3 +160,23 @@ def _number(item: dict[str, Any], *keys: str) -> float | None:
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _mapping(item: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _nested_text(item: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, dict):
+            text = _text(value, "abbreviation", "shortName", "displayName", "name", "label")
+        else:
+            text = str(value or "").strip()
+        if text:
+            return text
+    return ""

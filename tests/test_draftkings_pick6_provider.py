@@ -25,6 +25,30 @@ def test_normalize_draftkings_pick6_rejects_incomplete_offer():
     assert draftkings_pick6.normalize_offer({"playerName": "Missing Market"}) is None
 
 
+def test_normalize_draftkings_pick6_keeps_nested_event_identity():
+    row = draftkings_pick6.normalize_offer({
+        "id": "offer-2",
+        "playerName": "A Player",
+        "playerId": "player-8",
+        "league": "MLB",
+        "team": {"abbreviation": "SEA"},
+        "statType": "Hits",
+        "line": 1.5,
+        "event": {
+            "id": "game-9",
+            "awayTeam": {"abbreviation": "ATH"},
+            "homeTeam": {"abbreviation": "SEA"},
+            "startTime": "2026-09-05T02:10:00Z",
+        },
+    })
+
+    assert row is not None
+    assert row["game"] == "ATH @ SEA"
+    assert row["game_time"] == "2026-09-05T02:10:00Z"
+    assert row["provider_event_id"] == "game-9"
+    assert row["provider_offer_id"] == "offer-2"
+
+
 def test_draftkings_pick6_uses_fresh_cache_without_actor_run(monkeypatch):
     monkeypatch.setattr(draftkings_pick6, "_read_cache", lambda: (30, [{"player": "Cached"}]))
     monkeypatch.setattr(draftkings_pick6, "_token", lambda: "configured")

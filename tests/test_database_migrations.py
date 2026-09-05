@@ -1,5 +1,6 @@
 from repository.models.background_job_model import BackgroundJobModel
 from repository.models.entry_prop_model import EntryPropModel
+from repository.models.game_prediction_model import GamePredictionModel
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
 from repository.models.player_feature_model import PlayerFeatureModel
 from repository.models.prediction_record_model import PredictionRecordModel
@@ -60,4 +61,12 @@ def test_background_job_schema_preserves_restart_safe_progress() -> None:
     assert {
         "job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error",
         "owner_id", "process_id", "heartbeat_at",
+    } <= columns
+
+
+def test_game_prediction_schema_preserves_reproducible_forecasts_and_outcomes() -> None:
+    columns = set(GamePredictionModel.__table__.columns.keys())
+    assert {
+        "prediction_key", "game_id", "model_version", "home_win_probability",
+        "expected_margin", "expected_total", "evidence_json", "actual_home_win", "settled_at",
     } <= columns

@@ -55,6 +55,7 @@ def initialize_database():
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
     from repository.models.final_player_stat_model import FinalPlayerStatModel
+    from repository.models.game_prediction_model import GamePredictionModel
     from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
     from repository.models.player_feature_model import PlayerFeatureModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel

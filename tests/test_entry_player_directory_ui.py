@@ -13,3 +13,12 @@ def test_entry_builder_requires_sport_before_player_lookup() -> None:
     assert "loadEntryPlayerDirectory" in javascript
     assert "/api/players/directory" in javascript
     assert "player_identity_id: state.entrySelectedPlayerIdentityId" in javascript
+
+
+def test_today_game_predictions_can_be_added_to_entry_builder() -> None:
+    javascript = Path("web/static/app.js").read_text(encoding="utf-8")
+
+    assert "Add Winner Prediction" in javascript
+    assert "data-add-game-prediction" in javascript
+    assert 'prediction_leg?.stat === "Game Winner"' in javascript
+    assert '$("entry-mode").value = "paper"' in javascript

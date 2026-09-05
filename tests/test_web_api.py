@@ -674,6 +674,55 @@ def test_daily_game_generator_requires_two_actionable_props() -> None:
     assert card["generated_entry"]["label"] == "Not enough verified props"
 
 
+def test_daily_game_card_exposes_paper_first_game_winner_leg() -> None:
+    card = web_app._daily_game_card(
+        "PrizePicks",
+        "WNBA",
+        "MIN-DAL",
+        [{"player": "Player", "team": "MIN", "stat": "Points", "line": 20.5, "confidence": 60}],
+        {
+            "event_id": "event-1",
+            "commence_time": "2026-09-05T00:00:00Z",
+            "predicted_winner": "Minnesota Lynx",
+            "win_probability": 73.2,
+            "blowout_risk": "Elevated",
+            "source": "The Odds API",
+            "sportsbook_count": 4,
+            "consensus": {},
+        },
+    )
+
+    assert card["projected_winner"] == "Minnesota Lynx"
+    assert card["winner_probability"] == 73.2
+    assert card["prediction_leg"]["stat"] == "Game Winner"
+    assert card["prediction_leg"]["line"] == 0.5
+    assert card["prediction_leg"]["forecast_paid_eligible"] is False
+
+
+def test_espn_game_winner_settlement_uses_official_scoreboard(monkeypatch):
+    monkeypatch.setattr(espn, "_scoreboard", lambda path, game_date, ttl_seconds=120: {
+        "events": [{"competitions": [{
+            "status": {"type": {"completed": True}},
+            "competitors": [
+                {"homeAway": "away", "winner": True, "team": {"abbreviation": "MIN", "displayName": "Minnesota Lynx"}},
+                {"homeAway": "home", "winner": False, "team": {"abbreviation": "DAL", "displayName": "Dallas Wings"}},
+            ],
+        }]}],
+    })
+
+    result = espn.find_game_outcome({
+        "sport": "WNBA",
+        "player": "Minnesota Lynx",
+        "team": "Minnesota Lynx",
+        "game": "MIN vs DAL",
+        "game_time": "2026-09-05T00:00:00Z",
+    })
+
+    assert result["actual"] == 1.0
+    assert result["status"] == "played"
+    assert result["source"] == "espn_official_scoreboard"
+
+
 def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof(monkeypatch) -> None:
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
     monkeypatch.setattr(
@@ -2657,6 +2706,49 @@ def test_underdog_abbreviated_pra_is_end_to_end_eligible() -> None:
 
     assert result["eligible"] is True
     assert result["stat"] == "points rebounds assists"
+
+
+def test_adjusted_underdog_line_keeps_box_score_settlement_support(monkeypatch):
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
+    monkeypatch.setattr(web_app, "get_dashboard", lambda: {"bankroll": 100.0, "monthly_profit": 0.0})
+    monkeypatch.setattr(web_app, "_platform_value_check", lambda payload: {})
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app, "_loss_protection_entry_flags", lambda entry, payload: [])
+    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: [{
+        "player": "Kelsey Mitchell",
+        "team": "IND",
+        "league": "WNBA",
+        "stat": "Points",
+        "line": 20.5,
+        "line_offer_type": "standard",
+        "platform": platform,
+        "game": "IND @ SEA",
+        "game_time": "2026-09-05T02:00:00Z",
+    }])
+    payload = EntryPayload.model_validate({
+        "platform": "Underdog",
+        "entry_mode": "paper",
+        "props": [{
+            "player": "Kelsey Mitchell",
+            "team": "IND",
+            "sport": "WNBA",
+            "stat": "Points",
+            "line": 18.5,
+            "standard_line": 20.5,
+            "line_offer_type": "goblin",
+            "adjusted_line": True,
+            "is_discounted_line": True,
+            "direction": "Over",
+            "platform": "Underdog",
+        }],
+    })
+
+    body = placement_check(payload)
+
+    assert body["props"][0]["settlement_verifiable"] is True
+    assert body["props"][0]["settlement_provider"] == "ESPN official box score"
+    assert not any("manual final-stat verification" in warning for warning in body["warnings"])
+    assert any("closest active line is 20.5" in warning for warning in body["warnings"])
 
 
 def test_placement_check_allows_auto_projection_for_paper_mode(monkeypatch):

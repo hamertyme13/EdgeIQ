@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class StatType(Enum):
+    GAME_WINNER = "Game Winner"
     POINTS = "Points"
     REBOUNDS = "Rebounds"
     ASSISTS = "Assists"

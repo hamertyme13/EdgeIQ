@@ -62,6 +62,7 @@ from analytics.risk import calculate_entry_risk
 from config import APP_VERSION
 from data.providers.espn import (
     fetch_game_times,
+    find_game_outcome,
     refresh_final_stats_for_entries,
     refresh_game_times_for_entries,
     refresh_live_stats_for_entries,
@@ -97,6 +98,7 @@ from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, export_database
 from services.final_stats_archive import archive_final_stats
+from services.game_intelligence import prediction_for_matchup, settle_recent_predictions
 from services.ollama_client import (
     ollama_chat,
     ollama_model,
@@ -337,6 +339,7 @@ from web.routers.entries import (
     router as entry_router,
 )
 from web.routers.experience import router as experience_router
+from web.routers.games import router as games_router
 from web.routers.intelligence import (
     IntelligenceDependencies,
     ai_copilot,
@@ -515,7 +518,7 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260903-v250-player-directory-2"
+STATIC_ASSET_VERSION = "20260904-v250-game-predictions"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -1381,6 +1384,8 @@ def _record_settlement_audit(
 
 def _settlement_provider_plan(prop: dict) -> list[str]:
     sport = str(prop.get("sport") or "").upper()
+    if canonical_stat_label(prop.get("stat")) == "Game Winner":
+        return ["ESPN official scoreboard"]
     if sport in ESPORT_SPORTS:
         return ["PandaScore"] if sport in pandascore.supported_sports() else []
     providers = ["ESPN official box score"]
@@ -1854,7 +1859,10 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
 
     settlement_provider = ""
     market_supported = False
-    if sport in ESPORT_SPORTS:
+    if stat == "game winner" and sport in {"NBA", "WNBA", "MLB", "NFL", "NCAAF", "NHL"}:
+        market_supported = True
+        settlement_provider = "ESPN official scoreboard"
+    elif sport in ESPORT_SPORTS:
         esports_support = pandascore.market_support(sport, _prop_value(prop, "stat"))
         market_supported = bool(esports_support["eligible"])
         settlement_provider = str(esports_support["provider"])
@@ -4983,6 +4991,10 @@ def _daily_game_card(
     away_team = teams[0] if teams else ""
     home_team = teams[1] if len(teams) > 1 else ""
     movement = best_prop.get("line_movement") or {}
+    outcome = sportsbook_game or {}
+    projected_winner = str(outcome.get("predicted_winner") or _projected_winner(teams, ranked))
+    winner_probability = float(outcome.get("win_probability") or 0.0)
+    outcome_available = bool(outcome.get("predicted_winner") and winner_probability > 50.0)
     try:
         weather_signal = openweather.weather_signal(openweather.fetch_weather_for_game(game, sport)) if sport in {"NFL", "NCAAF", "MLB"} else None
     except Exception:
@@ -4999,7 +5011,10 @@ def _daily_game_card(
         "platform": platform,
         "teams": teams,
         "prop_count": len(ranked),
-        "projected_winner": _projected_winner(teams, ranked),
+        "projected_winner": projected_winner,
+        "winner_probability": round(winner_probability, 1),
+        "blowout_risk": outcome.get("blowout_risk") or "Unavailable",
+        "outcome_source": outcome.get("source") or "Player-prop inference",
         "team_pace": _team_pace_label(ranked),
         "injuries": _game_injury_summary(ranked),
         "best_prop": _daily_game_prop(best_prop),
@@ -5019,6 +5034,32 @@ def _daily_game_card(
             "label": "Generate Entry" if len(generated_props) >= 2 else "Not enough verified props",
             "available": len(generated_props) >= 2,
         },
+        "prediction_leg": ({
+            "player": projected_winner,
+            "team": projected_winner,
+            "sport": sport,
+            "stat": "Game Winner",
+            "direction": "Over",
+            "line": 0.5,
+            "projection": round(winner_probability / 100.0, 4),
+            "confidence": round(winner_probability, 1),
+            "edge": round((winner_probability / 100.0) - 0.5, 4),
+            "platform": platform,
+            "game": matchup_label,
+            "game_time": outcome.get("commence_time") or best_prop.get("game_time") or "",
+            "provider_event_id": outcome.get("event_id") or "",
+            "provider_offer_id": "",
+            "projection_source": "multi_book_no_vig_game_market",
+            "auto_projected": False,
+            "provider_backed": True,
+            "end_to_end_confirmed": True,
+            "forecast_paid_eligible": False,
+            "data_strength": [
+                {"label": "Multi-book no-vig", "status": "good"},
+                {"label": "Official result verified", "status": "good"},
+                {"label": "Provider offer verify", "status": "warning"},
+            ],
+        } if outcome_available else {}),
     }
 
 
@@ -6475,6 +6516,7 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
         team=raw.get("team", ""),
         game=raw.get("game", ""),
         history=history,
+        game_prediction=prediction_for_matchup(raw.get("league", ""), raw.get("game", "")) if raw.get("game") else None,
     )
     projection = forecast.projection if auto_projected else float(str(raw_projection))
     direction = _prop_direction(line, projection, raw.get("direction"))
@@ -6998,6 +7040,10 @@ def _player_research_payload(
             game_time=(recommendation or {}).get("game_time"),
             team=str((recommendation or {}).get("team") or ""),
             game=str((recommendation or {}).get("game") or ""),
+            game_prediction=prediction_for_matchup(
+                sport_filter or str((recommendation or {}).get("sport") or ""),
+                str((recommendation or {}).get("game") or ""),
+            ),
         )
         if target_line is not None
         else None
@@ -9088,6 +9134,8 @@ def _usable_final_stat_for_entry(prop: dict, entry: dict) -> dict | None:
 
 
 def _confirmed_final_stat_for_entry(prop: dict, entry: dict) -> dict | None:
+    if canonical_stat_label(prop.get("stat")) == "Game Winner":
+        return find_game_outcome(prop)
     final_stat = _usable_final_stat_for_entry(prop, entry)
     if final_stat is None:
         return None
@@ -9587,7 +9635,7 @@ def _placement_check(payload: EntryPayload, platform_value: dict | None = None) 
 
     for index, prop in enumerate(payload.props, start=1):
         platform = _canonical_platform(payload.platform or prop.platform)
-        if platform not in {"PrizePicks", "Underdog"}:
+        if platform not in {"PrizePicks", "Underdog", "DraftKings Pick6"}:
             checked_props.append(_placement_prop_row(index, prop, None, "skipped"))
             continue
         if platform not in current_by_platform:
@@ -9605,6 +9653,8 @@ def _placement_check(payload: EntryPayload, platform_value: dict | None = None) 
             else:
                 warnings.append(market_issue)
         settlement = _end_to_end_payload_eligibility(prop, payload.platform, current)
+        row["settlement_verifiable"] = bool(settlement["eligible"])
+        row["settlement_provider"] = settlement.get("provider", "")
         if not settlement["eligible"]:
             message = f"{label}: {settlement['reasons'][0]}."
             if _requires_verified_settlement(payload):
@@ -9713,7 +9763,7 @@ def _end_to_end_placement_blocks(payload: EntryPayload) -> list[str]:
     for prop in payload.props:
         platform = _canonical_platform(payload.platform or prop.platform)
         current = None
-        if requires_verified and platform in {"PrizePicks", "Underdog"}:
+        if requires_verified and platform in {"PrizePicks", "Underdog", "DraftKings Pick6"}:
             if platform not in current_by_platform:
                 current_by_platform[platform] = _fetch_platform_props(platform)
             current = _hydrate_payload_prop_context(prop, platform, current_by_platform[platform])
@@ -10086,6 +10136,9 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str, *, hydrate_pro
     direction = _prop_direction(payload.line, projection, payload.direction)
     edge = calculate_directional_edge(payload.line, projection, direction)
     confidence, confidence_adjustment = _analysis_confidence(edge, source_context, payload.stat, payload.sport, auto_projected)
+    if canonical_stat_label(payload.stat) == "Game Winner" and payload.confidence is not None:
+        confidence = float(payload.confidence)
+        confidence_adjustment = 0.0
     calibration = calibrate_probability(
         confidence / 100.0,
         sport=payload.sport,
@@ -10163,6 +10216,22 @@ def _provider_context_for_payload_prop(payload: PropPayload, entry_platform: str
 
 
 def _analysis_projection(payload: PropPayload, *, live_sources: bool = True) -> tuple[float, bool, str, dict, dict]:
+    if canonical_stat_label(payload.stat) == "Game Winner" and payload.projection is not None:
+        probability = max(0.0, min(100.0, float(payload.confidence or payload.projection * 100.0)))
+        forecast = {
+            "source": "multi_book_no_vig_game_market",
+            "probability": probability,
+            "model_version": payload.model_version or EDGEIQ_LOCAL_MODEL_VERSION,
+            "feature_as_of": payload.feature_as_of,
+            "paid_eligible": False,
+        }
+        return (
+            float(payload.projection),
+            False,
+            "multi_book_no_vig_game_market",
+            {},
+            {"signals": [], "source_score": probability, "forecast": forecast},
+        )
     if payload.projection is not None:
         direction = _prop_direction(payload.line, payload.projection, payload.direction)
         hit_rate = estimate_hit_rate(
@@ -10194,6 +10263,7 @@ def _analysis_projection(payload: PropPayload, *, live_sources: bool = True) -> 
         game_time=payload.game_time,
         team=payload.team,
         game=payload.game,
+        game_prediction=prediction_for_matchup(payload.sport, payload.game) if payload.game else None,
     )
     model_projection = forecast.projection
     resolved_direction = _prop_direction(payload.line, model_projection, payload.direction)
@@ -11733,6 +11803,7 @@ def _run_due_daily_operations_locked() -> dict:
             "entries": _auto_check_pending_entries(False, True),
             "shadow": ModelRehabilitationRepository.settle_pending(),
             "complete_board": _refresh_and_settle_complete_board(),
+            "game_predictions": settle_recent_predictions(),
         },
         "nightly_calibration": lambda: _backtest_payload(),
         "shadow_cohort": _queue_daily_shadow_cohort,
@@ -12601,6 +12672,7 @@ configure_intelligence_router(
 )
 app.include_router(intelligence_router)
 app.include_router(jobs_router)
+app.include_router(games_router)
 
 
 configure_recommendation_router(

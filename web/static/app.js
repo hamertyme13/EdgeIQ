@@ -701,7 +701,7 @@ function setView(viewId) {
   $(viewId).classList.add("active");
   document.querySelectorAll(`[data-view="${viewId}"]`).forEach((button) => button.classList.add("active"));
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
-  const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
+  const titles = { dashboard: "Today", games: "Game Intelligence", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
   if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
   loadViewData(viewId);
@@ -711,6 +711,16 @@ function setView(viewId) {
     loadWorkspacePaneData(workspace, activeWorkspaceTab.dataset.workspaceTab);
   }
 }
+
+document.addEventListener("edgeiq:game-to-props", (event) => {
+  const sport = String(event.detail?.sport || "");
+  document.querySelector('[data-display-mode="advanced"]')?.click();
+  setView("analysis");
+  if ($("research-sport") && sport) $("research-sport").value = sport;
+  if ($("research-context-status")) {
+    $("research-context-status").textContent = `Researching props for ${event.detail?.game || "the selected game"}. Choose a player and stat to continue.`;
+  }
+});
 
 function loadViewData(viewId) {
   if (state.loadedViews.has(viewId)) return;
@@ -722,6 +732,7 @@ function loadViewData(viewId) {
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection, loadPreferences],
     analysis: [],
+    games: [() => window.EdgeIQGames?.load(false)],
   }[viewId] || [];
   if (!tasks.length) return;
   Promise.allSettled(tasks.map((task) => task())).then((results) => {
@@ -1199,18 +1210,25 @@ function renderDailyGame(game, index) {
   const best = game.best_prop || {};
   const matchup = game.matchup_label || game.game || "Matchup TBD";
   const generatorAvailable = Boolean(game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2);
+  const predictionAvailable = Boolean(game.prediction_leg?.stat === "Game Winner");
   return `
     <details class="daily-game-card">
       <summary>
         <div>
           <span class="pill">${escapeHtml(game.sport || "Game")}</span>
           <strong>${escapeHtml(matchup)}</strong>
-          <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${pct(game.probability || 0)}</small>
+          <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${predictionAvailable ? `${pct(game.winner_probability || 0)} winner probability` : pct(game.probability || 0)}</small>
         </div>
-        ${generatorAvailable ? `<button class="secondary" type="button" data-generate-game-entry="${index}">${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>` : ""}
+        <div class="daily-game-actions">
+          ${predictionAvailable ? `<button class="secondary" type="button" data-add-game-prediction="${index}">Add Winner Prediction</button>` : ""}
+          ${generatorAvailable ? `<button class="secondary" type="button" data-generate-game-entry="${index}">${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>` : ""}
+        </div>
       </summary>
       <div class="daily-game-grid">
         ${renderGameMetric("Projected Winner", game.projected_winner)}
+        ${renderGameMetric("Winner Probability", game.winner_probability ? pct(game.winner_probability) : "Unavailable")}
+        ${renderGameMetric("Blowout Risk", game.blowout_risk)}
+        ${renderGameMetric("Outcome Evidence", game.outcome_source)}
         ${renderGameMetric("Team Pace", game.team_pace)}
         ${renderGameMetric("Injuries", game.injuries)}
         ${renderGameMetric("Best Prop", propLabel(game.best_prop))}
@@ -1474,6 +1492,21 @@ function bindDailyBriefingSummaryActions() {
       state.recommendationOrigin = true;
       setView("entries");
       $("entry-status").textContent = `Generated entry from ${game.matchup_label || game.game}. Analyze before placing.`;
+    });
+  });
+  document.querySelectorAll("[data-add-game-prediction]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const game = state.dailyBriefing?.games_today?.[Number(button.dataset.addGamePrediction)];
+      const prediction = game?.prediction_leg;
+      if (!prediction) return;
+      state.entryProps = uniqueUploadedProps([...state.entryProps, prediction]).map(entryPropFromFeed);
+      syncEntryPlatformFromProps();
+      if ($("entry-mode")) $("entry-mode").value = "paper";
+      state.recommendationOrigin = true;
+      renderEntryProps();
+      setView("entries");
+      $("entry-status").textContent = `${prediction.team} to win was added as a paper-first prediction. Verify that the exact selection is still offered in ${prediction.platform} before tracking it as paid.`;
     });
   });
 }
@@ -3039,6 +3072,8 @@ function entryPropFromFeed(prop) {
     player_identity_id: prop.player_identity_id ?? null,
     player_provider: prop.player_provider || prop.platform || "",
     provider_player_id: prop.provider_player_id || prop.player_id || "",
+    provider_event_id: prop.provider_event_id || prop.game_id || prop.event_id || "",
+    provider_offer_id: prop.provider_offer_id || prop.projection_id || prop.offer_id || "",
     team: prop.team || "",
     position: prop.position || "",
     sport: prop.sport || prop.league || "WNBA",
@@ -3137,7 +3172,8 @@ async function manageDatabase(action) {
 function renderEntryProps() {
   const corrections = new Map((state.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
-    const projection = prop.projection == null ? "Auto" : Number(prop.projection).toFixed(1);
+    const gameWinner = prop.stat === "Game Winner";
+    const projection = prop.projection == null ? "Auto" : gameWinner ? pct(Number(prop.projection) * 100) : Number(prop.projection).toFixed(1);
     const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
       ? Number(prop.line) - Number(prop.projection)
       : Number(prop.projection) - Number(prop.line);
@@ -3146,10 +3182,10 @@ function renderEntryProps() {
     const differs = correction?.action === "flip";
     return `
       <tr data-entry-leg="${index}">
-        <td>${prop.player}</td>
-        <td>${directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
-        <td>${prop.stat}</td>
-        <td>${prop.line}</td>
+        <td>${escapeHtml(prop.player)}</td>
+        <td>${gameWinner ? `<span class="direction-badge direction-over">WIN</span>` : directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
+        <td>${escapeHtml(prop.stat)}</td>
+        <td>${gameWinner ? "Wins game" : prop.line}</td>
         <td>${projection}</td>
         <td>${edge}</td>
         <td><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
@@ -4236,6 +4272,7 @@ async function loadPlayerResearch(event) {
   const split = data.splits || {};
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
+  const gameContext = data.forecast?.features?.game_intelligence;
   const sensitivity = data.projection_sensitivity || {};
   const assessment = data.season_assessment || {};
   window.EdgeIQBeta?.setAnalysisContext({
@@ -4246,6 +4283,13 @@ async function loadPlayerResearch(event) {
     platform: $("research-platform").value,
     line: data.line ?? null,
   });
+  if ((gameContext?.adjustments || []).length) {
+    trackProductEvent("game_context_influenced_prop", "prop", `${data.player || player}|${data.stat || stat}`, {
+      sport: data.sport || $("research-sport").value,
+      adjustment_count: gameContext.adjustments.length,
+      shadow_only: true,
+    });
+  }
   const bestHittingStats = data.best_hitting_stats || [];
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
@@ -4310,6 +4354,11 @@ async function loadPlayerResearch(event) {
       </div>
       ${(sensitivity.drivers || []).map((driver) => `<p class="subtle">What changes this: ${escapeHtml(driver)}</p>`).join("")}
     </section>
+    ${window.EdgeIQGames?.propContextMarkup(
+      gameContext,
+      data.forecast?.projection,
+      data.forecast?.features?.game_aware_shadow_projection,
+    ) || ""}
     <div class="player-research-bars">
       ${(data.chart || []).map((row) => `
         <div class="research-bar-row">
