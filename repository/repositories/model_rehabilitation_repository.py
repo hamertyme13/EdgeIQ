@@ -4,7 +4,10 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
+
 from analytics.grouped_validation import grouped_rolling_validation
+from analytics.model_registry import PRODUCT_MODEL_VERSION
 from analytics.prediction_evidence import independent_market_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
@@ -39,7 +42,7 @@ class ModelRehabilitationRepository:
         ModelRehabilitationRepository._legacy_migrated = True
 
     @staticmethod
-    def save_feed(payload: dict, *, model_version: str = "edgeiq-v2.2.1") -> dict:
+    def save_feed(payload: dict, *, model_version: str = PRODUCT_MODEL_VERSION) -> dict:
         """Append an immutable snapshot and update the compatibility pointer."""
         initialize_database()
         current = ModelRehabilitationRepository.load_feed()
@@ -64,6 +67,18 @@ class ModelRehabilitationRepository:
                 payload=json.dumps(merged, default=str, sort_keys=True),
             ))
             session.commit()
+        snapshot_props = _snapshot_props(merged)
+        evidence_capture = ModelRehabilitationRepository.queue_shadow(
+            snapshot_props,
+            model_version=model_version,
+            target=None,
+            cohort_date=captured_at.date().isoformat(),
+        ) if snapshot_props else {"created": 0, "queued": 0}
+        merged["evidence_capture"] = {
+            "eligible_props": len(snapshot_props),
+            "created": int(evidence_capture.get("created") or 0),
+            "queued": int(evidence_capture.get("queued") or 0),
+        }
         merged["snapshot_id"] = snapshot_id
         merged["model_version"] = model_version
         SettingsRepository.set(ModelRehabilitationRepository.FEED_KEY, json.dumps(merged, default=str))
@@ -91,7 +106,13 @@ class ModelRehabilitationRepository:
             } for row in rows]
 
     @staticmethod
-    def queue_shadow(rows: list[dict], *, model_version: str, target: int = 227, cohort_date: str | None = None) -> dict:
+    def queue_shadow(
+        rows: list[dict],
+        *,
+        model_version: str,
+        target: int | None = 227,
+        cohort_date: str | None = None,
+    ) -> dict:
         initialize_database()
         cohort = cohort_date or datetime.now(UTC).date().isoformat()
         created = 0
@@ -101,12 +122,12 @@ class ModelRehabilitationRepository:
                     cohort_date=cohort, model_version=model_version
                 ).all()
             }
-            needed = max(0, target - len(existing))
+            needed = len(rows) if target is None else max(0, target - len(existing))
             for row in rows:
                 key = independent_market_key(row)
                 if not key or key in existing or row.get("line") is None:
                     continue
-                session.add(ShadowPredictionModel(
+                candidate = ShadowPredictionModel(
                     cohort_date=cohort,
                     model_version=model_version,
                     independent_market_key=key,
@@ -122,10 +143,17 @@ class ModelRehabilitationRepository:
                     projection=_float_or_none(row.get("projection")),
                     probability=float(row.get("confidence") or row.get("probability") or 50.0),
                     feature_snapshot=json.dumps(row, default=str, sort_keys=True),
-                ))
+                )
+                try:
+                    with session.begin_nested():
+                        session.add(candidate)
+                        session.flush()
+                except IntegrityError:
+                    existing.add(key)
+                    continue
                 existing.add(key)
                 created += 1
-                if created >= needed:
+                if target is not None and created >= needed:
                     break
             session.commit()
             queued = session.query(ShadowPredictionModel).filter_by(
@@ -135,7 +163,7 @@ class ModelRehabilitationRepository:
             "created": created,
             "queued": queued,
             "cohort_date": cohort,
-            "remaining_target": max(0, target - queued),
+            "remaining_target": max(0, target - queued) if target is not None else 0,
             "message": "Shadow predictions do not count as evidence until verified final outcomes arrive.",
         }
 
@@ -143,12 +171,21 @@ class ModelRehabilitationRepository:
     def settle_pending(limit: int = 500) -> dict:
         ModelRehabilitationRepository._migrate_legacy_registry()
         initialize_database()
+        from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+
+        reconciled = ModelRehabilitationRepository.reconcile_shadow(
+            PredictionLedgerRepository.evidence_rows(include_legacy=False)
+        )
         settled = failed = pending = 0
         with SessionLocal() as session:
             rows = session.query(ShadowPredictionModel).filter_by(status="shadow_pending").order_by(
                 ShadowPredictionModel.game_time.asc(), ShadowPredictionModel.id.asc()
             ).limit(max(1, min(limit, 2000))).all()
             for row in rows:
+                if not _past_game_completion_window(row.game_time):
+                    pending += 1
+                    row.last_settlement_error = "Waiting for the game and official stat correction window to finish."
+                    continue
                 row.settlement_attempts += 1
                 row.last_attempt_at = utc_now()
                 match = FinalStatsRepository.find_result({
@@ -178,7 +215,10 @@ class ModelRehabilitationRepository:
                 row.last_settlement_error = ""
                 settled += 1
             session.commit()
-        result = {"settled": settled, "pending": pending, "failed": failed, "attempted": settled + pending + failed}
+        result = {
+            "settled": settled, "reconciled_from_ledger": reconciled,
+            "pending": pending, "failed": failed, "attempted": settled + pending + failed,
+        }
         SettingsRepository.set("shadow_settlement_status", json.dumps({**result, "ran_at": utc_now().isoformat()}))
         return result
 
@@ -279,6 +319,31 @@ def _stamp_snapshot_payload(payload: dict, snapshot_id: str, model_version: str)
                     row["model_version"] = model_version
 
 
+def _snapshot_props(payload: object) -> list[dict]:
+    """Collect each independently settleable prop embedded in a recommendation snapshot."""
+    selected: dict[str, dict] = {}
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if (
+                value.get("player")
+                and value.get("stat")
+                and value.get("line") is not None
+                and value.get("game_time")
+                and value.get("platform")
+            ):
+                key = independent_market_key(value)
+                selected.setdefault(key, dict(value))
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(payload)
+    return list(selected.values())
+
+
 def _float_or_none(value):
     try:
         return float(value) if value is not None else None
@@ -294,6 +359,16 @@ def _past_settlement_window(value: object) -> bool:
         return datetime.now(UTC) >= game_time.astimezone(UTC) + timedelta(hours=12)
     except (TypeError, ValueError):
         return False
+
+
+def _past_game_completion_window(value: object) -> bool:
+    try:
+        game_time = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        if game_time.tzinfo is None:
+            game_time = game_time.replace(tzinfo=UTC)
+        return datetime.now(UTC) >= game_time.astimezone(UTC) + timedelta(hours=4)
+    except (TypeError, ValueError):
+        return True
 
 
 def _json(value: str, default):

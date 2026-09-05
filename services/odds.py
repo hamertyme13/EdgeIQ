@@ -332,9 +332,9 @@ def summarize_player_prop_market(
     market_key = prop_market_key(stat)
     player_key = canonical_person_key(player)
     target_line = float(line)
-    sportsbook_rows = []
-    dfs_offers = []
-    last_updates = []
+    sportsbook_rows: list[dict[str, Any]] = []
+    dfs_offers: list[dict[str, Any]] = []
+    last_updates: list[str] = []
     for bookmaker in event.get("bookmakers") or []:
         book_key = str(bookmaker.get("key") or "")
         title = str(bookmaker.get("title") or book_key)
@@ -459,28 +459,53 @@ def find_game_odds(game: str, sport: str, games: list[dict] | None = None) -> di
 
 def summarize_game_odds(game: dict) -> dict:
     prices: dict[str, list[int]] = {}
+    fair_probabilities: dict[str, list[float]] = {}
+    bookmaker_keys: list[str] = []
     for bookmaker in game.get("bookmakers") or []:
+        book_key = str(bookmaker.get("key") or "")
         for market in bookmaker.get("markets") or []:
             if market.get("key") != "h2h":
                 continue
-            for outcome in market.get("outcomes") or []:
+            outcomes = market.get("outcomes") or []
+            paired = []
+            for outcome in outcomes:
                 try:
-                    prices.setdefault(str(outcome.get("name") or ""), []).append(int(outcome["price"]))
+                    team = str(outcome.get("name") or "")
+                    price = int(outcome["price"])
+                    prices.setdefault(team, []).append(price)
+                    paired.append((team, implied_probability(price)))
                 except (KeyError, TypeError, ValueError):
                     continue
+            total = sum(probability for _, probability in paired)
+            if len(paired) == 2 and total > 0:
+                bookmaker_keys.append(book_key)
+                for team, probability in paired:
+                    fair_probabilities.setdefault(team, []).append(probability / total)
     consensus = {
         team: round(sum(team_prices) / len(team_prices))
         for team, team_prices in prices.items()
         if team and team_prices
     }
+    no_vig = {
+        team: round(median(team_probabilities) * 100.0, 2)
+        for team, team_probabilities in fair_probabilities.items()
+        if team and team_probabilities
+    }
+    predicted_winner = max(no_vig, key=no_vig.get) if no_vig else ""
+    win_probability = float(no_vig.get(predicted_winner, 0.0))
     return {
         "event_id": game.get("id", ""),
         "away_team": game.get("away_team", ""),
         "home_team": game.get("home_team", ""),
         "commence_time": game.get("commence_time", ""),
         "consensus": consensus,
+        "no_vig_probabilities": no_vig,
+        "predicted_winner": predicted_winner,
+        "win_probability": round(win_probability, 2),
+        "blowout_risk": "Elevated" if win_probability >= 70 else "Moderate" if win_probability >= 62 else "Low",
         "best_prices": {team: max(team_prices) for team, team_prices in prices.items() if team_prices},
         "sportsbook_count": len(game.get("bookmakers") or []),
+        "bookmakers": sorted(set(bookmaker_keys)),
         "source": "The Odds API",
     }
 
@@ -532,7 +557,9 @@ def _team_tokens(team: object) -> set[str]:
     for token in tuple(tokens):
         if token in aliases:
             tokens.add(aliases[token])
-    return {token for token in tokens if token}
+    # One-letter initials can join unrelated games (for example, MIN/CWS to
+    # Milwaukee/Cincinnati), so they are never strong enough for identity.
+    return {token for token in tokens if len(token) >= 2}
 
 
 def _short_team(team: str) -> str:

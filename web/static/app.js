@@ -326,11 +326,51 @@ function showInitialSkeletons() {
   });
 }
 
+function ensureEsportsOptions() {
+  const sports = [
+    ["CS2", "CS2"],
+    ["LOL", "League of Legends"],
+    ["VALORANT", "Valorant"],
+    ["DOTA2", "Dota 2"],
+    ["COD", "Call of Duty"],
+    ["APEX", "Apex Legends"],
+  ];
+  const supportedSelects = [
+    "trending-props-sport", "watch-sport", "props-sport", "prop-sport",
+    "prizepicks-generator-sport", "underdog-generator-sport",
+    "research-context-sport", "research-sport",
+  ];
+  supportedSelects.forEach((id) => {
+    const select = $(id);
+    if (!select) return;
+    sports.forEach(([value, label]) => {
+      if ([...select.options].some((option) => option.value === value)) return;
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    });
+  });
+  const statOptions = $("stat-options");
+  [
+    "Kills on Map 1", "Kills on Maps 1+2", "Kills on Maps 1+2+3",
+    "Headshots on Map 1", "Headshots on Maps 1+2", "Assists on Maps 1+2",
+    "Fantasy Points on Maps 1+2", "Series K/D",
+  ].forEach((value) => {
+    if (!statOptions || [...statOptions.options].some((option) => option.value === value)) return;
+    const option = document.createElement("option");
+    option.value = value;
+    statOptions.append(option);
+  });
+}
+
 function syncDefaultInputs() {
   const defaults = JSON.parse(localStorage.getItem("edgeiq.onboarding") || "{}");
   if (defaults.platform && $("props-platform")) $("props-platform").value = defaults.platform;
   if (defaults.platform && $("entry-platform")) $("entry-platform").value = defaults.platform;
+  if (defaults.platform && $("optimizer-platform")) $("optimizer-platform").value = defaults.platform;
   if (defaults.sport && $("props-sport")) $("props-sport").value = defaults.sport;
+  if (defaults.sport && $("optimizer-sport")) $("optimizer-sport").value = defaults.sport;
   if (defaults.defaultWager && $("entry-wager")) $("entry-wager").value = defaults.defaultWager;
   if ((defaults.risk === "conservative" || defaults.risk === "paper_first") && $("entry-multiplier")) $("entry-multiplier").value = "2";
   if (defaults.risk === "aggressive" && $("entry-multiplier")) $("entry-multiplier").value = "5";
@@ -376,7 +416,7 @@ function loadWorkspacePaneData(root, paneName) {
     "decision-desk:board": [() => loadProps({ cascade: false })],
     "entry-generator:custom": [loadPending, loadDnpSetting, loadPortfolioIntelligence],
     "results-workspace:performance": [loadPerformance],
-    "results-workspace:model": [loadBacktest, loadAccuracyLab],
+    "results-workspace:model": [loadBacktest, loadAccuracyLab, loadPaperCalibrationStatus],
     "results-workspace:settlement": [loadSettlementAudit],
   }[key] || [];
   if (!loaders.length) return;
@@ -405,6 +445,131 @@ function setupWorkspaces() {
       : tabs.find((tab) => tab.classList.contains("active"))?.dataset.workspaceTab || tabs[0].dataset.workspaceTab;
     activateWorkspace(root, initial, { load: false });
   });
+}
+
+function setupEntryModes() {
+  const tabs = [...document.querySelectorAll("[data-entry-mode]")];
+  const sections = [...document.querySelectorAll("[data-entry-mode-section]")];
+  if (!tabs.length || !sections.length) return;
+  const activate = (mode) => {
+    if (document.body.dataset.displayMode !== "advanced" && mode === "generate") mode = "build";
+    tabs.forEach((tab) => {
+      const active = tab.dataset.entryMode === mode;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    sections.forEach((section) => {
+      const sectionMode = section.dataset.entryModeSection;
+      section.hidden = mode === "build" ? sectionMode !== "build" : sectionMode !== "generate";
+    });
+    const generator = document.querySelector('[data-workspace="entry-generator"]');
+    const settlementHealth = document.querySelector("[data-entry-track-only]");
+    if (settlementHealth) settlementHealth.hidden = mode !== "track";
+    if (mode === "generate") activateWorkspace(generator, "best", { load: false });
+    if (mode === "track") activateWorkspace(generator, "custom");
+    window.sessionStorage.setItem("edgeiq.entries.mode", mode);
+  };
+  tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.entryMode)));
+  const stored = window.sessionStorage.getItem("edgeiq.entries.mode");
+  activate(tabs.some((tab) => tab.dataset.entryMode === stored) ? stored : "build");
+}
+
+function setupDisplayModes() {
+  const buttons = [...document.querySelectorAll("[data-display-mode]")];
+  if (!buttons.length) return;
+  const activate = (mode) => {
+    const normalized = mode === "advanced" ? "advanced" : "basic";
+    document.body.dataset.displayMode = normalized;
+    buttons.forEach((button) => {
+      const active = button.dataset.displayMode === normalized;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    localStorage.setItem("edgeiq.displayMode", normalized);
+    document.querySelectorAll(".briefing-explore-drawer").forEach((details) => {
+      details.open = normalized === "advanced";
+    });
+    if (normalized === "basic") $("performance")?.classList.remove("show-performance-details");
+    if (normalized === "basic" && $("analysis")?.classList.contains("active")) setView("dashboard");
+    if (normalized === "basic") {
+      const generateTab = document.querySelector('[data-entry-mode="generate"].active');
+      if (generateTab) document.querySelector('[data-entry-mode="build"]')?.click();
+      const advancedResultsTab = document.querySelector('#performance [data-workspace-tab][data-advanced-only].active');
+      if (advancedResultsTab) activateWorkspace($("performance"), "performance", { load: false });
+    }
+  };
+  buttons.forEach((button) => button.addEventListener("click", () => activate(button.dataset.displayMode)));
+  activate(localStorage.getItem("edgeiq.displayMode") || "basic");
+}
+
+function setupEntryOptions() {
+  const button = $("toggle-entry-options");
+  const form = $("prop-form");
+  if (!button || !form) return;
+  button.addEventListener("click", () => {
+    const expanded = !form.classList.contains("show-entry-options");
+    form.classList.toggle("show-entry-options", expanded);
+    document.querySelector(".entry-payout-details")?.classList.toggle("show-entry-options", expanded);
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.textContent = expanded ? "Fewer Options" : "More Options";
+  });
+}
+
+function setupEntryBuilderSteps() {
+  const buttons = [...document.querySelectorAll("[data-entry-step]")];
+  const form = $("prop-form");
+  if (!buttons.length || !form) return;
+  const activate = (step) => {
+    const normalized = step === "settings" ? "settings" : "props";
+    form.dataset.activeStep = normalized;
+    buttons.forEach((button) => {
+      const active = button.dataset.entryStep === normalized;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    sessionStorage.setItem("edgeiq.entryBuilder.step", normalized);
+  };
+  buttons.forEach((button) => button.addEventListener("click", () => activate(button.dataset.entryStep)));
+  activate(sessionStorage.getItem("edgeiq.entryBuilder.step") || "props");
+}
+
+function setupPerformanceDetails() {
+  const button = $("toggle-performance-details");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const expanded = !$("performance").classList.contains("show-performance-details");
+    $("performance").classList.toggle("show-performance-details", expanded);
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    button.textContent = expanded ? "Hide Detailed Performance" : "Show Detailed Performance";
+  });
+}
+
+function renderEmptyEntryAnalysis() {
+  if (!$("entry-analysis")) return;
+  $("entry-analysis").className = "analysis-card muted-card compact-analysis-empty";
+  $("entry-analysis").innerHTML = `
+    <strong>Ready when your card is</strong>
+    <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>`;
+}
+
+function setupProviderGeneratorTabs() {
+  const tabs = [...document.querySelectorAll("[data-provider-generator-tab]")];
+  const generators = [...document.querySelectorAll("[data-provider-generator]")];
+  if (!tabs.length || !generators.length) return;
+  const activate = (provider) => {
+    tabs.forEach((tab) => {
+      const active = tab.dataset.providerGeneratorTab === provider;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    generators.forEach((generator) => {
+      generator.hidden = generator.dataset.providerGenerator !== provider;
+    });
+    window.sessionStorage.setItem("edgeiq.generator.provider", provider);
+  };
+  tabs.forEach((tab) => tab.addEventListener("click", () => activate(tab.dataset.providerGeneratorTab)));
+  const stored = window.sessionStorage.getItem("edgeiq.generator.provider");
+  activate(tabs.some((tab) => tab.dataset.providerGeneratorTab === stored) ? stored : "prizepicks");
 }
 
 function jumpToWorkspace(button) {
@@ -445,12 +610,43 @@ function runFullResearch(event) {
     ? "Running projection, hit-rate, and player-context analysis..."
     : "Running player context. Add a line to include projection and hit-rate analysis.";
   $("player-research-form").requestSubmit();
-  if (line) {
-    $("projection-assist-form").requestSubmit();
-    $("hit-rate-form").requestSubmit();
-  }
   saveResearchHistory({ player, stat, sport, platform, line: line ? Number(line) : null });
   trackProductEvent("research_run", "prop", `${player}|${stat}`, { sport, platform });
+}
+
+function researchCandidates() {
+  const briefing = state.dailyBriefing || {};
+  const sectionProps = Object.values(briefing.sections || {}).flatMap((cards) =>
+    (cards || []).flatMap((card) => card.props || []));
+  const rows = [...(briefing.top_opportunities || []), ...sectionProps];
+  return [...new Map(rows.filter((row) => row?.player).map((row) => [
+    `${String(row.player).toLowerCase()}|${String(row.stat || "").toLowerCase()}|${String(row.platform || "").toLowerCase()}`,
+    row,
+  ])).values()];
+}
+
+function refreshResearchSuggestions() {
+  const playerList = $("research-player-options");
+  const statList = $("research-stat-options");
+  if (!playerList || !statList) return;
+  const rows = researchCandidates();
+  const players = [...new Set(rows.map((row) => row.player))].sort();
+  playerList.innerHTML = players.map((player) => `<option value="${escapeHtml(player)}"></option>`).join("");
+  const selectedPlayer = $("research-context-player")?.value.trim().toLowerCase();
+  const matching = selectedPlayer ? rows.filter((row) => String(row.player).toLowerCase() === selectedPlayer) : rows;
+  const stats = [...new Set(matching.map((row) => row.stat).filter(Boolean))].sort();
+  statList.innerHTML = stats.map((stat) => `<option value="${escapeHtml(stat)}"></option>`).join("");
+  const preview = $("research-selection-preview");
+  if (!preview) return;
+  const selectedStat = $("research-context-stat")?.value.trim().toLowerCase();
+  const selection = matching.find((row) => !selectedStat || String(row.stat || "").toLowerCase() === selectedStat);
+  preview.hidden = !selection;
+  if (!selection) return;
+  const sample = Number(selection.espn?.sample_size || selection.espn_sample_size || selection.hit_rate?.sample_size || 0);
+  preview.innerHTML = `
+    <div><strong>${escapeHtml(selection.player)}</strong><span>${escapeHtml(selection.team || "Team unavailable")} · ${escapeHtml(selection.game || selection.matchup || "Matchup unavailable")}</span></div>
+    <div><strong>${escapeHtml(selection.platform || "Provider")}</strong><span>${escapeHtml(selection.stat || "Select a stat")} · ${sample ? `${sample} verified games` : "History depth pending"}</span></div>
+  `;
 }
 
 function trackProductEvent(eventName, entityType = "", entityId = "", metadata = {}) {
@@ -494,6 +690,7 @@ function restoreResearchHistory(item) {
 }
 
 function setView(viewId) {
+  if (document.body.dataset.displayMode !== "advanced" && viewId === "analysis") viewId = "dashboard";
   if (viewId === "props") {
     viewId = "dashboard";
     const advancedSignals = document.querySelector(".dashboard-support-drawer:nth-of-type(2)");
@@ -504,8 +701,9 @@ function setView(viewId) {
   $(viewId).classList.add("active");
   document.querySelectorAll(`[data-view="${viewId}"]`).forEach((button) => button.classList.add("active"));
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
-  const titles = { dashboard: "Today", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
+  const titles = { dashboard: "Today", games: "Game Intelligence", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
+  if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
   loadViewData(viewId);
   const workspace = $(viewId).matches("[data-workspace]") ? $(viewId) : $(viewId).querySelector("[data-workspace]");
   const activeWorkspaceTab = workspace?.querySelector("[data-workspace-tab].active");
@@ -513,6 +711,16 @@ function setView(viewId) {
     loadWorkspacePaneData(workspace, activeWorkspaceTab.dataset.workspaceTab);
   }
 }
+
+document.addEventListener("edgeiq:game-to-props", (event) => {
+  const sport = String(event.detail?.sport || "");
+  document.querySelector('[data-display-mode="advanced"]')?.click();
+  setView("analysis");
+  if ($("research-sport") && sport) $("research-sport").value = sport;
+  if ($("research-context-status")) {
+    $("research-context-status").textContent = `Researching props for ${event.detail?.game || "the selected game"}. Choose a player and stat to continue.`;
+  }
+});
 
 function loadViewData(viewId) {
   if (state.loadedViews.has(viewId)) return;
@@ -523,7 +731,8 @@ function loadViewData(viewId) {
     ],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection, loadPreferences],
-    analysis: [loadDataHealth, loadNotifications, loadDeployReadiness, loadRefreshSchedule, loadAlertDeliverySettings],
+    analysis: [],
+    games: [() => window.EdgeIQGames?.load(false)],
   }[viewId] || [];
   if (!tasks.length) return;
   Promise.allSettled(tasks.map((task) => task())).then((results) => {
@@ -549,7 +758,8 @@ function renderStats(stats) {
     { label: "Current Streak", value: stats.current_streak > 0 ? `W${stats.current_streak}` : stats.current_streak < 0 ? `L${Math.abs(stats.current_streak)}` : "-", icon: "↕", tone: stats.current_streak >= 0 ? "positive" : "negative" },
     { label: "Max Drawdown", value: money(stats.max_drawdown), icon: "↓", tone: Number(stats.max_drawdown || 0) > 0 ? "negative" : "neutral" },
   ];
-  $("dashboard-stats").innerHTML = items.map((item) => `
+  const primaryLabels = new Set(["Bankroll", "Pending Entry Exposure", "Record", "Current Streak"]);
+  const renderItem = (item) => `
     <div class="stat-card stat-${item.tone}">
       <span class="stat-icon">${item.icon}</span>
       <div>
@@ -557,7 +767,11 @@ function renderStats(stats) {
         <div class="stat-value">${item.value}</div>
       </div>
     </div>
-  `).join("");
+  `;
+  $("dashboard-stats").innerHTML = items.filter((item) => primaryLabels.has(item.label)).map(renderItem).join("");
+  if ($("dashboard-stats-detail")) {
+    $("dashboard-stats-detail").innerHTML = items.filter((item) => !primaryLabels.has(item.label)).map(renderItem).join("");
+  }
   $("recommendation-accuracy").innerHTML = `
     <div class="recommendation-accuracy-header">
       <div>
@@ -770,7 +984,7 @@ function renderDailyBriefing(data) {
     : data.cache?.hit
       ? `cached ${formatDateTime(data.cache.created_at)}`
       : "fresh scan";
-  $("daily-briefing-status").textContent = `${data.headline} · ${data.sport} · ${cacheLabel}`;
+  $("daily-briefing-status").textContent = `${data.sport} · ${cacheLabel}`;
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
   const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
@@ -802,33 +1016,34 @@ function renderDailyBriefing(data) {
       <div>
         <p class="eyebrow">Today Command Center</p>
         <h2>Today's Decision Plan</h2>
-        <p>${escapeHtml(commandCenterSummary(data, protection))}</p>
+        <p>${escapeHtml(betCount
+          ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared the current evidence and bankroll rules.`
+          : "No paid entry meets today's requirements. EdgeIQ is keeping weaker ideas in paper and watch modes.")}</p>
       </div>
       <div class="command-mode ${protection.active ? "mode-protect" : "mode-ready"}">
         <span>${escapeHtml(friendlyModeLabel(mode))}</span>
         <strong>${protection.active ? Number(protection.score || 0).toFixed(0) : Number(health.trust_score || 0).toFixed(0)}/100</strong>
       </div>
     </div>
-    <div class="command-next-grid">
+    <div class="command-next-grid advanced-briefing-detail">
       ${renderNextActionCard("Review Today's Best Card", betCount ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared` : "No paid card cleared. That can be the right call.", "dashboard", "daily-bet-list")}
       ${renderNextActionCard("Recheck Final Stats", "Clear unknowns before trusting calibration.", "performance", "entry-history-list")}
       ${renderNextActionCard("Create Paper Calibration", `${paperCount} paper idea${paperCount === 1 ? "" : "s"} available`, "dashboard", "daily-paper-list")}
       ${renderNextActionCard("View Loss Review", "See what EdgeIQ will avoid next.", "performance", "loss-review-list")}
     </div>
-    ${renderRecoveryProgress(protection)}
-    <div class="briefing-terminal">
+    <div class="briefing-terminal advanced-briefing-detail">
       <div class="briefing-terminal-main">
-        <div class="briefing-terminal-kicker">AI analyzed</div>
-        <div class="briefing-terminal-number">${Number(data.summary?.analyzed_props || 0).toLocaleString()}</div>
-        <div class="briefing-terminal-label">player props</div>
-        <p>${escapeHtml(data.headline)}</p>
+        <div class="briefing-terminal-kicker">Decision-ready board</div>
+        <div class="briefing-terminal-number">${Number(data.summary?.confirmed_props || 0).toLocaleString()}</div>
+        <div class="briefing-terminal-label">verified offers available</div>
+        <p>${Number(data.summary?.excluded_props || 0).toLocaleString()} offers excluded by freshness, identity, market, or evidence checks.</p>
       </div>
       <div class="briefing-terminal-side">
         <span class="health-orb">${Math.round(health.trust_score || 0)}</span>
         <small>${escapeHtml(health.status || "Model")}</small>
       </div>
     </div>
-    <div class="provider-badge-row">
+    <div class="provider-badge-row advanced-briefing-detail">
       ${providerBadges.map((badge) => `
         <span class="provider-badge provider-${escapeHtml(badge.status || "available")}">
           <strong>${escapeHtml(badge.name)}</strong>
@@ -845,7 +1060,7 @@ function renderDailyBriefing(data) {
         <span>${escapeHtml(protection.mode || "watch")} · ${Number(protection.score || 0).toFixed(0)}/100</span>
       </div>
     ` : ""}
-    <div class="briefing-market-grid">
+    <div class="briefing-market-grid advanced-briefing-detail">
       <div class="briefing-market-section">
         <div class="briefing-section-title">Today's Slate</div>
         <div class="slate-ticker">
@@ -884,6 +1099,9 @@ function renderDailyBriefing(data) {
         </div>
       </div>
     </div>
+    <details class="briefing-explore-drawer" ${document.body.dataset.displayMode === "advanced" ? "open" : ""}>
+      <summary><span>Explore Today's Board</span><small>${opportunities.length} ranked props · ${gamesToday.length} games</small></summary>
+      <div class="briefing-explore-body">
     <section id="opportunity-board" class="opportunity-board" aria-labelledby="opportunity-board-title">
       <div class="opportunity-board-header">
         <div>
@@ -898,10 +1116,11 @@ function renderDailyBriefing(data) {
       </div>
       <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
         <button class="risk-tab active" type="button" data-opportunity-risk="all">All <span>${opportunities.length}</span></button>
-        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative">Conservative <span>${opportunityLaneCounts.conservative}</span></button>
-        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced">Balanced <span>${opportunityLaneCounts.balanced}</span></button>
-        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive">Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
+        <button class="risk-tab risk-conservative" type="button" data-opportunity-risk="conservative" ${opportunityLaneCounts.conservative ? "" : "hidden"}>Conservative <span>${opportunityLaneCounts.conservative}</span></button>
+        <button class="risk-tab risk-balanced" type="button" data-opportunity-risk="balanced" ${opportunityLaneCounts.balanced ? "" : "hidden"}>Balanced <span>${opportunityLaneCounts.balanced}</span></button>
+        <button class="risk-tab risk-aggressive" type="button" data-opportunity-risk="aggressive" ${opportunityLaneCounts.aggressive ? "" : "hidden"}>Aggressive <span>${opportunityLaneCounts.aggressive}</span></button>
       </div>
+      ${opportunities.length && !opportunityLaneCounts.conservative && !opportunityLaneCounts.balanced ? `<div class="research-only-board-notice"><strong>Research-only board</strong><span>Every visible prop carries aggressive uncertainty. Prefer paper tracking until stronger evidence appears.</span></div>` : ""}
       <div class="opportunity-list opportunity-board-list">
         ${opportunities.map((prop, index) => {
           const receipt = prop.decision_receipt || {};
@@ -939,7 +1158,7 @@ function renderDailyBriefing(data) {
             </strong>
             <div class="opportunity-proof">
               <span>Model ${Number(receipt.probability || prop.confidence || 0).toFixed(0)}%</span>
-              <span>${marketProbability == null ? "Market unavailable" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
+              <span>${marketProbability == null ? "No comparison odds" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
               <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
@@ -969,10 +1188,13 @@ function renderDailyBriefing(data) {
     </div>
     <div class="games-today-panel">
       <div class="briefing-section-title">Games Today</div>
+      <p class="slate-generation-notice">${gamesToday.filter((game) => game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2).length} of ${gamesToday.length} games currently have enough verified props to generate an entry.</p>
       <div class="games-today-list">
         ${gamesToday.map((game, index) => renderDailyGame(game, index)).join("") || `<div class="suggestion compact-suggestion">No game-level slate is available for this filter yet.</div>`}
       </div>
     </div>
+      </div>
+    </details>
   `;
   renderBriefingSection("daily-bet-list", data.sections?.bet || [], data.empty_states?.bet || "No real-money slip cleared this filter yet.");
   renderBriefingSection("daily-paper-list", data.sections?.paper || [], data.empty_states?.paper || "No paper calibration card is needed right now.");
@@ -981,24 +1203,32 @@ function renderDailyBriefing(data) {
   bindDailyBriefingActions();
   bindDailyBriefingSummaryActions();
   bindBriefingTabs();
+  refreshResearchSuggestions();
 }
 
 function renderDailyGame(game, index) {
   const best = game.best_prop || {};
   const matchup = game.matchup_label || game.game || "Matchup TBD";
   const generatorAvailable = Boolean(game.generated_entry?.available && (game.generated_entry?.props || []).length >= 2);
+  const predictionAvailable = Boolean(game.prediction_leg?.stat === "Game Winner");
   return `
     <details class="daily-game-card">
       <summary>
         <div>
           <span class="pill">${escapeHtml(game.sport || "Game")}</span>
           <strong>${escapeHtml(matchup)}</strong>
-          <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${pct(game.probability || 0)}</small>
+          <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${predictionAvailable ? `${pct(game.winner_probability || 0)} winner probability` : pct(game.probability || 0)}</small>
         </div>
-        <button class="secondary" type="button" data-generate-game-entry="${index}" ${generatorAvailable ? "" : "disabled"}>${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>
+        <div class="daily-game-actions">
+          ${predictionAvailable ? `<button class="secondary" type="button" data-add-game-prediction="${index}">Add Winner Prediction</button>` : ""}
+          ${generatorAvailable ? `<button class="secondary" type="button" data-generate-game-entry="${index}">${escapeHtml(game.generated_entry?.label || "Generate Entry")}</button>` : ""}
+        </div>
       </summary>
       <div class="daily-game-grid">
         ${renderGameMetric("Projected Winner", game.projected_winner)}
+        ${renderGameMetric("Winner Probability", game.winner_probability ? pct(game.winner_probability) : "Unavailable")}
+        ${renderGameMetric("Blowout Risk", game.blowout_risk)}
+        ${renderGameMetric("Outcome Evidence", game.outcome_source)}
         ${renderGameMetric("Team Pace", game.team_pace)}
         ${renderGameMetric("Injuries", game.injuries)}
         ${renderGameMetric("Best Prop", propLabel(game.best_prop))}
@@ -1042,7 +1272,7 @@ function renderBriefingSection(elementId, cards, emptyMessage) {
       <div class="briefing-card ${isHero ? "daily-best-card" : ""} ${card.grade ? gradeClass(card.grade) : ""}" data-briefing-card="${elementId}:${index}">
         <div class="suggestion-top">
           <span class="pill">${escapeHtml(isHero ? "Daily Best Card" : card.title || "Card")}</span>
-          <strong>${escapeHtml(card.grade || card.type || "")}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
+          <strong>${escapeHtml(card.grade || friendlyCardType(card.type))}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
         </div>
         <div class="recommendation-meta-row">
           ${trust.label ? `<span class="model-trust-badge">Model Trust ${Number(trust.score || 0).toFixed(0)} · ${escapeHtml(trust.label)}</span>` : ""}
@@ -1081,11 +1311,23 @@ function friendlyCardAction(card) {
   return text;
 }
 
+function friendlyCardType(type) {
+  const labels = {
+    paper_status: "Calibration status",
+    avoid_status: "Board status",
+    paper: "Paper calibration",
+    watch: "Watch",
+    avoid: "No bet",
+    bet: "Paid candidate",
+  };
+  return labels[String(type || "").toLowerCase()] || "Recommendation";
+}
+
 function friendlyEmptyState(elementId, emptyMessage) {
   const map = {
     "daily-bet-list": {
-      title: "No paid card cleared",
-      body: "That is a good outcome when the board is weak. EdgeIQ will protect bankroll and keep useful watch/paper ideas separate.",
+      title: "No paid entry meets today's requirements",
+      body: "The current board did not clear freshness, evidence, payout, and bankroll rules. Use a paper card or refresh the live lines.",
     },
     "daily-paper-list": {
       title: "No paper calibration needed",
@@ -1101,10 +1343,17 @@ function friendlyEmptyState(elementId, emptyMessage) {
     },
   };
   const item = map[elementId] || { title: "Nothing to show yet", body: emptyMessage };
+  const actions = elementId === "daily-bet-list" ? `
+    <div class="button-row empty-state-actions">
+      <button type="button" data-empty-action="paper">Generate Paper Card</button>
+      <button class="secondary" type="button" data-empty-action="watch">Review Watchlist</button>
+      <button class="secondary" type="button" data-empty-action="refresh">Refresh Lines</button>
+    </div>` : "";
   return `
     <div class="empty-state-card">
       <strong>${escapeHtml(item.title)}</strong>
       <p>${escapeHtml(item.body || emptyMessage)}</p>
+      ${actions}
     </div>
   `;
 }
@@ -1138,6 +1387,25 @@ function bindDailyBriefingActions() {
       if (!card) return;
       handleDailyBriefingAction(card);
       $("entry-status").textContent = "Loaded card for app comparison. Analyze first, then use the handoff panel to compare apps.";
+    });
+  });
+  document.querySelectorAll("[data-empty-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.emptyAction;
+      if (action === "refresh") {
+        withButtonBusy(button, "Refreshing...", () => refreshTodayProviders({ refreshBriefing: true }));
+        return;
+      }
+      if (action === "paper") {
+        const paperCard = state.dailyBriefing?.sections?.paper?.[0];
+        if (paperCard) handleDailyBriefingAction(paperCard);
+        else withButtonBusy(button, "Creating...", createAutoPaperCalibrationEntries);
+        return;
+      }
+      const tab = document.querySelector(`[data-briefing-tab="${action}"]`);
+      tab?.click();
+      const target = action === "paper" ? $("daily-paper-list") : $("daily-watch-list");
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
   });
 }
@@ -1224,6 +1492,21 @@ function bindDailyBriefingSummaryActions() {
       state.recommendationOrigin = true;
       setView("entries");
       $("entry-status").textContent = `Generated entry from ${game.matchup_label || game.game}. Analyze before placing.`;
+    });
+  });
+  document.querySelectorAll("[data-add-game-prediction]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      const game = state.dailyBriefing?.games_today?.[Number(button.dataset.addGamePrediction)];
+      const prediction = game?.prediction_leg;
+      if (!prediction) return;
+      state.entryProps = uniqueUploadedProps([...state.entryProps, prediction]).map(entryPropFromFeed);
+      syncEntryPlatformFromProps();
+      if ($("entry-mode")) $("entry-mode").value = "paper";
+      state.recommendationOrigin = true;
+      renderEntryProps();
+      setView("entries");
+      $("entry-status").textContent = `${prediction.team} to win was added as a paper-first prediction. Verify that the exact selection is still offered in ${prediction.platform} before tracking it as paid.`;
     });
   });
 }
@@ -1452,11 +1735,57 @@ async function loadRuntimeStatus() {
       <div><strong>${escapeHtml(item.label || "System")}</strong><small>${escapeHtml(humanizeCopilotText(item.value || "Unknown"))}</small></div>
     </div>
   `).join("") || `<div class="runtime-status-loading">Runtime status is not available yet.</div>`;
+  const modelItem = (data.items || []).find((item) => /model|release/i.test(String(item.label || "")));
+  const settlementItem = (data.items || []).find((item) => /settlement|worker/i.test(String(item.label || "")));
+  if ($("global-model-status")) $("global-model-status").textContent = modelItem
+    ? `${modelItem.label}: ${humanizeCopilotText(modelItem.value || "Unknown")}`
+    : "Model release unavailable";
+  if ($("global-settlement-status") && settlementItem) {
+    $("global-settlement-status").textContent = `${settlementItem.label}: ${humanizeCopilotText(settlementItem.value || "Unknown")}`;
+  }
+}
+
+function renderGlobalHealthStrip(providers = [], summary = {}, operations = {}) {
+  const strip = $("global-health-strip");
+  if (!strip) return;
+  const activeView = document.querySelector(".view.active")?.id || "dashboard";
+  const selectedPlatform = activeView === "entries"
+    ? $("entry-platform")?.value
+    : activeView === "analysis"
+      ? $("research-context-platform")?.value
+      : activeView === "dashboard"
+        ? $("props-platform")?.value
+        : "";
+  const platformToken = String(selectedPlatform || "").toLowerCase().split(" ")[0];
+  const contextual = platformToken && !["all", "both"].includes(platformToken)
+    ? providers.filter((provider) => String(provider.name || "").toLowerCase().includes(platformToken))
+    : [];
+  const healthyProviders = providers.filter((provider) => !["empty", "unavailable", "disabled"].includes(String(provider.status || "").toLowerCase()));
+  const selected = (contextual.length ? contextual : healthyProviders).slice(0, activeView === "performance" ? 0 : 2);
+  const providerRows = selected.map((provider) => {
+    const status = String(provider.status || "unavailable").toLowerCase();
+    const tone = ["fresh", "connected", "healthy", "available"].includes(status)
+      ? "ready"
+      : ["empty", "stale", "degraded"].includes(status)
+        ? "warning"
+        : "danger";
+    return `<span title="${escapeHtml(provider.message || provider.purpose || "")}"><i class="global-health-dot status-${tone}"></i>${escapeHtml(provider.name)} ${escapeHtml(friendlyStatus(status))}</span>`;
+  }).join("");
+  const settlement = operations.shadow_settlement || {};
+  const settlementLabel = settlement.ran_at ? `Settlement ${settlement.failures?.length ? "needs attention" : "healthy"}` : "Settlement waiting";
+  const systemCount = selected.length + 2;
+  strip.innerHTML = `${providerRows || `<span><i class="global-health-dot status-ready"></i>${Number(summary.connected || 0)} data sources available</span>`}<span id="global-settlement-status">${escapeHtml(settlementLabel)}</span><span id="global-model-status">${escapeHtml($("global-model-status")?.textContent || "Model checking")}</span><button id="global-health-toggle" class="global-health-toggle" type="button" aria-expanded="false">${systemCount} systems</button>`;
+  $("global-health-toggle")?.addEventListener("click", () => {
+    const expanded = strip.classList.toggle("expanded");
+    $("global-health-toggle").setAttribute("aria-expanded", expanded ? "true" : "false");
+    $("global-health-toggle").textContent = expanded ? "Collapse" : `${systemCount} systems`;
+  });
 }
 
 async function loadDataHealth() {
   const data = await api("/api/data-health");
   const providers = sortProviderHealth(data.providers);
+  renderTodayProviderStatus(providers, data.summary || {});
   const usage = data.api_usage || {};
   const totals = usage.totals || {};
   const endpointPerformance = data.endpoint_performance || {};
@@ -1466,6 +1795,8 @@ async function loadDataHealth() {
   const shadow = operations.shadow_evaluation || {};
   const shadowSettlement = operations.shadow_settlement || {};
   const researchMemory = operations.research_memory || {};
+  state.providerHealth = { providers, summary: data.summary || {}, operations };
+  renderGlobalHealthStrip(providers, data.summary || {}, operations);
   $("data-health-list").innerHTML = `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
@@ -1499,6 +1830,9 @@ async function loadDataHealth() {
           ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
           Contract ${escapeHtml(provider.contract_version || "unversioned")}
         </p>
+        <p class="subtle">Sports: ${(provider.supported_sports || []).length
+          ? (provider.supported_sports || []).map((sport) => escapeHtml(sport === "NCAAF" ? "College Football" : sport)).join(" · ")
+          : "Coverage not declared"}</p>
         <p class="subtle">${provider.api_usage?.used_this_session
           ? `${Number(provider.api_usage.requests_avoided || 0)} calls avoided · ${Number(provider.api_usage.network_requests || 0)} network requests this session`
           : "Not requested in this session yet"}</p>
@@ -1522,6 +1856,25 @@ async function loadDataHealth() {
       </div>
     </div>
   `;
+  return data;
+}
+
+function renderTodayProviderStatus(providers = [], summary = {}) {
+  const status = $("today-provider-status");
+  if (!status) return;
+  const relevant = providers.filter((provider) => provider.configured !== false);
+  const stale = relevant.filter((provider) => ["stale", "degraded", "error", "unavailable"].includes(String(provider.status || "").toLowerCase()));
+  status.classList.toggle("needs-refresh", stale.length > 0);
+  status.classList.toggle("is-fresh", stale.length === 0 && relevant.length > 0);
+  if (stale.length) {
+    status.textContent = `${stale.length} provider${stale.length === 1 ? "" : "s"} need${stale.length === 1 ? "s" : ""} a refresh`;
+  } else if (relevant.length) {
+    status.textContent = "Providers are fresh";
+  } else if (summary.last_daily_refresh) {
+    status.textContent = `Last refreshed ${formatDateTime(summary.last_daily_refresh)}`;
+  } else {
+    status.textContent = "Provider status unavailable";
+  }
 }
 
 async function loadNotifications() {
@@ -1593,10 +1946,58 @@ async function loadRefreshSchedule() {
   `).join("");
 }
 
+async function waitForBackgroundJob(job, onProgress, { maxAttempts = 300 } = {}) {
+  let current = job;
+  for (let attempt = 0; attempt < maxAttempts && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
+    if (onProgress) onProgress(current);
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    current = await api(`/api/jobs/${encodeURIComponent(current.job_id)}`);
+  }
+  if (onProgress) onProgress(current);
+  if (current.status === "failed") throw new Error(current.error || `${current.label || "Background job"} could not finish.`);
+  if (current.status === "canceled") throw new Error(`${current.label || "Background job"} was canceled.`);
+  return current;
+}
+
 async function runDailyRefresh() {
-  $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
-  await api("/api/automation/run-daily-refresh", { method: "POST" });
-  await Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadEntryProgress({ autoCheck: true, refreshProviders: true })]);
+  if ($("refresh-schedule-list")) $("refresh-schedule-list").innerHTML = `<div class="suggestion">Running refresh jobs...</div>`;
+  const started = await api("/api/automation/start-daily-refresh", { method: "POST" });
+  await waitForBackgroundJob(started, (job) => {
+    if ($("refresh-schedule-list")) $("refresh-schedule-list").innerHTML = `<div class="suggestion">${escapeHtml(job.phase || "Refreshing providers...")} ${Number(job.progress || 0)}%</div>`;
+  });
+  return Promise.all([loadRefreshSchedule(), loadDataHealth(), loadNotifications(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus(), loadEntryProgress({ autoCheck: true, refreshProviders: true })]);
+}
+
+async function refreshTodayProviders() {
+  const status = $("today-provider-status");
+  if (status) {
+    status.textContent = "Refreshing provider lines and final results...";
+    status.classList.remove("is-fresh", "needs-refresh");
+  }
+  try {
+    const result = await api("/api/automation/start-daily-refresh", { method: "POST" });
+    if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
+    waitForBackgroundJob(result, (job) => {
+      if (status) status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
+    }).then(() => {
+      if (status) {
+        status.textContent = "Provider data refreshed.";
+        status.classList.add("is-fresh");
+      }
+      return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus()]);
+    }).catch((error) => {
+      if (status) {
+        status.textContent = humanErrorMessage(error, "Provider refresh did not finish. Try again.");
+        status.classList.add("needs-refresh");
+      }
+    });
+  } catch (error) {
+    if (status) {
+      status.textContent = "Provider refresh did not finish. Try again.";
+      status.classList.add("needs-refresh");
+    }
+    throw error;
+  }
 }
 
 async function loadAdvantageCenter() {
@@ -1713,22 +2114,31 @@ async function loadTrendingProps() {
   updateTrendingSelectionActions();
   $("trending-props-status").textContent = `Loading ${sport} market activity...`;
   $("trending-props-list").innerHTML = Array.from({ length: 5 }, () => `<div class="skeleton-row"></div>`).join("");
-  const data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
+  let data;
+  try {
+    data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
+  } catch (error) {
+    $("trending-props-count").textContent = "Unavailable";
+    $("trending-props-status").textContent = humanizeErrorText(error.message);
+    $("trending-props-list").innerHTML = `<div class="suggestion compact-suggestion"><strong>Trending props could not load.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-trending>Try again</button></div>`;
+    $("trending-props-list").querySelector("[data-retry-trending]")?.addEventListener("click", loadTrendingProps);
+    return;
+  }
   state.trendingProps = data.props || [];
   $("trending-props-count").textContent = `Top ${data.count || 0}`;
   $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
   $("trending-props-list").innerHTML = state.trendingProps.map((prop, index) => `
-    <div class="trending-prop-row">
-      <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" />
+    <div class="trending-prop-row ${prop.research_only ? "research-only-market" : ""}">
+      <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" ${prop.research_only ? "disabled" : ""} />
       <span class="trending-rank">#${Number(prop.rank || index + 1)}</span>
-      <span class="grade-chip" title="Grade combines model confidence and data quality">${escapeHtml(prop.grade || "-")}</span>
+      <span class="grade-chip" title="${prop.research_only ? "Live provider market; model grade unavailable" : "Grade combines model confidence and data quality"}">${escapeHtml(prop.research_only ? "Live" : (prop.grade || "-"))}</span>
       <strong>${escapeHtml(prop.player || "Player")}<small>${escapeHtml(prop.platform || platform)} · ${escapeHtml(prop.game || "Matchup")}</small></strong>
       <span class="trending-stat">${escapeHtml(prop.stat || "Stat")} ${prop.line ?? "-"}</span>
-      <span>${directionBadge(prop.direction || "Over")}</span>
-      <span class="trending-count">Score ${Number(prop.grade_score || 0).toFixed(1)}</span>
-      <button class="secondary" type="button" data-add-trending-prop="${index}">Add</button>
+      <span class="trending-direction">${directionBadge(prop.direction || "Over")}</span>
+      <span class="trending-count">${prop.research_only ? "Provider market · results source needed" : `Score ${Number(prop.grade_score || 0).toFixed(1)}`}</span>
+      <button class="secondary" type="button" data-add-trending-prop="${index}" ${prop.research_only ? 'disabled title="Automatic result verification is not connected yet"' : ""}>${prop.research_only ? "View only" : "Add"}</button>
     </div>
-  `).join("") || `<div class="suggestion compact-suggestion">No end-to-end trackable ${escapeHtml(sport)} props are trending right now.</div>`;
+  `).join("") || `<div class="suggestion compact-suggestion">No ${escapeHtml(sport)} provider markets are available right now.</div>`;
   document.querySelectorAll("[data-select-trending-prop]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => toggleTrendingPropSelection(checkbox));
   });
@@ -2260,6 +2670,7 @@ async function loadEntryProgress(options = {}) {
       ${renderProgressTimeGroups(entry)}
     </div>
   `).join("") || `<div class="suggestion">No active placed entries.</div>`;
+  await loadSettlementHealth();
   if (data.auto_check && data.auto_check.settled) {
     Promise.allSettled([
       loadDashboard(),
@@ -2271,6 +2682,41 @@ async function loadEntryProgress(options = {}) {
       const failure = results.find((result) => result.status === "rejected");
       if (failure) console.warn("Post-settlement panel refresh failed", failure.reason);
     });
+  }
+}
+
+async function loadSettlementHealth() {
+  const target = $("settlement-health");
+  if (!target) return;
+  try {
+    const data = await api("/api/entries/settlement-health");
+    const queue = data.queue || {};
+    const job = data.job || {};
+    const database = data.database || {};
+    const suspicious = data.suspicious_game_time_repairs || {};
+    const sportRows = Object.entries(data.by_sport || {}).map(([sport, row]) =>
+      `<span class="status-pill ${Number(row.overdue_legs || 0) ? "status-warning" : "status-connected"}">${escapeHtml(sport)}: ${Number(row.pending_legs || 0)} waiting${Number(row.overdue_legs || 0) ? ` · ${Number(row.overdue_legs)} overdue` : ""}</span>`,
+    ).join("");
+    const needsAttention = data.status === "attention";
+    target.classList.toggle("attention", needsAttention);
+    target.innerHTML = `
+      <div class="settlement-health-heading">
+        <strong>Settlement health</strong>
+        <span class="status-pill ${needsAttention ? "status-warning" : "status-connected"}">${needsAttention ? "Needs attention" : "Healthy"}</span>
+      </div>
+      <div class="metric-strip compact-metrics">
+        <span><strong>${Number(data.paid_pending_entries || 0)}</strong><small>Paid Pending</small></span>
+        <span><strong>${Number(data.overdue_legs || 0)}</strong><small>SLA Overdue</small></span>
+        <span><strong>${Number(queue.blocked || 0)}</strong><small>Blocked</small></span>
+      </div>
+      <div class="settlement-health-tags">${sportRows || '<span class="subtle">No legs are waiting for final stats.</span>'}</div>
+      ${job.status && job.status !== "idle" ? `<p class="subtle">Worker: ${escapeHtml(job.phase || job.status)}${job.status === "running" ? ` · ${Number(job.progress || 0)}%` : ""}</p>` : ""}
+      ${Number(suspicious.count || 0) ? `<p class="danger-text">${Number(suspicious.count)} large game-date correction${Number(suspicious.count) === 1 ? "" : "s"} require review.</p>` : ""}
+      <p class="subtle">${escapeHtml(database.message || "Database status unavailable.")}${Number(database.size_gb || 0) ? ` · ${Number(database.size_gb).toFixed(2)} GB` : ""}</p>
+    `;
+  } catch (error) {
+    target.classList.add("attention");
+    target.textContent = `Settlement health could not be loaded: ${humanizeErrorText(error.message)}`;
   }
 }
 
@@ -2626,6 +3072,8 @@ function entryPropFromFeed(prop) {
     player_identity_id: prop.player_identity_id ?? null,
     player_provider: prop.player_provider || prop.platform || "",
     provider_player_id: prop.provider_player_id || prop.player_id || "",
+    provider_event_id: prop.provider_event_id || prop.game_id || prop.event_id || "",
+    provider_offer_id: prop.provider_offer_id || prop.projection_id || prop.offer_id || "",
     team: prop.team || "",
     position: prop.position || "",
     sport: prop.sport || prop.league || "WNBA",
@@ -2724,7 +3172,8 @@ async function manageDatabase(action) {
 function renderEntryProps() {
   const corrections = new Map((state.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
-    const projection = prop.projection == null ? "Auto" : Number(prop.projection).toFixed(1);
+    const gameWinner = prop.stat === "Game Winner";
+    const projection = prop.projection == null ? "Auto" : gameWinner ? pct(Number(prop.projection) * 100) : Number(prop.projection).toFixed(1);
     const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
       ? Number(prop.line) - Number(prop.projection)
       : Number(prop.projection) - Number(prop.line);
@@ -2733,10 +3182,10 @@ function renderEntryProps() {
     const differs = correction?.action === "flip";
     return `
       <tr data-entry-leg="${index}">
-        <td>${prop.player}</td>
-        <td>${directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
-        <td>${prop.stat}</td>
-        <td>${prop.line}</td>
+        <td>${escapeHtml(prop.player)}</td>
+        <td>${gameWinner ? `<span class="direction-badge direction-over">WIN</span>` : directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
+        <td>${escapeHtml(prop.stat)}</td>
+        <td>${gameWinner ? "Wins game" : prop.line}</td>
         <td>${projection}</td>
         <td>${edge}</td>
         <td><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
@@ -2793,6 +3242,20 @@ function renderEntryProps() {
       renderEntryProps();
     });
   });
+  if ($("entry-card-summary")) {
+    const legs = state.entryProps.length;
+    const platform = entrySourcePlatforms()[0] || $("entry-platform")?.value || "Sportsbook";
+    const score = Number(state.lastAnalysis?.recommendation?.score ?? state.lastAnalysis?.score ?? 0);
+    const risk = state.lastAnalysis?.risk?.level || "";
+    $("entry-card-summary").innerHTML = `
+      <strong>${legs} ${legs === 1 ? "leg" : "legs"} · ${escapeHtml(platform)}</strong>
+      <span>${legs < 2
+        ? "Add at least two props to begin."
+        : state.lastAnalysis
+          ? `${score.toFixed(0)}/100 model score${risk ? ` · ${escapeHtml(risk)} risk` : ""}`
+          : "Ready for analysis."}</span>
+    `;
+  }
   syncMobileSlip();
 }
 
@@ -2800,6 +3263,7 @@ function propFromForm() {
   const projectionValue = $("prop-projection").value;
   return {
     player: $("prop-player").value.trim(),
+    player_identity_id: state.entrySelectedPlayerIdentityId,
     team: $("prop-team").value.trim(),
     sport: $("prop-sport").value,
     stat: $("prop-stat").value,
@@ -2812,6 +3276,44 @@ function propFromForm() {
     season_type: "",
     trending_count: 0,
   };
+}
+
+let entryPlayerLookupTimer = null;
+
+async function loadEntryPlayerDirectory(query = "") {
+  const sport = $("prop-sport")?.value || "";
+  const playerInput = $("prop-player");
+  const status = $("entry-player-lookup-status");
+  if (!sport) {
+    state.entryPlayerDirectory = [];
+    state.entrySelectedPlayerIdentityId = null;
+    playerInput.disabled = true;
+    playerInput.placeholder = "Select a sport first";
+    $("entry-player-options").innerHTML = "";
+    status.textContent = "Choose a sport to load saved players.";
+    return;
+  }
+  playerInput.disabled = false;
+  playerInput.placeholder = `Search ${sport} players`;
+  status.textContent = `Loading saved ${sport} players...`;
+  const requestedSport = sport;
+  const data = await api(`/api/players/directory?sport=${encodeURIComponent(sport)}&query=${encodeURIComponent(query)}&limit=150`);
+  if ($("prop-sport").value !== requestedSport) return;
+  state.entryPlayerDirectory = data.players || [];
+  $("entry-player-options").innerHTML = state.entryPlayerDirectory.map((player) => (
+    `<option value="${escapeHtml(player.name)}">${escapeHtml(player.team || player.sport)}</option>`
+  )).join("");
+  status.textContent = data.count
+    ? `${data.count} saved ${sport} ${data.count === 1 ? "player" : "players"} available.`
+    : `No saved ${sport} players match yet. You can still enter a name manually.`;
+  applyEntryPlayerSelection();
+}
+
+function applyEntryPlayerSelection() {
+  const playerName = $("prop-player")?.value.trim().toLowerCase() || "";
+  const match = state.entryPlayerDirectory.find((player) => String(player.name).trim().toLowerCase() === playerName);
+  state.entrySelectedPlayerIdentityId = match?.id || null;
+  if (match?.team && !$("prop-team").value.trim()) $("prop-team").value = match.team;
 }
 
 function entryPayload() {
@@ -2845,6 +3347,15 @@ function parsePayoutSchedule(value) {
   return schedule;
 }
 
+function analysisBulletList(values, className = "analysis-bullet-list") {
+  const items = (Array.isArray(values) ? values : [values])
+    .flatMap((value) => String(value || "").trim().split(/(?<=[.!?])\s+(?=[A-Z0-9])/))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!items.length) return "";
+  return `<ul class="${className}">${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+}
+
 function renderAnalysis(data) {
   const rec = data.recommendation;
   const risk = data.risk;
@@ -2859,6 +3370,17 @@ function renderAnalysis(data) {
   const payoutVerified = Boolean(data.platform_value?.payout_verified);
   const release = data.release_verdict || {};
   const corrections = data.corrections || {};
+  const analyzedProp = data.entry?.props?.[0] || {};
+  window.EdgeIQBeta?.setAnalysisContext({
+    prediction_record_id: analyzedProp.prediction_record_id || null,
+    entry_id: data.entry?.id || null,
+    entry_prop_id: analyzedProp.id || analyzedProp.entry_prop_id || null,
+    player: analyzedProp.player || "Entry analysis",
+    stat: analyzedProp.stat || "",
+    sport: analyzedProp.sport || "",
+    platform: analyzedProp.platform || data.entry?.platform || "",
+    line: analyzedProp.line ?? null,
+  });
   const correctionRows = (corrections.legs || []).map((leg) => {
     const action = String(leg.action || "keep");
     const actionLabel = action === "flip" ? `Use ${leg.suggested_direction}` : action === "remove" ? "Remove" : "Keep";
@@ -2869,8 +3391,11 @@ function renderAnalysis(data) {
             <strong>${escapeHtml(leg.player)} · ${escapeHtml(leg.stat)} ${Number(leg.line).toFixed(1)}</strong>
             <span class="status-pill status-${action === "keep" ? "positive" : action === "flip" ? "warning" : "danger"}">${escapeHtml(actionLabel)}</span>
           </div>
-          <p>${escapeHtml(leg.message || "")}</p>
-          <p class="subtle">${escapeHtml(leg.reason || "")} · ${Number(leg.confidence || 0).toFixed(1)}% confidence</p>
+          ${analysisBulletList([
+            leg.message || "",
+            leg.reason || "",
+            `${Number(leg.confidence || 0).toFixed(1)}% model confidence`,
+          ], "analysis-bullet-list compact-analysis-bullets")}
         </div>
         ${action === "flip" || action === "remove"
           ? `<button class="secondary compact-action" data-correction-action="${escapeHtml(action)}" data-correction-index="${Number(leg.index)}">${escapeHtml(actionLabel)}</button>`
@@ -2932,77 +3457,87 @@ function renderAnalysis(data) {
   }).join("");
   $("entry-analysis").classList.remove("muted-card");
   $("entry-analysis").innerHTML = `
-    <div class="grade">${escapeHtml(release.verdict || rec.verdict || rec.action || "Review")}</div>
-    <h2>${escapeHtml(release.verdict || rec.action || "Review")} Verdict</h2>
-    <p>${escapeHtml(release.summary || rec.reason || "")}</p>
-    <div class="stats-grid" style="margin-top:14px">
-      <div class="stat-card"><div class="stat-value">${Number(rec.score ?? 0).toFixed(1)}</div><div class="stat-label">Entry Score</div></div>
-      <div class="stat-card"><div class="stat-value">${pct(risk.average_confidence)}</div><div class="stat-label">Avg Confidence</div></div>
-      <div class="stat-card"><div class="stat-value">${Number(risk.average_edge).toFixed(2)}</div><div class="stat-label">Avg Edge</div></div>
-      <div class="stat-card"><div class="stat-value">${risk.level}</div><div class="stat-label">Risk</div></div>
+    <div class="entry-analysis-summary">
+      <div>
+        <div class="grade">${escapeHtml(release.verdict || rec.verdict || rec.action || "Review")}</div>
+        <p class="eyebrow">EdgeIQ decision</p>
+        <h2>${escapeHtml(release.verdict || rec.action || "Review")}</h2>
+        ${analysisBulletList(
+          release.summary || rec.reason || "EdgeIQ reviewed the entry against its current evidence.",
+          "analysis-bullet-list entry-analysis-lead",
+        )}
+      </div>
+      <div class="entry-analysis-risk">
+        <strong>${escapeHtml(risk.level || "Unknown")}</strong>
+        <span>risk level</span>
+      </div>
     </div>
-    <p class="subtle">Score blend: confidence ${pct(components.average_confidence)} · edge ${Number(components.average_edge || 0).toFixed(2)} · source support ${Number(components.average_source_score || 0).toFixed(1)}</p>
-    <div class="analysis-card correction-plan" style="margin-top:14px">
+    <div class="entry-analysis-metrics">
+      <span><strong>${Number(rec.score ?? 0).toFixed(0)}/100</strong><small>Model score</small></span>
+      <span><strong>${pct(risk.average_confidence)}</strong><small>Average leg confidence</small></span>
+      <span><strong>${Number(risk.average_edge || 0).toFixed(2)}</strong><small>Average projection cushion</small></span>
+    </div>
+    ${warnings.length ? `<div class="entry-analysis-alert"><strong>Before you continue</strong>${analysisBulletList(warnings)}</div>` : ""}
+    <section class="entry-analysis-section correction-plan">
       <div class="suggestion-top">
-        <h3>Suggested Corrections</h3>
+        <h3>${Number(corrections.change_count || 0) ? "Recommended changes" : "Leg review"}</h3>
         <span class="status-pill ${Number(corrections.change_count || 0) ? "status-warning" : "status-positive"}">${Number(corrections.change_count || 0)} changes</span>
       </div>
-      <p>${escapeHtml(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}</p>
+      ${analysisBulletList(corrections.summary || "EdgeIQ reviewed every leg against the current model.")}
       <div class="correction-list">${correctionRows || `<p class="subtle">No leg-level corrections are available.</p>`}</div>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <div class="suggestion-top">
-        <h3>${payoutVerified ? "Verified Payout Economics" : "Estimated Payout Economics"}</h3>
-        <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Payout confirmation needed"}</span>
+    </section>
+    <details class="entry-analysis-details">
+      <summary><span>Payout and sportsbook value</span><small>${payoutVerified ? "Payout verified" : "Confirm the payout before using expected value"}</small></summary>
+      <div class="entry-analysis-detail-body">
+        <div class="suggestion-top">
+          <h3>${payoutVerified ? "Payout outlook" : "Estimated payout outlook"}</h3>
+          <span class="status-pill ${payoutVerified ? "status-connected" : "status-warning"}">${payoutVerified ? "Verified" : "Needs confirmation"}</span>
+        </div>
+        ${payoutVerified ? "" : '<p class="subtle">The connection confirms lines and market odds, but the sportsbook does not provide the exact Pick’em card payout. Enter the displayed payout before relying on expected value.</p>'}
+        <div class="metric-strip">
+          <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Not verified"}</strong><small>Expected value</small></span>
+          <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected return</small></span>
+          <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Chance of profit</small></span>
+          <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Chance needed to break even</small></span>
+        </div>
+        <p class="subtle">${escapeHtml(payout.message || "Confirm the final displayed payout before placing.")}</p>
+        <h3>Best sportsbook value</h3>
+        <p>${escapeHtml(platformValue.recommendation || "No cross-platform value comparison was available.")}</p>
+        ${platformValue.recommended_platform ? `<p class="subtle">Best match: ${escapeHtml(platformValue.recommended_platform)} · line advantage ${Number(platformValue.value_delta || 0) >= 0 ? "+" : ""}${Number(platformValue.value_delta || 0).toFixed(2)}</p>` : ""}
+        ${platformEconomicsRows}
+        ${platformValueRows || `<p class="subtle">No matching PrizePicks or Underdog legs were found.</p>`}
       </div>
-      ${payoutVerified ? "" : '<p class="subtle">Your sportsbook connection verifies available lines and market odds, but it does not expose the exact Pick’em card payout. Enter the payout shown in the provider app to verify EV.</p>'}
-      <div class="metric-strip">
-        <span><strong>${payoutVerified ? `${Number(payout.expected_value || 0) >= 0 ? "+" : ""}${pct(payout.expected_value || 0)}` : "Unverified"}</strong><small>Expected Value</small></span>
-        <span><strong>${Number(payout.expected_return || 0).toFixed(2)}x</strong><small>Expected Return</small></span>
-        <span><strong>${pct(payout.profit_probability || 0)}</strong><small>Profit Chance</small></span>
-        <span><strong>${pct(payout.break_even_probability || 0)}</strong><small>Provider Break-Even</small></span>
+    </details>
+    <details class="entry-analysis-details">
+      <summary><span>Safety checks</span><small>${guardrails.length} safeguards · ${checklist.length} final checks</small></summary>
+      <div class="entry-analysis-detail-body">
+        ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${escapeHtml(guard.message || "")}</p>`).join("") || '<p class="subtle">No additional placement warnings.</p>'}
+        <div class="checklist-grid">
+          ${checklist.map((item) => `
+            <div class="checklist-item status-${String(item.status || "").replaceAll(" ", "-")}">
+              <strong>${escapeHtml(item.label || "Check")}</strong>
+              <span>${escapeHtml(item.status || "Review")}</span>
+              <p>${escapeHtml(item.detail || "")}</p>
+            </div>
+          `).join("")}
+        </div>
       </div>
-      <p class="subtle">${escapeHtml(release.authoritative_platform || payout.platform || "Provider")} is authoritative for this verdict.</p>
-      <p class="subtle">${escapeHtml(payout.message || "Confirm the final displayed payout before placing.")}</p>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Best App Value</h3>
-      <p>${escapeHtml(platformValue.recommendation || "No cross-platform value check was available.")}</p>
-      ${platformValue.recommended_platform ? `<p class="subtle">Recommended platform: ${escapeHtml(platformValue.recommended_platform)} · value delta ${Number(platformValue.value_delta || 0) >= 0 ? "+" : ""}${Number(platformValue.value_delta || 0).toFixed(2)}</p>` : ""}
-      ${platformEconomicsRows}
-      ${platformValueRows || `<p class="subtle">No matching PrizePicks/Underdog legs were found for comparison.</p>`}
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Placement Guardrails</h3>
-      ${guardrails.map((guard) => `<p class="${guard.severity === "danger" ? "danger-text" : guard.severity === "warning" ? "warning" : "subtle"}">${guard.message}</p>`).join("")}
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Final Checklist</h3>
-      <div class="checklist-grid">
-        ${checklist.map((item) => `
-          <div class="checklist-item status-${String(item.status || "").replaceAll(" ", "-")}">
-            <strong>${item.label}</strong>
-            <span>${item.status}</span>
-            <p>${item.detail}</p>
-          </div>
-        `).join("")}
+    </details>
+    <details class="entry-analysis-details">
+      <summary><span>Model evidence</span><small>Data quality, player history, and supporting sources</small></summary>
+      <div class="entry-analysis-detail-body">
+        <p class="subtle">Model score uses leg confidence, projection cushion, and source support. These are estimates, not guarantees.</p>
+        <p class="subtle">Confidence ${pct(components.average_confidence)} · projection cushion ${Number(components.average_edge || 0).toFixed(2)} · source strength ${Number(components.average_source_score || 0).toFixed(1)}</p>
+        <h3>Data quality</h3>
+        ${qualityRows}
+        <h3>Recent player history</h3>
+        <p>${espn.props_with_history || 0} legs have verified game history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% average hit rate` : ""}</p>
+        ${espnRows || `<p class="subtle">No matching final-stat history yet. Settled entries will strengthen this section.</p>`}
+        <h3>Other supporting sources</h3>
+        <p>${fusion.signal_count || 0} additional signals${fusion.sources && fusion.sources.length ? ` from ${fusion.sources.map((source) => escapeHtml(source)).join(", ")}` : ""}</p>
+        ${signalRows || `<p class="subtle">No additional source signals were available for this entry.</p>`}
       </div>
-    </div>
-    <div class="analysis-card" style="margin-top:14px">
-      <h3>Data Quality</h3>
-      ${qualityRows}
-    </div>
-    <div class="analysis-card ${espn.props_with_history ? "" : "muted-card"}" style="margin-top:14px">
-      <h3>ESPN Form Assist</h3>
-      <p>${espn.props_with_history || 0} props with ESPN history${espn.average_hit_rate ? ` · ${Number(espn.average_hit_rate).toFixed(1)}% avg hit rate` : ""}</p>
-      ${espnRows || `<p class="subtle">No matching ESPN final-stat history yet. Auto-check completed entries to import more box scores.</p>`}
-    </div>
-    <div class="analysis-card ${fusion.signal_count ? "" : "muted-card"}" style="margin-top:14px">
-      <h3>Source Fusion</h3>
-      <p>${fusion.signal_count || 0} signals${fusion.sources && fusion.sources.length ? ` · ${fusion.sources.join(", ")}` : ""}</p>
-      ${signalRows || `<p class="subtle">No extra source signals found for this entry yet.</p>`}
-    </div>
-    ${warnings.length ? `<p class="warning">${warnings.join(" · ")}</p>` : ""}
+    </details>
   `;
   document.querySelectorAll("[data-correction-action]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3040,7 +3575,18 @@ async function analyzeEntry() {
     return;
   }
   const payload = entryPayload();
-  const data = await api("/api/entries/analyze", { method: "POST", body: JSON.stringify(payload) });
+  $("entry-status").textContent = "Checking projections, player history, and calibration...";
+  let data;
+  try {
+    data = await api("/api/entries/analyze", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: 20000,
+    });
+  } catch (error) {
+    $("entry-status").textContent = `Analysis could not finish: ${humanizeErrorText(error.message)} Your entry is still in the builder.`;
+    return;
+  }
   state.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
@@ -3379,7 +3925,14 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   const recentPropKeys = state.generatorRecentProps[historyKey] || [];
   list.innerHTML = `<div class="suggestion">Building ${escapeHtml(platform)} ${legCount}-leg entries...</div>`;
   const avoidQuery = recentPropKeys.length ? `&avoid=${encodeURIComponent(recentPropKeys.join(","))}` : "";
-  const data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`);
+  let data;
+  try {
+    data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`, { timeoutMs: 30000 });
+  } catch (error) {
+    list.innerHTML = `<div class="suggestion"><strong>${escapeHtml(platform)} entries could not be generated.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-generator>Try again</button></div>`;
+    list.querySelector("[data-retry-generator]")?.addEventListener("click", () => loadProviderSuggestions(platform, sportId, legsId, listId));
+    return;
+  }
   const generatedPropKeys = [...new Set(
     (data.suggestions || []).flatMap((suggestion) => suggestion.diversification?.prop_keys || []),
   )];
@@ -3408,7 +3961,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
         <button class="secondary" data-explain-provider-suggestion="${index}">Why?</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion">No ${escapeHtml(platform)} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.</div>`;
+  `).join("") || `<div class="suggestion"><strong>${data.mode === "waiting_for_same_day_lines" ? "No same-day card available." : "No card cleared the safeguards."}</strong><p>${escapeHtml(data.message || `No ${platform} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.`)}</p></div>`;
   list.querySelectorAll("[data-load-provider-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadProviderSuggestion)];
@@ -3488,7 +4041,9 @@ async function runOptimizer(portfolioBatch = false) {
     apply_feedback: $("optimizer-apply-feedback").checked ? "true" : "false",
     limit: portfolioBatch ? "5" : "5",
   });
-  const data = await api(`/api/entries/optimizer?${params.toString()}`);
+  const data = await api(`/api/entries/optimizer?${params.toString()}`, {
+    timeoutMs: sport === "All Sports" ? 60000 : 30000,
+  });
   const suggestionsHtml = data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
@@ -3705,12 +4260,36 @@ async function loadPlayerResearch(event) {
     platform: $("research-platform").value,
   });
   if ($("research-line").value) params.set("line", $("research-line").value);
-  const data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
+  const started = performance.now();
+  let data;
+  try {
+    data = await api(`/api/players/${encodeURIComponent(player)}/research?${params.toString()}`);
+  } catch (error) {
+    $("player-research-result").textContent = humanizeCopilotText(error?.message || "Player research is temporarily unavailable. Refresh provider data and try again.");
+    $("research-context-status").textContent = "Research could not finish. Check the player, stat, sport, and current provider status.";
+    return;
+  }
   const split = data.splits || {};
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
+  const gameContext = data.forecast?.features?.game_intelligence;
   const sensitivity = data.projection_sensitivity || {};
   const assessment = data.season_assessment || {};
+  window.EdgeIQBeta?.setAnalysisContext({
+    prediction_record_id: data.prediction_record_id || null,
+    player: data.player || player,
+    stat: data.stat || stat,
+    sport: data.sport || $("research-sport").value,
+    platform: $("research-platform").value,
+    line: data.line ?? null,
+  });
+  if ((gameContext?.adjustments || []).length) {
+    trackProductEvent("game_context_influenced_prop", "prop", `${data.player || player}|${data.stat || stat}`, {
+      sport: data.sport || $("research-sport").value,
+      adjustment_count: gameContext.adjustments.length,
+      shadow_only: true,
+    });
+  }
   const bestHittingStats = data.best_hitting_stats || [];
   const maxActual = Math.max(1, ...((data.chart || []).map((row) => Number(row.actual) || 0)), Number(data.line) || 0);
   $("player-research-result").classList.remove("muted-card");
@@ -3740,15 +4319,7 @@ async function loadPlayerResearch(event) {
       </div>
       <p class="subtle">Ranked by verified season results against each currently available standard line. Recent form and sample size are shown separately so a small hot streak is not mistaken for a proven edge.</p>
       <div class="hit-stat-ranking">
-        ${bestHittingStats.map((row, index) => `
-          <article class="hit-stat-row">
-            <span class="hit-stat-rank">${index + 1}</span>
-            <div><strong>${escapeHtml(row.stat)} · ${escapeHtml(row.direction)} ${Number(row.line).toFixed(1)}</strong><small>${escapeHtml(row.platform || "Current market")} · average ${Number(row.season_average).toFixed(1)}</small></div>
-            <div><strong>${pct(row.season_hit_rate)}</strong><small>Season · ${Number(row.sample_size)} games</small></div>
-            <div><strong>${pct(row.recent_10_hit_rate)}</strong><small>Last 10</small></div>
-            <span class="status-pill ${row.sample_strength === "Strong" ? "status-positive" : "status-warning"}" title="${escapeHtml(row.note || "")}">${escapeHtml(row.sample_strength)}</span>
-          </article>
-        `).join("") || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
+        ${window.EdgeIQPlayerHitRankings?.render(bestHittingStats, { escapeHtml, pct }) || `<p class="subtle">No other active stats have enough verified season games to compare yet.</p>`}
       </div>
     </section>
     <div class="stats-grid" style="margin-top:14px">
@@ -3783,6 +4354,11 @@ async function loadPlayerResearch(event) {
       </div>
       ${(sensitivity.drivers || []).map((driver) => `<p class="subtle">What changes this: ${escapeHtml(driver)}</p>`).join("")}
     </section>
+    ${window.EdgeIQGames?.propContextMarkup(
+      gameContext,
+      data.forecast?.projection,
+      data.forecast?.features?.game_aware_shadow_projection,
+    ) || ""}
     <div class="player-research-bars">
       ${(data.chart || []).map((row) => `
         <div class="research-bar-row">
@@ -3807,6 +4383,8 @@ async function loadPlayerResearch(event) {
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
     ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
   `;
+  $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
+  $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function researchSplitCard(label, split = {}) {
@@ -4000,17 +4578,29 @@ async function loadSettlementAudit() {
       <div class="stat-card"><div class="stat-value">${data.historical_review || 0}</div><div class="stat-label">Historical Review</div></div>
     </div>
     ${(data.items || []).slice(0, 30).map((item) => `
-      <div class="suggestion compact-suggestion insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
+      <div class="suggestion compact-suggestion settlement-diagnostic insight-${item.status === "verified" ? "positive" : item.status === "scheduled" ? "neutral" : "warning"}">
         <div class="suggestion-top">
           <strong>Entry #${item.entry_id} · ${escapeHtml(item.requested_player || "Unknown player")}</strong>
           <span class="pill">${escapeHtml(item.status || "waiting")}</span>
         </div>
         ${item.scope === "historical" ? `<p class="subtle">Historical record · entry ${escapeHtml(item.entry_status || "archived")}</p>` : ""}
         <p>${escapeHtml(item.details?.stat || "Stat")} ${item.details?.line ?? ""} · ${escapeHtml(item.result || "Pending")} ${item.actual == null ? "" : `· Final ${item.actual}`}</p>
-        <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · ${item.attempt_count || 1} attempt${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
-        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : "No retry scheduled"}</p>
+        <p class="subtle">${escapeHtml(item.message || "Waiting for provider result.")} · ${escapeHtml(item.provider || "Provider pending")} · checked ${item.attempt_count || 1} time${Number(item.attempt_count || 1) === 1 ? "" : "s"}</p>
+        <div class="settlement-checks">
+          ${Object.values(item.match_checks || {}).map((check) => `<span class="check-${escapeHtml(check.status || "missing")}">${escapeHtml(check.label || "Evidence pending")}</span>`).join("")}
+        </div>
+        <div class="provider-attempt-list">
+          ${(item.provider_attempts || []).map((attempt) => `
+            <span><strong>${escapeHtml(attempt.provider || "Provider")}</strong><small>${Number(attempt.attempts || 0)} attempt${Number(attempt.attempts || 0) === 1 ? "" : "s"} · ${escapeHtml(String(attempt.last_status || "not tried").replaceAll("_", " "))}</small></span>
+          `).join("") || `<span><strong>Provider pending</strong><small>No attempt recorded</small></span>`}
+        </div>
+        <p class="subtle">Match confidence ${Number(item.match_confidence || 0)}% · ${item.retry_state?.due ? "Retry due now" : item.retry_state?.active && item.next_retry_at ? `Next retry ${formatDateTime(item.next_retry_at)}` : escapeHtml(item.retry_state?.label || "No retry scheduled")}</p>
         ${item.status !== "verified" ? `<p class="human-error">${escapeHtml(item.blocking_reason || "Waiting for verified final data.")}</p>` : ""}
         ${item.matched_player ? `<p class="subtle">Matched ${escapeHtml(item.matched_player)} · ${escapeHtml(item.matched_game || "game unavailable")}</p>` : ""}
+        <div class="settlement-resolution">
+          <div><strong>${escapeHtml(item.resolution_action?.label || "Review leg")}</strong><small>${escapeHtml(item.resolution_action?.description || "Confirm the saved player, game, and stat.")}</small></div>
+          ${item.resolution_action?.code === "recheck" ? `<button class="secondary compact-button recheck-final-stats" type="button">Recheck</button>` : ""}
+        </div>
       </div>
     `).join("") || `<div class="suggestion">No settlement attempts have been recorded yet. Recheck final stats to populate the audit.</div>`}
   `;
@@ -4027,26 +4617,26 @@ async function loadLossProtection() {
   $("entry-loss-protection").classList.toggle("protection-active", active);
   $("entry-loss-protection").classList.toggle("protection-clear", !active);
   $("entry-loss-protection").innerHTML = `
-    <div class="suggestion-top">
-      <div>
-        <span class="pill">${escapeHtml(data.mode || "normal")}</span>
-        <strong>${escapeHtml(data.label || "Paid Entries Enabled")}</strong>
-      </div>
+    <details class="protection-disclosure">
+      <summary>
+        <div><span class="status-dot ${active ? "status-dot-warning" : "status-dot-ready"}" aria-hidden="true"></span><strong>${escapeHtml(data.label || "Paid Entries Enabled")}</strong><small>${escapeHtml((data.reasons || [])[0] || "Recovery checks are clear.")}</small></div>
       <label class="toggle-control" title="Turn Loss Protection enforcement on or off">
         <input id="loss-protection-toggle" type="checkbox" ${enabled ? "checked" : ""} />
         <span class="toggle-track" aria-hidden="true"></span>
         <span>${toggleLabel}</span>
       </label>
-    </div>
-    <p>${escapeHtml((data.reasons || [])[0] || "Recovery checks are clear.")}</p>
-    ${!enabled && data.triggered ? `<p class="warning">Current performance would activate protection if you turn it back on.</p>` : ""}
-    <div class="briefing-metric-row compact-metrics">
-      <span>Month ${money(metrics.monthly_profit || 0)}</span>
-      <span>ROI ${pct(metrics.roi || 0)}</span>
-      <span>CLV ${Number(metrics.average_clv || 0).toFixed(2)}</span>
-      <span>${Number(metrics.positive_clv_rate || 0).toFixed(0)}% +CLV</span>
-    </div>
-    ${(data.paid_rules || []).slice(0, active ? 3 : 1).map((rule) => `<p class="subtle">${escapeHtml(rule)}</p>`).join("")}
+      </summary>
+      <div class="protection-detail-body">
+        ${!enabled && data.triggered ? `<p class="warning">Current performance would activate protection if you turn it back on.</p>` : ""}
+        <div class="briefing-metric-row compact-metrics">
+          <span>Month ${money(metrics.monthly_profit || 0)}</span>
+          <span>ROI ${pct(metrics.roi || 0)}</span>
+          <span>CLV ${Number(metrics.average_clv || 0).toFixed(2)}</span>
+          <span>${Number(metrics.positive_clv_rate || 0).toFixed(0)}% +CLV</span>
+        </div>
+        ${(data.paid_rules || []).slice(0, active ? 3 : 1).map((rule) => `<p class="subtle">${escapeHtml(rule)}</p>`).join("")}
+      </div>
+    </details>
   `;
   $("loss-protection-toggle").addEventListener("change", async (event) => {
     const nextEnabled = Boolean(event.target.checked);
@@ -4759,16 +5349,33 @@ async function mobilePlaceEntry() {
 
 async function loadPerformance() {
   const data = await api("/api/performance");
-  $("performance-summary").innerHTML = [
+  const summaryItems = [
     ["Record", data.summary.record],
-    ["Profit", money(data.summary.profit)],
-    ["ROI", pct(data.summary.roi)],
-    ["Bankroll", money(data.summary.bankroll)],
-    ["Entry Profit", money(data.entries.profit)],
-    ["Pending Exposure", money(data.entries.pending_exposure)],
-  ].map(([label, value]) => `
+    ["All-time net profit", money(data.summary.profit)],
+    ["All-time ROI", pct(data.summary.roi)],
+    ["Current bankroll", money(data.summary.bankroll)],
+    ["Settled entry profit", money(data.entries.profit)],
+    ["Pending entry exposure", money(data.entries.pending_exposure)],
+  ];
+  const renderSummaryItem = ([label, value]) => `
     <div class="stat-card"><div class="stat-value">${value}</div><div class="stat-label">${label}</div></div>
-  `).join("");
+  `;
+  $("performance-summary").innerHTML = summaryItems.slice(0, 4).map(renderSummaryItem).join("");
+  if ($("performance-summary-detail")) $("performance-summary-detail").innerHTML = summaryItems.slice(4).map(renderSummaryItem).join("");
+  const recordParts = String(data.summary.record || "0-0").split("-").map((value) => Number(value || 0));
+  const settledEntries = recordParts.slice(0, 3).reduce((total, value) => total + value, 0);
+  const sportRows = Array.isArray(data.by_sport) ? data.by_sport : [];
+  const weakSports = sportRows.filter((row) => Number(row.roi || 0) < 0 || Number(row.win_rate || row.win_pct || 0) < 50).slice(0, 2);
+  if ($("performance-recovery-summary")) {
+    $("performance-recovery-summary").innerHTML = `
+      <div><span class="status-dot ${Number(data.summary.roi || 0) >= 0 ? "status-dot-ready" : "status-dot-warning"}"></span><strong>${Number(data.summary.roi || 0) >= 0 ? "Performance is above break-even" : "Recovery mode is active"}</strong></div>
+      <ul>
+        <li>${settledEntries} settled entries currently support the all-time view.</li>
+        <li>${weakSports.length ? `${weakSports.map((row) => escapeHtml(row.group || row.name || row.label || "Weak segment")).join(" and ")} remain under review.` : "No sport-level pause is currently identified in this report."}</li>
+        <li>Negative or thin-evidence segments stay paper-first while fresh outcomes accumulate.</li>
+        <li>Next evidence milestone: 300 fresh, independently settled props before broader paid release.</li>
+      </ul>`;
+  }
   renderGroup("perf-sport", data.by_sport);
   renderGroup("perf-stat", data.by_stat);
   renderGroup("perf-platform", data.by_platform);
@@ -4789,7 +5396,7 @@ function renderMonthlyProfit(monthly) {
         <span class="subtle">${Number(current.tracked || 0)} tracked</span>
       </div>
       <div class="metric-strip">
-        <span><strong class="${Number(current.profit || 0) < 0 ? "danger-text" : ""}">${money(current.profit)}</strong><small>Profit</small></span>
+        <span><strong class="${Number(current.profit || 0) < 0 ? "danger-text" : ""}">${money(current.profit)}</strong><small>${escapeHtml(current.label || "Current month")} settled profit</small></span>
         <span><strong>${current.wins || 0}-${current.losses || 0}-${current.pushes || 0}</strong><small>Record</small></span>
         <span><strong>${pct(current.roi || 0)}</strong><small>ROI</small></span>
         <span><strong>${money(current.cumulative_profit || 0)}</strong><small>YTD/Running</small></span>
@@ -4805,6 +5412,19 @@ function renderMonthlyProfit(monthly) {
       <p>${month.wins || 0}-${month.losses || 0}-${month.pushes || 0} · ${Number(month.tracked || 0)} tracked · ${pct(month.roi || 0)} ROI · ${money(month.cumulative_profit || 0)} running</p>
     </div>
   `).join("") || `<div class="suggestion">No settled monthly profit yet.</div>`;
+  if ($("monthly-profit-chart")) {
+    const chronological = [...months].reverse().slice(-12);
+    const maxMagnitude = Math.max(1, ...chronological.map((month) => Math.abs(Number(month.profit || 0))));
+    $("monthly-profit-chart").innerHTML = `
+      <div class="monthly-profit-chart-heading"><strong>Settled profit trend</strong><span>Monthly outcomes only; bankroll deposits and withdrawals are excluded.</span></div>
+      <div class="monthly-profit-bars">
+        ${chronological.map((month) => {
+          const profit = Number(month.profit || 0);
+          const width = Math.max(4, Math.abs(profit) / maxMagnitude * 100);
+          return `<div class="monthly-profit-bar-row"><span>${escapeHtml(month.label || month.month)}</span><div><i class="${profit < 0 ? "bar-negative" : "bar-positive"}" style="width:${width.toFixed(1)}%"></i></div><strong class="${profit < 0 ? "danger-text" : "positive"}">${money(profit)}</strong></div>`;
+        }).join("") || `<p class="subtle">The monthly trend appears after the first settled month.</p>`}
+      </div>`;
+  }
 }
 
 function renderEntryPlatformProfitability(platforms) {
@@ -4842,6 +5462,8 @@ async function loadBacktest() {
   const ledger = data.prediction_ledger || {};
   const shadow = data.shadow_evaluation || {};
   const projectionAccuracy = ledger.projection_accuracy || {};
+  const modelVersionEvaluation = data.model_version_evaluation || ledger.model_version_evaluation || {};
+  const completeBoardEvidence = data.complete_board_evidence || {};
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
     <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
@@ -4885,6 +5507,7 @@ async function loadBacktest() {
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
     </div>
+    ${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, completeBoardEvidence, { escapeHtml }) || ""}
     <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
         <strong>v2.2 Shadow Evaluation</strong>
@@ -5101,22 +5724,43 @@ async function recheckFinalStats() {
     $("entry-history-status").textContent = "Final stat recheck canceled. No records were changed.";
     return;
   }
-  $("entry-history-status").textContent = "Checking previous entries against final stat providers...";
-  const data = await api("/api/entries/recheck-final-stats", { method: "POST" });
+  $("entry-history-status").textContent = "Starting the final-stat worker...";
+  let job = await api("/api/entries/recheck-final-stats/jobs", { method: "POST" });
+  for (let attempt = 0; attempt < 120 && ["queued", "running", "waiting"].includes(job.status); attempt += 1) {
+    $("entry-history-status").textContent = `${job.phase || "Checking official final stats..."} ${Number(job.progress || 0)}%`;
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    job = await api("/api/entries/recheck-final-stats/jobs/current");
+    if (job.status === "waiting" && attempt >= 4) break;
+  }
+  if (job.status === "failed") {
+    throw new Error(job.error || "The final-stat refresh failed. Review Settlement Health for details.");
+  }
+  if (job.status !== "complete") {
+    $("entry-history-status").textContent = job.phase || "The final-stat refresh is continuing in the background.";
+    await loadSettlementHealth();
+    return;
+  }
+  const data = job.result || {};
+  if (data.skipped) {
+    $("entry-history-status").textContent = data.message || "A final stat refresh is already running.";
+    return;
+  }
   const imported = data.provider_refresh?.imported || 0;
   const linked = data.backfill?.provider_rows || 0;
   const settled = data.auto_check?.settled || 0;
   const corrected = data.result_review?.corrected || 0;
   const reviewed = data.result_review?.reviewed || 0;
   $("entry-history-status").textContent = `Final stat recheck complete: ${data.cleared_unknowns || 0} unknown legs cleared, ${data.unknown_after || 0} still unknown. ${imported} provider rows imported, ${linked} leg results linked, ${settled} pending settled, ${corrected}/${reviewed} previous results corrected.`;
-  await Promise.allSettled([loadBets(), loadEntryProgress({ autoCheck: false, refreshProviders: false }), loadPerformance(), loadBacktest(), loadSettlementAudit(), loadAccuracyLab(), loadNotifications()]);
+  await Promise.allSettled([loadBets(), loadEntryProgress({ autoCheck: false, refreshProviders: false }), loadPerformance(), loadBacktest(), loadSettlementAudit(), loadAccuracyLab(), loadNotifications(), loadSettlementHealth()]);
 }
 
 async function createAutoPaperCalibrationEntries() {
   const sport = $("auto-paper-sport")?.value || "All Sports";
-  const platform = $("auto-paper-platform")?.value || "PrizePicks";
-  $("auto-paper-calibration-status").textContent = `Building five ${sport} calibration cards from weak confidence buckets...`;
-  const data = await api("/api/entries/auto-paper-calibration", {
+  const platform = $("auto-paper-platform")?.value || "Both";
+  $("auto-paper-calibration-status").textContent = sport === "All Sports"
+    ? "Building five $0-risk calibration cards for every sport with verified offers..."
+    : `Building five $0-risk ${sport} calibration cards from weak confidence buckets...`;
+  const started = await api("/api/entries/auto-paper-calibration/jobs", {
     method: "POST",
     body: JSON.stringify({
       platform,
@@ -5128,14 +5772,18 @@ async function createAutoPaperCalibrationEntries() {
       dry_run: false,
     }),
   });
+  const job = await waitForBackgroundJob(started, (current) => {
+    $("auto-paper-calibration-status").textContent = `${current.phase || "Building calibration cards..."} ${Number(current.progress || 0)}%`;
+  });
+  const data = job.result || {};
   const skippedText = (data.skipped || []).slice(0, 2).map((row) => escapeHtml(row.reason || "")).filter(Boolean).join(" ");
   const plan = (data.created_plan || []).map((legs) => `${Number(legs)}-leg`).join(", ");
   const diagnostics = data.board_diagnostics || {};
   const sportResults = (data.sport_results || []).map((row) => `
-    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5</span>
+    <span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${escapeHtml(row.sport)} ${Number(row.created_count || 0)}/5${(row.providers || []).length ? ` · ${(row.providers || []).map((provider) => `${escapeHtml(provider.platform)} ${Number(provider.created_count || 0)}`).join(" / ")}` : ""}</span>
   `).join("");
   $("auto-paper-calibration-status").innerHTML = `
-    Created ${data.created_count} of ${data.requested_count || 5} ${escapeHtml(sport)} paper calibration entries${plan ? `: ${escapeHtml(plan)}` : "."}
+    <strong>Created ${data.created_count} of ${data.requested_count || 5} $0-risk paper entries.</strong>${plan ? ` ${escapeHtml(plan)}.` : ""}
     ${sportResults}
     ${(data.created || []).map((row) => `
       <span class="status-pill status-paper">${escapeHtml(row.target?.name || row.target?.type || "Target")}</span>
@@ -5145,7 +5793,57 @@ async function createAutoPaperCalibrationEntries() {
   $("entry-status").textContent = data.created_count
     ? `Created ${data.created_count} pending paper calibration entries.`
     : "No new paper entries created; current targets may already be covered.";
-  await Promise.allSettled([loadPending(), loadBacktest(), loadDashboard(), loadAccuracyLab()]);
+  await Promise.allSettled([loadPending(), loadBacktest(), loadDashboard(), loadAccuracyLab(), loadPaperCalibrationStatus()]);
+}
+
+function paperCalibrationCountdown(nextRunAt) {
+  if (!nextRunAt) return "Automation is paused";
+  const remaining = new Date(nextRunAt).getTime() - Date.now();
+  if (remaining <= 0) return "Due now";
+  const totalMinutes = Math.ceil(remaining / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days) return `${days}d ${hours}h`;
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+async function loadPaperCalibrationStatus() {
+  if (!$("paper-calibration-dashboard")) return;
+  const data = await api("/api/entries/paper-calibration-status");
+  const totals = data.totals || {};
+  const sportRows = (data.sports || []).map((row) => `
+    <article class="calibration-sport-progress">
+      <div class="calibration-ring" style="--coverage:${Math.max(0, Math.min(100, Number(row.coverage || 0))) * 3.6}deg" aria-label="${escapeHtml(row.sport)} ${Number(row.created || 0)} of 5 cards">
+        <span><strong>${Number(row.created || 0)}</strong><small>/ 5</small></span>
+      </div>
+      <div class="calibration-sport-copy">
+        <div class="suggestion-top"><strong>${escapeHtml(row.sport)}</strong><span class="status-pill ${Number(row.shortfall || 0) ? "status-warning" : "status-connected"}">${Number(row.shortfall || 0) ? `${Number(row.shortfall)} open` : "Complete"}</span></div>
+        <p>${Number(row.waiting || 0)} waiting · ${Number(row.settled || 0)} settled · ${Number(row.blocked || 0)} blocked</p>
+        <span class="subtle">${(row.providers || []).map((provider) => `${escapeHtml(provider.platform)} ${Number(provider.created_count || 0)}`).join(" · ") || "Provider mix appears after today's run."}</span>
+      </div>
+    </article>
+  `).join("") || `<div class="calibration-empty"><strong>Ready for today's first calibration run</strong><span>Coverage appears here after verified sportsbook offers are available.</span></div>`;
+  const alerts = (data.alerts || []).map((message) => `<div class="calibration-shortfall"><strong>Coverage notice</strong><span>${escapeHtml(message)}</span></div>`).join("");
+  $("paper-calibration-dashboard").innerHTML = `
+    <div class="calibration-dashboard-head">
+      <div><p class="eyebrow">Daily Calibration</p><h3>Paper progress by sport</h3></div>
+      <div class="calibration-next-run"><span>Next automatic run</span><strong id="paper-calibration-countdown">${paperCalibrationCountdown(data.next_run_at)}</strong><small>${data.scheduler_enabled ? formatDateTime(data.next_run_at) : "Scheduler disabled"}</small></div>
+    </div>
+    <div class="calibration-state-strip">
+      <span><strong>${Number(totals.waiting || 0)}</strong><small>Waiting</small></span>
+      <span><strong>${Number(totals.settled || 0)}</strong><small>Settled</small></span>
+      <span class="${Number(totals.blocked || 0) ? "status-negative-text" : ""}"><strong>${Number(totals.blocked || 0)}</strong><small>Blocked</small></span>
+    </div>
+    <p class="calibration-explanation">${escapeHtml(data.explanation || "Paper results improve calibration without affecting bankroll.")}</p>
+    <div class="calibration-sport-grid">${sportRows}</div>
+    ${alerts}
+  `;
+  if (state.paperCalibrationCountdownTimer) window.clearInterval(state.paperCalibrationCountdownTimer);
+  state.paperCalibrationCountdownTimer = window.setInterval(() => {
+    const countdown = $("paper-calibration-countdown");
+    if (countdown) countdown.textContent = paperCalibrationCountdown(data.next_run_at);
+  }, 60000);
 }
 
 function renderSegmentList(segments, emptyText) {
@@ -5232,7 +5930,13 @@ async function loadAccuracyLab() {
 }
 
 function bindEvents() {
+  setupDisplayModes();
   setupWorkspaces();
+  setupEntryModes();
+  setupProviderGeneratorTabs();
+  setupEntryOptions();
+  setupEntryBuilderSteps();
+  setupPerformanceDetails();
   setupButtonSounds();
   document.addEventListener("click", (event) => {
     const button = event.target.closest("[data-workspace-jump]");
@@ -5259,6 +5963,7 @@ function bindEvents() {
     $("install-hint").hidden = true;
   });
   $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan));
+  $("refresh-today-providers")?.addEventListener("click", () => withButtonBusy("refresh-today-providers", "Refreshing...", refreshTodayProviders));
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));
@@ -5296,9 +6001,35 @@ function bindEvents() {
     });
   });
   $("load-props").addEventListener("click", () => withButtonBusy("load-props", "Loading...", loadProps));
+  $("prop-sport").addEventListener("change", () => {
+    $("prop-player").value = "";
+    $("prop-team").value = "";
+    state.entrySelectedPlayerIdentityId = null;
+    loadEntryPlayerDirectory().catch((error) => {
+      $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
+    });
+  });
+  $("prop-player").addEventListener("input", () => {
+    state.entrySelectedPlayerIdentityId = null;
+    applyEntryPlayerSelection();
+    window.clearTimeout(entryPlayerLookupTimer);
+    const query = $("prop-player").value.trim();
+    entryPlayerLookupTimer = window.setTimeout(() => {
+      if (query.length >= 2) {
+        loadEntryPlayerDirectory(query).catch((error) => {
+          $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
+        });
+      }
+    }, 220);
+  });
+  $("prop-player").addEventListener("change", applyEntryPlayerSelection);
   $("prop-form").addEventListener("submit", (event) => {
     event.preventDefault();
     const prop = propFromForm();
+    if (!prop.sport) {
+      $("entry-status").textContent = "Choose a sport before selecting a player.";
+      return;
+    }
     if (!prop.player || !prop.line) return;
     const maximumLegs = providerMaximumLegs(prop.platform);
     if (state.entryProps.length >= maximumLegs) {
@@ -5312,6 +6043,7 @@ function bindEvents() {
       wager: $("entry-wager").value,
       multiplier: $("entry-multiplier").value,
       payoutType: $("entry-payout-type").value,
+      sport: $("prop-sport").value,
     };
     state.entryProps.push(prop);
     $("prop-form").reset();
@@ -5320,6 +6052,10 @@ function bindEvents() {
     $("entry-wager").value = entryDefaults.wager;
     $("entry-multiplier").value = entryDefaults.multiplier || "3";
     $("entry-payout-type").value = entryDefaults.payoutType || "standard";
+    $("prop-sport").value = entryDefaults.sport;
+    $("prop-player").disabled = false;
+    $("prop-player").placeholder = `Search ${entryDefaults.sport} players`;
+    state.entrySelectedPlayerIdentityId = null;
     renderEntryProps();
   });
   $("entry-platform").addEventListener("change", () => {
@@ -5367,6 +6103,7 @@ function bindEvents() {
     $("place-entry").disabled = true;
     $("entry-handoff").classList.add("muted-card");
     $("entry-handoff").textContent = "No handoff prepared yet.";
+    renderEmptyEntryAnalysis();
     renderEntryProps();
   });
   $("generate-confirmed-entries").addEventListener("click", () => withButtonBusy("generate-confirmed-entries", "Building...", loadConfirmedEntries));
@@ -5379,6 +6116,16 @@ function bindEvents() {
     "generate-underdog",
     "Building...",
     () => loadProviderSuggestions("Underdog", "underdog-generator-sport", "underdog-generator-legs", "underdog-suggestions-list"),
+  ));
+  $("generate-draftkings").addEventListener("click", () => withButtonBusy(
+    "generate-draftkings",
+    "Building...",
+    () => loadProviderSuggestions("DraftKings Pick6", "draftkings-generator-sport", "draftkings-generator-legs", "draftkings-suggestions-list"),
+  ));
+  $("generate-sleeper").addEventListener("click", () => withButtonBusy(
+    "generate-sleeper",
+    "Building...",
+    () => loadProviderSuggestions("Sleeper", "sleeper-generator-sport", "sleeper-generator-legs", "sleeper-suggestions-list"),
   ));
   $("run-optimizer").addEventListener("click", () => withButtonBusy("run-optimizer", "Optimizing...", () => runOptimizer(false)));
   $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));
@@ -5403,6 +6150,14 @@ function bindEvents() {
   $("line-shop-form").addEventListener("submit", shopLines);
   $("player-research-form").addEventListener("submit", loadPlayerResearch);
   $("research-context-form").addEventListener("submit", runFullResearch);
+  $("research-context-player")?.addEventListener("input", refreshResearchSuggestions);
+  $("research-context-player")?.addEventListener("change", refreshResearchSuggestions);
+  $("research-context-stat")?.addEventListener("input", refreshResearchSuggestions);
+  ["props-platform", "entry-platform", "research-context-platform"].forEach((id) => {
+    $(id)?.addEventListener("change", () => {
+      if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
+    });
+  });
   $("sharp-consensus-form").addEventListener("submit", loadSharpConsensus);
   $("hedge-form").addEventListener("submit", calculateHedge);
   $("middle-form").addEventListener("submit", calculateMiddle);
@@ -5489,7 +6244,8 @@ async function loadAll(options = {}) {
   }
   hideRuntimeNotice();
 
-  if (!state.backgroundLoadPromise) {
+  const runBackgroundLoads = () => {
+    if (state.backgroundLoadPromise) return;
     const backgroundTasks = options.refresh
       ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
@@ -5499,6 +6255,15 @@ async function loadAll(options = {}) {
       const backgroundFailure = results.find((result) => result.status === "rejected");
       if (backgroundFailure) console.warn("Background EdgeIQ panel refresh failed", backgroundFailure.reason);
     }).finally(() => { state.backgroundLoadPromise = null; });
+  };
+  if (options.refresh) {
+    runBackgroundLoads();
+  } else if (!state.backgroundLoadScheduled) {
+    state.backgroundLoadScheduled = true;
+    window.setTimeout(() => {
+      state.backgroundLoadScheduled = false;
+      if ($("dashboard")?.classList.contains("active")) runBackgroundLoads();
+    }, 1800);
   }
 
   if (!state.ledgerLoadScheduled) {
@@ -5519,6 +6284,7 @@ async function loadAll(options = {}) {
   }
 }
 
+ensureEsportsOptions();
 registerPwa();
 bindEvents();
 applyViewFromUrl();

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from analytics.edgeiq_model import MODEL_VERSION as LEGACY_MODEL_VERSION
+from analytics.model_version_evaluation import evaluate_model_versions
 from analytics.prediction_evidence import deduplicate_outcomes, independent_market_key, offer_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.entry_model import EntryModel
@@ -134,6 +135,43 @@ class PredictionLedgerRepository:
             return len(rows)
 
     @staticmethod
+    def quarantine_incomplete_settled(dry_run: bool = True) -> dict:
+        """Keep incomplete entry legs out of calibration even if their card was marked settled."""
+        PredictionLedgerRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(PredictionRecordModel)
+                .join(EntryPropModel, EntryPropModel.id == PredictionRecordModel.entry_prop_id)
+                .join(EntryModel, EntryModel.id == PredictionRecordModel.entry_id)
+                .filter(EntryModel.status == "Settled")
+                .filter(PredictionRecordModel.legacy_quarantined.is_(False))
+                .filter(
+                    (EntryPropModel.actual.is_(None))
+                    | (EntryPropModel.final_status.is_(None))
+                    | (~EntryPropModel.final_status.in_(("played", "dnp")))
+                    | (EntryPropModel.final_source.is_(None))
+                    | (EntryPropModel.final_source.in_(("", "unknown", "unmatched", "projection_estimate")))
+                )
+                .all()
+            )
+            items = [
+                {
+                    "prediction_id": row.id,
+                    "entry_id": row.entry_id,
+                    "entry_prop_id": row.entry_prop_id,
+                    "player": row.player,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                }
+                for row in rows
+            ]
+            if not dry_run:
+                for row in rows:
+                    row.legacy_quarantined = True
+                session.commit()
+            return {"candidates": len(rows), "quarantined": 0 if dry_run else len(rows), "items": items}
+
+    @staticmethod
     def evidence_rows(include_legacy: bool = False) -> list[dict]:
         PredictionLedgerRepository._ensure_schema()
         with SessionLocal() as session:
@@ -185,6 +223,7 @@ class PredictionLedgerRepository:
             "legacy_quarantined": sum(1 for row in rows if row["legacy_quarantined"]),
             "settled_unique_markets": len(unique),
             "projection_accuracy": accuracy,
+            "model_version_evaluation": evaluate_model_versions(rows),
         }
 
 
@@ -217,6 +256,12 @@ def _projection_accuracy(rows: list[dict]) -> dict:
     errors = []
     market_errors = []
     regularized_errors = []
+    baseline_errors: dict[str, list[float]] = {
+        "season_average": [],
+        "recent_10_average": [],
+        "sportsbook_line": [],
+        "edgeiq_projection": [],
+    }
     signed = []
     distribution_predictions = 0
     middle_50_hits = 0
@@ -230,9 +275,15 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             - float(row["actual"])
         )
         market_errors.append(market_error)
+        baseline_errors["sportsbook_line"].append(market_error)
+        baseline_errors["edgeiq_projection"].append(abs(error))
         regularized_errors.append(regularized_error)
         signed.append(error)
         distribution = (row.get("feature_snapshot") or {}).get("distribution") or {}
+        features = (row.get("feature_snapshot") or {}).get("features") or {}
+        for label, key in (("season_average", "season_average"), ("recent_10_average", "last_10_average")):
+            if features.get(key) is not None:
+                baseline_errors[label].append(abs(float(features[key]) - float(row["actual"])))
         percentile_25 = distribution.get("percentile_25")
         percentile_75 = distribution.get("percentile_75")
         floor = distribution.get("floor")
@@ -274,6 +325,31 @@ def _projection_accuracy(rows: list[dict]) -> dict:
             }
             for source, values in sorted(groups.items())
         },
+        "baseline_comparison": _baseline_comparison(baseline_errors),
+    }
+
+
+def _baseline_comparison(errors: dict[str, list[float]]) -> dict:
+    rows = {
+        name: {
+            "samples": len(values),
+            "mae": round(sum(values) / len(values), 3) if values else None,
+        }
+        for name, values in errors.items()
+    }
+    comparable = [(name, row["mae"]) for name, row in rows.items() if row["mae"] is not None]
+    winner = min(comparable, key=lambda item: item[1])[0] if comparable else ""
+    model_mae = rows["edgeiq_projection"]["mae"]
+    market_mae = rows["sportsbook_line"]["mae"]
+    return {
+        "baselines": rows,
+        "best_baseline": winner,
+        "edgeiq_beats_market": bool(model_mae is not None and market_mae is not None and model_mae < market_mae),
+        "message": (
+            "EdgeIQ currently beats the sportsbook-line baseline on settled projection error."
+            if model_mae is not None and market_mae is not None and model_mae < market_mae
+            else "Keep paid mode restricted until EdgeIQ beats the sportsbook-line baseline."
+        ),
     }
 
 

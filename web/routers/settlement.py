@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from repository.repositories.product_experience_repository import ProductExperienceRepository
 from web.schemas import FinalStatsPayload, SettlePayload
@@ -22,37 +23,49 @@ class SettlementDependencies:
     backfill_final_stats: Callable[[bool], dict]
     recheck_final_stats_preview: Callable[[], dict]
     recheck_final_stats: Callable[[bool], dict]
+    start_recheck_job: Callable[[bool], dict]
+    recheck_job_status: Callable[[], dict]
+    settlement_health: Callable[[], dict]
+    archive_final_stats: Callable[[int, bool], dict]
     classify_default_wagers: Callable[[], dict]
     import_final_stats: Callable[[FinalStatsPayload], dict]
 
 
-_dependencies: SettlementDependencies | None = None
+_deps_store: list[SettlementDependencies] = []
 
 
 def configure_settlement_router(dependencies: SettlementDependencies) -> None:
-    global _dependencies
-    _dependencies = dependencies
+    if _deps_store:
+        _deps_store[0] = dependencies
+    else:
+        _deps_store.append(dependencies)
 
 
-def _deps() -> SettlementDependencies:
-    if _dependencies is None:
+def get_deps() -> SettlementDependencies:
+    if not _deps_store:
         raise HTTPException(status_code=503, detail="Settlement tracking is still starting. Please try again.")
-    return _dependencies
+    return _deps_store[0]
+
+
+DepsSettlement = Annotated[SettlementDependencies, Depends(get_deps)]
 
 
 @router.get("/api/entries/grading-report")
-def grading_report(compact: bool = False) -> dict:
-    return _deps().grading_report(compact)
+def grading_report(compact: bool = False, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.grading_report(compact)
 
 
 @router.get("/api/entries/settlement-audit")
-def settlement_audit(limit: int = 100) -> dict:
-    return _deps().settlement_audit(limit)
+def settlement_audit(limit: int = 100, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.settlement_audit(limit)
 
 
 @router.get("/api/entries/pending")
-def pending_entries() -> dict:
-    return _deps().pending_entries()
+def pending_entries(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.pending_entries()
 
 
 @router.get("/api/entries/progress")
@@ -60,13 +73,16 @@ def entry_progress(
     auto_check: bool = False,
     refresh_providers: bool = False,
     market_detail: bool = True,
+    deps: DepsSettlement = None,  # type: ignore[assignment]
 ) -> dict:
-    return _deps().entry_progress(auto_check, refresh_providers, market_detail)
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.entry_progress(auto_check, refresh_providers, market_detail)
 
 
 @router.post("/api/entries/{entry_id}/settle")
-def settle_entry(entry_id: int, payload: SettlePayload) -> dict:
-    result = _deps().settle_entry(entry_id, payload)
+def settle_entry(entry_id: int, payload: SettlePayload, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    result = _deps.settle_entry(entry_id, payload)
     ProductExperienceRepository.record_event(
         "entry_settled",
         "entry",
@@ -80,30 +96,61 @@ def settle_entry(entry_id: int, payload: SettlePayload) -> dict:
 def auto_check_entries(
     allow_estimates: bool = False,
     refresh_providers: bool = True,
+    deps: DepsSettlement = None,  # type: ignore[assignment]
 ) -> dict:
-    return _deps().auto_check(allow_estimates, refresh_providers)
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.auto_check(allow_estimates, refresh_providers)
 
 
 @router.post("/api/entries/backfill-final-stats")
-def backfill_entry_final_stats(allow_estimates: bool = True) -> dict:
-    return _deps().backfill_final_stats(allow_estimates)
+def backfill_entry_final_stats(allow_estimates: bool = True, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.backfill_final_stats(allow_estimates)
 
 
 @router.get("/api/entries/recheck-final-stats/preview")
-def preview_entry_final_stats_recheck() -> dict:
-    return _deps().recheck_final_stats_preview()
+def preview_entry_final_stats_recheck(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.recheck_final_stats_preview()
 
 
 @router.post("/api/entries/recheck-final-stats")
-def recheck_entry_final_stats(allow_estimates: bool = False) -> dict:
-    return _deps().recheck_final_stats(allow_estimates)
+def recheck_entry_final_stats(allow_estimates: bool = False, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.recheck_final_stats(allow_estimates)
+
+
+@router.post("/api/entries/recheck-final-stats/jobs")
+def start_entry_final_stats_recheck(allow_estimates: bool = False, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.start_recheck_job(allow_estimates)
+
+
+@router.get("/api/entries/recheck-final-stats/jobs/current")
+def current_entry_final_stats_recheck(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.recheck_job_status()
+
+
+@router.get("/api/entries/settlement-health")
+def settlement_health(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.settlement_health()
+
+
+@router.post("/api/final-stats/archive")
+def archive_final_stats(retention_days: int = 730, dry_run: bool = True, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.archive_final_stats(retention_days, dry_run)
 
 
 @router.post("/api/entries/classify-default-wagers")
-def classify_default_entry_wagers() -> dict:
-    return _deps().classify_default_wagers()
+def classify_default_entry_wagers(deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.classify_default_wagers()
 
 
 @router.post("/api/final-stats/import")
-def import_final_stats_endpoint(payload: FinalStatsPayload) -> dict:
-    return _deps().import_final_stats(payload)
+def import_final_stats_endpoint(payload: FinalStatsPayload, deps: DepsSettlement = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, SettlementDependencies) else get_deps()
+    return _deps.import_final_stats(payload)

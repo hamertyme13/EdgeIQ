@@ -2,6 +2,7 @@ from enum import Enum
 
 
 class StatType(Enum):
+    GAME_WINNER = "Game Winner"
     POINTS = "Points"
     REBOUNDS = "Rebounds"
     ASSISTS = "Assists"
@@ -51,6 +52,8 @@ class StatType(Enum):
     FIELD_GOALS_KICKING_ATTEMPTED = "Kicking Field Goals Attempted"
     LONGEST_FIELD_GOAL = "Longest Field Goal"
     KICKING_POINTS = "Kicking Points"
+    AT_BATS = "At Bats"
+    PLATE_APPEARANCES = "Plate Appearances"
     HITS = "Hits"
     RUNS = "Runs"
     RBIS = "RBIs"
@@ -59,6 +62,9 @@ class StatType(Enum):
     TOTAL_BASES = "Total Bases"
     SINGLES = "Singles"
     DOUBLES = "Doubles"
+    TRIPLES = "Triples"
+    STOLEN_BASES = "Stolen Bases"
+    HIT_BY_PITCH = "Hit By Pitch"
     WALKS = "Walks"
     STRIKEOUTS = "Strikeouts"
     PITCHER_STRIKEOUTS = "Pitcher Strikeouts"
@@ -66,6 +72,8 @@ class StatType(Enum):
     OUTS_RECORDED = "Outs Recorded"
     HITS_ALLOWED = "Hits Allowed"
     PITCHING_WALKS = "Pitching Walks"
+    PITCHES = "Pitches"
+    BATTERS_FACED = "Batters Faced"
     SHOTS_ON_GOAL = "Shots on Goal"
     SAVES = "Saves"
     GOALS = "Goals"

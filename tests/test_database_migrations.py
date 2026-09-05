@@ -1,23 +1,11 @@
-from sqlalchemy import create_engine, inspect, text
-
-import repository.database as database
+from repository.models.background_job_model import BackgroundJobModel
+from repository.models.entry_prop_model import EntryPropModel
+from repository.models.game_prediction_model import GamePredictionModel
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
+from repository.models.player_feature_model import PlayerFeatureModel
 from repository.models.prediction_record_model import PredictionRecordModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
-
-
-def test_lightweight_migrations_upgrade_legacy_entries_table(tmp_path, monkeypatch) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
-    with engine.begin() as connection:
-        connection.execute(text("CREATE TABLE entries (id INTEGER PRIMARY KEY, platform TEXT)"))
-
-    monkeypatch.setattr(database, "engine", engine)
-    monkeypatch.setattr(database, "DATABASE_URL", f"sqlite:///{tmp_path / 'legacy.db'}")
-    database._run_lightweight_migrations()
-
-    columns = {column["name"] for column in inspect(engine).get_columns("entries")}
-    assert {"status", "result", "audit_snapshot", "entry_mode", "expected_value"} <= columns
 
 
 def test_prediction_ledger_schema_has_immutable_prediction_and_outcome_fields() -> None:
@@ -54,4 +42,31 @@ def test_plausibility_rejection_schema_preserves_diagnostics() -> None:
         "normalized_value",
         "expected_minimum",
         "expected_maximum",
+    } <= columns
+
+
+def test_entry_leg_schema_preserves_exact_provider_identity() -> None:
+    columns = set(EntryPropModel.__table__.columns.keys())
+
+    assert {"provider_event_id", "provider_offer_id"} <= columns
+
+
+def test_player_feature_schema_materializes_verified_history() -> None:
+    columns = set(PlayerFeatureModel.__table__.columns.keys())
+    assert {"feature_key", "normalized_player_key", "history_json", "summary_json", "materialized_at"} <= columns
+
+
+def test_background_job_schema_preserves_restart_safe_progress() -> None:
+    columns = set(BackgroundJobModel.__table__.columns.keys())
+    assert {
+        "job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error",
+        "owner_id", "process_id", "heartbeat_at",
+    } <= columns
+
+
+def test_game_prediction_schema_preserves_reproducible_forecasts_and_outcomes() -> None:
+    columns = set(GamePredictionModel.__table__.columns.keys())
+    assert {
+        "prediction_key", "game_id", "model_version", "home_win_probability",
+        "expected_margin", "expected_total", "evidence_json", "actual_home_win", "settled_at",
     } <= columns

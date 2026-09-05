@@ -10,6 +10,7 @@ _SPORT_ENDPOINTS = {
     "NBA":  "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries",
     "WNBA": "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/injuries",
     "NFL":  "https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries",
+    "NCAAF": "https://site.api.espn.com/apis/site/v2/sports/football/college-football/injuries",
     "NHL":  "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries",
     "MLB":  "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/injuries",
 }

@@ -27,3 +27,11 @@ def test_basketball_shooting_aliases_map_to_distinct_markets() -> None:
 
 def test_short_nfl_alias_does_not_match_unrelated_stat() -> None:
     assert canonical_stat_label("Points") == "Points"
+
+
+def test_fantasy_and_baseball_settlement_aliases_are_canonical() -> None:
+    assert stat_type_from_text("Fantasy Points") == StatType.FANTASY_SCORE
+    assert stat_type_from_text("Pitching Outs") == StatType.OUTS_RECORDED
+    assert stat_type_from_text("Walks Allowed") == StatType.PITCHING_WALKS
+    assert stat_type_from_text("Pitch Count") == StatType.PITCHES
+    assert canonical_stat_label("TB") == "Total Bases"

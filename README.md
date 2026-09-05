@@ -64,6 +64,8 @@ BALLDONTLIE_API_KEY=your_balldontlie_api_key
 NEWSAPI_KEY=your_newsapi_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 SPORTSDATAIO_API_KEY=your_sportsdataio_api_key
+PANDASCORE_API_KEY=your_pandascore_api_key
+PANDASCORE_HISTORICAL_STATS_ENABLED=true  # only after the player-stat endpoint succeeds
 # Optional alert delivery. Email uses SMTP; SMS uses Twilio.
 EDGEIQ_SMTP_HOST=smtp.example.com
 EDGEIQ_SMTP_PORT=587
@@ -250,8 +252,19 @@ DATABASE_URL=sqlite:///edgeiq.db
 EDGEIQ_ALLOWED_ORIGINS=https://your-website.example
 ```
 
-For hosted use, point `DATABASE_URL` at Postgres or another SQLAlchemy-supported
-database and set `EDGEIQ_ALLOWED_ORIGINS` to your website origin.
+For hosted use, install the production database driver, point `DATABASE_URL` at
+PostgreSQL, run migrations, and set `EDGEIQ_ALLOWED_ORIGINS` to your website
+origin. SQLite remains the supported single-user desktop default.
+
+```bash
+pip install -e ".[production]"
+export DATABASE_URL="postgresql+psycopg://edgeiq:password@localhost/edgeiq"
+alembic upgrade head
+```
+
+The hosted runtime uses connection health checks and a bounded pool. Tune
+`EDGEIQ_DB_POOL_SIZE` and `EDGEIQ_DB_MAX_OVERFLOW` only after measuring the
+deployed workload.
 
 ## Alpha Notes
 

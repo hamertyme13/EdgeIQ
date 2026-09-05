@@ -5,7 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from data.providers import sleeper
+from data.providers import draftkings_pick6, pandascore, sleeper
 from data.providers.cache import cache_metrics
 from repository.repositories.settings_repository import SettingsRepository
 from utils.time import utc_now
@@ -22,6 +22,7 @@ def build_data_health_payload(
     providers = [
         provider_health_row("PrizePicks", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
         provider_health_row("Underdog", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
+        draftkings_pick6_health_row(settlement_status_key),
         sleeper_health_row(),
         provider_health_row(
             "OpenAI",
@@ -79,6 +80,7 @@ def build_data_health_payload(
             key_env="",
             settlement_status_key=settlement_status_key,
         ),
+        pandascore_health_row(settlement_status_key),
     ]
     providers = [enrich_provider_health(provider) for provider in providers]
     api_usage = dict(cache_metrics())
@@ -100,12 +102,12 @@ def build_data_health_payload(
     connected = sum(
         1
         for provider in providers
-        if provider["status"] in {"connected", "available", "fresh"}
+        if provider["status"] in {"connected", "fresh"} and provider.get("producing_data")
     )
     warnings = [
         provider
         for provider in providers
-        if provider["status"] in {"missing_key", "not_configured", "stale", "degraded"}
+        if provider["status"] in {"missing_key", "not_configured", "configured", "empty", "stale", "degraded"}
     ]
     operational_health = operational_health or {}
     scheduler = operational_health.get("scheduler") or {}
@@ -114,6 +116,8 @@ def build_data_health_payload(
     settlement = operational_health.get("shadow_settlement") or {}
     research_memory = operational_health.get("research_memory") or {}
     plausibility_rejections = operational_health.get("plausibility_rejections") or []
+    background_jobs = operational_health.get("background_jobs") or []
+    deployment = operational_health.get("deployment") or {}
     operational_warnings = []
     if scheduler.get("failures"):
         operational_warnings.append("One or more scheduled jobs failed during the latest maintenance run.")
@@ -123,6 +127,11 @@ def build_data_health_payload(
         operational_warnings.append(f"Scheduled maintenance is overdue: {labels}.")
     if int(shadow.get("settlement_failures") or 0) > 0:
         operational_warnings.append("Some shadow predictions could not be matched to verified final stats after repeated attempts.")
+    failed_jobs = [job for job in background_jobs if job.get("status") == "failed"]
+    if failed_jobs:
+        operational_warnings.append(
+            f"{len(failed_jobs)} recent background job(s) failed. Review Background Work for the exact reason."
+        )
     if shadow.get("queued") and not shadow.get("settled") and settlement.get("ran_at"):
         operational_warnings.append("Shadow settlement is running, but no verified outcomes have settled yet.")
     return {
@@ -142,6 +151,8 @@ def build_data_health_payload(
             "shadow_evaluation": shadow,
             "research_memory": research_memory,
             "plausibility_rejections": plausibility_rejections,
+            "background_jobs": background_jobs,
+            "deployment": deployment,
             "warnings": operational_warnings,
             "status": "degraded" if operational_warnings else "healthy",
         },
@@ -158,6 +169,7 @@ def provider_api_usage(name: str, usage: dict) -> dict:
     host_fragments = {
         "PrizePicks": ("prizepicks.com",),
         "Underdog": ("underdogfantasy.com",),
+        "DraftKings Pick6": ("apify.com",),
         "Sleeper": ("sleeper.app",),
         "OpenAI": ("openai.com",),
         "SportsDataIO": ("sportsdata.io",),
@@ -212,7 +224,7 @@ def provider_health_row(
     ):
         status = "degraded"
     elif last_success and age is not None:
-        status = "fresh" if age <= 30 else "stale"
+        status = "empty" if int(runtime.get("row_count") or 0) <= 0 else "fresh" if age <= 30 else "stale"
     elif configured and has_key:
         status = "configured" if key_env else "available"
     elif configured and key_env and not has_key:
@@ -230,8 +242,34 @@ def provider_health_row(
         "last_error": str(runtime.get("last_error") or ""),
         "age_minutes": age,
         "row_count": int(runtime.get("row_count") or 0),
+        "producing_data": status == "fresh" and int(runtime.get("row_count") or 0) > 0,
+        "verified_connection": bool(last_success),
         "message": provider_health_message(name, status, key_env, runtime),
     }
+
+
+def draftkings_pick6_health_row(settlement_status_key: str) -> dict:
+    status = draftkings_pick6.cache_status()
+    row = provider_health_row(
+        "DraftKings Pick6",
+        "Pick6 player props through Apify",
+        configured=bool(status["configured"]),
+        key_env="APIFY_TOKEN",
+        settlement_status_key=settlement_status_key,
+    )
+    if status["cached"]:
+        row.update({
+            "status": "fresh" if status["fresh"] else "stale",
+            "age_minutes": int(status["age_seconds"] or 0) // 60,
+            "row_count": int(status["row_count"] or 0),
+            "producing_data": bool(status["fresh"] and int(status["row_count"] or 0) > 0),
+            "verified_connection": True,
+            "message": (
+                f"DraftKings Pick6 has {status['row_count']} cached offers. "
+                "Apify actor runs are limited and are reused for one hour."
+            ),
+        })
+    return row
 
 
 def provider_health_message(
@@ -243,6 +281,8 @@ def provider_health_message(
     runtime = runtime or {}
     if status == "fresh":
         return f"{name} returned {int(runtime.get('row_count') or 0)} usable rows recently."
+    if status == "empty":
+        return f"{name} completed a refresh but returned no usable rows. Treat it as unavailable until data returns."
     if status == "stale":
         return f"{name} last succeeded at {runtime.get('last_success_at')}; refresh before relying on it."
     if status == "degraded":
@@ -280,6 +320,27 @@ def provider_status_key(name: object) -> str:
     return f"provider_fetch_status:{slug}"
 
 
+def pandascore_health_row(settlement_status_key: str) -> dict:
+    row = provider_health_row(
+        "PandaScore",
+        "verified CS2, League of Legends, Dota 2, and Valorant final player stats",
+        configured=pandascore.configured(),
+        key_env="PANDASCORE_API_KEY",
+        settlement_status_key=settlement_status_key,
+    )
+    if pandascore.key_configured() and not pandascore.configured():
+        row.update({
+            "status": "degraded",
+            "configured": False,
+            "has_key": True,
+            "message": (
+                "The PandaScore key is valid, but Historical player-stat access is not confirmed. "
+                "Upgrade the plan, then set PANDASCORE_HISTORICAL_STATS_ENABLED=true."
+            ),
+        })
+    return row
+
+
 def sleeper_health_row() -> dict:
     status = sleeper.public_api_status()
     player_cache = status["player_cache"]
@@ -289,8 +350,8 @@ def sleeper_health_row() -> dict:
     return {
         "name": "Sleeper",
         "purpose": "public NFL player metadata/trends; optional prop-feed import",
-        "status": "available",
-        "configured": True,
+        "status": "available" if status["props_configured"] else "context_only",
+        "configured": status["props_configured"],
         "key_env": "",
         "has_key": False,
         "auth_required": False,
@@ -300,7 +361,7 @@ def sleeper_health_row() -> dict:
         "message": (
             "No API key needed. Public read-only trends are available; "
             f"player cache is {cache_label}. "
-            f"{'Prop feed configured.' if status['props_configured'] else 'Configure a Sleeper prop feed only if you want Sleeper lines.'}"
+            f"{'Pick em prop feed configured.' if status['props_configured'] else 'Pick em lines are not connected; configure EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE to enable its generator.'}"
         ),
     }
 

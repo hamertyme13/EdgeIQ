@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from copy import deepcopy
 
+from data.providers import pandascore, sleeper
 from utils.entity_normalization import canonical_person_key
+from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
+from utils.ttl_cache import TTLMap
 
 
 class RecommendationRequestError(ValueError):
     pass
+
+
+_ENTRY_GENERATOR_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
+_ENTRY_GENERATOR_TTL_SECONDS = 45.0
 
 
 def top_props_payload(
@@ -56,9 +63,18 @@ def trending_props_payload(
         ):
             raw = {**raw, "direction": "Over", "allowed_directions": ["Over"]}
         eligibility = end_to_end_eligibility(raw)
-        if not eligibility.get("eligible"):
+        research_only = sport_filter in _ESPORT_SPORTS and bool(raw.get("research_only"))
+        if not eligibility.get("eligible") and not research_only:
             excluded += 1
             continue
+        if research_only:
+            raw = {
+                **raw,
+                "research_only": True,
+                "settlement_reason": (eligibility.get("reasons") or [
+                    "A verified esports result source is not connected."
+                ])[0],
+            }
         key = (
             canonical_person_key(raw.get("player")),
             str(raw.get("stat") or "").strip().lower(),
@@ -73,6 +89,24 @@ def trending_props_payload(
     eligible.sort(key=_trending_prefilter_key, reverse=True)
     analyzed_rows: list[dict] = []
     for raw in eligible[:candidate_limit]:
+        if raw.get("research_only"):
+            activity_score = min(100.0, max(0.0, float(raw.get("trending_count") or 0)) / 1000.0)
+            analyzed_rows.append({
+                **raw,
+                "direction": raw.get("direction") or "Over",
+                "allowed_directions": raw.get("allowed_directions") or ["Over", "Under"],
+                "projection": None,
+                "confidence": None,
+                "grade": "Watch",
+                "grade_score": round(activity_score, 1),
+                "data_quality": {"label": "Provider market", "score": 0, "flags": ["Final stats source needed"]},
+                "data_strength": ["Provider-backed", "Final stats unavailable"],
+                "history_sample": 0,
+                "forecast_paid_eligible": False,
+                "end_to_end_confirmed": False,
+                "settlement_provider": "Not connected",
+            })
+            continue
         analyzed = analyze_prop(raw)
         confidence = float(analyzed.get("confidence") or 0.0)
         quality_score = float((analyzed.get("data_quality") or {}).get("score") or 0.0)
@@ -118,6 +152,7 @@ def trending_props_payload(
     selected = analyzed_rows[:requested_limit]
     for rank, row in enumerate(selected, start=1):
         row["rank"] = rank
+    research_mode = sport_filter in _ESPORT_SPORTS and any(row.get("research_only") for row in selected)
     return {
         "props": selected,
         "platform": platform,
@@ -126,8 +161,13 @@ def trending_props_payload(
         "evaluated_count": min(len(eligible), candidate_limit),
         "eligible_count": len(eligible),
         "excluded": excluded,
-        "mode": "graded_shortlist",
-        "note": f"Top {len(selected)} graded props from {min(len(eligible), candidate_limit)} fully analyzed candidates. Verify live lines before entry.",
+        "mode": "provider_market_research" if research_mode else "graded_shortlist",
+        "research_only": research_mode,
+        "note": (
+            f"Showing {len(selected)} live gaming markets for research. Automatic projections, paid recommendations, and settlement stay off until a verified esports results source is connected."
+            if research_mode
+            else f"Top {len(selected)} graded props from {min(len(eligible), candidate_limit)} fully analyzed candidates. Verify live lines before entry."
+        ),
     }
 
 
@@ -160,8 +200,7 @@ def cached_command_center_payload(
     sport: str,
     refresh: bool,
     *,
-    cache: dict,
-    lock: AbstractContextManager,
+    cache: TTLMap[tuple, dict],
     ttl_seconds: float,
     canonical_platform: Callable[[str], str],
     selected_platforms: Callable[[str], list[str]],
@@ -178,14 +217,12 @@ def cached_command_center_payload(
         payload_token,
         tuple((canonical_platform(name), fetcher_token(name)) for name in selected_platforms(platform)),
     )
-    now = time.monotonic()
-    with lock:
-        cached = cache.get(cache_key)
-        if not refresh and cached and cached[0] > now:
-            return cached[1]
-        payload = build_payload(platform, sport_filter)
-        cache[cache_key] = (now + ttl_seconds, payload)
-        return payload
+    cached = cache.get(cache_key)
+    if not refresh and cached is not None:
+        return cached
+    payload = build_payload(platform, sport_filter)
+    cache.set(cache_key, payload, ttl=ttl_seconds)
+    return payload
 
 
 def entry_suggestions_payload(
@@ -203,6 +240,7 @@ def entry_suggestions_payload(
     serialize_suggestion: Callable[[object], dict],
     avoid_prop_keys: set[str] | None = None,
 ) -> dict:
+    started = time.perf_counter()
     sport_filter = _sport_filter(sport)
     entry_platform = canonical_platform(platform)
     if entry_platform not in entry_platforms and entry_platform != "Both":
@@ -212,12 +250,77 @@ def entry_suggestions_payload(
         raise RecommendationRequestError(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
-    raw_props = fetch_props(entry_platform, sport_filter)
+    if entry_platform == "Sleeper" and not sleeper.public_api_status()["props_configured"]:
+        return {
+            "suggestions": [],
+            "mode": "sleeper_feed_unavailable",
+            "platform": entry_platform,
+            "sport": sport_filter,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "message": (
+                "Sleeper's public API provides NFL player and trend context, but not current Pick'em lines. "
+                "Configure EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE with a current line feed "
+                "before EdgeIQ builds Sleeper cards. This prevents recommendations from using invented or stale offers."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": "provider_configuration",
+            },
+        }
+    if sport_filter in _ESPORT_SPORTS and (
+        sport_filter not in pandascore.supported_sports() or not pandascore.configured()
+    ):
+        return {
+            "suggestions": [],
+            "mode": "esports_research_only",
+            "platform": entry_platform,
+            "sport": sport_filter,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "message": (
+                f"{sport_filter} markets are available in Trending Props for live provider research. "
+                "Entry generation remains off until EdgeIQ can verify player results automatically, preventing stuck entries and unmeasured recommendations."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": "provider_market_research",
+            },
+        }
+    briefing = cached_briefing(entry_platform, sport_filter)
+    raw_props = _briefing_generator_props(briefing, entry_platform, sport_filter)
+    source = "daily_briefing_snapshot"
+    if len({canonical_person_key(prop.get("player")) for prop in raw_props}) < leg_count:
+        raw_props = fetch_props(entry_platform, sport_filter)
+        source = "live_provider_board"
+    cache_key = (
+        entry_platform, sport_filter or "ALL", int(leg_count), tuple(sorted(avoid_prop_keys or set())), id(suggest),
+        tuple(
+            (str(prop.get("platform") or ""), str(prop.get("player") or ""), str(prop.get("stat") or ""),
+             float(prop.get("line") or 0.0), str(prop.get("direction") or ""))
+            for prop in raw_props[:150]
+        ),
+    )
+    cached = _ENTRY_GENERATOR_CACHE.get(cache_key)
+    if cached is not None:
+        payload = deepcopy(cached)
+        payload["performance"] = {
+            "cache_hit": True,
+            "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "source": source,
+        }
+        return payload
     platform_pairs = props_by_platform(entry_platform, raw_props)
-    if sport_filter == "NFL" and not platform_pairs:
+    if not platform_pairs and source == "daily_briefing_snapshot":
+        raw_props = fetch_props(entry_platform, sport_filter)
+        platform_pairs = props_by_platform(entry_platform, raw_props)
+        source = "live_provider_fallback"
+    if sport_filter in {"NFL", "NCAAF"} and not platform_pairs:
         future = []
         for prop in raw_props:
-            if str(prop.get("league") or prop.get("sport") or "").upper() != "NFL":
+            if str(prop.get("league") or prop.get("sport") or "").upper() != sport_filter:
                 continue
             game_time = str(prop.get("game_time") or "").strip()
             if game_time and str(prop.get("season_type") or "").lower() != "season_long":
@@ -228,24 +331,61 @@ def entry_suggestions_payload(
             "mode": "waiting_for_nfl_lines",
             "next_available_slate": next_slate,
             "message": (
-                "No same-day, full-game NFL player props are posted on the selected platform. "
-                + (f"The next provider-backed NFL slate begins {next_slate}. " if next_slate else "")
+                f"No same-day, full-game {'college football' if sport_filter == 'NCAAF' else 'NFL'} player props are posted on the selected platform. "
+                + (f"The next provider-backed {sport_filter} slate begins {next_slate}. " if next_slate else "")
                 + "EdgeIQ keeps future and season-long offers out of today's entry generator and waits for a confirmed matchup and kickoff."
             ),
         }
-    suggestions = []
-    for platform_model, raw_props in platform_pairs:
-        suggestions.extend(
-            suggest(
-                raw_props,
-                sport,
-                platform_model,
-                limit=5,
-                leg_count=leg_count,
-                apply_feedback=True,
-                diversify=True,
-                avoid_prop_keys=avoid_prop_keys or set(),
-            )
+    if not platform_pairs:
+        next_slate = min(
+            (str(prop.get("game_time") or "").strip() for prop in raw_props if prop.get("game_time")),
+            default="",
+        )
+        if entry_platform == "DraftKings Pick6":
+            return {
+                "suggestions": [],
+                "mode": "draftkings_feed_unavailable",
+                "platform": entry_platform,
+                "leg_count": leg_count,
+                "maximum_legs": maximum_legs,
+                "message": (
+                    "No usable DraftKings Pick6 snapshot is available. Add APIFY_TOKEN, then use Refresh Providers once. "
+                    "EdgeIQ reuses that actor result for one hour to avoid unnecessary pay-per-event runs. "
+                    "The current actor supports MLB, NBA, NHL, soccer, PGA, UFC, CS, LOL, VAL, COD, and NASCAR; it does not advertise NFL or WNBA."
+                ),
+                "performance": {
+                    "cache_hit": False,
+                    "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                    "source": source,
+                },
+            }
+        return {
+            "suggestions": [],
+            "mode": "waiting_for_same_day_lines",
+            "platform": entry_platform,
+            "leg_count": leg_count,
+            "maximum_legs": maximum_legs,
+            "next_available_slate": next_slate,
+            "message": (
+                f"No same-day {entry_platform} card is available for this filter. "
+                + (f"The next posted slate begins {next_slate}. " if next_slate else "")
+                + "EdgeIQ does not mix tomorrow's props into today's entry."
+            ),
+            "performance": {
+                "cache_hit": False,
+                "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "source": source,
+            },
+        }
+    suggestions = _generate_entry_suggestions(
+        platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
+    )
+    if not suggestions and source == "daily_briefing_snapshot":
+        raw_props = fetch_props(entry_platform, sport_filter)
+        platform_pairs = props_by_platform(entry_platform, raw_props)
+        source = "live_provider_fallback"
+        suggestions = _generate_entry_suggestions(
+            platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
         )
     serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
     seen_keys: set[str] = set()
@@ -258,7 +398,7 @@ def entry_suggestions_payload(
             "prop_keys": keys,
             "reused_from_recent_batch": sum(1 for key in keys if key in (avoid_prop_keys or set())),
         }
-    return {
+    payload = {
         "suggestions": serialized,
         "mode": f"{entry_platform.lower()}_{leg_count}_leg",
         "platform": entry_platform,
@@ -273,7 +413,71 @@ def entry_suggestions_payload(
                 "Cards favor different props when comparably strong verified alternatives are available."
             ),
         },
+        "performance": {
+            "cache_hit": False,
+            "generation_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "source": source,
+        },
+        "message": (
+            "Same-day lines were found, but no card cleared the current evidence, correlation, and diversification filters. Try fewer legs or a paper entry."
+            if not serialized else ""
+        ),
     }
+    _ENTRY_GENERATOR_CACHE.set(cache_key, deepcopy(payload), ttl=_ENTRY_GENERATOR_TTL_SECONDS)
+    return payload
+
+
+def _generate_entry_suggestions(
+    platform_pairs: list[tuple],
+    sport: str,
+    leg_count: int,
+    suggest: Callable[..., list],
+    avoid_prop_keys: set[str],
+) -> list:
+    suggestions = []
+    for platform_model, props in platform_pairs:
+        bounded_props = sorted(
+            props,
+            key=lambda prop: (
+                float(prop.get("source_score") or 0.0),
+                int(prop.get("trending_count") or 0),
+            ),
+            reverse=True,
+        )[:40]
+        suggestions.extend(
+            suggest(
+                bounded_props,
+                sport,
+                platform_model,
+                limit=5,
+                leg_count=leg_count,
+                apply_feedback=True,
+                diversify=True,
+                avoid_prop_keys=avoid_prop_keys,
+            )
+        )
+    return suggestions
+
+
+def _briefing_generator_props(briefing: dict, platform: str, sport_filter: str | None) -> list[dict]:
+    """Reuse the immutable briefing shortlist before rescanning a large provider board."""
+    if not briefing or (briefing.get("cache") or {}).get("stale"):
+        return []
+    selected_platform = str(platform or "").strip().lower()
+    rows: list[dict] = []
+    for prop in briefing.get("top_opportunities") or []:
+        prop_platform = str(prop.get("platform") or briefing.get("platform") or "").strip().lower()
+        prop_sport = str(prop.get("sport") or prop.get("league") or "").strip().upper()
+        if selected_platform != "both" and prop_platform != selected_platform:
+            continue
+        if sport_filter and prop_sport != sport_filter:
+            continue
+        rows.append({
+            **prop,
+            "league": prop_sport,
+            "platform": prop.get("platform") or briefing.get("platform") or platform,
+        })
+    return rows
 
 
 def _serialized_prop_key(prop: dict) -> str:
@@ -323,11 +527,11 @@ def crazy_six_payload(
 ) -> dict:
     sport_filter = _sport_filter(sport)
     requested_platforms = selected_entry_platforms(platform)
-    platform_names = list(dict.fromkeys([*requested_platforms, "PrizePicks", "Underdog"]))
+    platform_names = list(dict.fromkeys(requested_platforms))
     candidates: list[dict] = []
     available_sports: set[str] = set()
     for platform_name in platform_names:
-        raw_props = feed_pool(fetch_platform_props(platform_name), sport_filter)
+        raw_props = feed_pool(fetch_platform_props(platform_name), sport_filter)[:24]
         confirmed_rows: list[dict] = []
         for raw in raw_props:
             raw_sport = str(raw.get("league") or "").upper()

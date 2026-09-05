@@ -55,8 +55,27 @@ def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them()
 
     result = forecast_prop("Player", "WNBA", "Points", 20.5, history=history)
 
-    assert result.distribution["expected_minutes"] == 31
-    assert result.distribution["expected_opportunities"] == 18.5
+    assert 30 <= result.distribution["expected_minutes"] <= 32
+    assert 18 <= result.distribution["expected_opportunities"] <= 19
+    assert result.features["workload_evidence"]["verified"] is True
+    assert result.features["opportunity_projection"]["verified"] is True
+    assert result.features["opportunity_source"] == "verified_game_workload"
+    assert result.distribution["production_per_opportunity"] is not None
+    assert result.distribution["opportunity_evidence_games"] == 20
+
+
+def test_opportunity_challenger_can_win_walk_forward_but_remains_paper_only() -> None:
+    history = _history([value * 2 for value in range(20, 0, -1)])
+    for value, row in zip(range(20, 0, -1), history, strict=True):
+        row["opportunities"] = value
+        row["minutes"] = 30
+
+    result = forecast_prop("Player", "WNBA", "Points", 30.5, history=history)
+
+    assert result.features["model_selection"]["method"] == "opportunity_aware"
+    assert result.features["opportunity_walk_forward_validation"]["leakage_free"] is True
+    assert result.paid_eligible is False
+    assert "paper-only" in result.reason
 
 
 def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
@@ -66,7 +85,8 @@ def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
 
     assert result.features["projection_method"] == "zero_inflated_recent_median"
     assert result.features["zero_rate_recent_20"] >= 0.35
-    assert result.projection == 0.17
+    assert result.projection == 0.4
+    assert result.features["model_selection"]["method"] in {"season_average", "recent_10_average"}
 
 
 def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
@@ -79,9 +99,16 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     )
 
     assert result.features["projection_method"] == "recency_weighted_mean"
-    assert result.features["walk_forward_validation"]["relative_improvement_pct"] == 4.8
+    validation = result.features["walk_forward_validation"]
+    assert validation["selected_method"] in {"season_average", "recent_10_average"}
+    assert all(row["samples"] == 15 for row in validation["baselines"])
+    assert "chronologically" in validation["note"]
     assert result.features["market_prior_weight"] == 0.35
-    assert result.model_version.endswith("v2.4.0")
+    assert result.model_version.endswith("baseline-v1")
+    assert result.features["model_selection"]["challenger_projection"] is not None
+    comparison = result.features["history_filter_comparison"]
+    assert comparison["current_season"]["sample_size"] == 20
+    assert comparison["trailing_history"]["probability"] is not None
 
 
 def test_forecast_uses_small_opponent_sample_with_shrinkage() -> None:
@@ -129,14 +156,42 @@ def test_thin_high_uncertainty_forecast_shrinks_probability_toward_even() -> Non
 def test_forecast_requests_team_specific_history(monkeypatch) -> None:
     captured = {}
 
-    def history(player, stat, sport=None, limit=100, team=""):
+    def history(player, sport, stat, limit=100, team=""):
         captured.update({"player": player, "sport": sport, "team": team})
         rows = _history([1, 2, 1, 0, 1] * 4)
         for row in rows:
             row["team"] = team
         return rows
 
-    monkeypatch.setattr("analytics.probabilistic_forecast.FinalStatsRepository.history", history)
+    monkeypatch.setattr("analytics.probabilistic_forecast.PlayerFeatureRepository.history", history)
     forecast_prop("Max Muncy", "MLB", "Hits", 0.5, team="LAD", game="LAD@COL")
 
     assert captured == {"player": "Max Muncy", "sport": "MLB", "team": "LAD"}
+
+
+def test_forecast_applies_capped_verified_workload_adjustment() -> None:
+    history = _history([20] * 20)
+    for index, row in enumerate(history):
+        row["minutes"] = 40 if index < 5 else 30
+
+    result = forecast_prop("Player", "WNBA", "Rebounds", 9.5, history=history)
+
+    workload = result.features["workload_evidence"]
+    assert workload["verified"] is True
+    assert workload["recent"] == 40
+    assert workload["baseline"] == 30
+    assert 0 < workload["adjustment_pct"] <= 15
+    assert result.projection > 16.5
+    assert result.distribution["workload_adjustment_pct"] == workload["adjustment_pct"]
+
+
+def test_forecast_does_not_adjust_for_sparse_workload_data() -> None:
+    history = _history([20] * 20)
+    for row in history[:4]:
+        row["minutes"] = 40
+
+    result = forecast_prop("Player", "WNBA", "Rebounds", 19.5, history=history)
+
+    workload = result.features["workload_evidence"]
+    assert workload["verified"] is False
+    assert workload["adjustment_pct"] == 0

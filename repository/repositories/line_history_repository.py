@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from sqlalchemy import func, tuple_
+
 from repository.database import SessionLocal
 from repository.models.prop_line_history_model import PropLineHistoryModel
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
-from utils.stat_normalization import canonical_stat_label
+from utils.stat_normalization import canonical_stat_label, stat_alias_labels
 
 
 def _stat_key(value: object) -> str:
@@ -17,7 +19,15 @@ class LineHistoryRepository:
         """Load line histories for many props with one database checkout."""
         if not requests:
             return {}
-        platforms = {str(row.get("platform", "")).strip() for row in requests if row.get("platform")}
+        requested_triples = {
+            (
+                str(row.get("player", "")).strip(),
+                str(row.get("stat", "")).strip(),
+                str(row.get("platform", "")).strip(),
+            )
+            for row in requests
+            if row.get("player") and row.get("stat") and row.get("platform")
+        }
         requested_keys = {
             (
                 canonical_person_key(row.get("player")),
@@ -30,14 +40,25 @@ class LineHistoryRepository:
         }
         histories = {key: [] for key in requested_keys}
         with SessionLocal() as session:
-            rows = (
-                session.query(PropLineHistoryModel)
-                .filter(
-                    PropLineHistoryModel.platform.in_(platforms),
+            rows = []
+            triples = sorted(requested_triples)
+            # SQLite has a bounded parameter count. Exact triples avoid the
+            # enormous player x stat x platform cross-product produced by
+            # three independent IN clauses while preserving the same matches.
+            for offset in range(0, len(triples), 250):
+                rows.extend(
+                    session.query(PropLineHistoryModel)
+                    .filter(
+                        tuple_(
+                            PropLineHistoryModel.player,
+                            PropLineHistoryModel.stat,
+                            PropLineHistoryModel.platform,
+                        ).in_(triples[offset:offset + 250])
+                    )
+                    .order_by(PropLineHistoryModel.recorded_at.asc(), PropLineHistoryModel.id.asc())
+                    .all()
                 )
-                .order_by(PropLineHistoryModel.recorded_at.asc(), PropLineHistoryModel.id.asc())
-                .all()
-            )
+            rows.sort(key=lambda row: (row.recorded_at, row.id))
             for row in rows:
                 key = (
                     canonical_person_key(row.player),
@@ -142,10 +163,15 @@ class LineHistoryRepository:
         platform: str,
         game: str | None = None,
         line_offer_type: str | None = None,
+        *,
+        allow_identity_fallback: bool = True,
     ) -> list[dict]:
         """Return recorded snapshots oldest-first as list of {line, recorded_at}."""
         with SessionLocal() as session:
-            base_query = session.query(PropLineHistoryModel).filter_by(platform=platform)
+            base_query = session.query(PropLineHistoryModel).filter(
+                PropLineHistoryModel.platform == platform,
+                PropLineHistoryModel.stat.in_(stat_alias_labels(stat)),
+            )
             candidates = (
                 base_query
                 .filter_by(player=player)
@@ -153,14 +179,23 @@ class LineHistoryRepository:
                 .all()
             )
             player_key = canonical_person_key(player)
+            if not candidates:
+                candidates = (
+                    base_query
+                    .filter(func.lower(PropLineHistoryModel.player) == str(player).strip().lower())
+                    .order_by(PropLineHistoryModel.recorded_at.asc())
+                    .all()
+                )
             if candidates:
-                rows = [row for row in candidates if _stat_key(row.stat) == _stat_key(stat)]
-            else:
+                rows = candidates
+            elif allow_identity_fallback:
                 candidates = base_query.order_by(PropLineHistoryModel.recorded_at.asc()).all()
                 rows = [
                     row for row in candidates
                     if canonical_person_key(row.player) == player_key and _stat_key(row.stat) == _stat_key(stat)
                 ]
+            else:
+                rows = []
             if game:
                 game_key = canonical_matchup_key(game)
                 rows = [row for row in rows if canonical_matchup_key(getattr(row, "game", "")) == game_key]

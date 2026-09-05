@@ -109,6 +109,30 @@ class PlayerIdentityRepository:
             ]
 
     @staticmethod
+    def search(sport: object, query: object = "", limit: int = 100) -> list[dict]:
+        PlayerIdentityRepository._ensure_schema()
+        sport_text = str(sport or "").strip().upper()
+        if not sport_text:
+            return []
+        query_key = canonical_person_key(query)
+        with SessionLocal() as session:
+            lookup = session.query(PlayerIdentityModel).filter(PlayerIdentityModel.sport == sport_text)
+            if query_key:
+                lookup = lookup.filter(PlayerIdentityModel.canonical_key.contains(query_key))
+            rows = lookup.order_by(PlayerIdentityModel.canonical_name.asc()).limit(
+                max(1, min(int(limit), 250))
+            ).all()
+            return [
+                {
+                    "id": identity.id,
+                    "name": identity.canonical_name,
+                    "sport": identity.sport,
+                    "team": identity.current_team,
+                }
+                for identity in rows
+            ]
+
+    @staticmethod
     def backfill_existing() -> dict:
         PlayerIdentityRepository._ensure_schema()
         linked_props = 0

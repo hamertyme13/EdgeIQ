@@ -194,6 +194,17 @@ def _normalize_sport(value: str) -> str:
         "WTA": "TENNIS",
         "GOLF": "PGA",
         "UFC": "MMA",
+        "CS": "CS2",
+        "COUNTER STRIKE": "CS2",
+        "COUNTER-STRIKE": "CS2",
+        "LEAGUE OF LEGENDS": "LOL",
+        "LEAGUE_OF_LEGENDS": "LOL",
+        "VAL": "VALORANT",
+        "DOTA": "DOTA2",
+        "DOTA 2": "DOTA2",
+        "CALL OF DUTY": "COD",
+        "CALL_OF_DUTY": "COD",
+        "APEX LEGENDS": "APEX",
     }
     return aliases.get(normalized, normalized)
 

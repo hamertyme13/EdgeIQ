@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260820-v244-player-hit-rates" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260904-v250-game-predictions" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -25,9 +25,10 @@
         </div>
         <nav class="nav">
           <button class="nav-item active" data-view="dashboard">Today</button>
+          <button class="nav-item" data-view="games">Games</button>
           <button class="nav-item" data-view="entries">Entries</button>
           <button class="nav-item" data-view="performance">Results</button>
-          <button class="nav-item" data-view="analysis">Research</button>
+          <button class="nav-item" data-view="analysis" data-advanced-only>Research</button>
         </nav>
       </aside>
 
@@ -38,14 +39,88 @@
             <h1 id="view-title">Today</h1>
           </div>
           <div class="topbar-actions">
+            <div class="display-mode-toggle" role="group" aria-label="Interface detail level">
+              <button class="display-mode-button active" type="button" data-display-mode="basic">Core</button>
+              <button class="display-mode-button" type="button" data-display-mode="advanced">Model Lab</button>
+            </div>
             <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
+            <button id="beta-center-toggle" class="secondary beta-center-toggle" type="button" aria-expanded="false" aria-controls="beta-center-drawer">Founding Beta</button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
         </header>
+        <div id="global-health-strip" class="global-health-strip" role="status" aria-live="polite">
+          <span><i class="global-health-dot status-waiting"></i>Checking providers</span>
+          <span id="global-settlement-status">Settlement checking</span>
+          <span id="global-model-status">Model checking</span>
+        </div>
         <aside id="notification-center-drawer" class="notification-center-drawer" hidden aria-label="EdgeIQ alerts">
           <div class="panel-header"><div><p class="eyebrow">Notification Center</p><h2>Needs Attention</h2></div><button id="notification-center-close" class="secondary" type="button">Close</button></div>
           <div id="notification-center-list" class="suggestion-list"></div>
+        </aside>
+        <aside id="beta-center-drawer" class="beta-center-drawer" hidden aria-label="Founding Beta center">
+          <div class="panel-header">
+            <div><p class="eyebrow">Founding Beta</p><h2 id="beta-center-title">Beta Account</h2></div>
+            <button id="beta-center-close" class="secondary" type="button">Close</button>
+          </div>
+          <p id="beta-center-status" class="subtle" role="status">Checking beta account...</p>
+          <form id="beta-login-form" class="stack beta-login-form">
+            <label>Email or username<input id="beta-login-identifier" autocomplete="username" required /></label>
+            <label>Password<input id="beta-login-password" type="password" autocomplete="current-password" minlength="10" required /></label>
+            <button type="submit">Sign In</button>
+          </form>
+          <section id="beta-account-panel" hidden>
+            <div class="beta-account-summary">
+              <div><strong id="beta-account-name">Tester</strong><span id="beta-account-meta" class="subtle"></span></div>
+              <button id="beta-logout" class="secondary" type="button">Sign Out</button>
+            </div>
+            <div id="beta-onboarding-panel" class="beta-onboarding-card" hidden>
+              <h3>Welcome to the EdgeIQ Founding Beta</h3>
+              <ul>
+                <li>EdgeIQ provides statistical decision support, not guaranteed outcomes.</li>
+                <li>Your feedback helps evaluate usefulness, usability, and calibration.</li>
+                <li>You remain responsible for every wagering decision.</li>
+              </ul>
+              <label class="check-row"><input id="beta-onboarding-ack" type="checkbox" /> I understand the probabilistic and financial-risk notice.</label>
+              <button id="beta-complete-onboarding" type="button" disabled>Continue to EdgeIQ</button>
+            </div>
+            <details class="beta-drawer-section" open>
+              <summary>Report a Problem</summary>
+              <form id="beta-bug-form" class="stack">
+                <select id="beta-bug-category" aria-label="Problem category">
+                  <option>Wrong player data</option><option>Wrong line</option><option>Prediction seems incorrect</option>
+                  <option>Settlement/result issue</option><option>Page/interface problem</option><option>Performance issue</option><option>Other</option>
+                </select>
+                <textarea id="beta-bug-description" rows="3" maxlength="4000" placeholder="What happened, and what did you expect?" required></textarea>
+                <button type="submit" class="secondary">Submit Problem</button>
+              </form>
+            </details>
+            <details class="beta-drawer-section">
+              <summary>Request a Feature</summary>
+              <form id="beta-feature-form" class="stack">
+                <textarea id="beta-feature-description" rows="3" maxlength="4000" placeholder="What would make EdgeIQ more useful?" required></textarea>
+                <button type="submit" class="secondary">Submit Request</button>
+              </form>
+            </details>
+            <section id="beta-admin-panel" class="beta-admin-panel" hidden>
+              <div class="panel-header"><div><p class="eyebrow">Admin Only</p><h3>Founding Beta Dashboard</h3></div><button id="beta-admin-refresh" class="secondary" type="button">Refresh</button></div>
+              <div id="beta-admin-kpis" class="beta-kpi-grid"></div>
+              <details open><summary>Tester Activity</summary><div id="beta-admin-users" class="beta-admin-list"></div></details>
+              <details><summary>Create Tester</summary>
+                <form id="beta-create-user-form" class="stack">
+                  <input id="beta-new-email" type="email" placeholder="Email" required />
+                  <input id="beta-new-username" placeholder="Username" required />
+                  <input id="beta-new-password" type="password" minlength="10" placeholder="Temporary password" required />
+                  <select id="beta-new-role"><option value="BETA_TESTER">Beta Tester</option><option value="ADMIN">Admin</option></select>
+                  <input id="beta-new-cohort" value="FOUNDING_25" placeholder="Cohort" />
+                  <button type="submit">Create Account</button>
+                </form>
+              </details>
+              <details><summary>Feedback and Requests</summary><div id="beta-admin-feedback" class="beta-admin-list"></div></details>
+              <details><summary>Model and Segment Evidence</summary><div id="beta-admin-model" class="beta-admin-list"></div></details>
+            </section>
+          </section>
+          <p class="responsible-use-copy">EdgeIQ provides statistical analysis for informational and entertainment purposes. Predictions do not guarantee outcomes or financial returns.</p>
         </aside>
         <div id="runtime-notice" class="runtime-notice" hidden></div>
         <div id="install-hint" class="install-hint" hidden>
@@ -55,7 +130,6 @@
         </div>
 
         <section id="dashboard" class="view active">
-          <div class="stats-grid" id="dashboard-stats"></div>
           <div class="panel daily-briefing-panel">
             <div class="panel-header">
               <div>
@@ -63,7 +137,13 @@
                 <h2 id="daily-greeting">Good Morning Joshua.</h2>
                 <p id="daily-briefing-status">Waking up the board...</p>
               </div>
-              <button id="refresh-daily-briefing" class="secondary">Refresh</button>
+              <div class="today-refresh-actions" aria-label="Today refresh controls">
+                <span id="today-provider-status" class="today-provider-status" role="status">Checking provider freshness...</span>
+                <div class="toolbar">
+                  <button id="refresh-today-providers" class="secondary" type="button">Refresh Providers</button>
+                  <button id="refresh-daily-briefing" class="secondary" type="button">Refresh Briefing</button>
+                </div>
+              </div>
             </div>
             <div id="daily-briefing-summary" class="daily-briefing-summary muted-card">Building the morning betting plan...</div>
             <div id="daily-scan-status" class="daily-scan-status muted-card">No Daily Briefing scan has run yet today.</div>
@@ -110,8 +190,22 @@
               </div>
             </div>
           </div>
-          <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel"></div>
-          <section class="runtime-status-panel" aria-labelledby="runtime-status-title">
+          <section class="today-performance-strip" aria-labelledby="today-performance-title">
+            <div class="section-heading-row">
+              <div>
+                <p class="eyebrow">Performance At A Glance</p>
+                <h2 id="today-performance-title">Bankroll + Recent Form</h2>
+              </div>
+              <button class="secondary compact-button" type="button" data-view-shortcut="performance">View Results</button>
+            </div>
+            <div class="stats-grid dashboard-primary-stats" id="dashboard-stats"></div>
+            <details class="inline-disclosure dashboard-performance-details">
+              <summary><span>More performance metrics</span><small>ROI, deposits, calibration, streak, and drawdown</small></summary>
+              <div id="dashboard-stats-detail" class="stats-grid disclosure-grid"></div>
+            </details>
+          </section>
+          <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel" data-advanced-only></div>
+          <section class="runtime-status-panel" aria-labelledby="runtime-status-title" data-advanced-only>
             <div class="runtime-status-heading">
               <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
               <button id="refresh-runtime-status" class="secondary" type="button">Refresh</button>
@@ -120,7 +214,7 @@
               <div class="runtime-status-loading">Checking Ollama, automation, settlement, providers, and model release...</div>
             </div>
           </section>
-          <details class="dashboard-support-drawer">
+          <details class="dashboard-support-drawer" data-advanced-only>
             <summary>
               <span>System + Settings</span>
               <small>Providers, automation, preferences, alerts, and imports</small>
@@ -189,7 +283,7 @@
             </div>
           </div>
           </details>
-          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk">
+          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk" data-advanced-only>
             <summary>
               <span>Tools + Signals</span>
               <small>Watchlists, alerts, custom analysis, and raw provider lines</small>
@@ -249,6 +343,7 @@
                       <option>NBA</option>
                       <option>MLB</option>
                       <option>NFL</option>
+                      <option value="NCAAF">College Football</option>
                       <option>All Sports</option>
                     </select>
                   </label>
@@ -271,6 +366,7 @@
                     <option>WNBA</option>
                     <option>NBA</option>
                     <option>NFL</option>
+                    <option value="NCAAF">College Football</option>
                     <option>MLB</option>
                     <option>NHL</option>
                   </select>
@@ -304,6 +400,7 @@
                     <option>WNBA</option>
                     <option>NBA</option>
                     <option>NFL</option>
+                    <option value="NCAAF">College Football</option>
                     <option>MLB</option>
                     <option>NHL</option>
                   </select>
@@ -515,9 +612,33 @@
           </details>
         </section>
 
+        <section id="games" class="view">
+          <div class="panel-header">
+            <div><p class="eyebrow">Game Intelligence</p><h2>Game Environments</h2><p>Versioned outcome, score, pace, and game-script estimates. Predictions are probabilistic, not guarantees.</p></div>
+            <div class="inline-controls game-intelligence-controls">
+              <select id="game-intelligence-sport" aria-label="Game Intelligence sport"><option>WNBA</option><option>NBA</option><option>NFL</option><option>NCAAF</option><option>MLB</option><option>NHL</option></select>
+              <button id="refresh-game-intelligence" class="secondary" type="button">Refresh Games</button>
+            </div>
+          </div>
+          <div id="game-intelligence-status" class="inline-status" role="status">Open Games to load the latest saved predictions.</div>
+          <div id="game-intelligence-list" class="game-intelligence-grid" aria-live="polite"></div>
+          <div class="panel game-model-governance">
+            <div class="panel-header"><div><p class="eyebrow">Shadow Evaluation</p><h2>Model Governance</h2></div></div>
+            <div id="game-intelligence-governance" class="suggestion-list"></div>
+          </div>
+        </section>
+
         <section id="entries" class="view">
-          <div class="two-col">
-            <div class="stack">
+          <div id="settlement-health" class="settlement-health muted-card" aria-live="polite" data-entry-track-only hidden>
+            Checking settlement worker, provider queue, and database readiness...
+          </div>
+          <div class="entry-mode-nav workspace-tab-strip" role="tablist" aria-label="Entry workspace">
+            <button class="workspace-tab active" type="button" data-entry-mode="build">Build</button>
+            <button class="workspace-tab" type="button" data-entry-mode="generate" data-advanced-only>Generate</button>
+            <button class="workspace-tab" type="button" data-entry-mode="track">Track</button>
+          </div>
+          <div class="entries-mode-layout">
+            <div class="stack" data-entry-mode-section="build">
               <details class="panel tool-group">
                 <summary>
                   <span>Betting Preferences</span>
@@ -568,15 +689,14 @@
                   </div>
                 </div>
                 <div id="entry-loss-protection" class="entry-protection-card muted-card">Checking Loss Protection...</div>
-                <form id="prop-form" class="form-grid">
-                  <label class="field-label">Player
-                    <input id="prop-player" placeholder="Player" />
-                  </label>
-                  <label class="field-label">Team
-                    <input id="prop-team" placeholder="Team" />
-                  </label>
-                  <label class="field-label">Sport
+                <div class="entry-builder-steps" role="tablist" aria-label="Entry Builder steps">
+                  <button class="entry-step-button active" type="button" data-entry-step="props"><span>1</span>Add Props</button>
+                  <button class="entry-step-button" type="button" data-entry-step="settings"><span>2</span>Card Settings</button>
+                </div>
+                <form id="prop-form" class="form-grid" data-active-step="props">
+                  <label class="field-label entry-prop-field">Sport
                     <select id="prop-sport">
+                      <option value="" selected>Select sport</option>
                       <option>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
@@ -594,7 +714,15 @@
                       <option>NASCAR</option>
                     </select>
                   </label>
-                  <label class="field-label">Stat
+                  <label class="field-label entry-prop-field">Player
+                    <input id="prop-player" list="entry-player-options" placeholder="Select a sport first" autocomplete="off" disabled />
+                    <datalist id="entry-player-options"></datalist>
+                    <small id="entry-player-lookup-status" class="subtle">Choose a sport to load saved players.</small>
+                  </label>
+                  <label class="field-label entry-advanced-field entry-prop-field">Team
+                    <input id="prop-team" placeholder="Team" />
+                  </label>
+                  <label class="field-label entry-prop-field">Stat
                     <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
                   </label>
                   <datalist id="stat-options">
@@ -690,19 +818,20 @@
                     <option value="Laps Led"></option>
                     <option value="Fastest Laps"></option>
                   </datalist>
-                  <label class="field-label">Line
+                  <label class="field-label entry-prop-field">Line
                     <input id="prop-line" type="number" step="0.1" placeholder="Line" />
                   </label>
-                  <label class="field-label">Projection
+                  <label class="field-label entry-advanced-field entry-prop-field">Projection
                     <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
                   </label>
-                  <label class="field-label">Pick
+                  <label class="field-label entry-prop-field">Pick
                     <select id="prop-direction">
                       <option>Over</option>
                       <option>Under</option>
                     </select>
                   </label>
-                  <label class="field-label">Platform
+                  <div class="entry-form-divider entry-config-field"><strong>Card settings</strong><span>Applied to the complete entry</span></div>
+                  <label class="field-label entry-config-field">Platform
                     <select id="entry-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
@@ -711,27 +840,28 @@
                       <option>Ball Don't Lie</option>
                     </select>
                   </label>
-                  <label class="field-label">Entry Type
+                  <label class="field-label entry-config-field">Entry Type
                     <select id="entry-mode">
                       <option value="real">Real entry</option>
                       <option value="paper">Paper entry</option>
                     </select>
                   </label>
-                  <label class="field-label">Wager
+                  <label class="field-label entry-config-field">Wager
                     <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
                   </label>
-                  <label class="field-label">Multiplier
+                  <label class="field-label entry-config-field">Multiplier
                     <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
                   </label>
-                  <label class="field-label">Payout Format
+                  <label class="field-label entry-advanced-field entry-config-field">Payout Format
                     <select id="entry-payout-type">
                       <option value="standard">Standard / Power</option>
                       <option value="flex">Flex</option>
                     </select>
                   </label>
-                  <button type="submit" class="add-prop-submit">Add Prop</button>
+                  <button id="toggle-entry-options" type="button" class="secondary entry-options-toggle" aria-expanded="false">More Options</button>
+                  <button type="submit" class="add-prop-submit entry-prop-field">Add Prop</button>
                 </form>
-                <details class="entry-payout-details">
+                <details class="entry-payout-details entry-advanced-field">
                   <summary>Exact provider payout</summary>
                   <label class="field-label">Flex payout table
                     <input id="entry-payout-schedule" type="text" placeholder="Example: 3:3, 2:1" />
@@ -754,23 +884,31 @@
                     <tbody id="entry-props"></tbody>
                   </table>
                 </div>
-                <div class="button-row">
+                <div class="entry-action-dock">
+                  <div id="entry-card-summary" class="entry-card-summary" aria-live="polite">
+                    <strong>0 legs</strong><span>Add at least two props to begin.</span>
+                  </div>
+                  <div class="button-row">
                   <button id="analyze-entry">Analyze Entry</button>
                   <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
                   <button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button>
                   <button id="place-entry" class="secondary circuit-action" disabled>Place Entry</button>
                   <button id="clear-entry" class="danger">Clear</button>
+                  </div>
                 </div>
               </div>
 
               <div class="panel">
                 <h2>Entry Intelligence</h2>
-                <div id="entry-analysis" class="analysis-card muted-card">No analysis yet.</div>
+                <div id="entry-analysis" class="analysis-card muted-card compact-analysis-empty">
+                  <strong>Ready when your card is</strong>
+                  <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>
+                </div>
                 <div id="entry-handoff" class="analysis-card muted-card">No handoff prepared yet.</div>
               </div>
             </div>
 
-            <div class="stack" data-workspace="entry-generator">
+            <div class="stack" data-workspace="entry-generator" data-entry-mode-section="generate" hidden>
               <div class="workspace-hub">
                 <div>
                   <p class="eyebrow">Entry Generator</p>
@@ -810,6 +948,8 @@
                     <select id="confirmed-platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>DraftKings Pick6</option>
+                      <option>Sleeper</option>
                     </select>
                     <button id="generate-confirmed-entries">Generate Confirmed Top 5</button>
                   </div>
@@ -824,8 +964,14 @@
                   <small>Provider-specific rules, lines, and leg limits</small>
                 </summary>
                 <div class="tool-group-body">
+                  <div class="provider-generator-tabs workspace-tab-strip" role="tablist" aria-label="Sportsbook generator">
+                    <button class="workspace-tab active" type="button" data-provider-generator-tab="prizepicks">PrizePicks</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="underdog">Underdog</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="draftkings">Pick6</button>
+                    <button class="workspace-tab" type="button" data-provider-generator-tab="sleeper">Sleeper</button>
+                  </div>
                   <div class="provider-generator-grid">
-                    <section class="provider-generator" aria-labelledby="prizepicks-generator-title">
+                    <section class="provider-generator" data-provider-generator="prizepicks" aria-labelledby="prizepicks-generator-title">
                       <div>
                         <span class="pill">PrizePicks</span>
                         <h3 id="prizepicks-generator-title">PrizePicks Generator</h3>
@@ -842,7 +988,7 @@
                       </div>
                       <div id="prizepicks-suggestions-list" class="suggestion-list"></div>
                     </section>
-                    <section class="provider-generator" aria-labelledby="underdog-generator-title">
+                    <section class="provider-generator" data-provider-generator="underdog" aria-labelledby="underdog-generator-title" hidden>
                       <div>
                         <span class="pill">Underdog</span>
                         <h3 id="underdog-generator-title">Underdog Generator</h3>
@@ -858,6 +1004,40 @@
                         <button id="generate-underdog">Generate Underdog</button>
                       </div>
                       <div id="underdog-suggestions-list" class="suggestion-list"></div>
+                    </section>
+                    <section class="provider-generator" data-provider-generator="draftkings" aria-labelledby="draftkings-generator-title" hidden>
+                      <div>
+                        <span class="pill">DraftKings Pick6</span>
+                        <h3 id="draftkings-generator-title">DraftKings Pick6 Generator</h3>
+                        <p>Uses a cached Apify board and standard lines. Provider refreshes may start a billable actor run.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="draftkings-generator-sport" aria-label="DraftKings Pick6 sport">
+                          <option>All Sports</option><option>NBA</option><option>MLB</option><option>NHL</option><option>MLS</option><option>EPL</option><option>UCL</option><option>PGA</option><option>MMA</option><option>NASCAR</option><option>CS2</option><option>LOL</option><option>VALORANT</option><option>COD</option>
+                        </select>
+                        <select id="draftkings-generator-legs" aria-label="DraftKings Pick6 legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option>
+                        </select>
+                        <button id="generate-draftkings">Generate Pick6</button>
+                      </div>
+                      <div id="draftkings-suggestions-list" class="suggestion-list"></div>
+                    </section>
+                    <section class="provider-generator" data-provider-generator="sleeper" aria-labelledby="sleeper-generator-title" hidden>
+                      <div>
+                        <span class="pill">Sleeper</span>
+                        <h3 id="sleeper-generator-title">Sleeper Generator</h3>
+                        <p>Builds cards only from a connected Sleeper Pick'em line feed. Public NFL trends remain supporting context.</p>
+                      </div>
+                      <div class="toolbar compact-controls">
+                        <select id="sleeper-generator-sport" aria-label="Sleeper sport">
+                          <option>NFL</option><option>All Sports</option><option>WNBA</option><option>NBA</option><option>MLB</option><option>NHL</option><option>NCAAF</option><option>NCAAM</option><option>NCAAW</option><option>MLS</option><option>EPL</option><option>UCL</option><option>TENNIS</option><option>PGA</option><option>MMA</option><option>NASCAR</option>
+                        </select>
+                        <select id="sleeper-generator-legs" aria-label="Sleeper legs">
+                          <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option>
+                        </select>
+                        <button id="generate-sleeper">Generate Sleeper</button>
+                      </div>
+                      <div id="sleeper-suggestions-list" class="suggestion-list"></div>
                     </section>
                   </div>
                 </div>
@@ -890,13 +1070,14 @@
                     <select id="optimizer-platform" aria-label="Optimizer platform">
                       <option>PrizePicks</option>
                       <option>Underdog</option>
+                      <option>DraftKings Pick6</option>
                       <option>Sleeper</option>
                       <option>Ball Don't Lie</option>
                       <option>Both</option>
                     </select>
                     <select id="optimizer-sport" aria-label="Optimizer sport">
                       <option>All Sports</option>
-                      <option>WNBA</option>
+                      <option selected>WNBA</option>
                       <option>NBA</option>
                       <option>NFL</option>
                       <option>MLB</option>
@@ -972,8 +1153,8 @@
             </div>
             <div class="workspace-tab-strip" role="tablist" aria-label="Research sections">
               <button class="workspace-tab active" type="button" data-workspace-tab="prop">Prop Research</button>
-              <button class="workspace-tab" type="button" data-workspace-tab="market">Market + Risk</button>
-              <button class="workspace-tab" type="button" data-workspace-tab="imports">Import Center</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="market" data-advanced-only>Market + Risk</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="imports" data-advanced-only>Import Center</button>
             </div>
           </div>
           <form id="research-context-form" class="panel research-context-bar">
@@ -982,8 +1163,10 @@
               <h3>Enter The Prop Once</h3>
             </div>
             <div class="form-grid compact-controls">
-              <input id="research-context-player" placeholder="Player" />
-              <input id="research-context-stat" placeholder="Stat" />
+              <input id="research-context-player" list="research-player-options" autocomplete="off" placeholder="Search player" />
+              <datalist id="research-player-options"></datalist>
+              <input id="research-context-stat" list="research-stat-options" autocomplete="off" placeholder="Select a supported stat" />
+              <datalist id="research-stat-options"></datalist>
               <select id="research-context-sport" aria-label="Research sport">
                 <option>WNBA</option>
                 <option>NBA</option>
@@ -1011,6 +1194,7 @@
               <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Research line" />
               <button type="submit">Run Full Research</button>
             </div>
+            <div id="research-selection-preview" class="research-selection-preview" hidden></div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
             <div class="recent-research-heading">
               <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Sync a league once, then EdgeIQ keeps the verified game history.</span></div>
@@ -1025,6 +1209,20 @@
                 <small>Projection, hit rate, and complete player context</small>
               </summary>
               <div class="tool-group-body">
+                <section id="beta-analysis-feedback" class="beta-analysis-feedback" hidden>
+                  <div class="beta-feedback-heading"><div><p class="eyebrow">Founding Beta Check-In</p><h3>Capture Your View Before EdgeIQ</h3></div><span id="beta-feedback-context" class="subtle">Choose an initial opinion before running research.</span></div>
+                  <form id="beta-feedback-form" class="beta-feedback-form">
+                    <label>Initial opinion<select id="beta-initial-pick"><option>Unsure</option><option>Over</option><option>Under</option></select></label>
+                    <label>After EdgeIQ<select id="beta-final-pick"><option>Pass</option><option>Over</option><option>Under</option></select></label>
+                    <label>Useful?<select id="beta-useful"><option value="">Not answered</option><option value="true">Yes</option><option value="false">No</option></select></label>
+                    <label>Would you make it?<select id="beta-would-pick"><option>Unsure</option><option>Yes</option><option>No</option></select></label>
+                    <label class="beta-feedback-notes">Anything missing?<textarea id="beta-feedback-text" rows="2" maxlength="2000" placeholder="Optional context"></textarea></label>
+                    <label class="beta-feedback-pricing">Launch preference<select id="beta-would-pay"><option value="">Skip for now</option><option>Free</option><option>$9.99/month</option><option>$19.99/month</option><option>$29.99/month</option><option>$49.99/month</option><option>I would not subscribe</option></select></label>
+                    <button type="submit">Submit Feedback</button>
+                  </form>
+                  <p id="beta-feedback-status" class="subtle" role="status">Feedback is optional and never blocks research.</p>
+                </section>
+                <div id="player-research-result" class="analysis-card muted-card">Enter a player and stat above to load the complete research report.</div>
                 <details class="inline-disclosure">
                   <summary>
                     <span>Individual Research Tools</span>
@@ -1104,7 +1302,6 @@
                     <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Player research line" />
                     <button type="submit">Research Prop</button>
                   </form>
-                  <div id="player-research-result" class="analysis-card muted-card">No player research loaded.</div>
                 </div>
                   </div>
                 </details>
@@ -1474,11 +1671,16 @@
               </div>
             </div>
             <div id="performance-summary" class="stats-grid"></div>
+            <details class="inline-disclosure performance-summary-details">
+              <summary><span>More account metrics</span><small>Bankroll and pending exposure</small></summary>
+              <div id="performance-summary-detail" class="stats-grid disclosure-grid"></div>
+            </details>
+            <div id="performance-recovery-summary" class="performance-recovery-summary"></div>
           </div>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="model">Model Validation</button>
-            <button class="workspace-tab" type="button" data-workspace-tab="settlement">Settlement</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="model" data-advanced-only>Model Validation</button>
+              <button class="workspace-tab" type="button" data-workspace-tab="settlement" data-advanced-only>Settlement</button>
             <button class="workspace-tab" type="button" data-view-shortcut="bets">Ledger</button>
           </div>
           <div class="panel" data-workspace-pane="settlement" hidden>
@@ -1512,8 +1714,10 @@
                 <div id="monthly-profit-log" class="suggestion-list"></div>
               </div>
             </div>
+            <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
+            <button id="toggle-performance-details" class="secondary performance-detail-toggle" type="button" aria-expanded="false">Show Detailed Performance</button>
           </div>
-          <div class="two-col" data-workspace-pane="performance">
+          <div class="two-col" data-workspace-pane="performance" data-performance-detail>
             <div class="panel">
               <div class="panel-header">
                 <div>
@@ -1543,8 +1747,10 @@
                     <div class="scorecard-filters">
                       <label class="field-label">Platform
                         <select id="auto-paper-platform">
+                          <option value="Both" selected>Balanced providers</option>
                           <option>PrizePicks</option>
                           <option>Underdog</option>
+                          <option>DraftKings Pick6</option>
                         </select>
                       </label>
                       <label class="field-label">Sport
@@ -1568,19 +1774,23 @@
                         </select>
                       </label>
                       <div class="calibration-batch-summary" aria-label="Paper calibration batch">
-                        <strong>5 cards</strong>
-                        <span>2 · 2 · 3 · 4 · 5 legs</span>
+                        <strong>5 cards per sport</strong>
+                        <span>$0 risk · 2 · 2 · 3 · 4 · 5 legs</span>
                       </div>
                     </div>
                     <div class="scorecard-actions">
-                      <button id="auto-paper-calibration" class="secondary">Auto Paper Samples</button>
+                      <button id="auto-paper-calibration" class="secondary">Create Today's Paper Samples</button>
                       <button id="refresh-calibration-data" class="secondary">Refresh Calibration Finals</button>
                       <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
                       <button id="repair-data-integrity" class="secondary">Repair Invalid Markets</button>
                     </div>
                   </div>
                 </div>
-                <div id="auto-paper-calibration-status" class="subtle">Ready to sample weak confidence buckets with end-to-end verified props.</div>
+                <div id="auto-paper-calibration-status" class="subtle" aria-live="polite">Paper only. EdgeIQ creates five unique same-day cards per available sport and balances providers when possible.</div>
+                <section id="paper-calibration-dashboard" class="calibration-dashboard" aria-label="Daily calibration progress">
+                  <div class="skeleton-row"></div>
+                  <div class="skeleton-row"></div>
+                </section>
                 <div id="data-integrity-repair-status" class="subtle" aria-live="polite"></div>
                 <div id="backtest-summary" class="suggestion-list"></div>
               </div>
@@ -1598,16 +1808,16 @@
               <div id="calibration-list" class="suggestion-list"></div>
             </div>
           </div>
-          <div class="three-col" data-workspace-pane="performance">
+          <div class="three-col" data-workspace-pane="performance" data-performance-detail>
             <div class="panel"><h2>By Sport</h2><div id="perf-sport"></div></div>
             <div class="panel"><h2>By Stat</h2><div id="perf-stat"></div></div>
             <div class="panel"><h2>By Platform</h2><div id="perf-platform"></div></div>
           </div>
-          <div class="panel" data-workspace-pane="performance">
+          <div class="panel" data-workspace-pane="performance" data-performance-detail>
             <h2>Platform Profitability</h2>
             <div id="entry-platform-profitability" class="suggestion-list"></div>
           </div>
-          <div class="panel" data-workspace-pane="performance">
+          <div class="panel" data-workspace-pane="performance" data-performance-detail>
             <h2>Result Breakdown</h2>
             <div id="entry-result-performance" class="suggestion-list"></div>
           </div>
@@ -1626,43 +1836,48 @@
     </div>
     <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
       <button class="nav-item active" data-view="dashboard" type="button">Today</button>
+      <button class="nav-item" data-view="games" type="button">Games</button>
       <button class="nav-item" data-view="entries" type="button">Entry</button>
       <button class="nav-item" data-view="performance" type="button">Results</button>
       <button class="nav-item" data-view="analysis" type="button">Research</button>
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/ui-shell.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/ui-utils.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/circuit-audio.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/js/state.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/js/api.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/app.js?v=20260820-v244-player-hit-rates"></script>
+    <script src="/static/js/beta.js?v=20260904-v250-game-predictions"></script>
+    <script src="/static/js/player-hit-rankings.js?v=20260904-v250-game-predictions"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260904-v250-game-predictions"></script>
+    <script src="/static/js/games.js?v=20260904-v250-game-predictions"></script>
+    <script src="/static/app.js?v=20260904-v250-game-predictions"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

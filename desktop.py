@@ -9,12 +9,16 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
+from config import APP_NAME, APP_VERSION
 from gui.app import EdgeIQWindow
+from utils.logging_config import configure_logging
 
 
 def main():
+    configure_logging()
     app = QApplication(sys.argv)
-    app.setApplicationName("EdgeIQ")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     window = EdgeIQWindow()
     window.show()
     sys.exit(app.exec())

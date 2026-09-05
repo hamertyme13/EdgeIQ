@@ -29,6 +29,14 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
             row[1]
             for row in connection.execute("PRAGMA table_info(bets)")
         }
+        entry_prop_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(entry_props)")
+        }
+        product_event_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(product_events)")
+        }
 
     assert {
         "alembic_version",
@@ -39,8 +47,17 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "player_identities",
         "player_aliases",
         "research_evidence",
+        "player_features",
+        "background_jobs",
+        "beta_users",
+        "beta_sessions",
+        "beta_feedback",
+        "beta_issues",
+        "game_predictions",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
+    assert {"provider_event_id", "provider_offer_id"} <= entry_prop_columns
+    assert {"user_id", "session_id"} <= product_event_columns
 
 
 def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None:
@@ -69,8 +86,64 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
         research_sessions_exist = connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'research_sessions'"
         ).fetchone()[0]
+        board_observations_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'board_offer_observations'"
+        ).fetchone()[0]
+        player_features_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'player_features'"
+        ).fetchone()[0]
+        background_jobs_exist = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'background_jobs'"
+        ).fetchone()[0]
 
-    assert revision == "f92d4a61c830"
+    assert revision == "j43a7e91c620"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1
+    assert board_observations_exist == 1
+    assert player_features_exist == 1
+    assert background_jobs_exist == 1
+
+
+def test_beta_migration_reconciles_tables_created_before_alembic_upgrade(tmp_path: Path) -> None:
+    database_path = tmp_path / "precreated-beta.db"
+    environment = {**os.environ, "DATABASE_URL": f"sqlite:///{database_path}"}
+    root = Path(__file__).parents[1]
+
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "g82d4f1a6b73"],
+        check=True,
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-c", "from repository.database import initialize_database; initialize_database()"],
+        check=True,
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        check=True,
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()[0]
+        product_event_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(product_events)")
+        }
+        beta_table_count = connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'beta_%'"
+        ).fetchone()[0]
+
+    assert revision == "j43a7e91c620"
+    assert beta_table_count == 4
+    assert {"user_id", "session_id"} <= product_event_columns
