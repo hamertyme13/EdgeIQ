@@ -97,7 +97,7 @@ if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
   "$PYTHON_BIN" -m alembic upgrade head
 fi
 REQUIRED_UI_VERSION="$(
-  "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+  "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
 )"
 
 stop_stale_edgeiq_servers

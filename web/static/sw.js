@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260904-v250-game-predictions";
+const CACHE_NAME = "edgeiq-shell-20260905-player-refresh";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

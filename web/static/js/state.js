@@ -23,5 +23,6 @@
     generatorRecentProps: {},
     entryPlayerDirectory: [],
     entrySelectedPlayerIdentityId: null,
+    entrySelectedPlayerRecord: null,
   };
 })(window);

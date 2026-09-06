@@ -5,11 +5,13 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from analytics.prediction_evidence import offer_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 from utils.time import utc_now
@@ -42,13 +44,11 @@ class BoardOfferRepository:
         prepared = list(prepared_by_key.values())
         if not prepared:
             return 0
-        keys = [row["observation_key"] for row in prepared]
+        identities = PlayerIdentityRepository.capture_provider_players(prepared, provider).get("identity_ids", {})
+        for row in prepared:
+            row["player_identity_id"] = identities.get((row["sport"], row["normalized_player_key"]))
         market_keys = {row["market_key"] for row in prepared}
         with SessionLocal() as session:
-            existing = {
-                value for (value,) in session.query(BoardOfferObservationModel.observation_key)
-                .filter(BoardOfferObservationModel.observation_key.in_(keys)).all()
-            }
             opening_rows = (
                 session.query(
                     BoardOfferObservationModel.market_key,
@@ -64,15 +64,17 @@ class BoardOfferRepository:
                 for row in session.query(BoardOfferObservationModel)
                 .filter(BoardOfferObservationModel.id.in_(opening_ids)).all()
             } if opening_ids else {}
-            created = 0
+            inserts = []
             for row in prepared:
-                if row["observation_key"] in existing:
-                    continue
-                existing.add(row["observation_key"])
                 row["opening_line"] = openings.get(row["market_key"], row["line"])
-                session.add(BoardOfferObservationModel(**row, captured_at=captured))
-                created += 1
-            if created:
+                inserts.append({**row, "captured_at": captured})
+            result = session.execute(
+                sqlite_insert(BoardOfferObservationModel)
+                .values(inserts)
+                .on_conflict_do_nothing(index_elements=["observation_key"])
+            )
+            created = max(0, int(result.rowcount or 0))
+            if inserts:
                 session.commit()
             return created
 

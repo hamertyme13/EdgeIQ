@@ -1971,20 +1971,23 @@ async function runDailyRefresh() {
 async function refreshTodayProviders() {
   const status = $("today-provider-status");
   if (status) {
-    status.textContent = "Refreshing provider lines and final results...";
+    status.textContent = "Refreshing current provider offers...";
     status.classList.remove("is-fresh", "needs-refresh");
   }
   try {
-    const result = await api("/api/automation/start-daily-refresh", { method: "POST" });
+    const platform = $("props-platform")?.value || "PrizePicks";
+    const sport = $("props-sport")?.value || "All Sports";
+    const params = new URLSearchParams({ platform, sport });
+    const result = await api(`/api/automation/start-provider-refresh?${params.toString()}`, { method: "POST" });
     if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
     waitForBackgroundJob(result, (job) => {
       if (status) status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
     }).then(() => {
       if (status) {
-        status.textContent = "Provider data refreshed.";
+        status.textContent = "Provider data refreshed. Refresh Briefing when you are ready to rebuild recommendations.";
         status.classList.add("is-fresh");
       }
-      return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyBriefing(), loadDailyScanStatus()]);
+      return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyScanStatus()]);
     }).catch((error) => {
       if (status) {
         status.textContent = humanErrorMessage(error, "Provider refresh did not finish. Try again.");
@@ -3261,9 +3264,17 @@ function renderEntryProps() {
 
 function propFromForm() {
   const projectionValue = $("prop-projection").value;
+  const selectedPlayer = state.entrySelectedPlayerRecord;
+  const selectedPlatform = $("entry-platform").value;
+  const providerAlias = (selectedPlayer?.provider_aliases || []).find((row) => (
+    String(row.provider || "").replaceAll(" ", "").toLowerCase() === selectedPlatform.replaceAll(" ", "").toLowerCase()
+  ));
+  const directProviderMatches = String(selectedPlayer?.provider || "").replaceAll(" ", "").toLowerCase() === selectedPlatform.replaceAll(" ", "").toLowerCase();
   return {
     player: $("prop-player").value.trim(),
     player_identity_id: state.entrySelectedPlayerIdentityId,
+    player_provider: selectedPlatform,
+    provider_player_id: providerAlias?.provider_player_id || (directProviderMatches ? selectedPlayer.provider_player_id : ""),
     team: $("prop-team").value.trim(),
     sport: $("prop-sport").value,
     stat: $("prop-stat").value,
@@ -3280,6 +3291,20 @@ function propFromForm() {
 
 let entryPlayerLookupTimer = null;
 
+function entryPlayerProviderLabel(player) {
+  const labels = {
+    prizepicks: "PrizePicks",
+    underdog: "Underdog",
+    draftkingspick6: "DraftKings Pick6",
+    sleeper: "Sleeper",
+    espn: "ESPN stats",
+  };
+  const providers = [...new Set((player.provider_aliases || [])
+    .map((alias) => labels[String(alias.provider || "").toLowerCase()] || "")
+    .filter(Boolean))];
+  return providers.length ? providers.join(", ") : "saved history";
+}
+
 async function loadEntryPlayerDirectory(query = "") {
   const sport = $("prop-sport")?.value || "";
   const playerInput = $("prop-player");
@@ -3287,6 +3312,7 @@ async function loadEntryPlayerDirectory(query = "") {
   if (!sport) {
     state.entryPlayerDirectory = [];
     state.entrySelectedPlayerIdentityId = null;
+    state.entrySelectedPlayerRecord = null;
     playerInput.disabled = true;
     playerInput.placeholder = "Select a sport first";
     $("entry-player-options").innerHTML = "";
@@ -3301,7 +3327,7 @@ async function loadEntryPlayerDirectory(query = "") {
   if ($("prop-sport").value !== requestedSport) return;
   state.entryPlayerDirectory = data.players || [];
   $("entry-player-options").innerHTML = state.entryPlayerDirectory.map((player) => (
-    `<option value="${escapeHtml(player.name)}">${escapeHtml(player.team || player.sport)}</option>`
+    `<option value="${escapeHtml(player.name)}">${escapeHtml(`${player.team || player.sport} · ${entryPlayerProviderLabel(player)}`)}</option>`
   )).join("");
   status.textContent = data.count
     ? `${data.count} saved ${sport} ${data.count === 1 ? "player" : "players"} available.`
@@ -3313,7 +3339,11 @@ function applyEntryPlayerSelection() {
   const playerName = $("prop-player")?.value.trim().toLowerCase() || "";
   const match = state.entryPlayerDirectory.find((player) => String(player.name).trim().toLowerCase() === playerName);
   state.entrySelectedPlayerIdentityId = match?.id || null;
+  state.entrySelectedPlayerRecord = match || null;
   if (match?.team && !$("prop-team").value.trim()) $("prop-team").value = match.team;
+  if (match && $("entry-player-lookup-status")) {
+    $("entry-player-lookup-status").textContent = `${match.name} · ${entryPlayerProviderLabel(match)}.`;
+  }
 }
 
 function entryPayload() {
@@ -6005,12 +6035,14 @@ function bindEvents() {
     $("prop-player").value = "";
     $("prop-team").value = "";
     state.entrySelectedPlayerIdentityId = null;
+    state.entrySelectedPlayerRecord = null;
     loadEntryPlayerDirectory().catch((error) => {
       $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
     });
   });
   $("prop-player").addEventListener("input", () => {
     state.entrySelectedPlayerIdentityId = null;
+    state.entrySelectedPlayerRecord = null;
     applyEntryPlayerSelection();
     window.clearTimeout(entryPlayerLookupTimer);
     const query = $("prop-player").value.trim();
@@ -6056,6 +6088,7 @@ function bindEvents() {
     $("prop-player").disabled = false;
     $("prop-player").placeholder = `Search ${entryDefaults.sport} players`;
     state.entrySelectedPlayerIdentityId = null;
+    state.entrySelectedPlayerRecord = null;
     renderEntryProps();
   });
   $("entry-platform").addEventListener("change", () => {

@@ -169,6 +169,7 @@ from web.application.briefing_service import daily_scan_summary as build_daily_s
 from web.application.briefing_service import friendly_scan_status
 from web.application.briefing_service import new_daily_scan as build_new_daily_scan
 from web.application.briefing_service import recover_interrupted_daily_scan as recover_briefing_scan
+from web.version import STATIC_ASSET_VERSION
 from web.application.briefing_service import run_daily_briefing_scan as run_briefing_scan
 from web.application.briefing_service import save_daily_scan_status as persist_daily_scan_status
 from web.application.briefing_service import update_daily_scan as update_briefing_scan
@@ -518,7 +519,6 @@ configure_logging()
 _log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-STATIC_ASSET_VERSION = "20260904-v250-game-predictions"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
 DAILY_BRIEFING_CACHE_VERSION = 12
@@ -583,19 +583,15 @@ async def lifespan(_: FastAPI):
     _recover_interrupted_daily_scan()
     settlement_task = asyncio.create_task(_settlement_refresh_loop())
     scheduler_task = asyncio.create_task(_daily_operations_scheduler_loop())
-    status_warmup_task = asyncio.create_task(asyncio.to_thread(_runtime_status_payload))
     try:
         yield
     finally:
         settlement_task.cancel()
         scheduler_task.cancel()
-        status_warmup_task.cancel()
         with suppress(asyncio.CancelledError):
             await settlement_task
         with suppress(asyncio.CancelledError):
             await scheduler_task
-        with suppress(asyncio.CancelledError):
-            await status_warmup_task
 
 
 async def _settlement_refresh_loop() -> None:
@@ -4319,7 +4315,7 @@ def _run_daily_briefing_scan(
             scan = _new_daily_scan(platform, sport_filter, trigger)
             if scan_id:
                 scan["id"] = scan_id
-            return {
+            failed_scan = {
                 **scan,
                 "status": "failed",
                 "status_label": "Already Running",
@@ -4328,6 +4324,9 @@ def _run_daily_briefing_scan(
                 "completed_at": iso_utc(utc_now()),
                 "errors": ["Wait for the active scan to finish before starting another refresh."],
             }
+            failed_scan = _save_daily_scan_status(failed_scan)
+            _append_daily_scan_log(failed_scan)
+            return failed_scan
         return run_briefing_scan(
             platform,
             sport_filter,
@@ -4372,7 +4371,7 @@ def _daily_scan_status_payload(platform: str, sport_filter: str | None) -> dict:
 
 
 def _cached_daily_briefing_payload(platform: str, sport_filter: str | None, refresh: bool = False, cached_only: bool = False) -> dict:
-    return build_cached_daily_briefing_payload(
+    payload = build_cached_daily_briefing_payload(
         platform,
         sport_filter,
         refresh=refresh,
@@ -4393,6 +4392,9 @@ def _cached_daily_briefing_payload(platform: str, sport_filter: str | None, refr
             key,
         ),
     )
+    if cached_only:
+        payload = {**payload, "user": _daily_user_context(_user_preferences())}
+    return payload
 
 
 def _refresh_cached_briefing_runtime_state(payload: dict) -> dict:
@@ -4403,6 +4405,7 @@ def _refresh_cached_briefing_runtime_state(payload: dict) -> dict:
         sections["bet"] = []
     return {
         **payload,
+        "user": _daily_user_context(_user_preferences()),
         "headline": _daily_loss_protection_headline(
             protection,
             sections["bet"],
@@ -4438,7 +4441,7 @@ def _daily_briefing_placeholder(platform: str, sport_filter: str | None, key: st
             "slate": [],
             "risk_level": "Scan Needed",
             "expected_value": 0.0,
-            "model_health": _model_health_payload(),
+            "model_health": _daily_model_health_summary(_model_health_payload()),
         },
         "top_opportunities": [],
         "games_today": [],
@@ -4481,7 +4484,7 @@ def _daily_briefing_cache_key(platform: str, sport_filter: str | None) -> str:
 
 def _daily_user_context(prefs: dict) -> dict:
     name = str(prefs.get("display_name") or "Joshua").strip() or "Joshua"
-    hour = datetime.now().hour
+    hour = datetime.now(ENTRY_DAY_TIME_ZONE).hour
     greeting = "Good Morning" if hour < 12 else "Good Afternoon" if hour < 18 else "Good Evening"
     return {"display_name": name, "greeting": f"{greeting} {name}."}
 
@@ -4509,6 +4512,16 @@ def _daily_provider_badges(platform: str, stale: bool = False) -> list[dict]:
             "entry_capable": False,
         })
     return badges
+
+
+def _daily_model_health_summary(model_health: dict) -> dict:
+    return {
+        "trust_score": float(model_health.get("trust_score") or 0),
+        "status": str(model_health.get("status") or "Model status unavailable"),
+        "paid_entry_mode": str(model_health.get("paid_entry_mode") or "paper_first"),
+        "settled_entries": int(model_health.get("settled_entries") or 0),
+        "calibrated_picks": int(model_health.get("calibrated_picks") or 0),
+    }
 
 
 def _provider_capability(name: str) -> dict:
@@ -4580,7 +4593,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
             "slate": confirmed.get("slate", []),
             "risk_level": risk_summary["risk_level"],
             "expected_value": risk_summary["expected_value"],
-            "model_health": command.get("model_health", {}),
+            "model_health": _daily_model_health_summary(command.get("model_health", {})),
         },
         "loss_protection": loss_protection,
         "top_opportunities": top_opportunities,
@@ -11742,6 +11755,34 @@ def _start_daily_refresh_job() -> dict:
     }
 
 
+def _start_provider_refresh_job(platform: str, sport: str) -> dict:
+    canonical_platform = _canonical_platform(platform)
+    sport_filter = None if sport == "All Sports" else str(sport or "").upper()
+    dedupe_sport = sport_filter or "all"
+
+    def run(context: JobContext) -> dict:
+        context.update(10, f"Refreshing {canonical_platform} offers.")
+        props = _fetch_props(canonical_platform, sport_filter)
+        context.update(90, "Saving provider freshness status.")
+        SettingsRepository.set("last_provider_refresh", iso_utc(utc_now()))
+        return {
+            "message": f"{canonical_platform} refreshed with {len(props):,} current {dedupe_sport.upper()} offers.",
+            "platform": canonical_platform,
+            "sport": dedupe_sport,
+            "offers": len(props),
+        }
+
+    return {
+        **background_jobs.submit(
+            "selected_provider_refresh",
+            run,
+            dedupe_key=f"selected-provider-refresh:{canonical_platform}:{dedupe_sport}",
+            label=f"Refresh {canonical_platform} {dedupe_sport.upper()}",
+        ),
+        "accepted": True,
+    }
+
+
 def _materialize_player_features(context: JobContext | None = None) -> dict:
     if context:
         context.update(10, "Loading the current provider board.")
@@ -12526,7 +12567,10 @@ configure_operations_router(
                 "EDGEIQ_BET_HISTORY_FILE",
                 _import_betting_history_payload,
             ),
-            auto_check=lambda estimates: auto_check_entries(allow_estimates=estimates),
+            auto_check=lambda estimates: auto_check_entries(
+                allow_estimates=estimates,
+                refresh_providers=False,
+            ),
             refresh_live_stats=lambda: _refresh_live_stats(EntryRepository.pending()),
             dashboard=lambda: get_dashboard(),
         ),
@@ -12556,6 +12600,7 @@ configure_operations_router(
         ),
         run_daily_refresh=lambda: _run_daily_refresh_now(),
         start_daily_refresh=lambda: _start_daily_refresh_job(),
+        start_provider_refresh=lambda platform, sport: _start_provider_refresh_job(platform, sport),
         start_feature_refresh=lambda: _start_player_feature_job(),
         feature_status=lambda: PlayerFeatureRepository.status(),
         alert_delivery=lambda: _alert_delivery_settings(),

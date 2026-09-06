@@ -106,19 +106,32 @@ class LineHistoryRepository:
             return 0
         saved = 0
         with SessionLocal() as session:
-            players = {str(row.get("player", "")).strip() for row in lines if row.get("player")}
-            stats = {str(row.get("stat", "")).strip() for row in lines if row.get("stat")}
-            platforms = {str(row.get("platform", "")).strip() for row in lines if row.get("platform")}
-            recent_rows = (
-                session.query(PropLineHistoryModel)
-                .filter(
-                    PropLineHistoryModel.player.in_(players),
-                    PropLineHistoryModel.stat.in_(stats),
-                    PropLineHistoryModel.platform.in_(platforms),
+            triples = sorted({
+                (
+                    str(row.get("player", "")).strip(),
+                    str(row.get("stat", "")).strip(),
+                    str(row.get("platform", "")).strip(),
                 )
-                .order_by(PropLineHistoryModel.recorded_at.desc(), PropLineHistoryModel.id.desc())
-                .all()
-            )
+                for row in lines
+                if row.get("player") and row.get("stat") and row.get("platform")
+            })
+            recent_rows = []
+            # Query exact markets in bounded chunks. Independent IN clauses
+            # create a player x stat x platform cross-product on large boards.
+            for offset in range(0, len(triples), 250):
+                recent_rows.extend(
+                    session.query(PropLineHistoryModel)
+                    .filter(
+                        tuple_(
+                            PropLineHistoryModel.player,
+                            PropLineHistoryModel.stat,
+                            PropLineHistoryModel.platform,
+                        ).in_(triples[offset:offset + 250])
+                    )
+                    .order_by(PropLineHistoryModel.recorded_at.desc(), PropLineHistoryModel.id.desc())
+                    .all()
+                )
+            recent_rows.sort(key=lambda row: (row.recorded_at, row.id), reverse=True)
             latest: dict[tuple[str, str, str, str, str], PropLineHistoryModel] = {}
             for item in recent_rows:
                 key = (

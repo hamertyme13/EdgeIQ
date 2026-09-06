@@ -29,7 +29,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 REQUIRED_UI_VERSION="$(
-  "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+  "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
 )"
 
 health_ok() {

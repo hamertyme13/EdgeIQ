@@ -649,6 +649,13 @@ def test_daily_briefing_returns_bet_paper_watch_avoid_sections(monkeypatch):
     assert body["provider_badges"][0]["entry_capable"] is True
     assert "bet" in body["empty_states"]
     assert body["summary"]["risk_level"] == "Medium"
+    assert body["summary"]["model_health"] == {
+        "trust_score": 64.0,
+        "status": "Usable",
+        "paid_entry_mode": "paper_first",
+        "settled_entries": 0,
+        "calibrated_picks": 0,
+    }
     assert body["suggested_entries"][0]["label"] == "2-Leg"
     assert body["games_today"][0]["game"] == "AAA-BBB"
     assert body["games_today"][0]["matchup_label"] == "AAA vs BBB"
@@ -1277,6 +1284,8 @@ def test_daily_briefing_cached_only_returns_placeholder_without_provider_scan(mo
         "monthly_profit": {"current_month": {"profit": 0.0, "roi": 0.0}},
     })
     monkeypatch.setattr(web_app, "_model_health_payload", lambda: {"trust_score": 0, "status": "Scan Needed"})
+    monkeypatch.setattr(web_app, "_user_preferences", lambda: {"display_name": "Joshua"})
+    monkeypatch.setattr(web_app, "_daily_user_context", lambda _prefs: {"greeting": "Good Afternoon Joshua."})
 
     def fail_payload(platform, sport):
         calls["payload"] += 1
@@ -1289,6 +1298,7 @@ def test_daily_briefing_cached_only_returns_placeholder_without_provider_scan(mo
     assert body["cache"]["cached_only"] is True
     assert body["cache"]["requires_refresh"] is True
     assert body["summary"]["risk_level"] == "Scan Needed"
+    assert body["user"]["greeting"] == "Good Afternoon Joshua."
     assert calls["payload"] == 0
 
 
@@ -1355,6 +1365,53 @@ def test_daily_briefing_scan_failure_is_logged(monkeypatch):
     assert status["runs"][0]["status"] == "failed"
 
 
+def test_daily_briefing_scan_lock_failure_is_persisted(monkeypatch):
+    from contextlib import contextmanager
+
+    store = {}
+
+    @contextmanager
+    def unavailable_lock(_name):
+        yield False
+
+    monkeypatch.setattr(web_app, "named_operation_lock", unavailable_lock)
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
+
+    scan = web_app._run_daily_briefing_scan("PrizePicks", "WNBA", scan_id="locked", trigger="test")
+    status = web_app._daily_scan_status_payload("PrizePicks", "WNBA")
+
+    assert scan["status"] == "failed"
+    assert status["current"]["id"] == "locked"
+    assert status["current"]["status"] == "failed"
+    assert status["runs"][0]["status"] == "failed"
+
+
+def test_cached_daily_briefing_refreshes_time_sensitive_user_context(monkeypatch):
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app, "_user_preferences", lambda: {"display_name": "Joshua"})
+    monkeypatch.setattr(web_app, "_daily_user_context", lambda _prefs: {"greeting": "Good Afternoon Joshua."})
+
+    refreshed = web_app._refresh_cached_briefing_runtime_state({
+        "user": {"greeting": "Good Morning Joshua."},
+        "sections": {"bet": [], "paper": [], "watch": [], "avoid": []},
+    })
+
+    assert refreshed["user"]["greeting"] == "Good Afternoon Joshua."
+
+
+def test_daily_user_context_uses_configured_local_timezone(monkeypatch):
+    class MorningUtcAfternoonEastern:
+        @classmethod
+        def now(cls, zone=None):
+            assert zone == web_app.ENTRY_DAY_TIME_ZONE
+            return type("LocalTime", (), {"hour": 14})()
+
+    monkeypatch.setattr(web_app, "datetime", MorningUtcAfternoonEastern)
+
+    assert web_app._daily_user_context({"display_name": "Joshua"})["greeting"] == "Good Afternoon Joshua."
+
+
 def test_daily_games_today_deduplicates_reversed_matchups(monkeypatch):
     monkeypatch.setattr(
         web_app,
@@ -1409,6 +1466,27 @@ def test_interrupted_daily_briefing_scan_is_recovered(monkeypatch):
     assert saved[0]["status"] == "not_run_today"
     assert saved[0]["progress"] == 0
     assert "interrupted" in saved[0]["message"].lower()
+
+
+def test_daily_scan_status_marks_stale_worker_as_timed_out(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 9, 5, 18, tzinfo=UTC)
+    stale = web_app._new_daily_scan("PrizePicks", "NCAAF", trigger="manual")
+    stale["updated_at"] = (now - timedelta(minutes=21)).isoformat()
+    monkeypatch.setattr(web_app, "utc_now", lambda: now)
+    monkeypatch.setattr(
+        web_app.SettingsRepository,
+        "get",
+        lambda key, default="": json.dumps(stale) if key == web_app.DAILY_SCAN_STATUS_KEY else default,
+    )
+    monkeypatch.setattr("web.application.briefing_service.utc_now", lambda: now)
+
+    status = web_app._daily_scan_status_payload("PrizePicks", "NCAAF")
+
+    assert status["current"]["status"] == "failed"
+    assert status["current"]["status_label"] == "Refresh Timed Out"
+    assert "Restart EdgeIQ" in status["current"]["message"]
 
 
 def test_entry_suggestions_limit_both_to_entry_platforms(monkeypatch):
@@ -4776,7 +4854,7 @@ def test_sync_run_classifies_imports_and_auto_checks(monkeypatch, tmp_path):
     monkeypatch.setattr(web_app.EntryRepository, "classify_missing_economics", lambda: {"updated": 1})
     monkeypatch.setattr(web_app, "import_final_stats", lambda payload, source: 1)
     monkeypatch.setattr(web_app, "_import_betting_history_payload", lambda payload, source: {"imported": 1, "skipped": 0})
-    monkeypatch.setattr(web_app, "auto_check_entries", lambda allow_estimates=False: {"checked": 2, "settled": 1})
+    monkeypatch.setattr(web_app, "auto_check_entries", lambda allow_estimates=False, refresh_providers=True: {"checked": 2, "settled": 1})
     monkeypatch.setattr(web_app, "get_dashboard", lambda: {"record": "1-0"})
 
     body = run_sync()

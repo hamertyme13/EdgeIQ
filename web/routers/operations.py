@@ -32,6 +32,7 @@ class OperationsDependencies:
     update_refresh_schedule: Callable[[RefreshSchedulePayload], dict]
     run_daily_refresh: Callable[[], dict]
     start_daily_refresh: Callable[[], dict]
+    start_provider_refresh: Callable[[str, str], dict]
     start_feature_refresh: Callable[[], dict]
     feature_status: Callable[[], dict]
     alert_delivery: Callable[[], dict]
@@ -130,6 +131,16 @@ def run_daily_refresh(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
 def start_daily_refresh(deps: DepsOps = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, OperationsDependencies) else get_deps()
     return _deps.start_daily_refresh()
+
+
+@router.post("/api/automation/start-provider-refresh", status_code=202)
+def start_provider_refresh(
+    platform: str = "PrizePicks",
+    sport: str = "All Sports",
+    deps: DepsOps = None,  # type: ignore[assignment]
+) -> dict:
+    _deps = deps if isinstance(deps, OperationsDependencies) else get_deps()
+    return _deps.start_provider_refresh(platform, sport)
 
 
 @router.post("/api/player-features/jobs", status_code=202)

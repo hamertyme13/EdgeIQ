@@ -211,12 +211,14 @@ def sync_payload(
     refresh_live_stats: Callable[[], dict],
     dashboard: Callable[[], dict],
 ) -> dict:
+    live_stats = refresh_live_stats()
+    checked_entries = auto_check(allow_estimates)
     return {
         "default_wagers": classify_economics(),
         "final_stats_file": import_final_stats_file(),
         "bet_history_file": import_bet_history_file(),
-        "auto_check": auto_check(allow_estimates),
-        "live_stats": refresh_live_stats(),
+        "auto_check": checked_entries,
+        "live_stats": live_stats,
         "dashboard": dashboard(),
         "sportsbook_sync": {
             "connected": False,
