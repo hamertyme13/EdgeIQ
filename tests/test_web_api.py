@@ -1400,6 +1400,28 @@ def test_cached_daily_briefing_refreshes_time_sensitive_user_context(monkeypatch
     assert refreshed["user"]["greeting"] == "Good Afternoon Joshua."
 
 
+def test_cached_daily_briefing_discards_nested_model_analytics(monkeypatch):
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app, "_user_preferences", lambda: {"display_name": "Joshua"})
+    payload = {
+        "summary": {
+            "model_health": {
+                "trust_score": 52,
+                "status": "Calibrating",
+                "model_registry": {"models": [{"large": "payload"}]},
+                "segment_quality": [{"large": "payload"}],
+            },
+        },
+        "sections": {"bet": [], "paper": [], "watch": [], "avoid": []},
+    }
+
+    refreshed = web_app._refresh_cached_briefing_runtime_state(payload)
+
+    assert refreshed["summary"]["model_health"]["trust_score"] == 52
+    assert "model_registry" not in refreshed["summary"]["model_health"]
+    assert "segment_quality" not in refreshed["summary"]["model_health"]
+
+
 def test_daily_user_context_uses_configured_local_timezone(monkeypatch):
     class MorningUtcAfternoonEastern:
         @classmethod
@@ -6879,3 +6901,17 @@ def test_background_settlement_refresh_reuses_active_job(monkeypatch):
     status = web_app._settlement_job_status()
     assert status["status"] == "complete"
     assert status["result"]["cleared_unknowns"] == 2
+
+
+def test_board_history_optimization_requires_preview_and_confirmation():
+    static_dir = Path(web_app.__file__).with_name("static")
+    html = static_dir.joinpath("index.html").read_text(encoding="utf-8")
+    source = static_dir.joinpath("app.js").read_text(encoding="utf-8")
+
+    assert 'id="compact-board-history"' in html
+    assert 'api("/api/data/compact-board-history", { method: "POST" })' in source
+    assert 'window.confirm(' in source
+    assert 'api("/api/data/compact-board-history?execute=true", { method: "POST" })' in source
+    assert "Review blocked provider-board results" in source
+    assert "item.blocking_reason" in source
+    assert "item.next_retry_at" in source

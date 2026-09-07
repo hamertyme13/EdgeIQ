@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func, text
 
 from repository.database import Base
 
@@ -46,10 +46,28 @@ class BoardOfferObservationModel(Base):
     actual = Column(Float)
     outcome = Column(String, default="", index=True)
     outcome_source = Column(String, default="")
+    settlement_attempts = Column(Integer, nullable=False, default=0)
+    last_settlement_attempt_at = Column(DateTime)
+    next_settlement_retry_at = Column(DateTime)
+    settlement_block_reason = Column(Text, default="")
     captured_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     analyzed_at = Column(DateTime)
     settled_at = Column(DateTime)
 
     __table_args__ = (
         UniqueConstraint("observation_key", name="uq_board_offer_observation_key"),
+        Index("ix_board_offer_outcome_captured", "outcome", "captured_at"),
+        Index("ix_board_offer_sport_captured", "sport", "captured_at"),
+        Index("ix_board_offer_market_captured", "market_key", "captured_at"),
+        Index("ix_board_offer_provider_sport_start", "provider", "sport", "scheduled_start"),
+        Index(
+            "ix_board_offer_pending_retry",
+            "next_settlement_retry_at",
+            sqlite_where=text("outcome = '' AND next_settlement_retry_at IS NOT NULL"),
+        ),
+        Index(
+            "ix_board_offer_analyzed",
+            "analyzed_at",
+            sqlite_where=text("analyzed_at IS NOT NULL"),
+        ),
     )

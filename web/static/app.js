@@ -1795,6 +1795,8 @@ async function loadDataHealth() {
   const shadow = operations.shadow_evaluation || {};
   const shadowSettlement = operations.shadow_settlement || {};
   const researchMemory = operations.research_memory || {};
+  const completeBoard = operations.complete_board || {};
+  const boardRetry = completeBoard.settlement_retry || {};
   state.providerHealth = { providers, summary: data.summary || {}, operations };
   renderGlobalHealthStrip(providers, data.summary || {}, operations);
   $("data-health-list").innerHTML = `
@@ -1813,6 +1815,20 @@ async function loadDataHealth() {
       </div>
       <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
       <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
+      <p>${Number(completeBoard.settled || 0).toLocaleString()} provider-board observations settled · ${Number(boardRetry.due || 0).toLocaleString()} retries due · ${Number(boardRetry.deferred || 0).toLocaleString()} waiting.</p>
+      ${(boardRetry.items || []).length ? `
+        <details class="compact-details">
+          <summary>Review blocked provider-board results</summary>
+          ${(boardRetry.items || []).map((item) => `
+            <div class="settlement-diagnostic">
+              <strong>${escapeHtml(item.player || "Unknown player")} · ${escapeHtml(item.stat || "Unknown stat")}</strong>
+              <p class="subtle">${escapeHtml(item.sport || "Unknown sport")} · ${escapeHtml(item.provider || "Provider unavailable")} · ${escapeHtml(item.game || "Game unavailable")}</p>
+              <p>${escapeHtml(item.blocking_reason || "Waiting for a verified final box score.")}</p>
+              <p class="subtle">Checked ${Number(item.attempts || 0)} time${Number(item.attempts || 0) === 1 ? "" : "s"} · Next retry ${item.next_retry_at ? formatDateTime(item.next_retry_at) : "not scheduled"}</p>
+            </div>
+          `).join("")}
+        </details>
+      ` : ""}
       <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml(humanizeCopilotText((scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
       ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
       ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
@@ -3170,6 +3186,26 @@ async function manageDatabase(action) {
   const result = await api(`/api/data/${action}`, { method: "POST" });
   const artifact = result[action === "backup" ? "backup" : "export"];
   $("data-management-status").textContent = `${action === "backup" ? "Backup" : "Export"} created: ${artifact.path}`;
+}
+
+async function optimizeBoardHistory() {
+  const status = $("data-management-status");
+  const preview = await api("/api/data/compact-board-history", { method: "POST" });
+  if (!preview.eligible) {
+    status.textContent = preview.message;
+    return;
+  }
+  const approved = window.confirm(
+    `${preview.eligible.toLocaleString()} redundant provider checkpoints can be removed. `
+    + "EdgeIQ will create a backup first and preserve opening, latest, changed, analyzed, and settled evidence. Continue?"
+  );
+  if (!approved) {
+    status.textContent = "History optimization canceled. No records were changed.";
+    return;
+  }
+  status.textContent = "Creating a backup and optimizing provider history...";
+  const result = await api("/api/data/compact-board-history?execute=true", { method: "POST" });
+  status.textContent = `${result.message} Backup: ${result.backup?.path || "created"}.`;
 }
 
 function renderEntryProps() {
@@ -6000,6 +6036,7 @@ function bindEvents() {
   $("refresh-runtime-status")?.addEventListener("click", () => withButtonBusy("refresh-runtime-status", "Checking...", loadRuntimeStatus));
   $("backup-database").addEventListener("click", () => withButtonBusy("backup-database", "Backing up...", () => manageDatabase("backup")));
   $("export-database").addEventListener("click", () => withButtonBusy("export-database", "Exporting...", () => manageDatabase("export")));
+  $("compact-board-history").addEventListener("click", () => withButtonBusy("compact-board-history", "Checking...", optimizeBoardHistory));
   $("refresh-notifications").addEventListener("click", () => withButtonBusy("refresh-notifications", "Checking...", loadNotifications));
   $("notification-center-toggle")?.addEventListener("click", () => {
     const drawer = $("notification-center-drawer");

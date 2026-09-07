@@ -195,12 +195,19 @@ class PlayerFeatureRepository:
         if not keys:
             return 0
         expired_at = datetime(1970, 1, 1, tzinfo=UTC)
-        updated = (
-            session.query(PlayerFeatureModel)
-            .filter(PlayerFeatureModel.feature_key.in_(keys))
-            .update({PlayerFeatureModel.materialized_at: expired_at}, synchronize_session=False)
-        )
-        return int(updated or 0)
+        ordered_keys = sorted(keys)
+        updated = 0
+        # Keep well below SQLite's bound-parameter limit. Large provider
+        # refreshes can touch tens of thousands of player/stat segments.
+        for start in range(0, len(ordered_keys), 500):
+            batch = ordered_keys[start:start + 500]
+            updated += int(
+                session.query(PlayerFeatureModel)
+                .filter(PlayerFeatureModel.feature_key.in_(batch))
+                .update({PlayerFeatureModel.materialized_at: expired_at}, synchronize_session=False)
+                or 0
+            )
+        return updated
 
     @staticmethod
     def status() -> dict:

@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260905-player-refresh" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260906-board-history" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -232,6 +232,7 @@
               <div class="button-row">
                 <button id="backup-database" class="secondary" type="button">Create Backup</button>
                 <button id="export-database" class="secondary" type="button">Export Data</button>
+                <button id="compact-board-history" class="secondary" type="button">Optimize History</button>
               </div>
               <p id="data-management-status" class="subtle" aria-live="polite"></p>
             </div>
@@ -1843,41 +1844,41 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260905-player-refresh"></script>
+    <script src="/static/ui-shell.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260905-player-refresh"></script>
+    <script src="/static/ui-utils.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260905-player-refresh"></script>
+    <script src="/static/circuit-audio.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260905-player-refresh"></script>
+    <script src="/static/js/state.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260905-player-refresh"></script>
+    <script src="/static/js/api.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/js/beta.js?v=20260905-player-refresh"></script>
-    <script src="/static/js/player-hit-rankings.js?v=20260905-player-refresh"></script>
-    <script src="/static/js/model-version-evaluation.js?v=20260905-player-refresh"></script>
-    <script src="/static/js/games.js?v=20260905-player-refresh"></script>
-    <script src="/static/app.js?v=20260905-player-refresh"></script>
+    <script src="/static/js/beta.js?v=20260906-board-history"></script>
+    <script src="/static/js/player-hit-rankings.js?v=20260906-board-history"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260906-board-history"></script>
+    <script src="/static/js/games.js?v=20260906-board-history"></script>
+    <script src="/static/app.js?v=20260906-board-history"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -1,4 +1,5 @@
 from repository.models.background_job_model import BackgroundJobModel
+from repository.models.board_offer_observation_model import BoardOfferObservationModel
 from repository.models.entry_prop_model import EntryPropModel
 from repository.models.game_prediction_model import GamePredictionModel
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
@@ -61,6 +62,16 @@ def test_background_job_schema_preserves_restart_safe_progress() -> None:
     assert {
         "job_id", "dedupe_key", "status", "progress", "phase", "result_json", "error",
         "owner_id", "process_id", "heartbeat_at",
+    } <= columns
+
+
+def test_board_offer_schema_preserves_settlement_retry_diagnostics() -> None:
+    columns = set(BoardOfferObservationModel.__table__.columns.keys())
+    assert {
+        "settlement_attempts",
+        "last_settlement_attempt_at",
+        "next_settlement_retry_at",
+        "settlement_block_reason",
     } <= columns
 
 

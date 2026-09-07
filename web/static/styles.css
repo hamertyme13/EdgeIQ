@@ -5980,6 +5980,22 @@ td,
   gap: 10px;
 }
 
+.compact-details {
+  margin-top: 10px;
+}
+
+.compact-details > summary {
+  color: var(--secondary);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.compact-details > .settlement-diagnostic {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
 .settlement-checks,
 .provider-attempt-list {
   display: flex;

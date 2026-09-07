@@ -96,7 +96,7 @@ from services import odds as sportsbook_odds
 from services.background_jobs import JobContext, background_jobs
 from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
-from services.data_management import backup_database, export_database
+from services.data_management import backup_database, compact_board_history, export_database
 from services.final_stats_archive import archive_final_stats
 from services.game_intelligence import prediction_for_matchup, settle_recent_predictions
 from services.ollama_client import (
@@ -1449,6 +1449,14 @@ def _data_integrity_repair_payload(dry_run: bool = True) -> dict:
             f"{incomplete['quarantined']} incomplete settled predictions, then rebuilt model metrics."
         ),
     }
+
+
+def _compact_board_history_payload(execute: bool = False) -> dict:
+    result = compact_board_history(execute=execute)
+    if execute and int(result.get("removed") or 0) > 0:
+        BoardOfferRepository.invalidate_summary()
+        _DATA_HEALTH_CACHE.clear()
+    return result
 
 
 def _refresh_calibration_data_payload() -> dict:
@@ -4393,11 +4401,13 @@ def _cached_daily_briefing_payload(platform: str, sport_filter: str | None, refr
         ),
     )
     if cached_only:
+        payload = _compact_daily_briefing_payload(payload)
         payload = {**payload, "user": _daily_user_context(_user_preferences())}
     return payload
 
 
 def _refresh_cached_briefing_runtime_state(payload: dict) -> dict:
+    payload = _compact_daily_briefing_payload(payload)
     protection = _loss_protection_payload()
     sections = {key: list((payload.get("sections") or {}).get(key) or []) for key in ("bet", "paper", "watch", "avoid")}
     if protection.get("active") and sections["bet"]:
@@ -4522,6 +4532,12 @@ def _daily_model_health_summary(model_health: dict) -> dict:
         "settled_entries": int(model_health.get("settled_entries") or 0),
         "calibrated_picks": int(model_health.get("calibrated_picks") or 0),
     }
+
+
+def _compact_daily_briefing_payload(payload: dict) -> dict:
+    summary = dict(payload.get("summary") or {})
+    summary["model_health"] = _daily_model_health_summary(summary.get("model_health") or {})
+    return {**payload, "summary": summary}
 
 
 def _provider_capability(name: str) -> dict:
@@ -12910,6 +12926,7 @@ configure_results_router(
         performance=lambda: _performance_payload(),
         create_backup=lambda: backup_database(),
         create_export=lambda: export_database(),
+        compact_board_history=lambda execute: _compact_board_history_payload(execute),
         backtest=lambda: _backtest_payload(),
         refresh_calibration=lambda: _refresh_calibration_data_payload(),
         model_health=lambda: _model_health_payload(),

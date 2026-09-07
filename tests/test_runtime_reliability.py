@@ -42,6 +42,25 @@ def test_data_health_exposes_plausibility_diagnostics(monkeypatch):
     assert payload["operations"]["plausibility_rejections"] == [rejection]
 
 
+def test_data_health_surfaces_due_complete_board_retries(monkeypatch):
+    monkeypatch.setattr("web.application.provider_health_service.cache_metrics", lambda: {})
+    complete_board = {
+        "settlement_retry": {
+            "due": 4,
+            "deferred": 7,
+            "message": "4 provider-board markets are ready for another verification attempt.",
+        }
+    }
+
+    payload = build_data_health_payload(
+        {}, {}, "settlement", operational_health={"complete_board": complete_board}
+    )
+
+    assert payload["operations"]["complete_board"] == complete_board
+    assert payload["operations"]["status"] == "degraded"
+    assert complete_board["settlement_retry"]["message"] in payload["operations"]["warnings"]
+
+
 def test_runtime_status_returns_stale_snapshot_while_refreshing(monkeypatch):
     started = []
 

@@ -76,6 +76,45 @@ def test_invalidation_expires_only_matching_feature(tmp_path, monkeypatch):
     assert not PlayerFeatureRepository.get("Player Two", "WNBA", "Rebounds")["materialized_at"].startswith("1970-")
 
 
+def test_large_feature_invalidation_is_batched_for_sqlite(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'large-invalidation.db'}")
+    session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    Base.metadata.create_all(engine)
+    monkeypatch.setattr(feature_module, "SessionLocal", session_local)
+    monkeypatch.setattr(PlayerFeatureRepository, "_schema_ready", True)
+    now = datetime.now(UTC)
+    rows = [
+        {
+            "player": f"Player {index}",
+            "sport": "NCAAF",
+            "stat": "Rushing Yards",
+        }
+        for index in range(1205)
+    ]
+    with session_local() as session:
+        session.add_all([
+            PlayerFeatureModel(
+                feature_key=PlayerFeatureRepository.feature_key(
+                    row["player"], row["sport"], row["stat"]
+                ),
+                normalized_player_key=f"player{index}",
+                player=row["player"],
+                sport=row["sport"],
+                stat=row["stat"],
+                materialized_at=now,
+            )
+            for index, row in enumerate(rows)
+        ])
+        session.commit()
+
+    assert PlayerFeatureRepository.invalidate_segments(rows) == 1205
+    with session_local() as session:
+        expired = session.query(PlayerFeatureModel).filter(
+            PlayerFeatureModel.materialized_at < now
+        ).count()
+    assert expired == 1205
+
+
 def test_concurrent_materialization_reuses_one_segment(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'concurrent.db'}")
     session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)

@@ -14,6 +14,7 @@ class ResultsDependencies:
     performance: Callable[[], dict]
     create_backup: Callable[[], dict]
     create_export: Callable[[], dict]
+    compact_board_history: Callable[[bool], dict]
     backtest: Callable[[], dict]
     refresh_calibration: Callable[[], dict]
     model_health: Callable[[], dict]
@@ -60,6 +61,15 @@ def create_database_export(deps: DepsResults = None) -> dict:  # type: ignore[as
     _deps = deps if isinstance(deps, ResultsDependencies) else get_deps()
     try:
         return {"export": _deps.create_export()}
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/api/data/compact-board-history")
+def compact_board_history(execute: bool = False, deps: DepsResults = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, ResultsDependencies) else get_deps()
+    try:
+        return _deps.compact_board_history(execute)
     except (FileNotFoundError, ValueError, OSError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

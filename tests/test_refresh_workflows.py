@@ -45,6 +45,13 @@ def test_desktop_launchers_read_version_without_importing_web_app() -> None:
         launcher = path.read_text(encoding="utf-8")
         assert "from web.version import STATIC_ASSET_VERSION" in launcher
         assert "from web.app import STATIC_ASSET_VERSION" not in launcher
+        assert "--connect-timeout 0.2 --max-time 1" in launcher
+
+    terminal_launcher = Path("scripts/run_edgeiq_desktop.sh").read_text(encoding="utf-8")
+    background_launcher = Path("scripts/launch_edgeiq.sh").read_text(encoding="utf-8")
+    migration = '"$PYTHON_BIN" -m alembic upgrade head'
+    assert terminal_launcher.index('if [[ "$STATE" == "running" ]]') < terminal_launcher.index(migration)
+    assert background_launcher.index('if ! health_ok "$PORT"') < background_launcher.index(migration)
 
 
 def test_startup_does_not_eagerly_scan_runtime_status() -> None:

@@ -115,6 +115,7 @@ def build_data_health_payload(
     shadow = operational_health.get("shadow_evaluation") or {}
     settlement = operational_health.get("shadow_settlement") or {}
     research_memory = operational_health.get("research_memory") or {}
+    complete_board = operational_health.get("complete_board") or {}
     plausibility_rejections = operational_health.get("plausibility_rejections") or []
     background_jobs = operational_health.get("background_jobs") or []
     deployment = operational_health.get("deployment") or {}
@@ -134,6 +135,9 @@ def build_data_health_payload(
         )
     if shadow.get("queued") and not shadow.get("settled") and settlement.get("ran_at"):
         operational_warnings.append("Shadow settlement is running, but no verified outcomes have settled yet.")
+    board_retry = complete_board.get("settlement_retry") or {}
+    if int(board_retry.get("due") or 0) > 0:
+        operational_warnings.append(str(board_retry.get("message") or "Provider-board results are ready to retry."))
     return {
         "providers": providers,
         "provider_weights": provider_weights,
@@ -150,6 +154,7 @@ def build_data_health_payload(
             "shadow_settlement": settlement,
             "shadow_evaluation": shadow,
             "research_memory": research_memory,
+            "complete_board": complete_board,
             "plausibility_rejections": plausibility_rejections,
             "background_jobs": background_jobs,
             "deployment": deployment,

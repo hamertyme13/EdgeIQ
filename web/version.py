@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260905-player-refresh"
+STATIC_ASSET_VERSION = "20260906-board-history"
