@@ -669,8 +669,10 @@ class EntryRepository:
             }
 
     @staticmethod
-    def financial_stats() -> dict:
-        entries = EntryRepository.all()
+    def financial_stats(entries: list[dict] | None = None) -> dict:
+        """Build entry totals from an optional already-loaded entry ledger."""
+        if entries is None:
+            entries = EntryRepository.all()
         active = [entry for entry in entries if entry["status"] in {"Pending", "Settled"}]
         real_active = [entry for entry in active if not EntryRepository._is_paper(entry)]
         paper_active = [entry for entry in active if EntryRepository._is_paper(entry)]

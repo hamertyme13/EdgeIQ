@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from threading import RLock
 
 from analytics.backtesting import backtest_summary
 from analytics.grouped_validation import grouped_rolling_validation
@@ -13,11 +14,30 @@ from repository.repositories.model_rehabilitation_repository import ModelRehabil
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from services.dashboard import get_dashboard
 from utils.time import iso_utc
+from utils.ttl_cache import TTLCache
+
+
+PERFORMANCE_CACHE_SECONDS = 20.0
+_performance_cache: TTLCache[tuple[object, dict]] = TTLCache()
+_performance_cache_lock = RLock()
+
+
+def invalidate_performance_payload() -> None:
+    """Clear the small Results cache after an entry or ledger write."""
+    with _performance_cache_lock:
+        _performance_cache.clear()
 
 
 def performance_payload() -> dict:
+    with _performance_cache_lock:
+        cached = _performance_cache.get_or_none()
+        if cached is not None:
+            cached_dependency, cached_payload = cached
+            if cached_dependency is get_dashboard:
+                return {**cached_payload, "cache": {"hit": True, "ttl_seconds": int(PERFORMANCE_CACHE_SECONDS)}}
+
     stats = get_dashboard()
-    return {
+    payload = {
         "bankroll_curve": stats.get("bankroll_curve", []),
         "by_sport": stats.get("by_sport", {}),
         "by_stat": stats.get("by_stat", {}),
@@ -26,6 +46,9 @@ def performance_payload() -> dict:
         "monthly_profit": stats.get("monthly_profit", {}),
         "summary": stats,
     }
+    with _performance_cache_lock:
+        _performance_cache.set((get_dashboard, dict(payload)), ttl=PERFORMANCE_CACHE_SECONDS)
+    return {**payload, "cache": {"hit": False, "ttl_seconds": int(PERFORMANCE_CACHE_SECONDS)}}
 
 
 def backtest_payload(clv: dict) -> dict:

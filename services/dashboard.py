@@ -27,8 +27,13 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     if starting_bankroll is None:
         starting_bankroll = get_starting_bankroll()
 
-    stats = BetRepository().dashboard_stats()
-    entry_stats = EntryRepository.financial_stats()
+    # Results uses each ledger for totals, timeline, and monthly reporting.
+    # Load each once so a full history is not repeatedly hydrated per request.
+    bet_repository = BetRepository()
+    bets = bet_repository.get_all()
+    entries = EntryRepository.all()
+    stats = bet_repository.dashboard_stats(bets)
+    entry_stats = EntryRepository.financial_stats(entries)
     bankroll_transactions = BankrollTransactionRepository.summary()
 
     stats["wins"] += entry_stats["wins"]
@@ -59,12 +64,9 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     )
     stats["by_stat"] = _display_groups(stats["by_stat"])
     stats["entry_platform_profitability"] = entry_stats.get("platform_profitability", [])
-    timeline_stats = _combined_timeline_stats(
-        BetRepository().get_all(),
-        EntryRepository.all(),
-    )
+    timeline_stats = _combined_timeline_stats(bets, entries)
     stats.update(timeline_stats)
-    stats["monthly_profit"] = monthly_profit_log()
+    stats["monthly_profit"] = monthly_profit_log(bets, entries)
     stats["bankroll_transactions"] = bankroll_transactions
     stats["performance_insights"] = _performance_insights(stats)
 
@@ -168,9 +170,13 @@ def _display_groups(groups: dict, hidden: set[str] | None = None) -> dict:
     return displayed
 
 
-def monthly_profit_log() -> dict:
+def monthly_profit_log(bets: list | None = None, entries: list[dict] | None = None) -> dict:
     months: dict[str, dict] = {}
-    for bet in BetRepository().get_all():
+    if bets is None:
+        bets = BetRepository().get_all()
+    if entries is None:
+        entries = EntryRepository.all()
+    for bet in bets:
         if bet.result not in {"Win", "Loss", "Push"}:
             continue
         row = _month_row(months, _month_key(getattr(bet, "created_at", None)))
@@ -179,7 +185,7 @@ def monthly_profit_log() -> dict:
         row["bets"] += 1
         _count_result(row, bet.result)
 
-    for entry in EntryRepository.all():
+    for entry in entries:
         if entry.get("entry_mode") == "paper":
             continue
         if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push"}:

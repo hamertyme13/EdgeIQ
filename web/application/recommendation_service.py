@@ -6,6 +6,7 @@ from copy import deepcopy
 
 from data.providers import pandascore, sleeper
 from utils.entity_normalization import canonical_person_key
+from utils.platforms import maximum_entry_legs
 from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
 from utils.ttl_cache import TTLMap
 
@@ -679,9 +680,4 @@ def _sport_filter(sport: str) -> str | None:
 
 
 def _maximum_legs(platform: str) -> int:
-    key = str(platform or "").strip().lower()
-    if key == "underdog":
-        return 8
-    if key in {"prizepicks", "draftkings pick6"}:
-        return 6
-    return 5
+    return maximum_entry_legs(platform)

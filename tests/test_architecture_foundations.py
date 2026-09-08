@@ -10,7 +10,7 @@ def test_canonical_platform_aliases_and_limits() -> None:
     assert canonical_platform("dk pick6") == "DraftKings Pick6"
     assert canonical_platform("all platforms") == "Both"
     assert maximum_entry_legs("underdog fantasy") == 8
-    assert maximum_entry_legs("DraftKings") == 6
+    assert maximum_entry_legs("DraftKings") == 7
 
 
 def test_canonical_sport_aliases_and_all_sports_filter() -> None:

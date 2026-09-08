@@ -1585,6 +1585,30 @@ def test_underdog_generator_supports_eight_legs(monkeypatch):
     assert calls[0]["avoid_prop_keys"] == {"playera|points|over|20.50"}
 
 
+@pytest.mark.parametrize(("platform", "leg_count", "maximum"), [
+    ("Sleeper", 8, 8),
+    ("DraftKings Pick6", 7, 7),
+])
+def test_provider_generator_supports_configured_maximum_legs(monkeypatch, platform, leg_count, maximum):
+    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda _platform: [{
+        "player": "A",
+        "team": "AAA",
+        "league": "WNBA",
+        "stat": "Points",
+        "line": 20.5,
+        "platform": platform,
+        "game_time": _today_game_time(),
+    }])
+    monkeypatch.setattr(web_app, "suggest_entries", lambda *args, **kwargs: [])
+    if platform == "Sleeper":
+        monkeypatch.setattr(web_app.sleeper, "public_api_status", lambda: {"props_configured": True})
+
+    body = entry_suggestions(sport="WNBA", platform=platform, leg_count=leg_count)
+
+    assert body["leg_count"] == leg_count
+    assert body["maximum_legs"] == maximum
+
+
 def test_nfl_entry_suggestions_explain_when_same_day_lines_are_unavailable(monkeypatch):
     monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [])
 
@@ -6164,7 +6188,7 @@ def test_dashboard_merges_entry_sport_performance_and_insights(monkeypatch):
     monkeypatch.setattr(
         dashboard_service.BetRepository,
         "dashboard_stats",
-        lambda self: {
+        lambda self, bets=None: {
             "wins": 1,
             "losses": 0,
             "pushes": 0,
@@ -6188,7 +6212,7 @@ def test_dashboard_merges_entry_sport_performance_and_insights(monkeypatch):
     monkeypatch.setattr(
         dashboard_service.EntryRepository,
         "financial_stats",
-        lambda: {
+        lambda entries=None: {
             "wins": 0,
             "losses": 1,
             "pushes": 0,

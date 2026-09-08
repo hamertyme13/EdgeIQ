@@ -30,8 +30,8 @@ PLATFORM_ALIASES: dict[str, str] = {
 PLATFORM_MAX_LEGS: dict[str, int] = {
     "PrizePicks": 6,
     "Underdog": 8,
-    "DraftKings Pick6": 6,
-    "Sleeper": 5,
+    "DraftKings Pick6": 7,
+    "Sleeper": 8,
 }
 
 

@@ -152,6 +152,31 @@ def test_portfolio_and_results_reports_stay_within_budget(monkeypatch):
     assert results_ms < 250
 
 
+def test_results_payload_reuses_a_short_lived_dashboard_snapshot(monkeypatch):
+    results_service.invalidate_performance_payload()
+    calls = 0
+
+    def dashboard() -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            "bankroll_curve": [],
+            "by_sport": {},
+            "by_stat": {},
+            "by_platform": {},
+            "entries": {},
+            "monthly_profit": {},
+        }
+
+    monkeypatch.setattr(results_service, "get_dashboard", dashboard)
+    first = results_service.performance_payload()
+    second = results_service.performance_payload()
+
+    assert calls == 1
+    assert first["cache"]["hit"] is False
+    assert second["cache"]["hit"] is True
+
+
 @pytest.mark.performance
 def test_provider_cache_and_health_api_latency_stay_within_budget(monkeypatch):
     web_app._PROP_FETCH_CACHE.clear()

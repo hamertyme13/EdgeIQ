@@ -726,9 +726,9 @@ function loadViewData(viewId) {
   if (state.loadedViews.has(viewId)) return;
   state.loadedViews.add(viewId);
   const tasks = {
-    performance: [
-      loadPerformance,
-    ],
+    // Results is a workspace. Its active Performance pane owns this fetch so
+    // opening Results does not issue the same expensive report twice.
+    performance: [],
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection, loadPreferences],
     analysis: [],
@@ -3149,8 +3149,9 @@ function providerBaseMultiplier(platform, legCount) {
 }
 
 function providerMaximumLegs(platform) {
-  if (platform === "Underdog") return 8;
-  if (platform === "PrizePicks" || platform === "DraftKings Pick6") return 6;
+  if (platform === "Underdog" || platform === "Sleeper") return 8;
+  if (platform === "DraftKings Pick6") return 7;
+  if (platform === "PrizePicks") return 6;
   return 5;
 }
 
