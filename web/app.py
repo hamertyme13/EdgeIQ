@@ -12998,6 +12998,7 @@ configure_intelligence_router(
                 for selected_name in _selected_entry_platforms(selected_platform)
                 for prop in _fetch_props(selected_name, sport_filter)
             ],
+            is_current_day=lambda prop: _is_prop_on_entry_day(prop),
             top_props_by_sport=lambda props, per_sport_limit, sport_filter: _top_props_by_sport(
                 props,
                 per_sport_limit,

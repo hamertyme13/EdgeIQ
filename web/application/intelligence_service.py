@@ -126,11 +126,18 @@ def trending_games_response(
     limit: int,
     *,
     fetch_props: Callable[[str, str | None], list[dict]],
+    is_current_day: Callable[[dict], bool],
     top_props_by_sport: Callable[[list[dict], int, str | None], list[dict]],
     build_games: Callable[[list[dict], list[dict], int], list[dict]],
 ) -> dict:
     sport_filter = None if sport == "All Sports" else sport.upper()
-    props = fetch_props(platform, sport_filter)
+    # A game browser should answer "what can I act on today", not become a
+    # mixed-date provider archive. Rows without a scheduled game time are held
+    # out because EdgeIQ cannot safely assign them to today's slate.
+    props = [
+        prop for prop in fetch_props(platform, sport_filter)
+        if is_current_day(prop)
+    ]
     props.sort(key=lambda prop: prop.get("trending_count", 0), reverse=True)
     ranked_props = top_props_by_sport(props, 5, sport_filter)
     games = build_games(props, ranked_props, limit)
@@ -139,6 +146,7 @@ def trending_games_response(
         "platform": platform,
         "sport": sport,
         "ranked_player_count": len({prop.get("player", "") for prop in ranked_props}),
+        "game_day": "today",
     }
 
 

@@ -4282,9 +4282,10 @@ def test_trending_games_payload_highlights_ranked_players():
 
 def test_trending_games_endpoint_uses_top_props_as_ranked_players(monkeypatch):
     raw_props = [
-        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "game": "SEA-NYL", "trending_count": 100},
-        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Assists", "line": 7.5, "game": "SEA-NYL", "trending_count": 90},
-        {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "game": "DAL-PHX", "trending_count": 80},
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "game": "SEA-NYL", "trending_count": 100, "game_time": _today_game_time()},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Assists", "line": 7.5, "game": "SEA-NYL", "trending_count": 90, "game_time": _today_game_time()},
+        {"player": "C", "team": "CCC", "league": "WNBA", "stat": "Rebounds", "line": 8.5, "game": "DAL-PHX", "trending_count": 80, "game_time": _today_game_time()},
+        {"player": "Future", "team": "DDD", "league": "WNBA", "stat": "Points", "line": 12.5, "game": "LAS-CON", "trending_count": 200, "game_time": f"{(datetime.now(ZoneInfo('America/New_York')).date() + timedelta(days=1)).isoformat()}T19:00:00-04:00"},
     ]
     monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
 
@@ -4293,6 +4294,8 @@ def test_trending_games_endpoint_uses_top_props_as_ranked_players(monkeypatch):
     assert body["games"][0]["game"] == "SEA-NYL"
     assert body["games"][0]["ranked_player_count"] == 2
     assert body["ranked_player_count"] == 3
+    assert body["game_day"] == "today"
+    assert all(game["game"] != "LAS-CON" for game in body["games"])
 
 
 def test_web_player_detail_summarizes_active_player_props(monkeypatch):

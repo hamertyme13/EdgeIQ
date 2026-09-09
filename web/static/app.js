@@ -3079,8 +3079,8 @@ async function evaluateCopilotModel() {
 async function loadTrendingGames(platform = $("props-platform").value, sport = $("props-sport").value) {
   const data = await api(`/api/games/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}`);
   $("trending-games-status").textContent = data.games.length
-    ? `${data.games.length} popular games · ${data.ranked_player_count} ranked players in view`
-    : "No trending games available.";
+    ? `${data.games.length} games today · ${data.ranked_player_count} ranked players in view`
+    : "No games scheduled for today.";
   $("trending-games-list").innerHTML = data.games.map((game) => {
     const players = game.ranked_players.length ? game.ranked_players : game.top_players;
     return `

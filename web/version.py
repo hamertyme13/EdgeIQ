@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260909-today-ledger-layout"
+STATIC_ASSET_VERSION = "20260909-games-today"
