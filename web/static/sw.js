@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260909-today-coverage";
+const CACHE_NAME = "edgeiq-shell-20260909-today-ledger-layout";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

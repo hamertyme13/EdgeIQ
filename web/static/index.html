@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260909-today-coverage" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260909-today-ledger-layout" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -140,6 +140,26 @@
               <div class="today-refresh-actions" aria-label="Today refresh controls">
                 <span id="today-provider-status" class="today-provider-status" role="status">Checking provider freshness...</span>
                 <div class="toolbar">
+                  <label class="today-sport-control" for="today-sport">Sport
+                    <select id="today-sport" aria-label="Today sport">
+                      <option>All Sports</option>
+                      <option>WNBA</option>
+                      <option>NBA</option>
+                      <option>NFL</option>
+                      <option>MLB</option>
+                      <option>NHL</option>
+                      <option>NCAAF</option>
+                      <option>NCAAM</option>
+                      <option>NCAAW</option>
+                      <option>MLS</option>
+                      <option>EPL</option>
+                      <option>UCL</option>
+                      <option>TENNIS</option>
+                      <option>PGA</option>
+                      <option>MMA</option>
+                      <option>NASCAR</option>
+                    </select>
+                  </label>
                   <button id="refresh-today-providers" class="secondary" type="button">Refresh Providers</button>
                   <button id="refresh-daily-briefing" class="secondary" type="button">Refresh Briefing</button>
                 </div>
@@ -1546,7 +1566,7 @@
             <button class="workspace-tab" type="button" data-workspace-jump="results-workspace:settlement">Settlement</button>
             <button class="workspace-tab active" type="button">Ledger</button>
           </div>
-          <div class="two-col">
+          <div class="two-col results-ledger-layout">
             <div class="panel">
               <h2>Track Bet</h2>
               <form id="bet-form" class="form-grid">
@@ -1844,41 +1864,41 @@
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260909-today-coverage"></script>
+    <script src="/static/ui-shell.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260909-today-coverage"></script>
+    <script src="/static/ui-utils.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260909-today-coverage"></script>
+    <script src="/static/circuit-audio.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260909-today-coverage"></script>
+    <script src="/static/js/state.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260909-today-coverage"></script>
+    <script src="/static/js/api.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/js/beta.js?v=20260909-today-coverage"></script>
-    <script src="/static/js/player-hit-rankings.js?v=20260909-today-coverage"></script>
-    <script src="/static/js/model-version-evaluation.js?v=20260909-today-coverage"></script>
-    <script src="/static/js/games.js?v=20260909-today-coverage"></script>
-    <script src="/static/app.js?v=20260909-today-coverage"></script>
+    <script src="/static/js/beta.js?v=20260909-today-ledger-layout"></script>
+    <script src="/static/js/player-hit-rankings.js?v=20260909-today-ledger-layout"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260909-today-ledger-layout"></script>
+    <script src="/static/js/games.js?v=20260909-today-ledger-layout"></script>
+    <script src="/static/app.js?v=20260909-today-ledger-layout"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

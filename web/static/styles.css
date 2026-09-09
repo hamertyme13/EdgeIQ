@@ -487,6 +487,20 @@ p { color: var(--muted); margin: 5px 0 0; }
   justify-content: flex-end;
   gap: 8px;
 }
+.today-sport-control {
+  display: inline-grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.today-sport-control select {
+  min-width: 132px;
+  min-height: 38px;
+  padding: 6px 28px 6px 9px;
+  font-size: 13px;
+}
 .today-provider-status {
   color: var(--muted);
   font-size: 12px;
@@ -504,9 +518,10 @@ p { color: var(--muted); margin: 5px 0 0; }
   }
   .today-refresh-actions .toolbar {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-  .today-refresh-actions button { width: 100%; }
+  .today-refresh-actions button,
+  .today-sport-control select { width: 100%; }
 }
 .dashboard-support-drawer {
   border: 1px solid rgba(74, 91, 119, .42);
@@ -860,6 +875,31 @@ p { color: var(--muted); margin: 5px 0 0; }
   min-height: 32px;
   padding: 6px 9px;
   font-size: 11px;
+}
+.today-sport-health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(74, 91, 119, .52);
+  border-radius: 8px;
+  background: rgba(8, 12, 22, .52);
+}
+.today-sport-health strong,
+.today-sport-health span { display: block; }
+.today-sport-health strong { color: var(--text); }
+.today-sport-health span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.today-sport-health.status-live { border-color: rgba(57, 255, 136, .4); }
+.today-sport-health.status-live strong { color: var(--primary); }
+.today-sport-health.status-stale { border-color: rgba(248, 193, 74, .48); }
+.today-sport-health.status-stale strong { color: var(--warning); }
+.today-sport-health.status-research_only { border-color: rgba(25, 230, 255, .34); }
+.today-sport-health.status-unavailable { border-color: rgba(248, 94, 125, .36); }
+@media (max-width: 720px) {
+  .today-sport-health { align-items: stretch; flex-direction: column; }
+  .today-sport-health .button-row { width: 100%; }
 }
 .evidence-list {
   display: grid;
@@ -1955,6 +1995,28 @@ p { color: var(--muted); margin: 5px 0 0; }
 .compact-panel .suggestion-list { max-height: 250px; overflow: auto; }
 .board-panel .table-wrap { max-height: 560px; }
 .two-col { display: grid; grid-template-columns: minmax(360px, .82fr) minmax(520px, 1.18fr); gap: 16px; align-items: start; }
+.results-ledger-layout {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.results-ledger-layout > .panel,
+.results-ledger-layout > .tool-group {
+  min-width: 0;
+}
+.results-ledger-layout .panel-header > * {
+  min-width: 0;
+}
+.results-ledger-layout .panel-header p,
+.results-ledger-layout .compact-suggestion p {
+  overflow-wrap: anywhere;
+}
+#bets #grading-report-list .stats-grid,
+#bets #settlement-audit-list .stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+}
+#bets #grading-report-list .stat-card,
+#bets #settlement-audit-list .stat-card {
+  min-width: 0;
+}
 .results-calibration-layout {
   display: grid;
   grid-template-columns: minmax(360px, .82fr) minmax(520px, 1.18fr);

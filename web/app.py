@@ -4581,10 +4581,13 @@ def _daily_sport_availability(provider_availability: list[dict]) -> list[dict]:
             row["today_count"] += current_count
             row["verified_count"] += verified_count
             if current_count or verified_count:
+                provider_status = _daily_provider_sport_status(provider, current_count, verified_count)
                 row["providers"].append({
                     "name": provider["name"],
                     "today_count": current_count,
                     "verified_count": verified_count,
+                    "status": provider_status["status"],
+                    "status_label": provider_status["label"],
                 })
 
     rows = list(by_sport.values())
@@ -4601,6 +4604,54 @@ def _daily_sport_availability(provider_availability: list[dict]) -> list[dict]:
             else f"View {row['today_count']} market offers"
         )
     return sorted(rows, key=lambda row: (row["verified_count"], row["today_count"], row["sport"]), reverse=True)[:12]
+
+
+def _daily_provider_sport_status(provider: dict, today_count: int, verified_count: int) -> dict:
+    attempted_at = str(provider.get("last_attempt_at") or "")
+    stale = bool(provider.get("stale_count")) or (_age_minutes(attempted_at) or 0) > 30
+    if verified_count:
+        return {
+            "status": "stale" if stale else "live",
+            "label": "Stale" if stale else "Live",
+        }
+    if today_count:
+        return {"status": "research_only", "label": "Research only"}
+    return {"status": "unavailable", "label": "Unavailable"}
+
+
+def _daily_selected_sport_health(sport_filter: str | None, provider_availability: list[dict]) -> dict:
+    sport = str(sport_filter or "All Sports").strip().upper()
+    providers: list[dict] = []
+    for provider in provider_availability:
+        sports = provider.get("sports") if isinstance(provider.get("sports"), dict) else {}
+        verified_sports = provider.get("verified_sports") if isinstance(provider.get("verified_sports"), dict) else {}
+        today_count = int(provider.get("today_count") or 0) if sport == "ALL SPORTS" else int(sports.get(sport) or 0)
+        verified_count = int(provider.get("verified_count") or 0) if sport == "ALL SPORTS" else int(verified_sports.get(sport) or 0)
+        state = _daily_provider_sport_status(provider, today_count, verified_count)
+        providers.append({
+            "name": provider["name"],
+            "today_count": today_count,
+            "verified_count": verified_count,
+            **state,
+        })
+    providers.sort(key=lambda row: (row["verified_count"], row["today_count"]), reverse=True)
+    best = providers[0] if providers else {"name": "PrizePicks", "today_count": 0, "verified_count": 0, "status": "unavailable", "label": "Unavailable"}
+    if best["verified_count"]:
+        message = f"{best['name']} has {best['verified_count']:,} verified {sport.lower()} offer{'s' if best['verified_count'] != 1 else ''} available now."
+    elif best["today_count"]:
+        message = f"{best['name']} has {best['today_count']:,} current {sport.lower()} offer{'s' if best['today_count'] != 1 else ''}, but they are research-only until the final-stat path is verified."
+    else:
+        message = f"No current {sport.lower()} offer was found on the selected live books. Refresh providers or widen the sport filter."
+    return {
+        "sport": "All Sports" if sport == "ALL SPORTS" else sport,
+        "status": best["status"],
+        "status_label": best["label"],
+        "best_platform": best["name"],
+        "today_count": best["today_count"],
+        "verified_count": best["verified_count"],
+        "message": message,
+        "providers": providers,
+    }
 
 
 def _daily_provider_badges(platform: str, stale: bool = False) -> list[dict]:
@@ -4779,6 +4830,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
     risk_summary = _daily_risk_summary(bet_cards, watch_cards, paper_cards)
     games_today = _daily_games_today(active_platform, sport_filter, confirmed)
     provider_availability = _daily_provider_availability(platform if requested == "Both" else active_platform)
+    selected_sport_health = _daily_selected_sport_health(sport_filter, provider_availability)
     payload = {
         "as_of": iso_utc(utc_now()),
         "platform": active_platform,
@@ -4806,6 +4858,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         "provider_availability": provider_availability,
         "provider_badges": _daily_provider_badges(platform if requested == "Both" else active_platform),
         "sport_availability": _daily_sport_availability(provider_availability),
+        "selected_sport_health": selected_sport_health,
         "provider_fallback": provider_fallback,
         "empty_states": _daily_empty_states(
             bet_cards,

@@ -370,6 +370,7 @@ function syncDefaultInputs() {
   if (defaults.platform && $("entry-platform")) $("entry-platform").value = defaults.platform;
   if (defaults.platform && $("optimizer-platform")) $("optimizer-platform").value = defaults.platform;
   if (defaults.sport && $("props-sport")) $("props-sport").value = defaults.sport;
+  if ($("today-sport") && $("props-sport")) $("today-sport").value = $("props-sport").value;
   if (defaults.sport && $("optimizer-sport")) $("optimizer-sport").value = defaults.sport;
   if (defaults.defaultWager && $("entry-wager")) $("entry-wager").value = defaults.defaultWager;
   if ((defaults.risk === "conservative" || defaults.risk === "paper_first") && $("entry-multiplier")) $("entry-multiplier").value = "2";
@@ -801,7 +802,7 @@ async function loadDailyBriefing(options = {}) {
     ? "Rebuilding confirmed props, calibration gaps, timing, and bankroll..."
     : "Loading cached morning card...";
   const platform = $("props-platform").value;
-  const sport = $("props-sport").value;
+  const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   if (refresh) params.set("refresh", "true");
   if (!refresh) params.set("cached_only", "true");
@@ -813,7 +814,7 @@ async function loadDailyBriefing(options = {}) {
 
 async function startDailyBriefingScan() {
   const platform = $("props-platform").value;
-  const sport = $("props-sport").value;
+  const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
   state.dailyScanPollStartedAt = Date.now();
@@ -837,7 +838,7 @@ function maybeAutoStartDailyScan(briefing) {
 
 async function loadDailyScanStatus() {
   const platform = $("props-platform").value;
-  const sport = $("props-sport").value;
+  const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   const data = await api(`/api/daily-briefing/scan-status?${params.toString()}`);
   renderDailyScanStatus(data);
@@ -1006,6 +1007,7 @@ function renderDailyBriefing(data) {
   const providerBadges = data.provider_badges || [];
   const providerAvailability = data.provider_availability || [];
   const sportAvailability = data.sport_availability || [];
+  const selectedSportHealth = data.selected_sport_health || null;
   const currentOfferCount = providerAvailability.reduce((total, provider) => total + Number(provider.today_count || 0), 0);
   const verifiedOfferCount = Number(data.summary?.confirmed_props || 0);
   const displayedOfferCount = verifiedOfferCount || currentOfferCount;
@@ -1078,6 +1080,19 @@ function renderDailyBriefing(data) {
       <div class="research-only-board-notice provider-fallback-notice">
         <strong>Showing ${escapeHtml(providerFallback.active_platform)} instead</strong>
         <span>${escapeHtml(providerFallback.reason)}</span>
+      </div>
+    ` : ""}
+    ${selectedSportHealth ? `
+      <div class="today-sport-health status-${escapeHtml(selectedSportHealth.status || "unavailable")}">
+        <div>
+          <strong>${escapeHtml(selectedSportHealth.sport || data.sport || "All Sports")} · ${escapeHtml(selectedSportHealth.status_label || "Unavailable")}</strong>
+          <span>${escapeHtml(selectedSportHealth.message || "Provider status is unavailable.")}</span>
+        </div>
+        <div class="button-row compact-button-row">
+          ${selectedSportHealth.status !== "live" ? `<button class="secondary compact" type="button" data-today-status-action="refresh">Refresh providers</button>` : ""}
+          ${selectedSportHealth.best_platform && data.requested_platform !== "Both" ? `<button class="secondary compact" type="button" data-today-status-action="best">Use Best Available</button>` : ""}
+          ${selectedSportHealth.sport !== "All Sports" ? `<button class="secondary compact" type="button" data-today-status-action="all">All sports</button>` : ""}
+        </div>
       </div>
     ` : ""}
     ${sportAvailability.length ? `
@@ -1214,6 +1229,7 @@ function renderDailyBriefing(data) {
               <span>${marketProbability == null ? "No comparison odds" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
+              <span>Updated ${formatDateTime(prop.feature_as_of || data.as_of)}</span>
               <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
                 expired
                   ? "Expired · refresh required"
@@ -1426,12 +1442,32 @@ function dailyCardFromKey(key) {
 }
 
 function bindDailyBriefingActions() {
+  document.querySelectorAll("[data-today-status-action]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const action = button.dataset.todayStatusAction;
+      if (action === "refresh") {
+        withButtonBusy(button, "Refreshing...", () => refreshTodayProviders({ refreshBriefing: true }));
+        return;
+      }
+      if (action === "best") {
+        $("props-platform").value = "Both";
+      }
+      if (action === "all") {
+        if ($("today-sport")) $("today-sport").value = "All Sports";
+        if ($("props-sport")) $("props-sport").value = "All Sports";
+      }
+      state.dailyScanAutoStartedFor = "";
+      loadDailyBriefing();
+      loadDailyScanStatus();
+    });
+  });
   document.querySelectorAll("[data-today-coverage]").forEach((button) => {
     button.addEventListener("click", () => {
       const row = state.dailyBriefing?.sport_availability?.[Number(button.dataset.todayCoverage)];
       if (!row) return;
       $("props-platform").value = row.best_platform || "PrizePicks";
       $("props-sport").value = row.sport || "All Sports";
+      if ($("today-sport")) $("today-sport").value = $("props-sport").value;
       state.dailyScanAutoStartedFor = "";
       loadDailyBriefing();
     });
@@ -2056,7 +2092,7 @@ async function refreshTodayProviders() {
   }
   try {
     const platform = $("props-platform")?.value || "PrizePicks";
-    const sport = $("props-sport")?.value || "All Sports";
+    const sport = $("today-sport")?.value || $("props-sport")?.value || "All Sports";
     const params = new URLSearchParams({ platform, sport });
     const result = await api(`/api/automation/start-provider-refresh?${params.toString()}`, { method: "POST" });
     if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
@@ -6129,6 +6165,17 @@ function bindEvents() {
   });
   $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan));
   $("refresh-today-providers")?.addEventListener("click", () => withButtonBusy("refresh-today-providers", "Refreshing...", refreshTodayProviders));
+  $("today-sport")?.addEventListener("change", () => {
+    const sport = $("today-sport").value;
+    if ($("props-sport")) $("props-sport").value = sport;
+    state.dailyScanAutoStartedFor = "";
+    $("daily-briefing-status").textContent = `Loading ${sport} for Today...`;
+    loadDailyBriefing();
+    loadDailyScanStatus();
+  });
+  $("props-sport")?.addEventListener("change", () => {
+    if ($("today-sport")) $("today-sport").value = $("props-sport").value;
+  });
   $("refresh-command-center").addEventListener("click", () => withButtonBusy("refresh-command-center", "Checking...", loadCommandCenter));
   $("refresh-advantage-center").addEventListener("click", () => withButtonBusy("refresh-advantage-center", "Checking...", loadAdvantageCenter));
   $("refresh-data-health").addEventListener("click", () => withButtonBusy("refresh-data-health", "Checking...", loadDataHealth));

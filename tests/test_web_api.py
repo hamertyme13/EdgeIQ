@@ -1578,6 +1578,37 @@ def test_best_available_briefing_selects_primary_book_with_most_verified_props(m
     assert "Underdog: 8 verified" in fallback["reason"]
 
 
+def test_daily_selected_sport_health_distinguishes_live_research_and_unavailable():
+    provider_rows = [
+        {
+            "name": "PrizePicks",
+            "today_count": 8,
+            "verified_count": 4,
+            "sports": {"NFL": 5, "MLB": 3},
+            "verified_sports": {"NFL": 4},
+            "stale_count": 0,
+            "last_attempt_at": iso_utc(utc_now()),
+        },
+        {
+            "name": "Underdog",
+            "today_count": 6,
+            "verified_count": 0,
+            "sports": {"NFL": 1, "WNBA": 5},
+            "verified_sports": {},
+            "stale_count": 0,
+            "last_attempt_at": iso_utc(utc_now()),
+        },
+    ]
+
+    nfl = web_app._daily_selected_sport_health("NFL", provider_rows)
+    wnba = web_app._daily_selected_sport_health("WNBA", provider_rows)
+    ncaaf = web_app._daily_selected_sport_health("NCAAF", provider_rows)
+
+    assert (nfl["status"], nfl["best_platform"], nfl["verified_count"]) == ("live", "PrizePicks", 4)
+    assert (wnba["status"], wnba["best_platform"], wnba["today_count"]) == ("research_only", "Underdog", 5)
+    assert ncaaf["status"] == "unavailable"
+
+
 def test_interrupted_daily_briefing_scan_is_recovered(monkeypatch):
     interrupted = web_app._new_daily_scan("PrizePicks", "WNBA", trigger="manual")
     interrupted = {**interrupted, "status": "building_entries", "progress": 70}
