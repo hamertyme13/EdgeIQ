@@ -46,7 +46,7 @@
       const apiDetail = parsed.detail ?? parsed.message ?? parsed.error;
       if (Array.isArray(apiDetail)) {
         const fields = apiDetail
-          .map((item) => Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(" ") : "")
+          .map((item) => validationFieldLabel(item.loc))
           .filter(Boolean)
           .slice(0, 3);
         return fields.length
@@ -58,6 +58,17 @@
       return humanizeErrorText(detail, status);
     }
     return fallback;
+  }
+
+  function validationFieldLabel(location) {
+    if (!Array.isArray(location)) return "";
+    const path = location.filter((part) => part !== "body");
+    const propIndex = path.indexOf("props");
+    if (propIndex >= 0 && Number.isInteger(path[propIndex + 1])) {
+      const field = path[propIndex + 2];
+      return field ? `leg ${path[propIndex + 1] + 1} ${String(field).replaceAll("_", " ")}` : `leg ${path[propIndex + 1] + 1}`;
+    }
+    return path.map((part) => String(part).replaceAll("_", " ")).join(" ");
   }
 
   async function api(path, options = {}) {

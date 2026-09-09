@@ -521,7 +521,7 @@ _log = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 ENTRY_DAY_TIME_ZONE = ZoneInfo("America/New_York")
 AUDIT_SNAPSHOT_SCHEMA_VERSION = 2
-DAILY_BRIEFING_CACHE_VERSION = 12
+DAILY_BRIEFING_CACHE_VERSION = 15
 DAILY_BRIEFING_CACHE_TTL_HOURS = 10
 DAILY_SCAN_STATUS_KEY = "daily_briefing_scan_status"
 DAILY_SCAN_LOG_KEY = "daily_briefing_run_log"
@@ -544,8 +544,15 @@ AUTO_PAPER_CALIBRATION_SPORTS: tuple[str, ...] = (
     "MLB",
     "NHL",
 )
+# "Best Available" is intentionally limited to the two primary live prop
+# books. Optional, metered, and context-only sources stay explicit choices.
+PRIMARY_DAILY_PLATFORMS: tuple[str, ...] = ("PrizePicks", "Underdog")
 _PROP_FETCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _RESEARCH_PROP_CACHE: dict[str, list[dict]] = {}
+# Retain today's provider rows long enough to describe the available slate even
+# when none of those rows has a verified settlement path yet. This data never
+# enters the actionable recommendation feed.
+_PROVIDER_BOARD_CONTEXT_CACHE: dict[str, list[dict]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
 _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
@@ -1695,7 +1702,22 @@ def _fetch_platform_props_uncached(
     with _PROP_FETCH_LOCK:
         _RESEARCH_PROP_CACHE[canonical] = research_rows
     eligible = [prop for prop in actionable if _end_to_end_prop_eligibility(prop)["eligible"]]
-    _record_provider_fetch_status(canonical, attempted_at, row_count=len(eligible))
+    with _PROP_FETCH_LOCK:
+        _PROVIDER_BOARD_CONTEXT_CACHE[canonical] = [dict(prop) for prop in current_props]
+    _record_provider_fetch_status(
+        canonical,
+        attempted_at,
+        row_count=len(eligible),
+        diagnostics={
+            "source_count": len(props),
+            "today_count": len(current_props),
+            "actionable_count": len(actionable),
+            "verified_count": len(eligible),
+            "stale_count": sum(bool(prop.get("stale")) for prop in current_props),
+            "sports": _provider_sport_counts(current_props),
+            "verified_sports": _provider_sport_counts(eligible),
+        },
+    )
     return eligible
 
 
@@ -1714,7 +1736,22 @@ def _record_board_offers(props: list[dict], platform: str) -> None:
         _log.warning("Failed to record board offers for platform %s", platform, exc_info=True)
 
 
-def _record_provider_fetch_status(platform: str, attempted_at: str, row_count: int = 0, error: str = "") -> None:
+def _provider_sport_counts(props: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for prop in props:
+        sport = str(prop.get("league") or prop.get("sport") or "").strip().upper()
+        if sport:
+            counts[sport] = counts.get(sport, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _record_provider_fetch_status(
+    platform: str,
+    attempted_at: str,
+    row_count: int = 0,
+    error: str = "",
+    diagnostics: dict | None = None,
+) -> None:
     key = _provider_status_key(platform)
     previous = _safe_json_loads(SettingsRepository.get(key, ""))
     payload = {
@@ -1724,6 +1761,10 @@ def _record_provider_fetch_status(platform: str, attempted_at: str, row_count: i
         "last_error": error,
         "row_count": int(row_count if not error else previous.get("row_count", 0) or 0),
     }
+    if diagnostics:
+        payload["diagnostics"] = diagnostics
+    elif previous.get("diagnostics"):
+        payload["diagnostics"] = previous["diagnostics"]
     try:
         SettingsRepository.set(key, json.dumps(payload))
     except Exception:
@@ -1957,7 +1998,7 @@ def _prop_value(prop: dict | PropPayload, key: str):
 def _selected_platforms(platform: str) -> list[str]:
     canonical = _canonical_platform(platform)
     if canonical == "Both":
-        return list(ENTRY_PLATFORMS)
+        return list(PRIMARY_DAILY_PLATFORMS)
     return [canonical] if canonical in PROP_PLATFORMS else ["PrizePicks"]
 
 
@@ -4499,18 +4540,95 @@ def _daily_user_context(prefs: dict) -> dict:
     return {"display_name": name, "greeting": f"{greeting} {name}."}
 
 
+def _daily_provider_availability(platform: str) -> list[dict]:
+    canonical = _canonical_platform(platform)
+    selected = list(PRIMARY_DAILY_PLATFORMS) if canonical == "Both" else [canonical]
+    rows: list[dict] = []
+    for name in selected:
+        runtime = _safe_json_loads(SettingsRepository.get(_provider_status_key(name), ""))
+        diagnostics = runtime.get("diagnostics") if isinstance(runtime.get("diagnostics"), dict) else {}
+        rows.append({
+            "name": name,
+            "source_count": int(diagnostics.get("source_count") or 0),
+            "today_count": int(diagnostics.get("today_count") or 0),
+            "actionable_count": int(diagnostics.get("actionable_count") or 0),
+            "verified_count": int(diagnostics.get("verified_count") or runtime.get("row_count") or 0),
+            "stale_count": int(diagnostics.get("stale_count") or 0),
+            "sports": diagnostics.get("sports") if isinstance(diagnostics.get("sports"), dict) else {},
+            "verified_sports": diagnostics.get("verified_sports") if isinstance(diagnostics.get("verified_sports"), dict) else {},
+            "last_attempt_at": str(runtime.get("last_attempt_at") or ""),
+            "last_error": str(runtime.get("last_error") or ""),
+        })
+    return rows
+
+
+def _daily_sport_availability(provider_availability: list[dict]) -> list[dict]:
+    """Present current and settlement-verified board coverage by sport."""
+    by_sport: dict[str, dict] = {}
+    for provider in provider_availability:
+        current = provider.get("sports") if isinstance(provider.get("sports"), dict) else {}
+        verified = provider.get("verified_sports") if isinstance(provider.get("verified_sports"), dict) else {}
+        for sport in set(current) | set(verified):
+            row = by_sport.setdefault(sport, {
+                "sport": sport,
+                "today_count": 0,
+                "verified_count": 0,
+                "providers": [],
+                "best_platform": "",
+            })
+            current_count = int(current.get(sport) or 0)
+            verified_count = int(verified.get(sport) or 0)
+            row["today_count"] += current_count
+            row["verified_count"] += verified_count
+            if current_count or verified_count:
+                row["providers"].append({
+                    "name": provider["name"],
+                    "today_count": current_count,
+                    "verified_count": verified_count,
+                })
+
+    rows = list(by_sport.values())
+    for row in rows:
+        providers = sorted(
+            row["providers"],
+            key=lambda provider: (provider["verified_count"], provider["today_count"]),
+            reverse=True,
+        )
+        row["providers"] = providers
+        row["best_platform"] = providers[0]["name"] if providers else "PrizePicks"
+        row["action_label"] = (
+            f"View {row['verified_count']} verified" if row["verified_count"]
+            else f"View {row['today_count']} market offers"
+        )
+    return sorted(rows, key=lambda row: (row["verified_count"], row["today_count"], row["sport"]), reverse=True)[:12]
+
+
 def _daily_provider_badges(platform: str, stale: bool = False) -> list[dict]:
     canonical = _canonical_platform(platform)
-    selected = _selected_entry_platforms(platform) if canonical == "Both" or canonical in ENTRY_PLATFORMS else [canonical]
+    selected = list(PRIMARY_DAILY_PLATFORMS) if canonical == "Both" else [canonical]
+    availability = {row["name"]: row for row in _daily_provider_availability(platform)}
     badges = []
     for name in selected:
         capability = _provider_capability(name)
+        available = availability.get(name, {})
+        verified_count = int(available.get("verified_count") or 0)
+        today_count = int(available.get("today_count") or 0)
+        stale_rows = int(available.get("stale_count") or 0)
+        no_usable_rows = bool(available.get("last_attempt_at")) and verified_count <= 0
         badges.append({
             "name": name,
             "role": capability["role"],
-            "freshness": "Needs Refresh" if stale else "Fresh/Cache Checked",
-            "status": "stale" if stale else "available",
+            "freshness": (
+                "Needs Refresh" if stale else
+                "Provider cache is stale" if stale_rows else
+                "No verified offers" if no_usable_rows else
+                f"{verified_count} verified today" if verified_count else "Fresh/Cache Checked"
+            ),
+            "status": "stale" if stale or stale_rows else "empty" if no_usable_rows else "available",
             "entry_capable": capability["entry_capable"],
+            "today_count": today_count,
+            "verified_count": verified_count,
+            "stale_count": stale_rows,
         })
     for name in CONTEXT_PLATFORMS:
         capability = _provider_capability(name)
@@ -4555,31 +4673,100 @@ def _daily_empty_states(
     watch_cards: list[dict],
     avoid_cards: list[dict],
     confirmed: dict,
+    provider_availability: list[dict],
 ) -> dict:
     analyzed = int(confirmed.get("analyzed_count", confirmed.get("count", 0) + confirmed.get("rejected_count", 0)) or 0)
     rejected = int(confirmed.get("rejected_count") or 0)
+    empty_provider = next((row for row in provider_availability if row.get("today_count", 0) or row.get("last_attempt_at")), None)
+    provider_message = (
+        f"{empty_provider['name']} returned {int(empty_provider.get('today_count') or 0):,} current offers, but none have a verified final-stat path for this filter. They remain research-only."
+        if empty_provider and int(empty_provider.get("verified_count") or 0) <= 0 and int(empty_provider.get("today_count") or 0) > 0
+        else "No current provider offers were available for this filter. Refresh providers or switch books."
+    )
     return {
-        "bet": "No real-money card cleared trust, timing, and data-quality thresholds." if not bet_cards else "",
+        "bet": provider_message if not bet_cards and not analyzed else "No real-money card cleared trust, timing, and data-quality thresholds." if not bet_cards else "",
         "paper": "No paper entry is needed; calibration coverage is acceptable for this filter." if not paper_cards else "",
         "watch": "No watch items need a final injury, timing, or line check." if not watch_cards else "",
         "avoid": f"No avoid flags after analyzing {analyzed} props and filtering {rejected} weak rows." if not avoid_cards else "",
     }
 
 
+def _daily_verified_provider_fallback(
+    requested_platform: str,
+    sport_filter: str | None,
+    confirmed: dict,
+) -> tuple[str, dict, dict | None]:
+    """Use an explicitly labeled verified board when a selected book is empty.
+
+    Today is an operating page, not a provider-health dead end. A book with no
+    end-to-end verified offers should not hide usable props from another
+    connected book. The resulting cards retain their own provider labels and
+    are never merged into an entry across platforms.
+    """
+    requested = _canonical_platform(requested_platform)
+    if requested == "Both":
+        candidates = [
+            (name, _confirmed_props_payload(name, sport_filter, limit=40, analysis_limit=80))
+            for name in PRIMARY_DAILY_PLATFORMS
+        ]
+        active_platform, best_confirmed = max(
+            candidates,
+            key=lambda candidate: int(candidate[1].get("count") or 0),
+        )
+        coverage = ", ".join(
+            f"{name}: {int(candidate.get('count') or 0)} verified"
+            for name, candidate in candidates
+        )
+        return active_platform, best_confirmed, {
+            "requested_platform": "Best Available",
+            "active_platform": active_platform,
+            "reason": f"Best Available compared current verified boards ({coverage}) and selected {active_platform}.",
+        }
+    if int(confirmed.get("count") or 0) > 0:
+        return requested_platform, confirmed, None
+    candidates = [
+        name for name in PRIMARY_DAILY_PLATFORMS
+        if name != requested
+    ]
+    for candidate in candidates:
+        fallback = _confirmed_props_payload(candidate, sport_filter, limit=40, analysis_limit=80)
+        if int(fallback.get("count") or 0) <= 0:
+            continue
+        return candidate, fallback, {
+            "requested_platform": requested_platform,
+            "active_platform": candidate,
+            "reason": (
+                f"{requested_platform} has no current offers with a verified final-stat path. "
+                f"Showing {candidate} opportunities instead."
+            ),
+        }
+    return requested_platform, confirmed, None
+
+
 def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
     dashboard_stats = get_dashboard()
     prefs = _user_preferences()
-    command = _command_center_payload(platform, sport_filter, fast=True)
-    confirmed = _confirmed_props_payload(platform, sport_filter, limit=40, analysis_limit=80)
+    requested = _canonical_platform(platform)
+    confirmed = (
+        {"count": 0, "props": [], "rejected_count": 0, "analyzed_count": 0, "slate": []}
+        if requested == "Both"
+        else _confirmed_props_payload(platform, sport_filter, limit=40, analysis_limit=80)
+    )
+    active_platform, confirmed, provider_fallback = _daily_verified_provider_fallback(
+        platform,
+        sport_filter,
+        confirmed,
+    )
+    command = _command_center_payload(active_platform, sport_filter, fast=True)
     loss_protection = _loss_protection_payload()
     candidate_bet_cards = _daily_bet_cards(command["cards"])
     paper_cards = _daily_paper_cards(
-        platform,
+        active_platform,
         sport_filter,
         dashboard_stats,
         command.get("model_health"),
     )
-    watch_cards = _daily_watch_cards(platform, sport_filter, command, confirmed)
+    watch_cards = _daily_watch_cards(active_platform, sport_filter, command, confirmed)
     avoid_cards = _daily_avoid_cards(command, confirmed)
     if loss_protection["active"]:
         watch_cards = _loss_protection_watch_cards(candidate_bet_cards, loss_protection) + watch_cards
@@ -4590,10 +4777,12 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
     current_month = monthly.get("current_month", {})
     top_opportunities = _daily_top_opportunities(command, confirmed)
     risk_summary = _daily_risk_summary(bet_cards, watch_cards, paper_cards)
-    games_today = _daily_games_today(platform, sport_filter, confirmed)
+    games_today = _daily_games_today(active_platform, sport_filter, confirmed)
+    provider_availability = _daily_provider_availability(platform if requested == "Both" else active_platform)
     payload = {
         "as_of": iso_utc(utc_now()),
-        "platform": platform,
+        "platform": active_platform,
+        "requested_platform": platform,
         "sport": sport_filter or "All Sports",
         "user": _daily_user_context(prefs),
         "headline": _daily_loss_protection_headline(loss_protection, bet_cards, paper_cards, watch_cards, avoid_cards),
@@ -4614,8 +4803,18 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         "loss_protection": loss_protection,
         "top_opportunities": top_opportunities,
         "games_today": games_today,
-        "provider_badges": _daily_provider_badges(platform),
-        "empty_states": _daily_empty_states(bet_cards, paper_cards, watch_cards, avoid_cards, confirmed),
+        "provider_availability": provider_availability,
+        "provider_badges": _daily_provider_badges(platform if requested == "Both" else active_platform),
+        "sport_availability": _daily_sport_availability(provider_availability),
+        "provider_fallback": provider_fallback,
+        "empty_states": _daily_empty_states(
+            bet_cards,
+            paper_cards,
+            watch_cards,
+            avoid_cards,
+            confirmed,
+            provider_availability,
+        ),
         "suggested_entries": _daily_suggested_entries(bet_cards, watch_cards, paper_cards),
         "sections": {
             "bet": bet_cards,
@@ -4808,7 +5007,7 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
         ),
         reverse=True,
     )
-    top_rows = _opportunities_by_risk_lane(rows, per_lane=3)
+    top_rows = _opportunities_by_risk_lane(rows, per_lane=3, total_limit=9)
     model_paid_enabled = _model_health_payload().get("paid_entry_mode") == "enabled"
     for row in top_rows:
         row["decision_receipt"] = _opportunity_decision_receipt(
@@ -4837,7 +5036,12 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
     return top_rows
 
 
-def _opportunities_by_risk_lane(rows: list[dict], *, per_lane: int = 3) -> list[dict]:
+def _opportunities_by_risk_lane(
+    rows: list[dict],
+    *,
+    per_lane: int = 3,
+    total_limit: int = 9,
+) -> list[dict]:
     """Keep one risk lane from crowding every other useful board option out."""
     lane_order = ("conservative", "balanced", "aggressive")
     limit = max(1, int(per_lane))
@@ -4849,11 +5053,29 @@ def _opportunities_by_risk_lane(rows: list[dict], *, per_lane: int = 3) -> list[
             if (candidate.get("risk_profile") or {}).get("key") == lane
         ][:limit]
     ]
-    if len(selected) >= 5:
-        return selected
     selected_ids = {id(row) for row in selected}
     selected.extend(row for row in rows if id(row) not in selected_ids)
-    return selected[:5]
+
+    # A full provider board can be dominated by one sport. Retain the highest
+    # scored rows, but reserve room for other sports before falling back.
+    result: list[dict] = []
+    sport_counts: dict[str, int] = {}
+    cap = 3
+    for row in selected:
+        sport = str(row.get("sport") or row.get("league") or "Other").upper()
+        if sport_counts.get(sport, 0) >= cap:
+            continue
+        result.append(row)
+        sport_counts[sport] = sport_counts.get(sport, 0) + 1
+        if len(result) >= total_limit:
+            return result
+    for row in selected:
+        if id(row) in {id(candidate) for candidate in result}:
+            continue
+        result.append(row)
+        if len(result) >= total_limit:
+            break
+    return result
 
 
 def _opportunity_decision_receipt(
@@ -4969,6 +5191,23 @@ def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict)
     props = confirmed.get("props") or []
     if not props:
         props = [_analyzed_feed_prop(prop) for prop in _fetch_props(platform, sport_filter)[:80]]
+    if not props:
+        # The slate is useful even when every current offer is held back from
+        # recommendations. It is explicitly marked research-only below and
+        # cannot produce an entry until verified props arrive.
+        selected = _selected_platforms(platform)
+        with _PROP_FETCH_LOCK:
+            context_rows = [
+                dict(prop)
+                for provider in selected
+                for prop in _PROVIDER_BOARD_CONTEXT_CACHE.get(_canonical_platform(provider), [])
+            ]
+        if sport_filter:
+            context_rows = [
+                prop for prop in context_rows
+                if str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter
+            ]
+        props = context_rows[:160]
     groups: dict[tuple[str, str], list[dict]] = {}
     for prop in props:
         game = str(prop.get("game") or "").strip()
@@ -4995,7 +5234,11 @@ def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict)
         if sport not in odds_by_sport:
             odds_by_sport[sport] = sportsbook_odds.get_games(sport)
         sportsbook_game = sportsbook_odds.find_game_odds(game, sport, odds_by_sport[sport])
-        games.append(_daily_game_card(platform, sport, game, game_props, sportsbook_game))
+        card = _daily_game_card(platform, sport, game, game_props, sportsbook_game)
+        card["research_only"] = not any(
+            bool(prop.get("end_to_end_confirmed")) for prop in game_props
+        )
+        games.append(card)
     games.sort(key=lambda game: (game["ai_score"], game["prop_count"]), reverse=True)
     return games[:6]
 
@@ -11778,7 +12021,18 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
 
     def run(context: JobContext) -> dict:
         context.update(10, f"Refreshing {canonical_platform} offers.")
-        props = _fetch_props(canonical_platform, sport_filter)
+        selected = _selected_platforms(canonical_platform)
+        if len(selected) > 1:
+            with ThreadPoolExecutor(max_workers=len(selected)) as pool:
+                batches = list(pool.map(lambda name: _fetch_platform_props(name, force_refresh=True), selected))
+            props = [prop for batch in batches for prop in batch]
+        else:
+            props = _fetch_platform_props(selected[0], force_refresh=True) if selected else []
+        if sport_filter:
+            props = [
+                prop for prop in props
+                if str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter
+            ]
         context.update(90, "Saving provider freshness status.")
         SettingsRepository.set("last_provider_refresh", iso_utc(utc_now()))
         return {
@@ -12686,10 +12940,11 @@ configure_intelligence_router(
             platform,
             sport,
             limit,
-            fetch_props=lambda selected_platform, sport_filter: _fetch_props(
-                selected_platform,
-                sport_filter,
-            ),
+            fetch_props=lambda selected_platform, sport_filter: [
+                prop
+                for selected_name in _selected_entry_platforms(selected_platform)
+                for prop in _fetch_props(selected_name, sport_filter)
+            ],
             top_props_by_sport=lambda props, per_sport_limit, sport_filter: _top_props_by_sport(
                 props,
                 per_sport_limit,
@@ -12823,10 +13078,11 @@ configure_recommendation_router(
                 sport_filter,
                 cached_only=True,
             ),
-            fetch_props=lambda selected_platform, sport_filter: _fetch_props(
-                selected_platform,
-                sport_filter,
-            ),
+            fetch_props=lambda selected_platform, sport_filter: [
+                prop
+                for selected_name in _selected_entry_platforms(selected_platform)
+                for prop in _fetch_props(selected_name, sport_filter)
+            ],
             props_by_platform=lambda selected_platform, props: _props_by_platform_from_props(
                 selected_platform,
                 props,

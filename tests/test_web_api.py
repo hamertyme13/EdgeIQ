@@ -991,7 +991,7 @@ def test_daily_paper_cards_skip_generation_while_samples_are_pending(monkeypatch
     assert "skipped duplicate sample generation" in cards[0]["reason"]
 
 
-def test_daily_opportunities_only_request_market_odds_for_visible_top_five(monkeypatch):
+def test_daily_opportunities_only_request_market_odds_for_visible_top_options(monkeypatch):
     calls = []
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
     monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
@@ -1023,8 +1023,8 @@ def test_daily_opportunities_only_request_market_odds_for_visible_top_five(monke
 
     rows = web_app._daily_top_opportunities({"cards": [{"props": props}]}, {"props": []})
 
-    assert len(rows) == 5
-    assert len(calls) == 5
+    assert len(rows) == 8
+    assert len(calls) == 8
     assert set(calls) == {row["player"] for row in rows}
 
 
@@ -1470,6 +1470,112 @@ def test_daily_games_today_deduplicates_reversed_matchups(monkeypatch):
     assert len(games) == 1
     assert games[0]["prop_count"] == 2
     assert games[0]["matchup_label"] == "NYL vs LVA"
+
+
+def test_daily_games_today_keeps_research_slate_when_no_verified_props(monkeypatch):
+    monkeypatch.setattr(web_app, "_fetch_props", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(web_app.sportsbook_odds, "get_games", lambda _sport: [])
+    monkeypatch.setattr(web_app, "_daily_game_card", lambda platform, sport, game, props, odds: {
+        "platform": platform,
+        "sport": sport,
+        "game": game,
+        "prop_count": len(props),
+        "ai_score": 0,
+    })
+    monkeypatch.setitem(web_app._PROVIDER_BOARD_CONTEXT_CACHE, "Underdog", [{
+        "player": "Research Player",
+        "league": "TENNIS",
+        "stat": "Aces",
+        "line": 4.5,
+        "game": "AAA vs BBB",
+        "end_to_end_confirmed": False,
+    }])
+
+    games = web_app._daily_games_today("Underdog", None, {"props": []})
+
+    assert len(games) == 1
+    assert games[0]["research_only"] is True
+    assert games[0]["prop_count"] == 1
+
+
+def test_daily_provider_availability_reports_unverified_provider_rows(monkeypatch):
+    runtime = {
+        "last_attempt_at": "2026-09-08T12:00:00+00:00",
+        "row_count": 0,
+        "diagnostics": {
+            "source_count": 120,
+            "today_count": 45,
+            "actionable_count": 40,
+            "verified_count": 0,
+            "sports": {"NFL": 45},
+        },
+    }
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda _key, default="": json.dumps(runtime))
+
+    rows = web_app._daily_provider_availability("Underdog")
+    badges = web_app._daily_provider_badges("Underdog")
+
+    assert rows == [{
+        "name": "Underdog",
+        "source_count": 120,
+        "today_count": 45,
+        "actionable_count": 40,
+        "verified_count": 0,
+        "stale_count": 0,
+        "sports": {"NFL": 45},
+        "verified_sports": {},
+        "last_attempt_at": "2026-09-08T12:00:00+00:00",
+        "last_error": "",
+    }]
+    assert badges[0]["freshness"] == "No verified offers"
+
+
+def test_daily_briefing_uses_verified_provider_fallback_when_selected_book_is_empty(monkeypatch):
+    calls: list[str] = []
+
+    def confirmed(platform, sport, **_kwargs):
+        calls.append(platform)
+        return {"count": 5 if platform == "PrizePicks" else 0, "platform": platform, "sport": sport}
+
+    monkeypatch.setattr(web_app, "_confirmed_props_payload", confirmed)
+
+    active, rows, fallback = web_app._daily_verified_provider_fallback(
+        "Underdog",
+        "NFL",
+        {"count": 0},
+    )
+
+    assert calls == ["PrizePicks"]
+    assert active == "PrizePicks"
+    assert rows["count"] == 5
+    assert fallback == {
+        "requested_platform": "Underdog",
+        "active_platform": "PrizePicks",
+        "reason": "Underdog has no current offers with a verified final-stat path. Showing PrizePicks opportunities instead.",
+    }
+
+
+def test_best_available_briefing_selects_primary_book_with_most_verified_props(monkeypatch):
+    calls: list[str] = []
+
+    def confirmed(platform, sport, **_kwargs):
+        calls.append(platform)
+        return {"count": 8 if platform == "Underdog" else 3, "platform": platform, "sport": sport}
+
+    monkeypatch.setattr(web_app, "_confirmed_props_payload", confirmed)
+
+    active, rows, fallback = web_app._daily_verified_provider_fallback(
+        "Both",
+        "NFL",
+        {"count": 0},
+    )
+
+    assert calls == ["PrizePicks", "Underdog"]
+    assert active == "Underdog"
+    assert rows["count"] == 8
+    assert fallback["requested_platform"] == "Best Available"
+    assert "PrizePicks: 3 verified" in fallback["reason"]
+    assert "Underdog: 8 verified" in fallback["reason"]
 
 
 def test_interrupted_daily_briefing_scan_is_recovered(monkeypatch):

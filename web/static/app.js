@@ -984,7 +984,9 @@ function renderDailyBriefing(data) {
     : data.cache?.hit
       ? `cached ${formatDateTime(data.cache.created_at)}`
       : "fresh scan";
-  $("daily-briefing-status").textContent = `${data.sport} · ${cacheLabel}`;
+  const requestedPlatform = data.requested_platform || data.platform;
+  const providerFallback = data.provider_fallback || null;
+  $("daily-briefing-status").textContent = `${data.sport} · ${requestedPlatform !== data.platform ? `${requestedPlatform} to ${data.platform} · ` : ""}${cacheLabel}`;
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
   const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
@@ -1002,6 +1004,13 @@ function renderDailyBriefing(data) {
   const suggestedEntries = data.suggested_entries || [];
   const gamesToday = data.games_today || [];
   const providerBadges = data.provider_badges || [];
+  const providerAvailability = data.provider_availability || [];
+  const sportAvailability = data.sport_availability || [];
+  const currentOfferCount = providerAvailability.reduce((total, provider) => total + Number(provider.today_count || 0), 0);
+  const verifiedOfferCount = Number(data.summary?.confirmed_props || 0);
+  const displayedOfferCount = verifiedOfferCount || currentOfferCount;
+  const unavailableProviders = providerAvailability.filter((provider) =>
+    provider.last_attempt_at && Number(provider.verified_count || 0) === 0);
   const protection = data.loss_protection || {};
   const ev = Number(data.summary?.expected_value || 0);
   const mode = protection.active ? protection.mode || "watch" : (data.sections?.bet || []).length ? "attack" : "selective";
@@ -1034,9 +1043,14 @@ function renderDailyBriefing(data) {
     <div class="briefing-terminal advanced-briefing-detail">
       <div class="briefing-terminal-main">
         <div class="briefing-terminal-kicker">Decision-ready board</div>
-        <div class="briefing-terminal-number">${Number(data.summary?.confirmed_props || 0).toLocaleString()}</div>
-        <div class="briefing-terminal-label">verified offers available</div>
-        <p>${Number(data.summary?.excluded_props || 0).toLocaleString()} offers excluded by freshness, identity, market, or evidence checks.</p>
+        <div class="briefing-terminal-number">${displayedOfferCount.toLocaleString()}</div>
+        <div class="briefing-terminal-label">${verifiedOfferCount ? "verified offers available" : "current provider offers found"}</div>
+        <p>${verifiedOfferCount
+          ? `${Number(data.summary?.excluded_props || 0).toLocaleString()} offers excluded by freshness, identity, market, or evidence checks.`
+          : currentOfferCount
+            ? "No current offer is verified for automatic settlement yet. The research slate remains available below."
+            : "No current provider offers were returned for this filter. Refresh providers or change the sport."
+        }</p>
       </div>
       <div class="briefing-terminal-side">
         <span class="health-orb">${Math.round(health.trust_score || 0)}</span>
@@ -1058,6 +1072,34 @@ function renderDailyBriefing(data) {
           <span>${escapeHtml((protection.reasons || [])[0] || "Paid entries are paused until recovery rules clear.")}</span>
         </div>
         <span>${escapeHtml(protection.mode || "watch")} · ${Number(protection.score || 0).toFixed(0)}/100</span>
+      </div>
+    ` : ""}
+    ${providerFallback ? `
+      <div class="research-only-board-notice provider-fallback-notice">
+        <strong>Showing ${escapeHtml(providerFallback.active_platform)} instead</strong>
+        <span>${escapeHtml(providerFallback.reason)}</span>
+      </div>
+    ` : ""}
+    ${sportAvailability.length ? `
+      <div class="today-coverage-panel advanced-briefing-detail">
+        <div class="today-coverage-heading">
+          <div>
+            <strong>Available today</strong>
+            <span>Current offers and end-to-end verified coverage by sport.</span>
+          </div>
+        </div>
+        <div class="today-coverage-grid">
+          ${sportAvailability.map((row, index) => `
+            <div class="today-coverage-row">
+              <div>
+                <strong>${escapeHtml(row.sport)}</strong>
+                <span>${Number(row.verified_count || 0).toLocaleString()} verified · ${Number(row.today_count || 0).toLocaleString()} current</span>
+                <small>${escapeHtml((row.providers || []).map((provider) => provider.name).join(" · "))}</small>
+              </div>
+              <button class="secondary compact" data-today-coverage="${index}">${escapeHtml(row.action_label || "View board")}</button>
+            </div>
+          `).join("")}
+        </div>
       </div>
     ` : ""}
     <div class="briefing-market-grid advanced-briefing-detail">
@@ -1102,6 +1144,17 @@ function renderDailyBriefing(data) {
     <details class="briefing-explore-drawer" ${document.body.dataset.displayMode === "advanced" ? "open" : ""}>
       <summary><span>Explore Today's Board</span><small>${opportunities.length} ranked props · ${gamesToday.length} games</small></summary>
       <div class="briefing-explore-body">
+    ${unavailableProviders.length ? `
+      <div class="research-only-board-notice">
+        <strong>${escapeHtml(unavailableProviders.map((provider) => provider.name).join(" and "))} has no verified offers for this board</strong>
+        <span>${escapeHtml(unavailableProviders.map((provider) => {
+          const current = Number(provider.today_count || 0);
+          const stale = Number(provider.stale_count || 0);
+          return current
+            ? `${provider.name} returned ${current.toLocaleString()} current offers${stale ? "; its provider cache is stale" : ""}, but EdgeIQ cannot settle them end to end yet.`
+            : `${provider.name} did not return a current offer for this filter.`;
+        }).join(" "))} You can review the research slate below, but no entry can be generated until verified offers are available.</span>
+      </div>` : ""}
     <section id="opportunity-board" class="opportunity-board" aria-labelledby="opportunity-board-title">
       <div class="opportunity-board-header">
         <div>
@@ -1216,6 +1269,7 @@ function renderDailyGame(game, index) {
       <summary>
         <div>
           <span class="pill">${escapeHtml(game.sport || "Game")}</span>
+          ${game.research_only ? `<span class="status-pill status-warning">Research only</span>` : ""}
           <strong>${escapeHtml(matchup)}</strong>
           <small>${Number(game.prop_count || 0)} props · AI ${Number(game.ai_score || 0).toFixed(0)} · ${predictionAvailable ? `${pct(game.winner_probability || 0)} winner probability` : pct(game.probability || 0)}</small>
         </div>
@@ -1372,6 +1426,16 @@ function dailyCardFromKey(key) {
 }
 
 function bindDailyBriefingActions() {
+  document.querySelectorAll("[data-today-coverage]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const row = state.dailyBriefing?.sport_availability?.[Number(button.dataset.todayCoverage)];
+      if (!row) return;
+      $("props-platform").value = row.best_platform || "PrizePicks";
+      $("props-sport").value = row.sport || "All Sports";
+      state.dailyScanAutoStartedFor = "";
+      loadDailyBriefing();
+    });
+  });
   document.querySelectorAll("[data-daily-action]").forEach((button) => {
     button.addEventListener("click", () => handleDailyBriefingAction(dailyCardFromKey(button.dataset.dailyAction)));
   });
@@ -3401,6 +3465,34 @@ function entryPayload() {
   };
 }
 
+function entryAnalysisValidationMessage(payload) {
+  const props = payload?.props || [];
+  const sourcePlatforms = entrySourcePlatforms(props);
+  if (sourcePlatforms.length > 1) {
+    return `This entry mixes ${sourcePlatforms.join(" and ")}. Build one entry per sportsbook.`;
+  }
+  const maxLegs = providerMaximumLegs(payload?.platform || "");
+  if (props.length > maxLegs) {
+    return `${payload.platform} entries support at most ${maxLegs} legs.`;
+  }
+  for (const [index, prop] of props.entries()) {
+    const leg = `Leg ${index + 1}`;
+    if (!String(prop.player || "").trim()) return `${leg} needs a player name.`;
+    if (!String(prop.sport || "").trim()) return `${leg} needs a sport.`;
+    if (!String(prop.stat || "").trim()) return `${leg} needs a stat.`;
+    if (prop.line == null || prop.line === "" || !Number.isFinite(Number(prop.line))) {
+      return `${leg} needs a valid numeric line.`;
+    }
+    if (prop.projection != null && prop.projection !== "" && !Number.isFinite(Number(prop.projection))) {
+      return `${leg} has an invalid projection. Clear it or enter a number.`;
+    }
+    if (!["Over", "Under"].includes(String(prop.direction || ""))) {
+      return `${leg} needs an Over or Under pick.`;
+    }
+  }
+  return "";
+}
+
 function parsePayoutSchedule(value) {
   const schedule = {};
   String(value || "").split(",").forEach((part) => {
@@ -3642,6 +3734,12 @@ async function analyzeEntry() {
     return;
   }
   const payload = entryPayload();
+  const validationMessage = entryAnalysisValidationMessage(payload);
+  if (validationMessage) {
+    $("entry-status").textContent = validationMessage;
+    playCircuitSound("warning");
+    return;
+  }
   $("entry-status").textContent = "Checking projections, player history, and calibration...";
   let data;
   try {
