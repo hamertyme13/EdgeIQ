@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260906-board-history"
+STATIC_ASSET_VERSION = "20260909-today-coverage"
