@@ -4280,6 +4280,19 @@ def test_trending_games_payload_highlights_ranked_players():
     assert games[1]["ranked_players"][0]["player"] == "A"
 
 
+def test_trending_games_payload_merges_nfl_rams_provider_aliases():
+    props = [
+        {"player": "A", "team": "SF", "league": "NFL", "game": "SF @ LA", "trending_count": 100},
+        {"player": "B", "team": "SF", "league": "NFL", "game": "SF @ LAR", "trending_count": 80},
+    ]
+
+    games = _trending_games_payload(props, [], limit=8)
+
+    assert len(games) == 1
+    assert games[0]["prop_count"] == 2
+    assert games[0]["trending_count"] == 180
+
+
 def test_trending_games_endpoint_uses_top_props_as_ranked_players(monkeypatch):
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "game": "SEA-NYL", "trending_count": 100, "game_time": _today_game_time()},

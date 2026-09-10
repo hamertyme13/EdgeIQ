@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260909-games-today";
+const CACHE_NAME = "edgeiq-shell-20260910-nfl-game-dedupe";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

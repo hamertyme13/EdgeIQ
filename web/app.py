@@ -4162,6 +4162,16 @@ def _feed_prop_direction(prop: dict) -> str:
     return _prop_direction(line, float(projection), prop.get("direction"))
 
 
+def _game_group_key(sport: str, game: str) -> str:
+    """Group provider matchup labels without crossing league-specific aliases."""
+    aliases = dict(EntryRepository.TEAM_ALIASES)
+    if sport.upper() == "NFL":
+        # PrizePicks commonly emits LA while Underdog emits LAR for the Rams.
+        # Keep this scoped to NFL because LA has different meanings elsewhere.
+        aliases["LA"] = "LAR"
+    return canonical_matchup_key(game, aliases)
+
+
 def _trending_games_payload(props: list[dict], ranked_props: list[dict], limit: int) -> list[dict]:
     ranked_players = {
         (canonical_person_key(prop.get("player")), prop.get("league", "").strip().upper())
@@ -4174,7 +4184,7 @@ def _trending_games_payload(props: list[dict], ranked_props: list[dict], limit: 
         sport = str(prop.get("league", "")).strip().upper()
         if not game or not sport:
             continue
-        key = (sport, canonical_matchup_key(game, EntryRepository.TEAM_ALIASES))
+        key = (sport, _game_group_key(sport, game))
         group = grouped.setdefault(
             key,
             {
@@ -5269,7 +5279,7 @@ def _daily_games_today(platform: str, sport_filter: str | None, confirmed: dict)
         sport = str(prop.get("sport") or prop.get("league") or sport_filter or "All Sports").upper()
         teams = _teams_from_game(game, [prop])
         matchup_source = " @ ".join(teams[:2]) if len(teams) >= 2 else game
-        key = (sport, canonical_matchup_key(matchup_source, EntryRepository.TEAM_ALIASES))
+        key = (sport, _game_group_key(sport, matchup_source))
         groups.setdefault(key, []).append(prop)
 
     games: list[dict] = []
