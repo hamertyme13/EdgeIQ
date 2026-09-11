@@ -10,6 +10,13 @@ _ENGINE_ARGS: dict[str, Any] = {"echo": False}
 
 if DATABASE_URL.startswith("sqlite"):
     _ENGINE_ARGS["connect_args"] = {"check_same_thread": False, "timeout": 30}
+else:
+    _ENGINE_ARGS.update({
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+        "pool_size": int(os.getenv("EDGEIQ_DB_POOL_SIZE", "5")),
+        "max_overflow": int(os.getenv("EDGEIQ_DB_MAX_OVERFLOW", "10")),
+    })
 
 engine = create_engine(DATABASE_URL, **_ENGINE_ARGS)
 
@@ -38,15 +45,23 @@ Base: Any = declarative_base()
 def initialize_database():
 
     from repository.entities import BetEntity
+    from repository.models.background_job_model import BackgroundJobModel
     from repository.models.bankroll_transaction_model import BankrollTransactionModel
+    from repository.models.beta_feedback_model import BetaFeedbackModel
+    from repository.models.beta_issue_model import BetaIssueModel
+    from repository.models.beta_session_model import BetaSessionModel
+    from repository.models.beta_user_model import BetaUserModel
+    from repository.models.board_offer_observation_model import BoardOfferObservationModel
     from repository.models.entry_model import EntryModel
     from repository.models.entry_prop_model import EntryPropModel
     from repository.models.final_player_stat_model import FinalPlayerStatModel
+    from repository.models.game_prediction_model import GamePredictionModel
     from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
+    from repository.models.player_feature_model import PlayerFeatureModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel
     from repository.models.prediction_record_model import PredictionRecordModel
-    from repository.models.prop_line_history_model import PropLineHistoryModel
     from repository.models.product_event_model import ProductEventModel
+    from repository.models.prop_line_history_model import PropLineHistoryModel
     from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
     from repository.models.research_evidence_model import ResearchEvidenceModel
     from repository.models.research_session_model import ResearchSessionModel
@@ -55,96 +70,3 @@ def initialize_database():
     from repository.models.shadow_prediction_model import ShadowPredictionModel
 
     Base.metadata.create_all(bind=engine)
-    _run_lightweight_migrations()
-
-
-def _run_lightweight_migrations():
-    """Run additive migrations that are safe to repeat for local SQLite data."""
-    from sqlalchemy import text
-
-    if not DATABASE_URL.startswith("sqlite"):
-        return
-
-    migrations = {
-        "bets": [
-            ("platform", "TEXT DEFAULT ''"),
-            ("stat_type", "TEXT DEFAULT ''"),
-            ("win_probability", "REAL DEFAULT 0.0"),
-            ("source", "TEXT DEFAULT 'manual'"),
-            ("source_entry_id", "INTEGER"),
-            ("entry_mode", "TEXT DEFAULT 'real'"),
-            ("payout_type", "TEXT DEFAULT 'standard'"),
-            ("payout_table_snapshot", "TEXT DEFAULT ''"),
-            ("expected_return", "REAL DEFAULT 0.0"),
-            ("expected_value", "REAL DEFAULT 0.0"),
-            ("created_at", "DATETIME"),
-        ],
-        "entries": [
-            ("status", "TEXT DEFAULT 'Draft'"),
-            ("result", "TEXT DEFAULT ''"),
-            ("placed_at", "DATETIME"),
-            ("settled_at", "DATETIME"),
-            ("wager", "REAL DEFAULT 0.0"),
-            ("multiplier", "REAL DEFAULT 1.0"),
-            ("potential_payout", "REAL DEFAULT 0.0"),
-            ("profit", "REAL DEFAULT 0.0"),
-            ("recommended_by_app", "BOOLEAN DEFAULT 0"),
-            ("audit_snapshot", "TEXT DEFAULT ''"),
-            ("entry_mode", "TEXT DEFAULT 'real'"),
-            ("payout_type", "TEXT DEFAULT 'standard'"),
-            ("payout_table_snapshot", "TEXT DEFAULT ''"),
-            ("expected_return", "REAL DEFAULT 0.0"),
-            ("expected_value", "REAL DEFAULT 0.0"),
-        ],
-        "entry_props": [
-            ("platform", "TEXT DEFAULT ''"),
-            ("player_identity_id", "INTEGER"),
-            ("player_provider", "TEXT DEFAULT ''"),
-            ("provider_player_id", "TEXT DEFAULT ''"),
-            ("game", "TEXT DEFAULT ''"),
-            ("game_time", "TEXT DEFAULT ''"),
-            ("position", "TEXT DEFAULT ''"),
-            ("baseline_line", "REAL"),
-            ("standard_line", "REAL"),
-            ("line_offer_type", "TEXT DEFAULT 'standard'"),
-            ("adjusted_line", "BOOLEAN DEFAULT 0"),
-            ("is_discounted_line", "BOOLEAN DEFAULT 0"),
-            ("is_premium_line", "BOOLEAN DEFAULT 0"),
-            ("line_discount", "REAL DEFAULT 0.0"),
-            ("projection_source", "TEXT DEFAULT ''"),
-            ("auto_projected", "BOOLEAN DEFAULT 0"),
-            ("direction", "TEXT DEFAULT 'Over'"),
-            ("actual", "REAL"),
-            ("final_result", "TEXT DEFAULT ''"),
-            ("final_source", "TEXT DEFAULT ''"),
-            ("final_status", "TEXT DEFAULT ''"),
-        ],
-        "final_player_stats": [
-            ("status", "TEXT DEFAULT 'played'"),
-            ("player_identity_id", "INTEGER"),
-            ("player_provider", "TEXT DEFAULT ''"),
-            ("provider_player_id", "TEXT DEFAULT ''"),
-        ],
-        "prop_line_history": [
-            ("game", "TEXT DEFAULT ''"),
-            ("game_time", "TEXT DEFAULT ''"),
-            ("line_offer_type", "TEXT DEFAULT 'standard'"),
-        ],
-    }
-
-    with engine.connect() as conn:
-        for table_name, columns in migrations.items():
-            result = conn.execute(text(f"PRAGMA table_info({table_name})"))
-            existing = {row[1] for row in result.fetchall()}
-
-            if not existing:
-                continue
-
-            for column_name, typedef in columns:
-                if column_name not in existing:
-                    conn.execute(
-                        text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {typedef}")
-                    )
-            if table_name == "bets" and "created_at" not in existing:
-                conn.execute(text("UPDATE bets SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL"))
-        conn.commit()

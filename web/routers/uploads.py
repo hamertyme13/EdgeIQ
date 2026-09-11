@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from web.schemas import BettingHistoryPayload, UploadAnalyzePayload
 
@@ -17,30 +18,38 @@ class UploadDependencies:
     import_history: Callable[[BettingHistoryPayload], dict]
 
 
-_dependencies: UploadDependencies | None = None
+_deps_store: list[UploadDependencies] = []
 
 
 def configure_upload_router(dependencies: UploadDependencies) -> None:
-    global _dependencies
-    _dependencies = dependencies
+    if _deps_store:
+        _deps_store[0] = dependencies
+    else:
+        _deps_store.append(dependencies)
 
 
-def _deps() -> UploadDependencies:
-    if _dependencies is None:
+def get_deps() -> UploadDependencies:
+    if not _deps_store:
         raise HTTPException(status_code=503, detail="Import tools are still starting. Please try again.")
-    return _dependencies
+    return _deps_store[0]
+
+
+DepsUpload = Annotated[UploadDependencies, Depends(get_deps)]
 
 
 @router.get("/api/import-wizard")
-def import_wizard() -> dict:
-    return _deps().import_wizard()
+def import_wizard(deps: DepsUpload = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, UploadDependencies) else get_deps()
+    return _deps.import_wizard()
 
 
 @router.post("/api/uploads/analyze")
-def analyze_uploaded_file(payload: UploadAnalyzePayload) -> dict:
-    return _deps().analyze(payload)
+def analyze_uploaded_file(payload: UploadAnalyzePayload, deps: DepsUpload = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, UploadDependencies) else get_deps()
+    return _deps.analyze(payload)
 
 
 @router.post("/api/bets/import-history")
-def import_betting_history(payload: BettingHistoryPayload) -> dict:
-    return _deps().import_history(payload)
+def import_betting_history(payload: BettingHistoryPayload, deps: DepsUpload = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, UploadDependencies) else get_deps()
+    return _deps.import_history(payload)

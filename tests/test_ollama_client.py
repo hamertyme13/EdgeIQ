@@ -3,7 +3,7 @@ from __future__ import annotations
 import requests
 
 from services.ollama_client import ollama_chat, ollama_model, ollama_status, ollama_structured, ollama_vision_structured
-from web.app import _unsupported_ollama_matchup_claim
+from web.app import _ollama_card_identity_mismatch, _unsupported_ollama_matchup_claim
 
 
 class Response:
@@ -104,3 +104,21 @@ def test_ollama_grounding_guard_rejects_invented_opponent_defense():
     assert _unsupported_ollama_matchup_claim("Minnesota has a stronger defense.") is True
     assert _unsupported_ollama_matchup_claim("The opponent's performance is based on one game.") is True
     assert _unsupported_ollama_matchup_claim("The player averaged 23.5 points in two verified games.") is False
+
+
+def test_ollama_grounding_guard_requires_exact_selected_player_identities():
+    suggestions = [{
+        "entry": {
+            "props": [
+                {"player": "Temi Fágbénlé"},
+                {"player": "Diamond Miller"},
+            ],
+        },
+    }]
+
+    assert _ollama_card_identity_mismatch(
+        "Temi Fàgbènni and Diamond Miller are the selected legs.", suggestions,
+    ) is True
+    assert _ollama_card_identity_mismatch(
+        "Temi Fagbenle and Diamond Miller are the selected legs.", suggestions,
+    ) is False

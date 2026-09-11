@@ -4,6 +4,7 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from repository.database import SessionLocal
@@ -11,6 +12,7 @@ from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
 from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from services.opportunity_enrichment import attach_opportunity_context
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.stat_normalization import canonical_stat_label, stat_alias_labels
 
@@ -19,42 +21,68 @@ class FinalStatsRepository:
 
     @staticmethod
     def upsert_many(rows: list[dict]) -> int:
-        saved = 0
-        prepared = []
+        return FinalStatsRepository.upsert_many_report(rows)["processed"]
+
+    @staticmethod
+    def upsert_many_report(rows: list[dict]) -> dict:
+        inserted = 0
+        updated = 0
+        duplicates_removed = 0
+        prepared_index: dict[tuple[str, str, str, str, str], dict] = {}
+        identity_cache: dict[tuple[str, str, str, str, str], dict | None] = {}
         for row in rows:
             normalized = _normalize_row(row)
             if normalized is None:
                 continue
-            identity = PlayerIdentityRepository.resolve(
-                normalized["player"],
+            identity_key = (
+                canonical_person_key(normalized["player"]),
                 normalized["sport"],
                 normalized["team"],
                 normalized["player_provider"] or normalized["source"],
                 normalized["provider_player_id"],
             )
+            if identity_key not in identity_cache:
+                identity_cache[identity_key] = PlayerIdentityRepository.resolve(
+                    normalized["player"],
+                    normalized["sport"],
+                    normalized["team"],
+                    normalized["player_provider"] or normalized["source"],
+                    normalized["provider_player_id"],
+                )
+            identity = identity_cache[identity_key]
             normalized["player_identity_id"] = identity["id"] if identity else None
-            prepared.append(normalized)
+            key = _record_key(normalized)
+            current = prepared_index.get(key)
+            if current is None or _prefer_incoming_result(current, normalized):
+                prepared_index[key] = normalized
+        prepared = list(prepared_index.values())
+        if not prepared:
+            return {"processed": 0, "inserted": 0, "updated": 0, "duplicates_removed": 0}
         with SessionLocal() as session:
+            existing_index: dict[tuple[str, str, str, str, str], FinalPlayerStatModel] = {}
+            existing_rows = (
+                session.query(FinalPlayerStatModel)
+                .filter(FinalPlayerStatModel.sport.in_({row["sport"] for row in prepared}))
+                .filter(FinalPlayerStatModel.stat.in_({row["stat"] for row in prepared}))
+                .filter(FinalPlayerStatModel.game_date.in_({row["game_date"] for row in prepared}))
+                .order_by(FinalPlayerStatModel.id.desc())
+                .all()
+            )
+            for row in existing_rows:
+                key = _record_key(row)
+                current = existing_index.get(key)
+                if current is not None:
+                    if _prefer_stored_result(row, current):
+                        session.delete(current)
+                        existing_index[key] = row
+                    else:
+                        session.delete(row)
+                    duplicates_removed += 1
+                else:
+                    existing_index[key] = row
             for normalized in prepared:
-                existing_rows = (
-                    session.query(FinalPlayerStatModel)
-                    .filter_by(
-                        sport=normalized["sport"],
-                        stat=normalized["stat"],
-                        game_date=normalized["game_date"],
-                    )
-                    .order_by(FinalPlayerStatModel.id.desc())
-                    .all()
-                )
-                player_key = canonical_person_key(normalized["player"])
-                game_key = _game_key(normalized["game"])
-                existing = next(
-                    (
-                        row for row in existing_rows
-                        if canonical_person_key(row.player) == player_key and _game_key(row.game) == game_key
-                    ),
-                    None,
-                )
+                key = _record_key(normalized)
+                existing = existing_index.get(key)
                 if existing:
                     incoming_is_live = normalized["status"] == "live"
                     existing_is_final = (existing.status or "played") in {"played", "dnp"}
@@ -66,12 +94,63 @@ class FinalStatsRepository:
                         existing.player_identity_id = normalized["player_identity_id"]
                         existing.player_provider = normalized["player_provider"]
                         existing.provider_player_id = normalized["provider_player_id"]
+                        updated += 1
                 else:
-                    session.add(FinalPlayerStatModel(**normalized))
+                    existing = FinalPlayerStatModel(**normalized)
+                    session.add(existing)
                     session.flush()
-                saved += 1
+                    existing_index[key] = existing
+                    inserted += 1
+            # Imported locally because the feature repository reads this
+            # repository while rebuilding a segment.
+            from repository.repositories.player_feature_repository import PlayerFeatureRepository
+
+            PlayerFeatureRepository.expire_segments(session, prepared)
             session.commit()
-        return saved
+        return {
+            "processed": inserted + updated,
+            "inserted": inserted,
+            "updated": updated,
+            "duplicates_removed": duplicates_removed,
+        }
+
+    @staticmethod
+    def deduplicate_sport(sport: str) -> int:
+        sport_key = str(sport or "").strip().upper()
+        if not sport_key:
+            return 0
+        duplicate_ids: list[int] = []
+        retained: dict[tuple[str, str, str, str, str], object] = {}
+        with SessionLocal() as session:
+            rows = session.query(
+                FinalPlayerStatModel.id,
+                FinalPlayerStatModel.player,
+                FinalPlayerStatModel.player_identity_id,
+                FinalPlayerStatModel.sport,
+                FinalPlayerStatModel.stat,
+                FinalPlayerStatModel.game,
+                FinalPlayerStatModel.game_date,
+                FinalPlayerStatModel.status,
+            ).filter(
+                FinalPlayerStatModel.sport == sport_key
+            ).order_by(FinalPlayerStatModel.id.desc()).yield_per(5000)
+            for row in rows:
+                key = _record_key(row)
+                current = retained.get(key)
+                if current is not None:
+                    if _prefer_stored_result(row, current):
+                        duplicate_ids.append(current.id)
+                        retained[key] = row
+                    else:
+                        duplicate_ids.append(row.id)
+                else:
+                    retained[key] = row
+            for start in range(0, len(duplicate_ids), 1000):
+                session.query(FinalPlayerStatModel).filter(
+                    FinalPlayerStatModel.id.in_(duplicate_ids[start:start + 1000])
+                ).delete(synchronize_session=False)
+            session.commit()
+        return len(duplicate_ids)
 
     @staticmethod
     def find_actual(prop: dict) -> float | None:
@@ -144,6 +223,8 @@ class FinalStatsRepository:
         sport: str | None = None,
         limit: int = 100,
         team: str = "",
+        *,
+        include_opportunity_context: bool = True,
     ) -> list[dict]:
         try:
             identity = PlayerIdentityRepository.resolve(player, sport or "", create=False)
@@ -158,19 +239,31 @@ class FinalStatsRepository:
                     player_key = canonical_person_key(player)
                     candidate_ids = [
                         row.id
-                        for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
-                        if canonical_person_key(row.player) == player_key
+                        for row in session.query(FinalPlayerStatModel.id)
+                        .filter(FinalPlayerStatModel.player == str(player).strip())
+                        .all()
                     ]
+                    if not candidate_ids:
+                        candidate_ids = [
+                            row.id
+                            for row in session.query(FinalPlayerStatModel.id).filter(
+                                func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
+                            ).all()
+                        ]
+                    if not candidate_ids:
+                        candidate_ids = [
+                            row.id
+                            for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
+                            if canonical_person_key(row.player) == player_key
+                        ]
                     if not candidate_ids:
                         return []
                     query = query.filter(FinalPlayerStatModel.id.in_(candidate_ids))
                 if sport:
                     query = query.filter(FinalPlayerStatModel.sport == sport.upper())
-                if team:
-                    query = query.filter(FinalPlayerStatModel.team == team.upper())
                 rows = (
                     query.order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc())
-                    .limit(limit)
+                    .limit(max(limit * 3, limit))
                     .all()
                 )
                 history = [
@@ -187,63 +280,28 @@ class FinalStatsRepository:
                     }
                     for row in rows
                 ]
-                _attach_role_context(session, history, identity, player, sport, team)
-                return history + _entry_prop_history(session, player, stat, sport, max(0, limit - len(rows)))
+                if include_opportunity_context:
+                    attach_opportunity_context(session, history, identity, player, sport, team)
+                entry_history = _entry_prop_history(session, player, stat, sport, limit)
+                return _deduplicate_history(history + entry_history)[:limit]
         except SQLAlchemyError:
             return []
 
 
-def _attach_role_context(session, history: list[dict], identity: dict | None, player: str, sport: str | None, team: str = "") -> None:
-    if not history:
-        return
-    role_stats = {
-        "Minutes", "Field Goals Attempted", "Passing Attempts", "Pass Attempts",
-        "Rush Attempts", "Carries", "Targets", "At Bats", "Shots on Goal",
-    }
-    query = session.query(FinalPlayerStatModel).filter(FinalPlayerStatModel.stat.in_(role_stats))
-    if identity:
-        query = query.filter(FinalPlayerStatModel.player_identity_id == identity["id"])
-    else:
-        player_key = canonical_person_key(player)
-        matching_ids = [
-            row.id for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
-            if canonical_person_key(row.player) == player_key
-        ]
-        query = query.filter(FinalPlayerStatModel.id.in_(matching_ids))
-    if sport:
-        query = query.filter(FinalPlayerStatModel.sport == sport.upper())
-    if team:
-        query = query.filter(FinalPlayerStatModel.team == team.upper())
-    context: dict[tuple[str, str], dict[str, float]] = {}
-    for row in query.all():
-        context.setdefault((str(row.game_date or ""), _game_key(row.game)), {})[row.stat] = float(row.actual)
-    for row in history:
-        values = context.get((str(row.get("game_date") or ""), _game_key(row.get("game"))), {})
-        if "Minutes" in values:
-            row["minutes"] = values["Minutes"]
-        opportunities = _role_opportunities(str(row.get("sport") or sport or ""), str(row.get("stat") or ""), values)
-        if opportunities is not None:
-            row["opportunities"] = opportunities
-
-
-def _role_opportunities(sport: str, stat: str, values: dict[str, float]) -> float | None:
-    sport_key = sport.upper()
-    stat_key = canonical_stat_label(stat).lower()
-    if sport_key in {"WNBA", "NBA"}:
-        return values.get("Minutes") if "assist" in stat_key else values.get("Field Goals Attempted")
-    if sport_key == "NFL":
-        if "pass" in stat_key or "completion" in stat_key or "interception" in stat_key:
-            return values.get("Passing Attempts", values.get("Pass Attempts"))
-        if "rush" in stat_key or "carr" in stat_key:
-            return values.get("Rush Attempts", values.get("Carries"))
-        if "rec" in stat_key or "target" in stat_key:
-            return values.get("Targets")
-    if sport_key == "MLB":
-        return values.get("At Bats")
-    if sport_key == "NHL":
-        return values.get("Shots on Goal")
-    return None
-
+def _deduplicate_history(rows: list[dict]) -> list[dict]:
+    """Keep one independent final outcome for each player game and stat."""
+    unique: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        game_date = str(row.get("game_date") or "").strip()[:10]
+        matchup = _game_key(row.get("game"))
+        if game_date or matchup:
+            key = (game_date, matchup)
+            if key in seen:
+                continue
+            seen.add(key)
+        unique.append(row)
+    return unique
 
 def _normalize_row(row: dict) -> dict | None:
     try:
@@ -415,7 +473,7 @@ def _rows_allow_extended_date_recovery(rows: list[FinalPlayerStatModel]) -> bool
         sport for row in rows
         if (sport := str(getattr(row, "sport", "") or "").upper())
     }
-    return not sports or sports.issubset({"NBA", "WNBA", "NFL"})
+    return not sports or sports.issubset({"NBA", "WNBA", "NFL", "NCAAF"})
 
 
 def _date_distance(value: object, target: date) -> int:
@@ -508,6 +566,35 @@ def _game_key(value: object) -> str:
     return canonical_matchup_key(value, _TEAM_ALIASES)
 
 
+def _record_key(row: object) -> tuple[str, str, str, str, str]:
+    def value(name: str, default: object = "") -> object:
+        return row.get(name, default) if isinstance(row, dict) else getattr(row, name, default)
+
+    identity_id = value("player_identity_id", None)
+    player_key = f"id:{identity_id}" if identity_id else canonical_person_key(value("player"))
+    return (
+        str(value("sport") or "").upper(),
+        canonical_stat_label(value("stat")),
+        str(value("game_date") or ""),
+        player_key,
+        _game_key(value("game")),
+    )
+
+
+def _prefer_incoming_result(current: dict, incoming: dict) -> bool:
+    current_final = str(current.get("status") or "").lower() in {"played", "dnp"}
+    incoming_final = str(incoming.get("status") or "").lower() in {"played", "dnp"}
+    return incoming_final or not current_final
+
+
+def _prefer_stored_result(candidate: object, current: object) -> bool:
+    candidate_final = str(getattr(candidate, "status", "") or "").lower() in {"played", "dnp"}
+    current_final = str(getattr(current, "status", "") or "").lower() in {"played", "dnp"}
+    if candidate_final != current_final:
+        return candidate_final
+    return int(getattr(candidate, "id", 0) or 0) > int(getattr(current, "id", 0) or 0)
+
+
 _TEAM_ALIASES = {
     "NYL": "NY",
     "LVA": "LV",
@@ -534,13 +621,23 @@ def _entry_prop_history(session, player: str, stat: str, sport: str | None, limi
     )
     if sport:
         query = query.filter(EntryPropModel.sport == sport)
+    player_key = canonical_person_key(player)
+    ordered = query.order_by(EntryModel.settled_at.desc(), EntryPropModel.id.desc())
+    # Most lookups have an exact provider spelling. Filter those in SQL so a
+    # projection does not materialize the entire settled ledger for every
+    # candidate prop. Keep the canonical fallback for accents and aliases.
     rows = (
-        query.order_by(EntryModel.settled_at.desc(), EntryPropModel.id.desc())
-        .limit(max(limit * 8, limit))
+        ordered.filter(func.lower(EntryPropModel.player_name) == str(player).strip().lower())
+        .limit(limit)
         .all()
     )
-    player_key = canonical_person_key(player)
-    rows = [(prop, entry) for prop, entry in rows if canonical_person_key(prop.player_name) == player_key][:limit]
+    if not rows:
+        candidates = ordered.limit(max(limit * 8, limit)).all()
+        rows = [
+            (prop, entry)
+            for prop, entry in candidates
+            if canonical_person_key(prop.player_name) == player_key
+        ][:limit]
     return [
         {
             "player": prop.player_name,

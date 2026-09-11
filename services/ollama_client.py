@@ -89,7 +89,7 @@ def ollama_chat(
         "messages": messages,
         "stream": False,
         "keep_alive": "10m",
-        "options": {"temperature": 0.0, "num_predict": 420},
+        "options": {"temperature": 0.0, "num_predict": 240},
     }
     if format_schema:
         payload["format"] = format_schema

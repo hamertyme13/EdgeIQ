@@ -1,5 +1,6 @@
 import pytest
 
+from utils.platforms import maximum_entry_legs
 from web.schemas.entries import EntryPayload
 
 
@@ -53,3 +54,8 @@ def test_draftkings_pick6_is_detected_from_leg_source() -> None:
 
     assert payload.platform == "DraftKings Pick6"
     assert payload.props[0].platform == "DraftKings Pick6"
+
+
+def test_sleeper_and_pick6_support_their_current_card_limits() -> None:
+    assert maximum_entry_legs("Sleeper") == 8
+    assert maximum_entry_legs("DraftKings Pick6") == 7

@@ -37,6 +37,10 @@ def recommendation_eligibility(
         paid_blocks.append(f"Model Trust is {trust_score:.0f}; paid consideration requires 64 or higher.")
     if not model_paid_enabled:
         paid_blocks.append("The current model release has not cleared the paid recommendation gate.")
+    if not prop.get("provider_event_id"):
+        paid_blocks.append("The provider event ID is missing, so exact-game settlement cannot be guaranteed.")
+    if not prop.get("provider_offer_id"):
+        paid_blocks.append("The exact provider offer ID is missing or stale.")
 
     if prop.get("adjusted_line"):
         warnings.append("Confirm the adjusted-line payout and allowed direction in the provider app.")

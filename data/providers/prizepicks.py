@@ -38,6 +38,17 @@ _LEAGUE_MAP = {
     "MMA":    "MMA",
     "UFC":    "MMA",
     "NASCAR": "NASCAR",
+    "CS2":    "CS2",
+    "CS":     "CS2",
+    "LOL":    "LOL",
+    "VAL":    "VALORANT",
+    "VALORANT": "VALORANT",
+    "DOTA2":  "DOTA2",
+    "DOTA 2": "DOTA2",
+    "COD":    "COD",
+    "CALL OF DUTY": "COD",
+    "APEX":   "APEX",
+    "APEX LEGENDS": "APEX",
 }
 
 _SUPPORTED = set(_LEAGUE_MAP.keys())
@@ -143,7 +154,7 @@ def fetch_projections(limit: int = 500) -> list[dict]:
         results.append({
             "projection_id": proj.get("id"),
             "player_id":     player_id,
-            "player":        player_attrs.get("display_name", "Unknown"),
+            "player":        player_attrs.get("display_name") or player_attrs.get("name") or "Unknown",
             "team":          player_attrs.get("team", ""),
             "league":        league,
             "position":      player_attrs.get("position", ""),
@@ -154,7 +165,7 @@ def fetch_projections(limit: int = 500) -> list[dict]:
             "odds_type":      str(attrs.get("odds_type", "standard") or "standard").lower(),
             "adjusted_odds":  bool(attrs.get("adjusted_odds")),
             "is_promo":      bool(attrs.get("is_promo")),
-            "game":          _game_matchup(game_attrs) or attrs.get("description", ""),
+            "game":          _game_matchup(game_attrs) or game_attrs.get("description") or attrs.get("description", ""),
             "game_time":      game_attrs.get("start_time") or attrs.get("start_time") or attrs.get("scheduled_at") or attrs.get("game_time") or attrs.get("commence_time") or "",
             "provider_game_id": str(game_attrs.get("external_game_id") or attrs.get("game_id") or game_id or ""),
             "season_type":    _season_type(raw_league, attrs, game_attrs),

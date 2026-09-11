@@ -29,12 +29,12 @@ if [[ -z "$PYTHON_BIN" ]]; then
   exit 1
 fi
 REQUIRED_UI_VERSION="$(
-  "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+  "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
 )"
 
 health_ok() {
   local port="$1"
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/health" >/dev/null 2>&1
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/health" >/dev/null 2>&1
 }
 
 current_app_ok() {
@@ -42,12 +42,12 @@ current_app_ok() {
   if ! health_ok "$port"; then
     return 1
   fi
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
 }
 
 edgeiq_server() {
   local port="$1"
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null |
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null |
     /usr/bin/grep -q '"app":"EdgeIQ Web"'
 }
 
@@ -102,6 +102,9 @@ if [[ -z "${PORT:-}" ]]; then
 fi
 
 if ! health_ok "$PORT"; then
+  if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+    "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1
+  fi
   echo "Starting EdgeIQ on ${HOST}:${PORT} at $(date) with ${PYTHON_BIN}" >>"$LOG_FILE"
   /usr/bin/nohup "$PYTHON_BIN" -m uvicorn web.app:app --host "$HOST" --port "$PORT" >>"$LOG_FILE" 2>&1 &
 

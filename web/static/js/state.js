@@ -21,5 +21,8 @@
     placementInFlight: false,
     buttonSoundsBound: false,
     generatorRecentProps: {},
+    entryPlayerDirectory: [],
+    entrySelectedPlayerIdentityId: null,
+    entrySelectedPlayerRecord: null,
   };
 })(window);

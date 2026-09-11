@@ -211,6 +211,45 @@ def test_adjusted_prizepicks_lines_do_not_create_opposite_side_free_edges():
     assert ("B", "Over") in adjusted_sides
 
 
+def test_partial_game_market_cannot_be_normalized_into_full_game_suggestion():
+    raw_props = [
+        {"player": "Kelsey Mitchell", "team": "IND", "league": "WNBA", "stat": "1Q Points", "line": 6.5},
+        {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 18.5},
+        {"player": "B", "team": "BBB", "league": "WNBA", "stat": "Rebounds", "line": 7.5},
+    ]
+
+    suggestions = suggest_entries(raw_props, "WNBA", Platform.UNDERDOG, limit=2, leg_count=2)
+
+    assert suggestions
+    assert all(prop.player.name != "Kelsey Mitchell" for row in suggestions for prop in row.entry.props)
+
+
+def test_generators_reuse_forecasts_across_leg_counts(monkeypatch):
+    import analytics.entry_suggestions as module
+
+    calls = {"count": 0}
+    original = module.forecast_prop
+
+    def tracked(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, history=[
+            {"actual": 20 + index % 3, "status": "played", "game_date": f"2026-07-{index + 1:02d}", "game": f"A@B-{index}"}
+            for index in range(20)
+        ], **{key: value for key, value in kwargs.items() if key != "history"})
+
+    monkeypatch.setattr(module, "forecast_prop", tracked)
+    module._FORECAST_CACHE.clear()
+    props = [
+        {"player": name, "team": name, "league": "WNBA", "stat": "Points", "line": 20.5, "game": "A @ B"}
+        for name in ("A", "B", "C")
+    ]
+
+    suggest_entries(props, "WNBA", Platform.UNDERDOG, limit=1, leg_count=2)
+    suggest_entries(props, "WNBA", Platform.UNDERDOG, limit=1, leg_count=3)
+
+    assert calls["count"] == 3
+
+
 def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypatch):
     calls = {"history": 0, "adjustments": 0}
     history = [{"status": "Settled", "result": "Win"} for _ in range(5)]

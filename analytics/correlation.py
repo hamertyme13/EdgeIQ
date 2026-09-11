@@ -1,3 +1,4 @@
+from analytics.empirical_correlation import empirical_pair_correlation
 from models.entry import Entry
 from utils.entity_normalization import canonical_matchup_key
 
@@ -118,6 +119,10 @@ def _pair_correlation(first, second) -> float:
             value -= 0.18
     if _direction(first) != _direction(second):
         value *= -1
+    learned = empirical_pair_correlation(first, second)
+    if learned:
+        sample_weight = min(0.75, float(learned["samples"]) / 40.0)
+        value = (value * (1.0 - sample_weight)) + (float(learned["correlation"]) * sample_weight)
     return round(max(-0.30, min(0.30, value)), 3)
 
 

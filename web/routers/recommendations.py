@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from web.application.recommendation_service import RecommendationRequestError
 from web.schemas import AutoPaperCalibrationPayload
@@ -20,24 +21,31 @@ class RecommendationDependencies:
     command_center: Callable[[str, str, bool], dict]
     opportunity_feed: Callable[[str, str, float, int, int], dict]
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
+    start_auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
+    paper_calibration_status: Callable[[], dict]
     entry_suggestions: Callable[[str, str, int, set[str]], dict]
     confirmed_suggestions: Callable[[str, str], dict]
     crazy_six: Callable[[str, str], dict]
     optimizer: Callable[..., dict]
 
 
-_dependencies: RecommendationDependencies | None = None
+_deps_store: list[RecommendationDependencies] = []
 
 
 def configure_recommendation_router(dependencies: RecommendationDependencies) -> None:
-    global _dependencies
-    _dependencies = dependencies
+    if _deps_store:
+        _deps_store[0] = dependencies
+    else:
+        _deps_store.append(dependencies)
 
 
-def _deps() -> RecommendationDependencies:
-    if _dependencies is None:
+def get_deps() -> RecommendationDependencies:
+    if not _deps_store:
         raise HTTPException(status_code=503, detail="Recommendations are still starting. Please try again.")
-    return _dependencies
+    return _deps_store[0]
+
+
+DepsRec = Annotated[RecommendationDependencies, Depends(get_deps)]
 
 
 def _request(call: Callable[[], dict]) -> dict:
@@ -48,23 +56,27 @@ def _request(call: Callable[[], dict]) -> dict:
 
 
 @router.get("/api/props/top")
-def top_props(platform: str = "PrizePicks", sport: str = "All Sports", limit: int = 5) -> dict:
-    return _deps().top_props(platform, sport, limit)
+def top_props(platform: str = "PrizePicks", sport: str = "All Sports", limit: int = 5, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.top_props(platform, sport, limit)
 
 
 @router.get("/api/props/trending")
-def trending_props(platform: str = "PrizePicks", sport: str = "WNBA", limit: int = 15) -> dict:
-    return _deps().trending_props(platform, sport, limit)
+def trending_props(platform: str = "PrizePicks", sport: str = "WNBA", limit: int = 15, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.trending_props(platform, sport, limit)
 
 
 @router.get("/api/props/confirmed")
-def confirmed_props(platform: str = "PrizePicks", sport: str = "All Sports", limit: int = 20) -> dict:
-    return _deps().confirmed_props(platform, sport, limit)
+def confirmed_props(platform: str = "PrizePicks", sport: str = "All Sports", limit: int = 20, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.confirmed_props(platform, sport, limit)
 
 
 @router.get("/api/dashboard/parlay")
-def dashboard_parlay(platform: str = "PrizePicks", sport: str = "All Sports") -> dict:
-    return _deps().dashboard_parlay(platform, sport)
+def dashboard_parlay(platform: str = "PrizePicks", sport: str = "All Sports", deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.dashboard_parlay(platform, sport)
 
 
 @router.get("/api/dashboard/command-center")
@@ -72,8 +84,10 @@ def dashboard_command_center(
     platform: str = "PrizePicks",
     sport: str = "All Sports",
     refresh: bool = False,
+    deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
-    return _deps().command_center(platform, sport, refresh)
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.command_center(platform, sport, refresh)
 
 
 @router.get("/api/market/opportunity-feed")
@@ -83,13 +97,28 @@ def opportunity_feed(
     min_ev: float = 0.0,
     limit: int = 12,
     odds: int = -110,
+    deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
-    return _deps().opportunity_feed(platform, sport, min_ev, limit, odds)
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.opportunity_feed(platform, sport, min_ev, limit, odds)
 
 
 @router.post("/api/entries/auto-paper-calibration")
-def auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
-    return _deps().auto_paper(payload)
+def auto_paper_calibration(payload: AutoPaperCalibrationPayload, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.auto_paper(payload)
+
+
+@router.post("/api/entries/auto-paper-calibration/jobs", status_code=202)
+def start_auto_paper_calibration(payload: AutoPaperCalibrationPayload, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.start_auto_paper(payload)
+
+
+@router.get("/api/entries/paper-calibration-status")
+def paper_calibration_status(deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.paper_calibration_status()
 
 
 @router.get("/api/entries/suggestions")
@@ -98,19 +127,23 @@ def entry_suggestions(
     platform: str = "PrizePicks",
     leg_count: int = 2,
     avoid: str = "",
+    deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
     avoid_prop_keys = {key for key in avoid.split(",") if key}
-    return _request(lambda: _deps().entry_suggestions(sport, platform, leg_count, avoid_prop_keys))
+    return _request(lambda: _deps.entry_suggestions(sport, platform, leg_count, avoid_prop_keys))
 
 
 @router.get("/api/entries/confirmed-suggestions")
-def confirmed_entry_suggestions(sport: str = "WNBA", platform: str = "PrizePicks") -> dict:
-    return _deps().confirmed_suggestions(sport, platform)
+def confirmed_entry_suggestions(sport: str = "WNBA", platform: str = "PrizePicks", deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.confirmed_suggestions(sport, platform)
 
 
 @router.get("/api/entries/crazy-six")
-def crazy_six_suggestion(sport: str = "All Sports", platform: str = "PrizePicks") -> dict:
-    return _deps().crazy_six(sport, platform)
+def crazy_six_suggestion(sport: str = "All Sports", platform: str = "PrizePicks", deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.crazy_six(sport, platform)
 
 
 @router.get("/api/entries/optimizer")
@@ -125,9 +158,11 @@ def optimize_entries(
     max_same_team: int = 5,
     exclude_correlated: bool = False,
     apply_feedback: bool = True,
+    deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
     return _request(
-        lambda: _deps().optimizer(
+        lambda: _deps.optimizer(
             platform,
             sport,
             min_legs,

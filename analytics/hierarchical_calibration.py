@@ -14,7 +14,13 @@ def calibrate_probability(
     rows: list[dict],
 ) -> dict:
     raw = max(0.02, min(0.98, float(raw_probability)))
-    unique_rows = deduplicate_outcomes(rows)
+    unique_rows = deduplicate_outcomes([
+        row for row in rows
+        if not row.get("legacy_quarantined")
+        and row.get("result") in {"Win", "Loss"}
+        and str(row.get("outcome_source") or "").strip().lower()
+        not in {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
+    ])
     tiers = (
         (
             "sport_stat_provider_direction_source",
@@ -27,12 +33,23 @@ def calibrate_probability(
         ("sport", ("sport",), 100),
     )
     target = {
-        "sport": sport.upper(),
+        "sport": sport.strip().lower(),
         "stat": stat.lower(),
         "platform": provider.lower(),
         "direction": direction.lower(),
         "projection_source": projection_source.lower(),
     }
+    segment_peers = [
+        row for row in unique_rows
+        if _matches(row, target, ("sport", "stat", "platform"))
+    ]
+    segment_samples = len(segment_peers)
+    maturity = (
+        "mature" if segment_samples >= 500
+        else "developing" if segment_samples >= 200
+        else "calibrated" if segment_samples >= 100
+        else "thin"
+    )
 
     for tier, fields, minimum in tiers:
         peers = [row for row in unique_rows if _matches(row, target, fields)]
@@ -42,7 +59,13 @@ def calibrate_probability(
         prior_strength = max(20.0, minimum / 2)
         posterior = ((raw * prior_strength) + wins) / (prior_strength + len(peers))
         uncertainty = 1.96 * ((posterior * (1.0 - posterior) / (prior_strength + len(peers))) ** 0.5)
-        cap = 0.90 if len(peers) >= 200 and uncertainty <= 0.07 else 0.84 if len(peers) >= 100 else 0.79
+        cap = (
+            0.88 if len(peers) >= 500 and uncertainty <= 0.04
+            else 0.84 if len(peers) >= 300 and uncertainty <= 0.06
+            else 0.80 if len(peers) >= 200 and uncertainty <= 0.08
+            else 0.76 if len(peers) >= 100
+            else 0.72
+        )
         calibrated = max(0.02, min(cap, posterior))
         return {
             "probability": round(calibrated * 100.0, 2),
@@ -50,12 +73,15 @@ def calibrate_probability(
             "tier": tier,
             "sample_size": len(peers),
             "uncertainty_points": round(uncertainty * 100.0, 2),
-            "paid_eligible": len(peers) >= minimum and uncertainty <= 0.10,
+            "paid_eligible": segment_samples >= 100 and len(peers) >= 50 and uncertainty <= 0.10,
+            "segment_sample_size": segment_samples,
+            "segment_maturity": maturity,
+            "segment_next_threshold": 100 if segment_samples < 100 else 200 if segment_samples < 200 else 500,
             "confidence_cap": round(cap * 100.0, 1),
             "cap_reason": "Confidence is capped until this segment has enough precise independent outcomes.",
         }
 
-    cap = 0.69
+    cap = 0.65
     return {
         "probability": round(min(raw, cap) * 100.0, 2),
         "raw_probability": round(raw * 100.0, 2),
@@ -63,8 +89,11 @@ def calibrate_probability(
         "sample_size": 0,
         "uncertainty_points": 50.0,
         "paid_eligible": False,
+        "segment_sample_size": segment_samples,
+        "segment_maturity": maturity,
+        "segment_next_threshold": 100 if segment_samples < 100 else 200 if segment_samples < 200 else 500,
         "confidence_cap": cap * 100.0,
-        "cap_reason": "Uncalibrated predictions cannot exceed 69% confidence.",
+        "cap_reason": "Uncalibrated predictions cannot exceed 65% confidence.",
     }
 
 

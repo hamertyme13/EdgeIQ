@@ -225,7 +225,10 @@ def daily_scan_status_payload(
     current = raw_current if isinstance(raw_current, dict) else {}
     log = safe_json_loads(get_setting(log_key, ""))
     runs = log.get("runs", []) if isinstance(log, dict) else []
-    today = utc_now().date()
+    now = utc_now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    today = now.date()
     if not current:
         current = {
             "id": "",
@@ -243,6 +246,24 @@ def daily_scan_status_payload(
             "cache": {},
             "errors": [],
         }
+    elif current.get("status") in {"scanning_props", "analyzing_games", "building_entries"}:
+        try:
+            updated = datetime.fromisoformat(str(current.get("updated_at") or "").replace("Z", "+00:00"))
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=UTC)
+            if now - updated > timedelta(minutes=20):
+                current = {
+                    **current,
+                    "status": "failed",
+                    "status_label": "Refresh Timed Out",
+                    "message": "The briefing stopped reporting progress. Restart EdgeIQ, then try Refresh Briefing again.",
+                    "progress": 100,
+                    "steps": daily_scan_steps(""),
+                    "completed_at": iso_utc(now),
+                    "errors": ["The briefing worker exceeded the 20-minute progress window."],
+                }
+        except ValueError:
+            pass
     elif current.get("completed_at"):
         try:
             completed = datetime.fromisoformat(str(current["completed_at"]).replace("Z", "+00:00"))
@@ -325,7 +346,10 @@ def cached_daily_briefing_payload(
         payload = cached.get("payload") if cached.get("version") == cache_version else None
         if isinstance(payload, dict):
             fresh = daily_briefing_cache_is_fresh(cached, ttl_hours)
-            payload = refresh_runtime_state(payload)
+            # Startup reads should remain instant. A full scan or a non-cached
+            # request refreshes runtime-sensitive loss-protection calculations.
+            if not cached_only:
+                payload = refresh_runtime_state(payload)
             return {
                 **payload,
                 "cache": {

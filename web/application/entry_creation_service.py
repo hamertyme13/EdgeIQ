@@ -1,20 +1,71 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from analytics.card_probability import analyze_card_probability
+from analytics.correlation import estimate_correlation_matrix
+from analytics.entry_recommendation import recommendation as entry_recommendation
+from analytics.pickem_payouts import payout_analysis
 from analytics.prop_metrics import calculate_confidence, calculate_edge
-from repository.repositories.entry_repository import EntryRepository
+from utils.prop_plausibility import prop_line_plausibility
 from web.schemas import EntryPayload
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class EntryCreationError(Exception):
     status_code: int
     detail: str
+
+
+def prepare_entry_analysis(entry: Any, *, payout_type: str, multiplier: float, audit_snapshot: str) -> tuple[dict, dict]:
+    """Validate props, compute payout, and compute recommendation.
+
+    This is the business logic that was previously embedded in
+    ``EntryRepository.save()``.  Call this from the service layer before
+    persisting so the repository only handles I/O.
+
+    Returns ``(payout, analysis)`` ready to be passed into ``EntryRepository.save()``.
+    """
+    checked = [(prop, prop_line_plausibility(prop)) for prop in entry.props]
+    invalid = [(prop, result) for prop, result in checked if not result.valid]
+    if invalid:
+        prop, validation = invalid[0]
+        _log.warning(
+            "Rejected implausible entry market player=%s stat=%s line=%s reason=%s",
+            getattr(getattr(prop, "player", None), "name", ""),
+            getattr(getattr(prop, "stat", None), "value", getattr(prop, "stat", "")),
+            getattr(prop, "line", ""),
+            validation.reason,
+        )
+        raise ValueError(f"Entry contains an invalid market: {validation.reason}")
+
+    audit_payload: dict = {}
+    try:
+        audit_payload = json.loads(audit_snapshot or "{}")
+    except (TypeError, ValueError):
+        audit_payload = {}
+    audited_payout = audit_payload.get("payout_analysis") or {}
+    exact_schedule = (
+        audited_payout.get("payouts")
+        if audited_payout.get("source") == "exact_offer_snapshot"
+        else None
+    )
+    payout = payout_analysis(
+        [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
+        entry.platform.value,
+        payout_type,
+        displayed_multiplier=multiplier,
+        correlation_matrix=estimate_correlation_matrix(entry.props),
+        exact_schedule=exact_schedule,
+    )
+    analysis = entry_recommendation(entry, payout)
+    return payout, analysis
 
 
 def validated_call(
@@ -75,7 +126,11 @@ def place_entry_payload(
     entry_from_payload: Callable[[EntryPayload], Any],
     analyze_entry: Callable[[Any, EntryPayload], dict],
     audit_snapshot: Callable[[Any, EntryPayload, dict, list[str]], dict],
+    save_entry: Callable[..., int] | None = None,
 ) -> dict:
+    if save_entry is None:
+        from repository.repositories.entry_repository import EntryRepository as _ER
+        save_entry = _ER.save
     reject_combined_props(payload.props)
     if payload.entry_mode == "real" and payload.wager <= 0:
         raise EntryCreationError(
@@ -115,17 +170,34 @@ def place_entry_payload(
             400,
             "Placement blocked: " + hard_blocks[0]["message"],
         )
-    entry_id = EntryRepository.save(
+    audit_json = json.dumps(
+        audit_snapshot(entry, payload, analysis, verification_warnings)
+    )
+    payout, lower_analysis = prepare_entry_analysis(
+        entry,
+        payout_type=payload.payout_type,
+        multiplier=payload.multiplier,
+        audit_snapshot=audit_json,
+    )
+    entry_id = save_entry(
         entry,
         status="Pending",
         wager=payload.wager,
         multiplier=payload.multiplier,
         recommended_by_app=payload.recommended_by_app,
-        audit_snapshot=json.dumps(
-            audit_snapshot(entry, payload, analysis, verification_warnings)
-        ),
+        audit_snapshot=audit_json,
         entry_mode=payload.entry_mode,
         payout_type=payload.payout_type,
+        payout=payout,
+        analysis=lower_analysis,
+    )
+    _log.info(
+        "Entry persisted id=%s mode=%s platform=%s legs=%s recommended=%s",
+        entry_id,
+        payload.entry_mode,
+        entry.platform.value,
+        len(entry.props),
+        payload.recommended_by_app,
     )
     return {
         "id": entry_id,

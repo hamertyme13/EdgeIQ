@@ -15,10 +15,34 @@ class ProductExperienceRepository:
     FUNNEL = ("recommendation_viewed", "entry_analyzed", "recommendation_added", "entry_saved", "entry_settled")
 
     @staticmethod
-    def record_event(event_name: str, entity_type: str = "", entity_id: str = "", metadata: dict | None = None) -> dict:
+    def record_event(
+        event_name: str,
+        entity_type: str = "",
+        entity_id: str = "",
+        metadata: dict | None = None,
+        *,
+        user_id: int | None = None,
+        session_id: str | None = None,
+    ) -> dict:
         initialize_database()
         with SessionLocal() as session:
-            row = ProductEventModel(event_name=event_name, entity_type=entity_type, entity_id=entity_id, metadata_json=json.dumps(metadata or {}, default=str, sort_keys=True))
+            if event_name == "entry_settled" and user_id is None and entity_id:
+                saved = session.query(ProductEventModel).filter_by(
+                    event_name="entry_saved",
+                    entity_type="entry",
+                    entity_id=entity_id,
+                ).order_by(ProductEventModel.created_at.desc()).first()
+                if saved is not None:
+                    user_id = saved.user_id
+                    session_id = saved.session_id
+            row = ProductEventModel(
+                user_id=user_id,
+                session_id=session_id,
+                event_name=event_name,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                metadata_json=json.dumps(metadata or {}, default=str, sort_keys=True),
+            )
             session.add(row)
             session.commit()
             session.refresh(row)
@@ -31,6 +55,15 @@ class ProductExperienceRepository:
             counts = dict(session.query(ProductEventModel.event_name, func.count(ProductEventModel.id)).group_by(ProductEventModel.event_name).all())
         viewed = int(counts.get("recommendation_viewed", 0))
         return {"funnel": [{"event": event, "count": int(counts.get(event, 0))} for event in ProductExperienceRepository.FUNNEL], "conversion": {"view_to_analyze": _rate(counts.get("entry_analyzed", 0), viewed), "view_to_save": _rate(counts.get("entry_saved", 0), viewed), "save_to_settle": _rate(counts.get("entry_settled", 0), counts.get("entry_saved", 0))}}
+
+    @staticmethod
+    def event_counts(*, user_id: int | None = None) -> dict[str, int]:
+        initialize_database()
+        with SessionLocal() as session:
+            query = session.query(ProductEventModel.event_name, func.count(ProductEventModel.id))
+            if user_id is not None:
+                query = query.filter(ProductEventModel.user_id == int(user_id))
+            return {name: int(count) for name, count in query.group_by(ProductEventModel.event_name).all()}
 
     @staticmethod
     def save_research(payload: dict) -> dict:

@@ -51,7 +51,7 @@ _TEAM_LOCATIONS = {
 
 
 def fetch_weather_for_game(game: str, sport: str) -> dict | None:
-    if sport.upper() not in {"MLB", "NFL"}:
+    if sport.upper() not in {"MLB", "NFL", "NCAAF"}:
         return None
     location = _location_from_game(game)
     if not location:

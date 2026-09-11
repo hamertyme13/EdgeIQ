@@ -2,7 +2,20 @@
   const DISPLAY_TIME_ZONE = "America/New_York";
 
   function friendlyStatus(value) {
-    return String(value || "unknown")
+    const status = String(value || "unknown").toLowerCase();
+    const labels = {
+      empty: "No fresh offers",
+      missing_key: "Setup needed",
+      not_configured: "Setup needed",
+      manual_handoff: "Manual handoff",
+      manual_import: "Manual import",
+      stale: "Cached data",
+      unavailable: "Temporarily unavailable",
+      disabled: "Turned off",
+      degraded: "Needs attention",
+    };
+    if (labels[status]) return labels[status];
+    return status
       .split("_")
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(" ");
@@ -118,7 +131,13 @@
       labels.push({ label: "Thin history", tone: "thin" });
     }
     const unique = [...new Map(labels.map((row) => [row.label, row])).values()];
-    return `<div class="data-strength-row">${unique.map((row) => `<span class="data-strength-badge data-${row.tone}">${escapeHtml(row.label)}</span>`).join("")}</div>`;
+    if (!unique.length) return "";
+    const warningCount = unique.filter((row) => row.tone === "warning" || row.tone === "thin").length;
+    const verifiedCount = unique.length - warningCount;
+    const tone = warningCount === 0 ? "verified" : verifiedCount > warningCount ? "mixed" : "warning";
+    const label = warningCount === 0 ? "Strong evidence" : verifiedCount ? "Mixed evidence" : "Thin evidence";
+    const detail = unique.map((row) => row.label).join(" · ");
+    return `<div class="data-strength-row"><span class="trust-indicator trust-${tone}" title="${escapeHtml(detail)}"><span class="trust-indicator-dot" aria-hidden="true"></span>${escapeHtml(label)}<small>${unique.length} checks</small></span></div>`;
   }
 
   global.EdgeIQUi = {

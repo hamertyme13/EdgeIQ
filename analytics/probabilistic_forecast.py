@@ -4,12 +4,20 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timezone
 from statistics import median
+from typing import cast
 
-from repository.repositories.final_stats_repository import FinalStatsRepository
+from analytics.game_features import prop_opportunity_context
+from analytics.model_registry import (
+    MARKET_BASELINE_VERSION,
+    OPPORTUNITY_CHALLENGER_VERSION,
+    PRODUCT_MODEL_VERSION,
+)
+from analytics.model_selection import select_projection_champion
+from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 
-MODEL_VERSION = "edgeiq-season-matchup-distribution-v2.4.0"
+MODEL_VERSION = PRODUCT_MODEL_VERSION
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
 
@@ -44,11 +52,18 @@ def forecast_prop(
     game_time: object = None,
     team: str = "",
     game: str = "",
+    game_prediction: dict | None = None,
 ) -> PropForecast:
-    rows = list(history) if history is not None else FinalStatsRepository.history(player, stat, sport=sport, limit=100, team=team)
-    rows = _eligible_history(rows, game_time)
-    rows = _current_season_history(rows, sport, game_time)
+    policy = _league_stat_policy(sport, stat)
+    rows = (
+        list(history)
+        if history is not None
+        else PlayerFeatureRepository.history(player, sport, stat, limit=100, team=team)
+    )
+    trailing_rows = _eligible_history(rows, game_time)
+    rows = _current_season_history(trailing_rows, sport, game_time)
     actuals = [float(row["actual"]) for row in rows]
+    trailing_actuals = [float(row["actual"]) for row in trailing_rows]
     feature_as_of = datetime.now(UTC).isoformat()
 
     if len(actuals) < MIN_HISTORY_FOR_FORECAST:
@@ -59,7 +74,7 @@ def forecast_prop(
             sample_size=len(actuals),
             effective_sample_size=float(len(actuals)),
             source="market_prior",
-            model_version=MODEL_VERSION,
+            model_version=MARKET_BASELINE_VERSION,
             paid_eligible=False,
             reason=f"Only {len(actuals)} verified games; at least {MIN_HISTORY_FOR_FORECAST} are required for a forecast.",
             feature_as_of=feature_as_of,
@@ -69,6 +84,7 @@ def forecast_prop(
                 "stat": canonical_stat_label(stat),
                 "verified_games": len(actuals),
                 "market_line_used_as_prior": True,
+                "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
             },
             distribution={
                 "expected_result": round(float(line), 2),
@@ -94,7 +110,11 @@ def forecast_prop(
         weighted_mean,
         stat,
     )
-    market_prior_weight = 0.25 if len(actuals) >= 40 else 0.35 if len(actuals) >= 20 else 0.50
+    market_prior_weight = policy["market_prior_weight"]
+    if len(actuals) >= 40:
+        market_prior_weight = max(0.20, market_prior_weight - 0.10)
+    elif len(actuals) < 20:
+        market_prior_weight = min(0.60, market_prior_weight + 0.10)
     regularized_center = (projection_center * (1.0 - market_prior_weight)) + (float(line) * market_prior_weight)
     side = _game_side(game, team)
     side_values = [
@@ -132,22 +152,71 @@ def forecast_prop(
     raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     recent = actuals[:5]
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
-    expected_minutes = _optional_history_median(rows, ("minutes", "min"))
-    expected_opportunities = _optional_history_median(
-        rows,
-        ("opportunities", "attempts", "usage_opportunities", "targets", "carries"),
+    expected_minutes = _recent_weighted_history_value(rows, ("minutes", "min"))
+    expected_opportunities = _recent_weighted_history_value(rows, policy["opportunity_keys"])
+    workload = _workload_adjustment(rows, policy)
+    opportunity_projection = _opportunity_rate_projection(rows, policy)
+    if opportunity_projection["verified"]:
+        opportunity_center = float(opportunity_projection["projection"])
+        blended = (contextual_mean * 0.60) + (opportunity_center * 0.40)
+        lower, upper = contextual_mean * 0.85, contextual_mean * 1.15
+        contextual_mean = max(min(lower, upper), min(max(lower, upper), blended))
+        raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
+        over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    opportunity_validation = _opportunity_walk_forward_validation(rows, policy)
+    opportunity_projection_value = opportunity_projection.get("projection")
+    challenger_center = (
+        float(cast(float, opportunity_projection_value))
+        if opportunity_projection.get("verified")
+        and isinstance(opportunity_projection_value, (int, float))
+        else contextual_mean
     )
-    role_required = sport.upper() in {"WNBA", "NBA", "NFL"}
-    role_verified = expected_minutes is not None or expected_opportunities is not None
-    paid_eligible = len(actuals) >= MIN_HISTORY_FOR_PAID and effective_n >= 8 and (not role_required or role_verified)
+    selection = select_projection_champion(
+        actuals,
+        challenger_center,
+        opportunity_validation=opportunity_validation,
+    )
+    contextual_mean = float(selection["projection"])
+    raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
+    over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    role_required = bool(policy["requires_role_evidence"])
+    role_verified = bool(workload["verified"])
+    selected_model_paid_eligible = selection["model_version"] != OPPORTUNITY_CHALLENGER_VERSION
+    paid_eligible = (
+        len(actuals) >= MIN_HISTORY_FOR_PAID
+        and effective_n >= 8
+        and (not role_required or role_verified)
+        and selected_model_paid_eligible
+    )
     uncertainty_drivers = _uncertainty_drivers(
         len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
     )
+    if role_required and not role_verified:
+        uncertainty_drivers.append("Verified workload coverage is below the paid-entry threshold")
+    if not selected_model_paid_eligible:
+        uncertainty_drivers.append("Opportunity-aware challenger remains in shadow evaluation")
     evidence_strength = min(1.0, effective_n / MIN_HISTORY_FOR_PAID)
     if expected_minutes is None and expected_opportunities is None:
         evidence_strength *= 0.85
     probability = 0.5 + ((raw_probability - 0.5) * evidence_strength)
+    probability = min(0.85, max(0.15, probability))
     opponent_hits = sum(_value_hits_line(value, float(line), direction) for value in opponent_values)
+    game_context = prop_opportunity_context(
+        sport,
+        stat,
+        team,
+        game_prediction or {},
+        expected_minutes=expected_minutes,
+        expected_opportunities=expected_opportunities,
+    ) if game_prediction else {
+        "model_version": "edgeiq-game-context-prop-distribution-v2.5.0",
+        "shadow_only": True,
+        "confidence_delta": 0.0,
+        "opportunity_factor": 1.0,
+        "adjustments": [],
+        "anti_double_counting": "No game prediction was available; production forecast is unchanged.",
+    }
+    game_aware_shadow_projection = contextual_mean * float(game_context["opportunity_factor"])
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -156,11 +225,13 @@ def forecast_prop(
         sample_size=len(actuals),
         effective_sample_size=round(effective_n, 2),
         source="verified_history_distribution",
-        model_version=MODEL_VERSION,
+        model_version=str(selection["model_version"]),
         paid_eligible=paid_eligible,
         reason=(
             "Verified history clears the minimum paid-model evidence threshold."
             if paid_eligible
+            else "The opportunity-aware model won this player's walk-forward test but remains paper-only until release gates pass."
+            if not selected_model_paid_eligible
             else "Forecast available, but verified minutes or opportunity evidence is required for paid mode."
             if role_required and not role_verified
             else f"Forecast available, but paid mode requires {MIN_HISTORY_FOR_PAID} verified games."
@@ -170,6 +241,8 @@ def forecast_prop(
             "player_key": canonical_person_key(player),
             "sport": sport.upper(),
             "stat": canonical_stat_label(stat),
+            "league_stat_policy": policy["name"],
+            "opportunity_metric": policy["opportunity_metric"],
             "verified_games": len(actuals),
             "effective_sample_size": round(effective_n, 2),
             "weighted_mean": round(weighted_mean, 3),
@@ -180,12 +253,12 @@ def forecast_prop(
             "projection_method": projection_method,
             "zero_rate_recent_20": round(zero_rate, 3),
             "walk_forward_validation": {
-                "baseline_mae": 1.052,
-                "adaptive_mae": 1.002,
-                "relative_improvement_pct": 4.8,
-                "stored_projection_mae": 6.362,
-                "market_regularized_mae": 5.814,
-                "market_regularization_improvement_pct": 8.6,
+                "selected_method": selection["method"],
+                "selected_model_version": selection["model_version"],
+                "baselines": selection["validation"],
+                "challenger_projection": selection["challenger_projection"],
+                "challenger_delta": selection.get("challenger_delta"),
+                "note": "Metrics are calculated chronologically from this player's pre-game history.",
             },
             "contextual_mean": round(contextual_mean, 3),
             "recent_5_mean": round(sum(recent) / len(recent), 3),
@@ -194,6 +267,11 @@ def forecast_prop(
             "market_line_used_as_prior": False,
             "role_evidence_required": role_required,
             "role_evidence_verified": role_verified,
+            "workload_evidence": workload,
+            "opportunity_projection": opportunity_projection,
+            "opportunity_walk_forward_validation": opportunity_validation,
+            "model_selection": selection,
+            "opportunity_source": opportunity_projection["source"],
             "raw_probability_before_evidence_shrinkage": round(raw_probability * 100.0, 2),
             "evidence_strength": round(evidence_strength, 3),
             "home_away": side or "unknown",
@@ -210,11 +288,14 @@ def forecast_prop(
             "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
             "season_average": round(sum(actuals) / len(actuals), 3),
             "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
+            "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
             "missingness": {
                 "home_away": not bool(side),
                 "opponent": not bool(opponent),
                 "rest_days": _rest_days(game_time, rows) is None,
             },
+            "game_intelligence": game_context,
+            "game_aware_shadow_projection": round(game_aware_shadow_projection, 3),
         },
         distribution={
             "expected_result": round(contextual_mean, 2),
@@ -227,6 +308,12 @@ def forecast_prop(
             "probability_under_exact_line": round((1.0 - over_probability) * 100.0, 2),
             "expected_minutes": expected_minutes,
             "expected_opportunities": expected_opportunities,
+            "workload_adjustment_pct": workload["adjustment_pct"],
+            "opportunity_projection": opportunity_projection.get("projection"),
+            "production_per_opportunity": opportunity_projection.get("production_rate"),
+            "opportunity_evidence_games": opportunity_projection.get("games", 0),
+            "game_aware_shadow_projection": round(game_aware_shadow_projection, 2),
+            "game_context_shadow_only": True,
             "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
             "uncertainty_drivers": uncertainty_drivers,
         },
@@ -245,6 +332,38 @@ def _quantile(values: list[float], probability: float) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def _history_filter_comparison(
+    current: list[float], trailing: list[float], line: float, direction: str, stat: str,
+) -> dict:
+    """Persist a counterfactual so settled outcomes can compare season filtering fairly."""
+    def estimate(values: list[float]) -> dict:
+        if not values:
+            return {"sample_size": 0, "projection": None, "probability": None}
+        weights = [_recency_weight(index) for index in range(len(values))]
+        center = sum(value * weight for value, weight in zip(values, weights, strict=False)) / sum(weights)
+        sigma = max(_minimum_sigma(stat, center), _sample_spread(values, center, weights))
+        probability = _side_probability(center, sigma, line, direction, stat)
+        return {"sample_size": len(values), "projection": round(center, 3), "probability": round(probability * 100.0, 2)}
+
+    current_result = estimate(current)
+    trailing_result = estimate(trailing)
+    return {
+        "current_season": current_result,
+        "trailing_history": trailing_result,
+        "excluded_prior_season_games": max(0, len(trailing) - len(current)),
+        "projection_delta": round(
+            float(current_result["projection"]) - float(trailing_result["projection"]), 3,
+        ) if current_result["projection"] is not None and trailing_result["projection"] is not None else None,
+    }
+
+
+def _sample_spread(values: list[float], center: float, weights: list[float]) -> float:
+    if not values:
+        return 0.0
+    variance = sum(weight * ((value - center) ** 2) for value, weight in zip(values, weights, strict=False)) / sum(weights)
+    return math.sqrt(max(0.0, variance))
+
+
 def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float | None:
     values: list[float] = []
     for row in rows[:20]:
@@ -256,6 +375,202 @@ def _optional_history_median(rows: list[dict], keys: tuple[str, ...]) -> float |
         except (TypeError, ValueError):
             continue
     return round(float(median(values)), 2) if values else None
+
+
+def _recent_weighted_history_value(rows: list[dict], keys: tuple[str, ...]) -> float | None:
+    values: list[float] = []
+    for row in rows[:5]:
+        value = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        try:
+            if value is not None and float(value) > 0:
+                values.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not values:
+        return _optional_history_median(rows, keys)
+    weights = [_recency_weight(index) for index in range(len(values))]
+    return round(sum(value * weight for value, weight in zip(values, weights, strict=False)) / sum(weights), 2)
+
+
+def _workload_adjustment(rows: list[dict], policy: dict) -> dict:
+    keys = ("minutes", "min") if "minutes" in policy["opportunity_metric"] else policy["opportunity_keys"]
+    observations: list[float] = []
+    for row in rows[:20]:
+        value = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        try:
+            if value is not None and float(value) > 0:
+                observations.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    coverage = len(observations) / min(20, len(rows)) if rows else 0.0
+    if len(observations) < 5:
+        return {
+            "verified": False,
+            "metric": policy["opportunity_metric"],
+            "games": len(observations),
+            "coverage_pct": round(coverage * 100.0, 1),
+            "recent": None,
+            "baseline": None,
+            "factor": 1.0,
+            "adjustment_pct": 0.0,
+            "reason": "At least five matched workload games are required.",
+        }
+    recent_count = min(5, len(observations))
+    recent = sum(observations[:recent_count]) / recent_count
+    baseline = float(median(observations))
+    raw_ratio = recent / baseline if baseline > 0 else 1.0
+    evidence = min(1.0, len(observations) / 15.0) * min(1.0, coverage / 0.75)
+    factor = 1.0 + ((raw_ratio - 1.0) * 0.50 * evidence)
+    factor = max(0.85, min(1.15, factor))
+    verified = coverage >= 0.50
+    return {
+        "verified": verified,
+        "metric": policy["opportunity_metric"],
+        "games": len(observations),
+        "coverage_pct": round(coverage * 100.0, 1),
+        "recent": round(recent, 2),
+        "baseline": round(baseline, 2),
+        "factor": round(factor, 4) if verified else 1.0,
+        "adjustment_pct": round((factor - 1.0) * 100.0, 1) if verified else 0.0,
+        "reason": (
+            "Recent verified workload adjusted the projection with a capped, evidence-weighted factor."
+            if verified
+            else "Workload coverage is below 50%, so it did not change the projection."
+        ),
+    }
+
+
+def _opportunity_rate_projection(rows: list[dict], policy: dict) -> dict:
+    """Estimate production from verified workload before blending result history."""
+    keys = ("minutes", "min") if "minutes" in policy["opportunity_metric"] else policy["opportunity_keys"]
+    pairs: list[tuple[float, float]] = []
+    for row in rows[:20]:
+        opportunity = next((row.get(key) for key in keys if row.get(key) is not None), None)
+        if opportunity is None:
+            continue
+        try:
+            actual = float(row["actual"])
+            volume = float(opportunity)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if volume > 0:
+            pairs.append((actual, volume))
+    coverage = len(pairs) / min(20, len(rows)) if rows else 0.0
+    if len(pairs) < 5 or coverage < 0.50:
+        return {
+            "verified": False,
+            "source": "unavailable",
+            "metric": policy["opportunity_metric"],
+            "games": len(pairs),
+            "coverage_pct": round(coverage * 100.0, 1),
+            "expected_opportunities": None,
+            "production_rate": None,
+            "projection": None,
+            "reason": "At least five matched games and 50% workload coverage are required.",
+        }
+    recent = pairs[:5]
+    weights = [_recency_weight(index) for index in range(len(recent))]
+    expected_volume = sum(volume * weight for (_, volume), weight in zip(recent, weights, strict=False)) / sum(weights)
+    rate_weights = [_recency_weight(index) for index in range(len(pairs))]
+    production_rate = sum(
+        (actual / volume) * weight
+        for (actual, volume), weight in zip(pairs, rate_weights, strict=False)
+    ) / sum(rate_weights)
+    return {
+        "verified": True,
+        "source": "verified_game_workload",
+        "metric": policy["opportunity_metric"],
+        "games": len(pairs),
+        "coverage_pct": round(coverage * 100.0, 1),
+        "expected_opportunities": round(expected_volume, 2),
+        "production_rate": round(production_rate, 4),
+        "projection": round(production_rate * expected_volume, 3),
+        "reason": "Projection uses verified production per opportunity and recent expected workload.",
+    }
+
+
+def _opportunity_walk_forward_validation(rows: list[dict], policy: dict) -> dict:
+    """Evaluate workload-rate forecasts using only information available before each game."""
+    descending: list[tuple[float, float]] = []
+    for row in rows:
+        opportunity = next(
+            (row.get(key) for key in policy["opportunity_keys"] if row.get(key) is not None),
+            None,
+        )
+        if opportunity is None:
+            continue
+        try:
+            actual = float(row["actual"])
+            volume = float(cast(float | str, opportunity))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if volume > 0:
+            descending.append((actual, volume))
+    chronological = list(reversed(descending))
+    errors: list[float] = []
+    for index in range(5, len(chronological)):
+        train = chronological[:index]
+        actual = chronological[index][0]
+        total_volume = sum(volume for _, volume in train)
+        if total_volume <= 0:
+            continue
+        production_rate = sum(result for result, _ in train) / total_volume
+        expected_volume = sum(volume for _, volume in train[-5:]) / len(train[-5:])
+        errors.append(abs((production_rate * expected_volume) - actual))
+    return {
+        "key": "opportunity_aware",
+        "samples": len(errors),
+        "mae": round(sum(errors) / len(errors), 4) if errors else None,
+        "leakage_free": True,
+        "method": "prior production per opportunity multiplied by prior-five expected workload",
+    }
+
+
+def _league_stat_policy(sport: str, stat: str) -> dict:
+    """Route forecasts through league/stat-specific opportunity assumptions."""
+    league = str(sport or "").upper()
+    market = canonical_stat_label(stat).lower()
+    if league in {"NFL", "NCAAF"}:
+        prefix = league.lower()
+        if any(token in market for token in ("pass", "completion", "interception")):
+            return _policy(f"{prefix}_passing", "dropbacks/pass attempts", ("pass_attempts", "attempts", "dropbacks"), 0.40)
+        if any(token in market for token in ("rush", "carry")):
+            return _policy(f"{prefix}_rushing", "carries", ("carries", "rush_attempts", "opportunities"), 0.40)
+        if any(token in market for token in ("reception", "receiving", "target")):
+            return _policy(f"{prefix}_receiving", "targets/routes", ("targets", "routes", "route_participation"), 0.40)
+        if any(token in market for token in ("field goal", "extra point", "kicking")):
+            return _policy(f"{prefix}_kicking", "kicking attempts", ("field_goal_attempts", "extra_point_attempts", "attempts"), 0.45)
+        return _policy(f"{prefix}_general", "snaps", ("snaps", "opportunities", "attempts"), 0.45)
+    if league in {"NBA", "WNBA"}:
+        return _policy(
+            f"{league.lower()}_minutes_usage",
+            "minutes/usage",
+            ("usage_opportunities", "possessions", "opportunities", "attempts"),
+            0.35,
+        )
+    if league == "MLB":
+        if any(token in market for token in ("strikeout", "pitch", "earned run", "walks allowed")):
+            return _policy("mlb_pitching", "batters faced/pitches", ("batters_faced", "pitches", "innings_pitched"), 0.35)
+        return _policy("mlb_batting", "plate appearances", ("plate_appearances", "at_bats", "opportunities"), 0.35)
+    if league == "NHL":
+        return _policy("nhl_ice_time_role", "time on ice/shifts", ("time_on_ice", "shifts", "opportunities"), 0.40)
+    return _policy("generic_verified_history", "opportunities", ("opportunities", "attempts", "targets", "carries"), 0.40, False)
+
+
+def _policy(
+    name: str,
+    metric: str,
+    keys: tuple[str, ...],
+    market_prior_weight: float,
+    requires_role: bool = True,
+) -> dict:
+    return {
+        "name": name,
+        "opportunity_metric": metric,
+        "opportunity_keys": keys,
+        "market_prior_weight": market_prior_weight,
+        "requires_role_evidence": requires_role,
+    }
 
 
 def _uncertainty_level(sample_size: int, sigma: float, mean: float) -> str:
@@ -327,7 +642,7 @@ def _current_season_history(rows: list[dict], sport: str, game_time: object) -> 
         start = datetime(target.year, 3, 1).date().isoformat()
     elif sport_key == "WNBA":
         start = datetime(target.year, 5, 1).date().isoformat()
-    elif sport_key == "NFL":
+    elif sport_key in {"NFL", "NCAAF"}:
         start = datetime(target.year, 7, 15).date().isoformat()
     else:
         return rows

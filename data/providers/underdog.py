@@ -50,6 +50,17 @@ _LEAGUE_MAP = {
     "MMA":        "MMA",
     "UFC":        "MMA",
     "NASCAR":     "NASCAR",
+    "CS":         "CS2",
+    "CS2":        "CS2",
+    "LOL":        "LOL",
+    "LEAGUE_OF_LEGENDS": "LOL",
+    "VAL":        "VALORANT",
+    "VALORANT":   "VALORANT",
+    "DOTA":       "DOTA2",
+    "DOTA2":      "DOTA2",
+    "COD":        "COD",
+    "CALL_OF_DUTY": "COD",
+    "APEX":       "APEX",
 }
 
 _SUPPORTED = set(_LEAGUE_MAP.keys())
@@ -267,10 +278,10 @@ def fetch_projections() -> list[dict]:
         # Rank — lower = more featured; invert for trending_count parity
         raw_rank  = line.get("rank", 999_999_999)
 
-        name = (
-            f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
-            or "Unknown"
-        )
+        first_name = str(player.get("first_name") or "").strip()
+        last_name = str(player.get("last_name") or "").strip()
+        name = str(player.get("display_name") or player.get("name") or "").strip()
+        name = name or " ".join(part for part in (first_name, last_name) if part) or "Unknown"
 
         raw_line = line.get("stat_value")
         try:

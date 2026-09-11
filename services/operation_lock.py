@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import fcntl
+import os
+import re
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -9,6 +11,15 @@ from pathlib import Path
 
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+
+
+def _operation_lock_path(name: str) -> Path:
+    namespace = os.getenv("EDGEIQ_OPERATION_LOCK_NAMESPACE", "").strip()
+    if not namespace and os.getenv("PYTEST_CURRENT_TEST"):
+        namespace = f"pytest-{os.getpid()}"
+    safe_namespace = re.sub(r"[^A-Za-z0-9_.-]+", "-", namespace).strip("-")
+    prefix = f"{safe_namespace}-" if safe_namespace else ""
+    return Path(tempfile.gettempdir()) / f"edgeiq-{prefix}{name}.lock"
 
 
 @contextmanager
@@ -20,7 +31,7 @@ def named_operation_lock(name: str) -> Iterator[bool]:
         yield False
         return
 
-    path = Path(tempfile.gettempdir()) / f"edgeiq-{name}.lock"
+    path = _operation_lock_path(name)
     handle = None
     acquired = False
     try:

@@ -84,8 +84,15 @@ class BetRepository:
         bets = self.get_all()
         return sum(bet.profit for bet in bets)
 
-    def dashboard_stats(self) -> dict:
-        bets = self.get_all()
+    def dashboard_stats(self, bets: list[Bet] | None = None) -> dict:
+        """Build dashboard totals from an optional already-loaded ledger.
+
+        The web Results report needs the same bet ledger for several views.
+        Accepting it here avoids re-hydrating every historical row for each
+        individual calculation.
+        """
+        if bets is None:
+            bets = self.get_all()
 
         if not bets:
             return self._empty_stats()

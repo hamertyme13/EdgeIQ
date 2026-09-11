@@ -18,6 +18,30 @@ def test_espn_basketball_rows_include_provider_fantasy_score() -> None:
     assert fantasy["actual"] == 40.0
 
 
+def test_espn_baseball_rows_preserve_settleable_market_components() -> None:
+    hitting = espn._baseball_hitting_rows(
+        "Test Hitter", "ATL", "ATL@NYM", date(2026, 8, 21),
+        {"AB": 4, "PA": 5, "H": 3, "2B": 1, "3B": 1, "HR": 1, "BB": 1, "SB": 1, "SO": 1},
+        "played",
+    )
+    pitching = espn._baseball_pitching_rows(
+        "Test Pitcher", "ATL", "ATL@NYM", date(2026, 8, 21),
+        {"IP": 6.0, "ER": 2, "K": 8, "H": 5, "BB": 2, "PC": 96, "BF": 24},
+        {"starter": True, "notes": []},
+        "played",
+    )
+
+    hit_values = {row["stat"]: row["actual"] for row in hitting}
+    pitch_values = {row["stat"]: row["actual"] for row in pitching}
+    assert hit_values["Singles"] == 0
+    assert hit_values["Total Bases"] == 9
+    assert hit_values["Plate Appearances"] == 5
+    assert pitch_values["Fantasy Score"] == 40
+    assert pitch_values["Hits Allowed"] == 5
+    assert pitch_values["Pitching Walks"] == 2
+    assert pitch_values["Pitches"] == 96
+
+
 def test_espn_event_matching_normalizes_provider_team_aliases() -> None:
     prop = {
         "team": "GSV",
@@ -108,6 +132,10 @@ def test_espn_nfl_final_summary_supports_provider_markets() -> None:
     assert next(row for row in rows if row["player"] == "Test Quarterback")["game"] == "ARI@CAR"
     assert next(row for row in rows if row["player"] == "Test Receiver")["provider_player_id"] == "nfl-2"
 
+    college_rows = espn._parse_summary(summary, "NCAAF", date(2026, 8, 30))
+    assert college_rows
+    assert {row["sport"] for row in college_rows} == {"NCAAF"}
+
 
 def test_espn_nhl_final_summary_supports_skater_and_goalie_markets() -> None:
     summary = {
@@ -186,6 +214,16 @@ def test_prizepicks_duplicate_player_metadata_keeps_populated_fields() -> None:
 def test_nfl_august_game_is_labeled_preseason_when_feed_omits_label() -> None:
     assert prizepicks._season_type("NFL", {}, {"start_time": "2026-08-06T20:00:00-04:00"}) == "preseason"
     assert underdog._season_type("NFL", {"scheduled_at": "2026-08-07T00:00:00Z"}, {}) == "preseason"
+
+
+def test_provider_gaming_leagues_are_normalized() -> None:
+    assert prizepicks._normalize_league("CS2") == "CS2"
+    assert prizepicks._normalize_league("LoL") == "LOL"
+    assert prizepicks._normalize_league("Dota2") == "DOTA2"
+    assert prizepicks._normalize_league("APEX") == "APEX"
+    assert underdog._normalize_league("CS") == "CS2"
+    assert underdog._normalize_league("LOL") == "LOL"
+    assert underdog._normalize_league("VAL") == "VALORANT"
 
 
 def test_espn_refresh_dates_use_the_eastern_slate_day() -> None:

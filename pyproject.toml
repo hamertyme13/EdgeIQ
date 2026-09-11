@@ -1,6 +1,6 @@
 [project]
 name = "edgeiq"
-version = "2.3.0"
+version = "2.5.0"
 description = "Desktop, browser, and CLI platform for player-prop research, probabilistic forecasting, entry validation, and performance tracking."
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,29 @@ dependencies = [
     "uvicorn>=0.30.0,<1.0.0",
 ]
 
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["app", "config", "desktop"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "analytics*",
+    "data*",
+    "gui*",
+    "models*",
+    "repository*",
+    "services*",
+    "ui*",
+    "utils*",
+    "web*",
+]
+exclude = ["tests*", "artifacts*", "assets*", "migrations*"]
+namespaces = true
+
 [project.optional-dependencies]
 dev = [
     "alembic>=1.14",
@@ -23,6 +46,9 @@ dev = [
     "playwright>=1.49,<2",
     "pytest>=8.0",
     "ruff>=0.9",
+]
+production = [
+    "psycopg[binary]>=3.2,<4",
 ]
 
 [tool.pytest.ini_options]
@@ -47,6 +73,10 @@ select = ["E9", "F63", "F7", "F82", "I", "UP", "B", "SIM"]
 [tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true
-follow_imports = "skip"
+follow_imports = "silent"
 ignore_missing_imports = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = "analytics.*"
+disallow_untyped_defs = true

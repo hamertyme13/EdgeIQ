@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import smtplib
 from collections.abc import Callable
@@ -7,6 +8,60 @@ from copy import deepcopy
 from email.message import EmailMessage
 
 import requests
+
+
+def alert_channels(settings: dict) -> list[str]:
+    channels = []
+    if settings.get("browser_enabled"):
+        channels.append("browser")
+    if settings.get("email_enabled") and str(settings.get("email_address") or "").strip():
+        channels.append("email")
+    if settings.get("sms_enabled") and str(settings.get("sms_number") or "").strip():
+        channels.append("sms")
+    if settings.get("webhook_enabled") and str(settings.get("webhook_url") or "").strip():
+        channels.append("webhook")
+    return channels
+
+
+def alert_delivery_settings(
+    *,
+    load_setting: Callable[[str, str], str],
+    load_json: Callable[[str], dict],
+) -> dict:
+    defaults = {
+        "browser_enabled": True,
+        "email_enabled": False,
+        "email_address": "",
+        "sms_enabled": False,
+        "sms_number": "",
+        "webhook_enabled": False,
+        "webhook_url": os.getenv("EDGEIQ_ALERT_WEBHOOK_URL", ""),
+        "min_priority": 65.0,
+        "channels": ["browser"],
+    }
+    stored = load_json(load_setting("alert_delivery_settings", ""))
+    settings = {**defaults, **stored}
+    settings["channels"] = alert_channels(settings)
+    return {
+        "settings": settings,
+        "delivery_hooks": delivery_hooks(settings),
+    }
+
+
+def update_alert_delivery_settings(
+    settings_dict: dict,
+    *,
+    save_setting: Callable[[str, str], object],
+    serialize: Callable[[object], str],
+    load_setting: Callable[[str, str], str],
+    load_json: Callable[[str], dict],
+) -> dict:
+    settings_dict["email_address"] = str(settings_dict.get("email_address") or "").strip()
+    settings_dict["sms_number"] = str(settings_dict.get("sms_number") or "").strip()
+    settings_dict["webhook_url"] = str(settings_dict.get("webhook_url") or "").strip()
+    settings_dict["channels"] = alert_channels(settings_dict)
+    save_setting("alert_delivery_settings", serialize(settings_dict))
+    return alert_delivery_settings(load_setting=load_setting, load_json=load_json)
 
 
 def delivery_hooks(settings: dict) -> dict:

@@ -4,6 +4,7 @@ import math
 from datetime import UTC
 
 from analytics.calibration import calibrate
+from analytics.model_version_evaluation import evaluate_model_versions
 from analytics.prediction_evidence import deduplicate_outcomes
 from analytics.release_validation import validation_readiness
 from models.bet import Bet
@@ -70,6 +71,7 @@ def backtest_summary(bets: list[Bet], entries: list[dict], prediction_rows: list
         "what_works": segment_rankings["works"],
         "what_fails": segment_rankings["fails"],
         "calibration_rules": _calibration_rules(calibration_rows, segment_rankings["all"]),
+        "model_version_evaluation": evaluate_model_versions(prediction_rows or []),
         "validation_readiness": validation_readiness(
             settled_entries,
             segment_rankings["all"],

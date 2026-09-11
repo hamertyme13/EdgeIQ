@@ -46,7 +46,7 @@
       const apiDetail = parsed.detail ?? parsed.message ?? parsed.error;
       if (Array.isArray(apiDetail)) {
         const fields = apiDetail
-          .map((item) => Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(" ") : "")
+          .map((item) => validationFieldLabel(item.loc))
           .filter(Boolean)
           .slice(0, 3);
         return fields.length
@@ -60,21 +60,53 @@
     return fallback;
   }
 
+  function validationFieldLabel(location) {
+    if (!Array.isArray(location)) return "";
+    const path = location.filter((part) => part !== "body");
+    const propIndex = path.indexOf("props");
+    if (propIndex >= 0 && Number.isInteger(path[propIndex + 1])) {
+      const field = path[propIndex + 2];
+      return field ? `leg ${path[propIndex + 1] + 1} ${String(field).replaceAll("_", " ")}` : `leg ${path[propIndex + 1] + 1}`;
+    }
+    return path.map((part) => String(part).replaceAll("_", " ")).join(" ");
+  }
+
   async function api(path, options = {}) {
     const method = String(options.method || "GET").toUpperCase();
     const requestKey = method === "GET" ? `${API_BASE}${path}` : "";
     if (requestKey && inflightGetRequests.has(requestKey)) return inflightGetRequests.get(requestKey);
     const request = (async () => {
-      const response = await fetch(`${API_BASE}${path}`, {
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        cache: "no-store",
-        ...options,
-      });
-      if (!response.ok) {
-        const detail = await response.text();
-        throw new Error(humanizeApiError(detail, response.status));
+      const { timeoutMs = method === "GET" ? 20000 : 60000, signal, ...fetchOptions } = options;
+      const controller = new AbortController();
+      const abortFromCaller = () => controller.abort();
+      if (signal) signal.addEventListener("abort", abortFromCaller, { once: true });
+      const timeout = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 20000));
+      try {
+        const betaToken = global.localStorage?.getItem("edgeiq.beta.token") || "";
+        const response = await fetch(`${API_BASE}${path}`, {
+          headers: {
+            "Content-Type": "application/json",
+            ...(betaToken ? { Authorization: `Bearer ${betaToken}` } : {}),
+            ...(fetchOptions.headers || {}),
+          },
+          cache: "no-store",
+          ...fetchOptions,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(humanizeApiError(detail, response.status));
+        }
+        return response.json();
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw new Error("This is taking longer than expected. Check provider status, then try again.");
+        }
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+        if (signal) signal.removeEventListener("abort", abortFromCaller);
       }
-      return response.json();
     })();
     if (requestKey) inflightGetRequests.set(requestKey, request);
     try {

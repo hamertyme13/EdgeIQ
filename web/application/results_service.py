@@ -1,21 +1,43 @@
 from __future__ import annotations
 
 import json
+from threading import RLock
 
 from analytics.backtesting import backtest_summary
 from analytics.grouped_validation import grouped_rolling_validation
+from analytics.model_registry import model_registry
 from analytics.release_validation import validation_readiness
 from repository.bet_repository import BetRepository
+from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from services.dashboard import get_dashboard
 from utils.time import iso_utc
+from utils.ttl_cache import TTLCache
+
+
+PERFORMANCE_CACHE_SECONDS = 20.0
+_performance_cache: TTLCache[tuple[object, dict]] = TTLCache()
+_performance_cache_lock = RLock()
+
+
+def invalidate_performance_payload() -> None:
+    """Clear the small Results cache after an entry or ledger write."""
+    with _performance_cache_lock:
+        _performance_cache.clear()
 
 
 def performance_payload() -> dict:
+    with _performance_cache_lock:
+        cached = _performance_cache.get_or_none()
+        if cached is not None:
+            cached_dependency, cached_payload = cached
+            if cached_dependency is get_dashboard:
+                return {**cached_payload, "cache": {"hit": True, "ttl_seconds": int(PERFORMANCE_CACHE_SECONDS)}}
+
     stats = get_dashboard()
-    return {
+    payload = {
         "bankroll_curve": stats.get("bankroll_curve", []),
         "by_sport": stats.get("by_sport", {}),
         "by_stat": stats.get("by_stat", {}),
@@ -24,6 +46,9 @@ def performance_payload() -> dict:
         "monthly_profit": stats.get("monthly_profit", {}),
         "summary": stats,
     }
+    with _performance_cache_lock:
+        _performance_cache.set((get_dashboard, dict(payload)), ttl=PERFORMANCE_CACHE_SECONDS)
+    return {**payload, "cache": {"hit": False, "ttl_seconds": int(PERFORMANCE_CACHE_SECONDS)}}
 
 
 def backtest_payload(clv: dict) -> dict:
@@ -66,6 +91,7 @@ def backtest_payload(clv: dict) -> dict:
         prediction_summary=prediction_summary,
     )
     payload["prediction_ledger"] = prediction_summary
+    payload["complete_board_evidence"] = BoardOfferRepository.evidence_report()
     payload["shadow_evaluation"] = ModelRehabilitationRepository.shadow_status(
         prediction_rows,
         validation={
@@ -147,6 +173,7 @@ def model_health_payload(ai: dict) -> dict:
         "holdout_validation": holdout,
         "grouped_validation": grouped_validation,
         "prediction_ledger": PredictionLedgerRepository.summary(),
+        "model_registry": model_registry(),
         "settled_entries": settled_entries,
         "calibrated_picks": calibrated_rows,
         "average_calibration_error": round(avg_error, 1),

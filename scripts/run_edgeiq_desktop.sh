@@ -29,17 +29,17 @@ pick_python() {
 
 health_ok() {
   local port="$1"
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/health" >/dev/null 2>&1
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/health" >/dev/null 2>&1
 }
 
 current_app_ok() {
   local port="$1"
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
 }
 
 edgeiq_server() {
   local port="$1"
-  /usr/bin/curl -fsS "http://${HOST}:${port}/api/version" 2>/dev/null |
+  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null |
     /usr/bin/grep -q '"app":"EdgeIQ Web"'
 }
 
@@ -93,7 +93,7 @@ PYTHON_BIN="$(pick_python)" || {
   exit 1
 }
 REQUIRED_UI_VERSION="$(
-  "$PYTHON_BIN" -c 'from web.app import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+  "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
 )"
 
 stop_stale_edgeiq_servers
@@ -110,6 +110,11 @@ if [[ "$STATE" == "running" ]]; then
   echo "EdgeIQ is already running at ${URL}"
   /usr/bin/open "$URL"
   exit 0
+fi
+
+if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+  echo "Applying EdgeIQ database migrations..."
+  "$PYTHON_BIN" -m alembic upgrade head
 fi
 
 echo "Starting EdgeIQ at ${URL}"

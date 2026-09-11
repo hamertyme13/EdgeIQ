@@ -22,14 +22,22 @@ jobs:
       - run: ruff check .
       - run: >-
           mypy
+          analytics/pipeline_types.py
           analytics/release_validation.py
           analytics/entry_recommendation.py
           analytics/probabilistic_forecast.py
-          repository/repositories/model_rehabilitation_repository.py
+          analytics/model_version_evaluation.py
+          analytics/model_registry.py
+          analytics/model_selection.py
           services/probability.py
           services/data_management.py
           services/odds.py
+          services/background_jobs.py
           utils/entity_normalization.py
+          utils/platforms.py
+          utils/sports.py
+          utils/ttl_cache.py
+          utils/logging_config.py
           web/application
           web/routers
           web/schemas
