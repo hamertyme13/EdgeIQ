@@ -4484,10 +4484,11 @@ async function loadPlayerResearch(event) {
     platform: $("research-platform").value,
     line: data.line ?? null,
   });
-  if ((gameContext?.adjustments || []).length) {
+  if (Number(gameContext?.opportunity_factor || 1) !== 1) {
     trackProductEvent("game_context_influenced_prop", "prop", `${data.player || player}|${data.stat || stat}`, {
       sport: data.sport || $("research-sport").value,
       adjustment_count: gameContext.adjustments.length,
+      opportunity_factor: Number(gameContext.opportunity_factor),
       shadow_only: true,
     });
   }

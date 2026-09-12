@@ -491,7 +491,7 @@ def summarize_game_odds(game: dict) -> dict:
         for team, team_probabilities in fair_probabilities.items()
         if team and team_probabilities
     }
-    predicted_winner = max(no_vig, key=no_vig.get) if no_vig else ""
+    predicted_winner = max(no_vig, key=lambda team: no_vig[team]) if no_vig else ""
     win_probability = float(no_vig.get(predicted_winner, 0.0))
     return {
         "event_id": game.get("id", ""),

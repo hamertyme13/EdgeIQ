@@ -28,10 +28,11 @@ def beta_summary() -> dict:
             .filter(ProductEventModel.user_id.is_not(None))
             .group_by(ProductEventModel.event_name).all()
         }
-        session_counts = dict(
-            session.query(BetaSessionModel.user_id, func.count(BetaSessionModel.id))
+        session_counts: dict[int, int] = {
+            int(user_id): int(count)
+            for user_id, count in session.query(BetaSessionModel.user_id, func.count(BetaSessionModel.id))
             .group_by(BetaSessionModel.user_id).all()
-        )
+        }
         user_events = {
             (user_id, event): int(count)
             for user_id, event, count in session.query(
@@ -43,17 +44,18 @@ def beta_summary() -> dict:
                 ProductEventModel.event_name,
             ).all()
         }
-        feedback_counts = dict(
-            session.query(BetaFeedbackModel.user_id, func.count(BetaFeedbackModel.id))
+        feedback_counts: dict[int, int] = {
+            int(user_id): int(count)
+            for user_id, count in session.query(BetaFeedbackModel.user_id, func.count(BetaFeedbackModel.id))
             .group_by(BetaFeedbackModel.user_id).all()
-        )
+        }
     feedback = BetaFeedbackRepository.aggregate()
     issues = BetaIssueRepository.counts()
     beta_funnel = _funnel(event_counts)
     model = PredictionLedgerRepository.summary()
     testers = [
         {
-            "id": user.id,
+            "id": int(user.id),
             "username": user.username,
             "email": user.email,
             "role": user.role,
@@ -61,11 +63,11 @@ def beta_summary() -> dict:
             "is_active": bool(user.is_active),
             "created_at": user.created_at.isoformat() if user.created_at else "",
             "last_active_at": user.last_active_at.isoformat() if user.last_active_at else "",
-            "sessions": int(session_counts.get(user.id, 0)),
-            "analyses": int(user_events.get((user.id, "entry_analyzed"), 0)),
-            "feedback": int(feedback_counts.get(user.id, 0)),
-            "entries_saved": int(user_events.get((user.id, "entry_saved"), 0)),
-            "entries_settled": int(user_events.get((user.id, "entry_settled"), 0)),
+            "sessions": int(session_counts.get(int(user.id), 0)),
+            "analyses": int(user_events.get((int(user.id), "entry_analyzed"), 0)),
+            "feedback": int(feedback_counts.get(int(user.id), 0)),
+            "entries_saved": int(user_events.get((int(user.id), "entry_saved"), 0)),
+            "entries_settled": int(user_events.get((int(user.id), "entry_settled"), 0)),
         }
         for user in users
     ]

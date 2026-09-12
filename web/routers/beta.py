@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from typing import Any, Literal, overload
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -22,13 +23,26 @@ from web.schemas.beta import (
 router = APIRouter(prefix="/api/beta", tags=["beta"])
 
 
-def beta_session_from_request(request: Request, *, required: bool = False, admin: bool = False) -> dict | None:
+@overload
+def beta_session_from_request(request: Request, *, required: Literal[True], admin: bool = False) -> dict[str, Any]: ...
+
+
+@overload
+def beta_session_from_request(request: Request, *, required: Literal[False] = False, admin: bool = False) -> dict[str, Any] | None: ...
+
+
+def beta_session_from_request(
+    request: Request,
+    *,
+    required: bool = False,
+    admin: bool = False,
+) -> dict[str, Any] | None:
     authorization = request.headers.get("authorization", "")
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
     session = BetaUserRepository.session_for_token(token) if token else None
     if required and session is None:
         raise HTTPException(status_code=401, detail="Sign in with an active Founding Beta account to continue.")
-    if admin and not session["user"]["is_admin"]:
+    if admin and (session is None or not session["user"]["is_admin"]):
         raise HTTPException(status_code=403, detail="This Founding Beta action is available to administrators only.")
     return session
 
@@ -111,6 +125,8 @@ def logout(request: Request) -> dict:
 def complete_onboarding(request: Request) -> dict:
     session = beta_session_from_request(request, required=True)
     user = BetaUserRepository.complete_onboarding(session["user"]["id"])
+    if user is None:
+        raise HTTPException(status_code=404, detail="Founding Beta account was not found.")
     ProductExperienceRepository.record_event(
         "beta_onboarding_completed",
         "user",

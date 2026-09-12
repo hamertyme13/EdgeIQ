@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import UTC, datetime
 
 from data.providers.cache import get_json
 
@@ -42,13 +42,23 @@ def fetch_injuries(sport: str) -> list[dict]:
         return []
 
     try:
-        data = get_json(url, headers=_HEADERS, timeout=10, ttl_seconds=300).data
+        response = get_json(url, headers=_HEADERS, timeout=10, ttl_seconds=300)
+        if getattr(response, "stale", False):
+            return []
+        data = response.data
     except RuntimeError:
         return []
 
     results = []
 
-    for item in data.get("injuries", []):
+    items = []
+    for group in data.get("injuries", []):
+        if isinstance(group.get("injuries"), list):
+            for report in group["injuries"]:
+                items.append({**report, "team": report.get("team") or group.get("team") or {"displayName": group.get("displayName", "")}})
+        else:
+            items.append(group)
+    for item in items:
         athlete = item.get("athlete", {})
         team    = item.get("team", {})
         status  = item.get("status", "")
@@ -59,6 +69,10 @@ def fetch_injuries(sport: str) -> list[dict]:
         results.append({
             "player": athlete.get("displayName", "Unknown"),
             "team":   team.get("abbreviation", ""),
+            "team_name": team.get("displayName", ""),
+            "source": "espn_injury_feed",
+            "captured_at": datetime.now(UTC).isoformat(),
+            "verified": bool(athlete.get("displayName") and status),
             "status": label,
             "detail": detail,
             "sport":  sport.upper(),

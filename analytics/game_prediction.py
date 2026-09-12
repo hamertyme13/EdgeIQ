@@ -4,7 +4,11 @@ import math
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
-from analytics.game_model_registry import GAME_MARKET_CHAMPION_VERSION
+from analytics.game_model_registry import (
+    GAME_CONTEXT_CHALLENGER_VERSION,
+    GAME_HISTORICAL_BASELINE_VERSION,
+    GAME_MARKET_CHAMPION_VERSION,
+)
 
 
 @dataclass(frozen=True)
@@ -36,14 +40,19 @@ class GamePrediction:
 
 def predict_game(features: dict, *, model_version: str = GAME_MARKET_CHAMPION_VERSION) -> GamePrediction:
     market_home = _probability(features.get("market_home_probability"), 0.5)
-    historical_home = _probability(features.get("historical_home_probability"), market_home)
+    historical_home = _probability(features.get("historical_home_probability"), 0.5)
     quality_score = max(0.0, min(100.0, float(features.get("data_quality_score") or 0.0)))
     historical_weight = min(0.25, float(features.get("historical_sample_size") or 0.0) / 200.0)
     if model_version == GAME_MARKET_CHAMPION_VERSION:
         home_probability = market_home
         method = "no_vig_market_baseline"
+    elif model_version == GAME_HISTORICAL_BASELINE_VERSION:
+        home_probability = historical_home if historical_weight > 0 else 0.5
+        method = "pre_game_team_history_baseline"
     else:
         home_probability = market_home * (1.0 - historical_weight) + historical_home * historical_weight
+        context_delta = max(-0.06, min(0.06, float(features.get("context_home_probability_delta") or 0.0)))
+        home_probability += context_delta * historical_weight
         method = "market_plus_shrunk_historical_residual"
     home_probability = max(0.05, min(0.95, home_probability))
     away_probability = 1.0 - home_probability
@@ -51,8 +60,17 @@ def predict_game(features: dict, *, model_version: str = GAME_MARKET_CHAMPION_VE
     market_total = float(features.get("market_total") or _default_total(features.get("sport")))
     market_margin = features.get("market_home_margin")
     expected_margin = float(market_margin) if market_margin is not None else _probability_margin(home_probability)
+    if model_version == GAME_HISTORICAL_BASELINE_VERSION:
+        historical_home_points = features.get("historical_expected_home_points")
+        historical_away_points = features.get("historical_expected_away_points")
+        if historical_home_points is not None and historical_away_points is not None:
+            market_total = float(historical_home_points) + float(historical_away_points)
+            expected_margin = float(historical_home_points) - float(historical_away_points)
+        else:
+            market_total = _default_total(features.get("sport"))
+            expected_margin = _probability_margin(home_probability)
     residual_margin = float(features.get("historical_margin_residual") or 0.0)
-    if model_version != GAME_MARKET_CHAMPION_VERSION:
+    if model_version == GAME_CONTEXT_CHALLENGER_VERSION:
         expected_margin += max(-3.0, min(3.0, residual_margin * historical_weight))
     expected_home = (market_total + expected_margin) / 2.0
     expected_away = market_total - expected_home
@@ -60,6 +78,9 @@ def predict_game(features: dict, *, model_version: str = GAME_MARKET_CHAMPION_VE
     blowout_probability = max(0.05, min(0.85, abs(expected_margin) / (blowout_threshold * 1.8)))
     script = "home_leading" if expected_margin >= 3 else "away_leading" if expected_margin <= -3 else "neutral"
     script_confidence = min(1.0, abs(expected_margin) / max(1.0, blowout_threshold))
+    pace = features.get("expected_pace")
+    if model_version == GAME_HISTORICAL_BASELINE_VERSION or (model_version == GAME_CONTEXT_CHALLENGER_VERSION and features.get("historical_pace") is not None):
+        pace = features.get("historical_pace")
     return GamePrediction(
         sport=str(features.get("sport") or "").upper(),
         game_id=str(features.get("game_id") or ""),
@@ -72,7 +93,7 @@ def predict_game(features: dict, *, model_version: str = GAME_MARKET_CHAMPION_VE
         expected_total=round(market_total, 2),
         expected_home_points=round(expected_home, 2),
         expected_away_points=round(expected_away, 2),
-        expected_pace=_optional_float(features.get("expected_pace")),
+        expected_pace=_optional_float(pace),
         blowout_probability=round(blowout_probability, 4),
         game_script=script,
         game_script_confidence=round(script_confidence, 3),
@@ -85,7 +106,7 @@ def predict_game(features: dict, *, model_version: str = GAME_MARKET_CHAMPION_VE
 
 def _probability(value: object, default: float) -> float:
     try:
-        probability = float(value)
+        probability = float(str(value))
     except (TypeError, ValueError):
         return default
     if probability > 1.0:
@@ -105,7 +126,7 @@ def _default_total(sport: object) -> float:
 
 def _optional_float(value: object) -> float | None:
     try:
-        return round(float(value), 2)
+        return round(float(str(value)), 2)
     except (TypeError, ValueError):
         return None
 

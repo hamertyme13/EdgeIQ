@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260910-nfl-game-dedupe"
+STATIC_ASSET_VERSION = "20260912-game-evidence"

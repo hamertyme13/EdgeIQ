@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from repository.database import SessionLocal
 from repository.models.game_prediction_model import GamePredictionModel
+from utils.entity_normalization import canonical_person_key
 
 
 class GamePredictionRepository:
@@ -65,19 +66,48 @@ class GamePredictionRepository:
             return []
 
     @staticmethod
-    def settle(game_id: str, actual_home_points: float, actual_away_points: float, source: str) -> int:
+    def settle(game_id: str, actual_home_points: float, actual_away_points: float, source: str, *, sport: str = "") -> int:
         with SessionLocal() as session:
-            rows = session.query(GamePredictionModel).filter_by(game_id=str(game_id)).filter(GamePredictionModel.settled_at.is_(None)).all()
+            query = session.query(GamePredictionModel).filter_by(game_id=str(game_id)).filter(GamePredictionModel.settled_at.is_(None))
+            if sport:
+                query = query.filter_by(sport=sport.upper())
+            rows = query.all()
             for row in rows:
                 row.actual_home_points = float(actual_home_points)
                 row.actual_away_points = float(actual_away_points)
                 row.actual_margin = float(actual_home_points) - float(actual_away_points)
                 row.actual_total = float(actual_home_points) + float(actual_away_points)
-                row.actual_home_win = 1.0 if actual_home_points > actual_away_points else 0.0
+                row.actual_home_win = 0.5 if actual_home_points == actual_away_points else float(actual_home_points > actual_away_points)
                 row.outcome_source = source
                 row.settled_at = datetime.now(UTC)
             session.commit()
             return len(rows)
+
+    @staticmethod
+    def settle_outcome(outcome: dict) -> int:
+        """Resolve provider IDs using both oriented teams and the scheduled start."""
+        started = _datetime(outcome.get("game_start"))
+        if started is None or outcome.get("source") != "espn_official_scoreboard":
+            return 0
+        home_names = {canonical_person_key(value) for value in [outcome.get("home_team"), *(outcome.get("home_aliases") or [])] if value}
+        away_names = {canonical_person_key(value) for value in [outcome.get("away_team"), *(outcome.get("away_aliases") or [])] if value}
+        with SessionLocal() as session:
+            rows = session.query(GamePredictionModel).filter_by(sport=str(outcome.get("sport") or "").upper()).filter(
+                GamePredictionModel.settled_at.is_(None),
+            ).all()
+            matches = set()
+            for row in rows:
+                row_start = _datetime(row.game_start)
+                if row_start is None or abs((row_start - started).total_seconds()) > 21600:
+                    continue
+                if canonical_person_key(row.home_team) in home_names and canonical_person_key(row.away_team) in away_names:
+                    matches.add(str(row.game_id))
+        if len(matches) != 1:
+            return 0
+        return GamePredictionRepository.settle(
+            matches.pop(), float(outcome["home_points"]), float(outcome["away_points"]), str(outcome["source"]),
+            sport=str(outcome["sport"]),
+        )
 
     @staticmethod
     def latest_for_game(game_id: str) -> list[dict]:
@@ -91,6 +121,15 @@ class GamePredictionRepository:
         except SQLAlchemyError:
             return []
 
+    @staticmethod
+    def pending_dates() -> list[tuple[str, str]]:
+        with SessionLocal() as session:
+            return [
+                (str(sport), str(start)) for sport, start in session.query(
+                    GamePredictionModel.sport, GamePredictionModel.game_start,
+                ).filter(GamePredictionModel.settled_at.is_(None)).distinct().all()
+            ]
+
 
 def _prediction_key(snapshot: dict, generated_at: datetime) -> str:
     identity = "|".join((str(snapshot.get("sport") or "").upper(), str(snapshot.get("game_id") or snapshot.get("game") or ""), str(snapshot.get("model_version") or ""), generated_at.isoformat()))
@@ -101,7 +140,8 @@ def _datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     except (TypeError, ValueError):
         return None
 

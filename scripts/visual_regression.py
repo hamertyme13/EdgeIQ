@@ -74,6 +74,8 @@ def visual_issues(page: Page) -> dict:
 
 
 def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
+    if view_name == "Research":
+        page.locator('button[data-display-mode="advanced"]').click()
     page.locator(f'button[data-view="{VIEW_TARGETS[view_name]}"]:visible').first.click()
     page.wait_for_timeout(900)
     issues = visual_issues(page)
@@ -89,6 +91,7 @@ def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
 def main() -> int:
     global BASE_URL
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    (OUTPUT / "report.json").unlink(missing_ok=True)
     database_path = Path(tempfile.gettempdir()) / "edgeiq-visual-regression.db"
     database_path.unlink(missing_ok=True)
     env = {
@@ -128,6 +131,7 @@ def main() -> int:
             server.wait(timeout=5)
         except subprocess.TimeoutExpired:
             server.kill()
+            server.wait(timeout=5)
         log_handle.close()
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")

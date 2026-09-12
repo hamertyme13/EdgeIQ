@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -70,6 +73,12 @@ def prop_opportunity_context(
     combined_factor = 1.0
     for adjustment in adjustments:
         combined_factor *= adjustment.factor
+    combined_factor = round(combined_factor, 4)
+    if combined_factor != 1.0:
+        _log.info("game_context_influenced_prop", extra={
+            "event_name": "game_context_influenced_prop", "sport": sport_key,
+            "stat": stat, "opportunity_factor": combined_factor, "shadow_only": True,
+        })
     return {
         "model_version": "edgeiq-game-context-prop-distribution-v2.5.0",
         "shadow_only": True,
@@ -83,7 +92,8 @@ def prop_opportunity_context(
         "blowout_probability": blowout,
         "game_script": game_prediction.get("game_script", "neutral"),
         "game_script_confidence": game_prediction.get("game_script_confidence", 0.0),
-        "opportunity_factor": round(combined_factor, 4),
+        "opportunity_factor": combined_factor,
+        "game_context_influenced_prop": combined_factor != 1.0,
         "adjustments": [row.snapshot() for row in adjustments],
         "anti_double_counting": "Residual opportunity adjustments only; market prior, opponent history, injuries, and role evidence are not re-added.",
     }
