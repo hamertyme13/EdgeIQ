@@ -2,6 +2,69 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from datetime import UTC, datetime
+
+from analytics.game_model_registry import (
+    GAME_CONTEXT_CHALLENGER_VERSION,
+    GAME_HISTORICAL_BASELINE_VERSION,
+    GAME_MARKET_CHAMPION_VERSION,
+)
+
+
+def promotion_evidence(rows: list[dict], candidate_version: str = GAME_CONTEXT_CHALLENGER_VERSION) -> dict:
+    """Use a shared, pre-game three-model cohort, with one outcome per sport/game."""
+    versions = {candidate_version, GAME_MARKET_CHAMPION_VERSION, GAME_HISTORICAL_BASELINE_VERSION}
+    cohorts: dict[tuple[str, str, datetime], dict[str, dict]] = defaultdict(dict)
+    now = datetime.now(UTC)
+    for row in rows:
+        generated = _timestamp(row.get("generated_at"))
+        started = _timestamp(row.get("game_start"))
+        settled = _timestamp(row.get("settled_at"))
+        version = str(row.get("model_version") or "")
+        if (version not in versions or generated is None or started is None or generated >= started
+                or settled is None or not started < settled <= now
+                or row.get("actual_home_win") not in (0.0, 1.0) or not row.get("outcome_source")
+                or not row.get("settled_at") or not row.get("game_id")):
+            continue
+        if version == GAME_HISTORICAL_BASELINE_VERSION and not (row.get("evidence") or {}).get("historical_sample_size"):
+            continue
+        key = (str(row.get("sport") or ""), str(row["game_id"]), generated)
+        cohorts[key][version] = row
+    independent: dict[tuple[str, str], dict[str, dict]] = {}
+    for key, cohort in sorted(cohorts.items(), key=lambda item: item[0][2]):
+        if set(cohort) != versions or len({r["actual_home_win"] for r in cohort.values()}) != 1:
+            continue
+        independent.setdefault(key[:2], cohort)
+    ordered = sorted(independent.values(), key=lambda cohort: _timestamp(cohort[candidate_version]["game_start"]) or datetime.min.replace(tzinfo=UTC))
+    split = int(len(ordered) * 0.75)
+    holdout = ordered[split:] if split else []
+    metrics_by_version = {
+        version: evaluate_game_predictions([cohort[version] for cohort in holdout]) for version in versions
+    }
+    candidate = metrics_by_version[candidate_version]
+    brier = candidate["brier_score"]
+    beats = {
+        name: brier is not None and metrics_by_version[version]["brier_score"] is not None
+        and brier < metrics_by_version[version]["brier_score"]
+        for name, version in (("market", GAME_MARKET_CHAMPION_VERSION), ("historical", GAME_HISTORICAL_BASELINE_VERSION))
+    }
+    return {
+        "method": "shared_chronological_pregame_holdout",
+        "independent_games": len(ordered), "training_games": split, "holdout_games": len(holdout),
+        "by_model": metrics_by_version,
+        "metrics": candidate | {
+            "chronological_holdout": bool(split and holdout),
+            "beats_market_baseline": beats["market"], "beats_historical_baseline": beats["historical"],
+        },
+    }
+
+
+def _timestamp(value: object) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    except (ValueError, TypeError):
+        return None
 
 
 def evaluate_game_predictions(rows: list[dict]) -> dict:
@@ -13,7 +76,7 @@ def evaluate_game_predictions(rows: list[dict]) -> dict:
     brier = sum((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes, strict=False)) / len(settled)
     log_loss = -sum(outcome * math.log(probability) + (1 - outcome) * math.log(1 - probability) for probability, outcome in zip(probabilities, outcomes, strict=False)) / len(settled)
     accuracy = sum((probability >= 0.5) == bool(outcome) for probability, outcome in zip(probabilities, outcomes, strict=False)) / len(settled)
-    buckets = []
+    buckets: list[dict] = []
     for start in range(0, 100, 10):
         bucket_rows = [(p, o) for p, o in zip(probabilities, outcomes, strict=False) if start <= p * 100 < start + 10]
         if bucket_rows:
@@ -58,6 +121,59 @@ def chronological_game_evaluation(rows: list[dict], *, holdout_fraction: float =
         "holdout_games": holdout_count,
         "metrics": evaluate_game_predictions(holdout),
         "segments": segments,
+    }
+
+
+def chronological_model_comparison(
+    rows: list[dict],
+    candidate_version: str,
+    baseline_version: str,
+    *,
+    holdout_fraction: float = 0.25,
+) -> dict:
+    """Compare model versions on the same newest settled games only."""
+    grouped: dict[str, dict[str, dict]] = defaultdict(dict)
+    for row in rows:
+        if row.get("actual_home_win") is None:
+            continue
+        game_id = str(row.get("game_id") or row.get("game") or "")
+        version = str(row.get("model_version") or "")
+        if not game_id or version not in {candidate_version, baseline_version}:
+            continue
+        existing = grouped[game_id].get(version)
+        if existing is None or str(row.get("generated_at") or "") > str(existing.get("generated_at") or ""):
+            grouped[game_id][version] = row
+    paired = [
+        versions for versions in grouped.values()
+        if candidate_version in versions and baseline_version in versions
+    ]
+    paired.sort(key=lambda versions: str(versions[candidate_version].get("game_start") or versions[candidate_version].get("generated_at") or ""))
+    if not paired:
+        return {
+            "method": "chronological_paired_holdout",
+            "holdout_games": 0,
+            "candidate": evaluate_game_predictions([]),
+            "baseline": evaluate_game_predictions([]),
+            "beats_baseline": False,
+        }
+    holdout_count = max(1, math.ceil(len(paired) * max(0.1, min(0.5, holdout_fraction))))
+    holdout = paired[-holdout_count:]
+    candidate_rows = [versions[candidate_version] for versions in holdout]
+    baseline_rows = [versions[baseline_version] for versions in holdout]
+    candidate = evaluate_game_predictions(candidate_rows)
+    baseline = evaluate_game_predictions(baseline_rows)
+    candidate_brier = candidate.get("brier_score")
+    baseline_brier = baseline.get("brier_score")
+    return {
+        "method": "chronological_paired_holdout",
+        "holdout_games": len(holdout),
+        "candidate": candidate,
+        "baseline": baseline,
+        "beats_baseline": (
+            candidate_brier is not None
+            and baseline_brier is not None
+            and float(candidate_brier) < float(baseline_brier)
+        ),
     }
 
 

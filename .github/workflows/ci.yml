@@ -23,6 +23,13 @@ jobs:
       - run: >-
           mypy
           analytics/pipeline_types.py
+          analytics/game_model_evaluation.py
+          analytics/game_model_registry.py
+          analytics/game_prediction.py
+          analytics/game_features.py
+          services/game_intelligence.py
+          services/game_team_features.py
+          services/game_history_collection.py
           analytics/release_validation.py
           analytics/entry_recommendation.py
           analytics/probabilistic_forecast.py

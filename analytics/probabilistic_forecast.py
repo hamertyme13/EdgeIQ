@@ -216,7 +216,8 @@ def forecast_prop(
         "adjustments": [],
         "anti_double_counting": "No game prediction was available; production forecast is unchanged.",
     }
-    game_aware_shadow_projection = contextual_mean * float(game_context["opportunity_factor"])
+    opportunity_factor = _numeric(game_context.get("opportunity_factor"), 1.0)
+    game_aware_shadow_projection = contextual_mean * opportunity_factor
 
     return PropForecast(
         projection=round(contextual_mean, 2),
@@ -750,3 +751,10 @@ def _rest_days(game_time: object, rows: list[dict]) -> int | None:
     except ValueError:
         return None
     return max(0, (target_date - latest).days)
+
+
+def _numeric(value: object, default: float) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default

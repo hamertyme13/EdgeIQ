@@ -169,7 +169,6 @@ from web.application.briefing_service import daily_scan_summary as build_daily_s
 from web.application.briefing_service import friendly_scan_status
 from web.application.briefing_service import new_daily_scan as build_new_daily_scan
 from web.application.briefing_service import recover_interrupted_daily_scan as recover_briefing_scan
-from web.version import STATIC_ASSET_VERSION
 from web.application.briefing_service import run_daily_briefing_scan as run_briefing_scan
 from web.application.briefing_service import save_daily_scan_status as persist_daily_scan_status
 from web.application.briefing_service import update_daily_scan as update_briefing_scan
@@ -189,6 +188,8 @@ from web.application.entry_creation_service import (
     prepare_entry_analysis,
     validated_call,
 )
+from web.application.game_feed_service import game_group_key as _game_group_key
+from web.application.game_feed_service import trending_games_payload as _trending_games_payload
 from web.application.import_service import analyze_upload_payload as build_analyze_upload_payload
 from web.application.import_service import deduplicate_uploaded_props
 from web.application.import_service import import_betting_history_payload as build_import_betting_history_payload
@@ -240,6 +241,7 @@ from web.application.provider_health_service import (
 )
 from web.application.recommendation_policy import recommendation_eligibility
 from web.application.schedule_service import elapsed_job_due, scheduled_job_due, scheduled_job_overdue
+from web.version import STATIC_ASSET_VERSION
 
 _elapsed_job_due = elapsed_job_due
 _scheduled_job_overdue = scheduled_job_overdue
@@ -4160,73 +4162,6 @@ def _feed_prop_direction(prop: dict) -> str:
     if projection is None:
         projection = auto_projection(line, int(prop.get("trending_count") or 0))
     return _prop_direction(line, float(projection), prop.get("direction"))
-
-
-def _game_group_key(sport: str, game: str) -> str:
-    """Group provider matchup labels without crossing league-specific aliases."""
-    aliases = dict(EntryRepository.TEAM_ALIASES)
-    if sport.upper() == "NFL":
-        # PrizePicks commonly emits LA while Underdog emits LAR for the Rams.
-        # Keep this scoped to NFL because LA has different meanings elsewhere.
-        aliases["LA"] = "LAR"
-    return canonical_matchup_key(game, aliases)
-
-
-def _trending_games_payload(props: list[dict], ranked_props: list[dict], limit: int) -> list[dict]:
-    ranked_players = {
-        (canonical_person_key(prop.get("player")), prop.get("league", "").strip().upper())
-        for prop in ranked_props
-    }
-    grouped: dict[tuple[str, str], dict] = {}
-
-    for prop in props:
-        game = str(prop.get("game", "")).strip()
-        sport = str(prop.get("league", "")).strip().upper()
-        if not game or not sport:
-            continue
-        key = (sport, _game_group_key(sport, game))
-        group = grouped.setdefault(
-            key,
-            {
-                "sport": sport,
-                "game": game,
-                "trending_count": 0,
-                "prop_count": 0,
-                "players": {},
-                "ranked_players": {},
-            },
-        )
-        player = str(prop.get("player", "")).strip()
-        if not player:
-            continue
-        trend = int(prop.get("trending_count") or 0)
-        group["trending_count"] += trend
-        group["prop_count"] += 1
-        player_row = group["players"].setdefault(
-            player,
-            {"player": player, "team": prop.get("team", ""), "trending_count": 0, "ranked": False},
-        )
-        player_row["trending_count"] += trend
-        if (canonical_person_key(player), sport) in ranked_players:
-            player_row["ranked"] = True
-            group["ranked_players"][player] = player_row
-
-    games: list[dict] = []
-    for group in grouped.values():
-        players = sorted(group["players"].values(), key=lambda row: row["trending_count"], reverse=True)
-        ranked = sorted(group["ranked_players"].values(), key=lambda row: row["trending_count"], reverse=True)
-        games.append({
-            "sport": group["sport"],
-            "game": group["game"],
-            "trending_count": group["trending_count"],
-            "prop_count": group["prop_count"],
-            "ranked_player_count": len(ranked),
-            "ranked_players": ranked[:6],
-            "top_players": players[:6],
-        })
-
-    games.sort(key=lambda game: (game["ranked_player_count"], game["trending_count"]), reverse=True)
-    return games[:limit]
 
 
 def _recommended_parlay(platform: str, sport_filter: str | None):

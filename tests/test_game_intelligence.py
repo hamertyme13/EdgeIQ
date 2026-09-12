@@ -1,12 +1,22 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from analytics.game_features import prop_opportunity_context
-from analytics.game_model_evaluation import chronological_game_evaluation, evaluate_game_predictions
-from analytics.game_model_registry import GAME_CONTEXT_CHALLENGER_VERSION, promotion_decision
+from analytics.game_model_evaluation import (
+    chronological_game_evaluation,
+    chronological_model_comparison,
+    evaluate_game_predictions,
+)
+from analytics.game_model_registry import (
+    GAME_CONTEXT_CHALLENGER_VERSION,
+    GAME_HISTORICAL_BASELINE_VERSION,
+    GAME_MARKET_CHAMPION_VERSION,
+    promotion_decision,
+)
 from analytics.game_prediction import predict_game
 from analytics.probabilistic_forecast import forecast_prop
 from repository.repositories.game_prediction_repository import GamePredictionRepository
 from services.game_intelligence import latest_slate_predictions
+from services.game_team_features import team_history_features
 
 
 def _features(**overrides):
@@ -77,6 +87,77 @@ def test_home_favorite_prediction_has_higher_home_score():
     prediction = predict_game(_features(market_home_probability=0.7, market_home_margin=5.5))
     assert prediction.home_win_probability > prediction.away_win_probability
     assert prediction.expected_home_points > prediction.expected_away_points
+
+
+def test_real_team_history_populates_baseline_and_can_move_shadow_challenger():
+    history = [
+        {
+            "game_id": f"prior-{index}",
+            "home_team": "DAL",
+            "away_team": "MIN",
+            "game_start": f"2026-08-{index + 1:02d}T19:00:00Z",
+            "actual_home_points": 92,
+            "actual_away_points": 78,
+            "actual_home_win": 1.0,
+            "pace": 81.0,
+        }
+        for index in range(8)
+    ] + [
+        {
+            "game_id": f"away-{index}",
+            "home_team": "MIN",
+            "away_team": "DAL",
+            "game_start": f"2026-08-{index + 10:02d}T19:00:00Z",
+            "actual_home_points": 70,
+            "actual_away_points": 88,
+            "actual_home_win": 0.0,
+        }
+        for index in range(4)
+    ]
+    features = team_history_features("WNBA", "DAL", "MIN", "2026-09-01T19:00:00Z", history)
+    assert features["historical_sample_size"] == 12
+    assert features["historical_home_probability"] > 0.5
+    assert features["team_features"]["home"]["offensive_performance"] is not None
+    assert features["team_features"]["home"]["estimated_pace"] is not None
+
+    prediction_features = _features(**features, market_home_probability=0.5)
+    champion = predict_game(prediction_features, model_version=GAME_MARKET_CHAMPION_VERSION)
+    challenger = predict_game(prediction_features, model_version=GAME_CONTEXT_CHALLENGER_VERSION)
+    assert challenger.home_win_probability != champion.home_win_probability
+
+
+def test_challenger_promotion_requires_winning_both_chronological_baselines():
+    rows = []
+    for index in range(240):
+        shared = {
+            "game_id": f"comparison-{index}",
+            "game_start": (datetime(2025, 1, 1, 19, tzinfo=UTC) + timedelta(days=index)).isoformat(),
+            "generated_at": (datetime(2025, 1, 1, 12, tzinfo=UTC) + timedelta(days=index)).isoformat(),
+            "actual_home_win": 1.0,
+        }
+        rows.extend([
+            shared | {"model_version": GAME_CONTEXT_CHALLENGER_VERSION, "home_win_probability": 1.0},
+            shared | {"model_version": GAME_MARKET_CHAMPION_VERSION, "home_win_probability": 0.65},
+            shared | {"model_version": GAME_HISTORICAL_BASELINE_VERSION, "home_win_probability": 0.75},
+        ])
+    market = chronological_model_comparison(rows, GAME_CONTEXT_CHALLENGER_VERSION, GAME_MARKET_CHAMPION_VERSION)
+    historical = chronological_model_comparison(rows, GAME_CONTEXT_CHALLENGER_VERSION, GAME_HISTORICAL_BASELINE_VERSION)
+    candidate_metrics = evaluate_game_predictions([row for row in rows if row["model_version"] == GAME_CONTEXT_CHALLENGER_VERSION])
+    passed = promotion_decision(candidate_metrics | {
+        "chronological_holdout": True,
+        "beats_market_baseline": market["beats_baseline"],
+        "beats_historical_baseline": historical["beats_baseline"],
+    })
+    assert market["beats_baseline"] is True
+    assert historical["beats_baseline"] is True
+    assert passed["promotable"] is True
+
+    blocked = promotion_decision(candidate_metrics | {
+        "chronological_holdout": True,
+        "beats_market_baseline": True,
+        "beats_historical_baseline": False,
+    })
+    assert blocked["promotable"] is False
 
 
 def test_prop_forecast_keeps_champion_projection_and_stores_shadow_context():

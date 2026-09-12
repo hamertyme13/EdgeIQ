@@ -149,7 +149,7 @@ def fetch_game_times(sport: str, game_date: date) -> list[dict]:
     return rows
 
 
-def fetch_final_game_outcomes(sport: str, game_date: date) -> list[dict]:
+def fetch_final_game_outcomes(sport: str, game_date: date, *, include_team_stats: bool = False) -> list[dict]:
     """Return official final team scores for settling versioned game predictions."""
     sport_key = sport.upper()
     path = _SPORT_PATHS.get(sport_key)
@@ -176,9 +176,41 @@ def fetch_final_game_outcomes(sport: str, game_date: date) -> list[dict]:
             "game_date": game_date.isoformat(),
             "home_points": home_score,
             "away_points": away_score,
+            "game_start": str(event.get("date") or competition.get("date") or ""),
+            "home_team": str(((home or {}).get("team") or {}).get("displayName") or ""),
+            "away_team": str(((away or {}).get("team") or {}).get("displayName") or ""),
+            "home_aliases": [str(((home or {}).get("team") or {}).get(key) or "") for key in ("displayName", "shortDisplayName", "abbreviation")],
+            "away_aliases": [str(((away or {}).get("team") or {}).get(key) or "") for key in ("displayName", "shortDisplayName", "abbreviation")],
             "source": "espn_official_scoreboard",
         })
+        if include_team_stats and sport_key in {"NBA", "WNBA"}:
+            summary = _summary(path, str(event.get("id") or ""), cache_variant="final")
+            rows[-1]["pace"] = basketball_box_score_pace(summary, sport_key)
     return rows
+
+
+def basketball_box_score_pace(summary: dict, sport: str) -> float | None:
+    """Estimate possessions from complete team box scores, normalized for overtime."""
+    from math import isfinite
+
+    estimates = []
+    for team in (summary.get("boxscore") or {}).get("teams") or []:
+        stats = {str(row.get("name") or ""): row.get("displayValue") for row in team.get("statistics") or []}
+        try:
+            fga = float(str(stats["fieldGoalsMade-fieldGoalsAttempted"]).split("-")[1])
+            fta = float(str(stats["freeThrowsMade-freeThrowsAttempted"]).split("-")[1])
+            orb = float(stats["offensiveRebounds"])
+            turnovers = float(stats["turnovers"])
+        except (KeyError, ValueError, TypeError, IndexError):
+            return None
+        if not all(isfinite(value) and value >= 0 for value in (fga, fta, orb, turnovers)):
+            return None
+        estimates.append(fga + 0.44 * fta - orb + turnovers)
+    competitions = (summary.get("header") or {}).get("competitions") or []
+    period = int((competitions[0].get("status") or {}).get("period") or 4) if competitions else 4
+    regulation = 48 if sport.upper() == "NBA" else 40
+    elapsed = regulation + max(0, period - 4) * 5
+    return round(sum(estimates) / 2 * regulation / elapsed, 2) if len(estimates) == 2 else None
 
 
 def find_game_outcome(prop: dict) -> dict | None:

@@ -16,7 +16,6 @@ from services.dashboard import get_dashboard
 from utils.time import iso_utc
 from utils.ttl_cache import TTLCache
 
-
 PERFORMANCE_CACHE_SECONDS = 20.0
 _performance_cache: TTLCache[tuple[object, dict]] = TTLCache()
 _performance_cache_lock = RLock()
