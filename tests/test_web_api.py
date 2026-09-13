@@ -1914,6 +1914,12 @@ def test_advantage_center_watchlist_boost_and_game_context(monkeypatch):
         "factors": [],
     })
 
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "load_daily_feed", lambda *args: {
+        "daily_briefing": {"recommendation_snapshot_id": "shared-test", "as_of": iso_utc(utc_now()),
+                           "platform": "PrizePicks", "requested_platform": "Both", "sport": "WNBA",
+                           "top_opportunities": props,
+                           "sections": {"bet": [{"trust": {"score": 0}, "props": props[:2]}]}}
+    })
     body = web_app.advantage_center(platform="Both", sport="WNBA")
     watch_alerts = web_app._watchlist_alerts([{
         "id": "a",
@@ -4151,7 +4157,10 @@ def test_confirmed_props_bounds_expensive_analysis_for_large_feeds(monkeypatch):
     body = web_app._confirmed_props_payload("PrizePicks", "WNBA", limit=20)
 
     assert len(analyzed_calls) == 40
-    assert body["analyzed_count"] == 1000
+    assert body["analyzed_count"] == 40
+    assert body["pipeline_counts"]["retrieved"] == 1000
+    assert body["pipeline_counts"]["deferred"] == 960
+    assert body["rejected_count"] == 0
     assert body["count"] == 40
 
 
@@ -4734,57 +4743,28 @@ def test_sportsbook_integrations_reports_manual_handoff(monkeypatch):
     assert "credentials" in body["privacy_note"]
 
 
-def test_opportunity_feed_blends_ev_timing_and_watchlist(monkeypatch):
-    monkeypatch.setattr(web_app, "_ev_scanner_rows", lambda *args, **kwargs: [{
-        "player": "A",
-        "sport": "WNBA",
-        "platform": "PrizePicks",
-        "direction": "Over",
-        "stat": "Points",
-        "line": 20.5,
-        "projection": 23,
-        "confidence": 61,
-        "edge": 2.5,
-        "expected_value": 8.2,
-        "data_quality": {"score": 74},
-        "data_strength": [],
-        "auto_projected": False,
-        "provider_backed": True,
-        "probability_adjustment": "No material probability adjustment.",
-    }])
-    monkeypatch.setattr(web_app, "_market_timing_alert_rows", lambda *args, **kwargs: [{
-        "type": "Take Now",
-        "action": "Good timing",
-        "priority_score": 70,
-        "player": "B",
-        "sport": "WNBA",
-        "platform": "Underdog",
-        "direction": "Under",
-        "stat": "Assists",
-        "line": 7.5,
-        "projection": 6.8,
-        "confidence": 59,
-        "edge": 0.7,
-        "expected_value": 3.1,
-        "reason": "Positive EV with no major line move yet.",
-        "data_quality": {"score": 70},
-        "data_strength": [],
-    }])
-    monkeypatch.setattr(web_app, "_watchlist_alerts", lambda: [{
-        "player": "C",
-        "platform": "PrizePicks",
-        "direction": "Over",
-        "stat": "Rebounds",
-        "line": 8.5,
-        "reason": "Over line is at or below target 8.5.",
-        "prop": {"sport": "WNBA", "confidence": 57, "edge": 1.0},
-    }])
+def test_opportunity_feed_reuses_today_without_scanning_or_writing(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Read-only opportunity feed must not scan or write evidence")
 
-    body = web_app.opportunity_feed(platform="Both", sport="WNBA", min_ev=0, limit=5)
-
-    assert body["count"] == 3
-    assert {row["type"] for row in body["opportunities"]} == {"Positive EV", "Take Now", "Watchlist"}
-    assert body["opportunities"][0]["priority_score"] >= body["opportunities"][-1]["priority_score"]
+    for name in ("_ev_scanner_rows", "_market_timing_alert_rows", "_watchlist_alerts"):
+        monkeypatch.setattr(web_app, name, forbidden)
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "save_feed", forbidden)
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "queue_shadow", forbidden)
+    rows = [{"player": "A", "stat": "Points", "line": 20.5, "confidence": 60,
+             "recommendation_snapshot_id": "shared-feed-test"}]
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "load_daily_feed", lambda *args: {
+        "daily_briefing": {"recommendation_snapshot_id": "shared-feed-test",
+                           "as_of": iso_utc(utc_now()), "platform": "PrizePicks",
+                           "requested_platform": "Both", "sport": "WNBA",
+                           "top_opportunities": rows}
+    })
+    body = web_app.opportunity_feed(platform="Both", sport="WNBA", limit=5)
+    assert body["count"] == 1
+    assert body["opportunities"][0]["player"] == "A"
+    assert body["recommendation_snapshot_id"] == "shared-feed-test"
+    assert body["odds_applied"] is False
+    assert "edgeiq_score" not in rows[0]
 
 
 def test_entry_handoff_returns_copy_ready_slip(monkeypatch):

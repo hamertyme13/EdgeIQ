@@ -123,6 +123,8 @@ def main() -> int:
                     page.locator("#onboarding-skip").click()
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
+                results.extend(capture_research_details(page, viewport_name))
+                results.append(capture_best_lines(page, viewport_name))
                 page.close()
             browser.close()
     finally:
@@ -136,6 +138,75 @@ def main() -> int:
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")
     return 0
+
+
+def capture_research_details(page: Page, viewport_name: str) -> list[dict]:
+    """Exercise populated research, not just the empty-state shell."""
+    payload = {
+        "player": "Example Player", "sport": "WNBA", "stat": "Points",
+        "history_count": 0, "active_props": [], "line": 19.5,
+        "edgeiq_score": {
+            "score": 45.0, "label": "Pass", "components": {"model": 60, "history": 0},
+            "penalties": {"evidence_cap": -5},
+            "summary": "Small sample: fewer than 20 comparable player games.",
+            "meaning": "Research score, not win probability or permission to place a paid entry.",
+            "restrictions": ["This model segment has not cleared paid-use evidence requirements."],
+        },
+    }
+    page.route("**/api/players/*/research?*", lambda route: route.fulfill(json=payload))
+    page.evaluate("""async () => {
+        document.getElementById('research-player').value = 'Example Player';
+        document.getElementById('research-stat').value = 'Points';
+        await loadPlayerResearch({preventDefault() {}});
+    }""")
+    panel = page.locator("#player-research-result")
+    assert panel.locator(".consumer-research-section").count() == 6
+    assert panel.locator(".consumer-research-section[open]").count() == 0
+    results = []
+    for expanded in (False, True):
+        if expanded:
+            panel.locator("summary").evaluate_all("els => els.forEach(el => el.parentElement.open = true)")
+            assert "Unavailable" in panel.inner_text()
+        issues = visual_issues(page)
+        assert not issues["horizontal_overflow"], issues
+        assert not issues["clipped_buttons"], issues
+        suffix = "expanded" if expanded else "overview"
+        screenshot = OUTPUT / f"{viewport_name}-research-{suffix}.png"
+        page.screenshot(path=screenshot, full_page=True)
+        results.append({"viewport": viewport_name, "view": f"Research {suffix}",
+                        "screenshot": str(screenshot), **issues})
+    page.unroute("**/api/players/*/research?*")
+    return results
+
+
+def capture_best_lines(page: Page, viewport_name: str) -> dict:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from web.application.best_lines_service import best_lines_payload
+
+    offer = {"sport": "WNBA", "stat": "Points", "game": "Example A @ Example B",
+             "game_time": "2026-09-12T20:00:00Z", "line_offer_type": "standard"}
+    payload = best_lines_payload({"player": "Example Player", "stat": "Points", "sport": "WNBA",
+                                 "lines": [{**offer, "platform": "PrizePicks", "line": 20.5},
+                                           {**offer, "platform": "Underdog", "line": 21.5}]})
+    page.route("**/api/market/best-lines?*", lambda route: route.fulfill(json=payload))
+    page.locator('button[data-view="best-lines"]:visible').first.click()
+    page.locator('button[data-display-mode="basic"]').click()
+    assert page.locator("#best-lines").is_visible()
+    page.locator("#shop-player").fill("Example Player")
+    page.locator("#shop-stat").fill("Points")
+    page.locator("#shop-sport").select_option("WNBA")
+    page.locator('#line-shop-form button[type="submit"]').click()
+    page.locator(".best-line-row").first.wait_for()
+    assert page.locator(".best-line-row").count() == 2
+    assert "Best threshold" in page.locator("#line-shop-result").inner_text()
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-best-lines.png"
+    page.screenshot(path=screenshot, full_page=True)
+    page.unroute("**/api/market/best-lines?*")
+    return {"viewport": viewport_name, "view": "Best Lines", "screenshot": str(screenshot), **issues}
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -14,6 +16,7 @@ from repository.models.recommendation_snapshot_model import RecommendationSnapsh
 from repository.models.shadow_prediction_model import ShadowPredictionModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.settings_repository import SettingsRepository
+from services.recommendation_snapshot import stamp_snapshot_payload
 from utils.time import utc_now
 
 VERIFIED_SOURCES_EXCLUDED = {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
@@ -46,16 +49,16 @@ class ModelRehabilitationRepository:
         """Append an immutable snapshot and update the compatibility pointer."""
         initialize_database()
         current = ModelRehabilitationRepository.load_feed()
-        merged = {**current, **payload}
+        merged = deepcopy({**current, **payload})
         captured_at = utc_now()
         merged["captured_at"] = captured_at.isoformat()
         merged.pop("snapshot_id", None)
         feed = merged.get("feed") or {}
-        platform = str(merged.get("platform") or feed.get("platform") or "All Platforms")
-        sport = str(merged.get("sport") or feed.get("sport") or "All Sports")
+        platform = str(payload.get("platform") or feed.get("platform") or "All Platforms")
+        sport = str(payload.get("sport") or feed.get("sport") or "All Sports")
         purpose = str(feed.get("purpose") or "recommendation_feed")
         snapshot_id = f"{captured_at.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
-        _stamp_snapshot_payload(merged, snapshot_id, model_version)
+        stamp_snapshot_payload(merged, snapshot_id, model_version, captured_at, updated_sections=set(payload))
         with SessionLocal() as session:
             session.add(RecommendationSnapshotModel(
                 snapshot_id=snapshot_id,
@@ -67,7 +70,7 @@ class ModelRehabilitationRepository:
                 payload=json.dumps(merged, default=str, sort_keys=True),
             ))
             session.commit()
-        snapshot_props = _snapshot_props(merged)
+        snapshot_props = _snapshot_props({key: merged[key] for key in payload})
         evidence_capture = ModelRehabilitationRepository.queue_shadow(
             snapshot_props,
             model_version=model_version,
@@ -82,11 +85,25 @@ class ModelRehabilitationRepository:
         merged["snapshot_id"] = snapshot_id
         merged["model_version"] = model_version
         SettingsRepository.set(ModelRehabilitationRepository.FEED_KEY, json.dumps(merged, default=str))
+        if "daily_briefing" in payload:
+            briefing = merged.get("daily_briefing") or {}
+            for provider in {briefing.get("platform"), briefing.get("requested_platform")} - {None, ""}:
+                SettingsRepository.set(_daily_feed_key(str(provider), briefing.get("sport")), snapshot_id)
         return merged
 
     @staticmethod
     def load_feed() -> dict:
         return _json(SettingsRepository.get(ModelRehabilitationRepository.FEED_KEY, ""), {})
+
+    @staticmethod
+    def load_daily_feed(platform: str, sport: str | None) -> dict:
+        """Resolve a scope-specific pointer through the indexed immutable snapshot ID."""
+        snapshot_id = SettingsRepository.get(_daily_feed_key(platform, sport), "")
+        if not snapshot_id:
+            return ModelRehabilitationRepository.load_feed()
+        with SessionLocal() as session:
+            row = session.query(RecommendationSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
+            return _json(row.payload, {}) if row else {}
 
     @staticmethod
     def snapshot_history(limit: int = 20) -> list[dict]:
@@ -301,22 +318,9 @@ def _shadow_dict(row: ShadowPredictionModel) -> dict:
     }
 
 
-def _stamp_snapshot_payload(payload: dict, snapshot_id: str, model_version: str) -> None:
-    payload["snapshot_id"] = snapshot_id
-    payload["model_version"] = model_version
-    for key in ("daily_briefing", "opportunity_feed"):
-        recommendation = payload.get(key)
-        if not isinstance(recommendation, dict):
-            continue
-        recommendation["recommendation_snapshot_id"] = snapshot_id
-        recommendation["model_version"] = model_version
-        groups = [recommendation.get("opportunities") or [], recommendation.get("top_opportunities") or [], recommendation.get("suggested_entries") or []]
-        groups.extend((recommendation.get("sections") or {}).get(section) or [] for section in ("bet", "paper", "watch", "avoid"))
-        for group in groups:
-            for row in group:
-                if isinstance(row, dict):
-                    row["recommendation_snapshot_id"] = snapshot_id
-                    row["model_version"] = model_version
+def _daily_feed_key(platform: str, sport: str | None) -> str:
+    scope = json.dumps([platform.strip().casefold(), str(sport or "All Sports").strip().casefold()])
+    return "daily_snapshot_scope:" + hashlib.sha256(scope.encode()).hexdigest()
 
 
 def _snapshot_props(payload: object) -> list[dict]:

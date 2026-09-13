@@ -23,6 +23,8 @@ jobs:
       - run: >-
           mypy
           analytics/pipeline_types.py
+          analytics/opportunity_score.py
+          services/recommendation_snapshot.py
           analytics/game_model_evaluation.py
           analytics/game_model_registry.py
           analytics/game_prediction.py

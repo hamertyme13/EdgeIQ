@@ -1171,6 +1171,7 @@ function renderDailyBriefing(data) {
         }).join(" "))} You can review the research slate below, but no entry can be generated until verified offers are available.</span>
       </div>` : ""}
     <section id="opportunity-board" class="opportunity-board" aria-labelledby="opportunity-board-title">
+      ${data.daily_agent?.coverage ? `<details class="daily-agent-summary"><summary>Daily Agent coverage</summary><dl class="edgeiq-score-components">${Object.entries(data.daily_agent.coverage).map(([key, count]) => `<div><dt>${escapeHtml(key.replaceAll("_", " "))}</dt><dd>${Number(count).toLocaleString()}</dd></div>`).join("")}</dl><p>${escapeHtml(data.daily_agent.scope)}</p><p>${Number(data.daily_agent.shortlist?.paper_ready || 0)} paper-ready and ${Number(data.daily_agent.shortlist?.paid_ready || 0)} paid-ready among ${Number(data.daily_agent.shortlist?.displayed || 0)} displayed opportunities.</p></details>` : `<p class="subtle">Scan coverage is unavailable for this saved briefing. Refresh the briefing to collect it.</p>`}
       <div class="opportunity-board-header">
         <div>
           <p class="eyebrow">Single Recommendation Source</p>
@@ -1197,7 +1198,8 @@ function renderDailyBriefing(data) {
           const marketProbability = receipt.market_probability;
           const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
           const currentProfile = prop.risk_profile?.key || "aggressive";
-          const expired = prop.recommendation_freshness?.status === "expired";
+          const expired = prop.recommendation_freshness?.status === "expired"
+            || (prop.edgeiq_score_freshness && prop.edgeiq_score_freshness.status !== "fresh");
           const eligibility = prop.recommendation_eligibility || {};
           const actionable = prop.actionable ?? Boolean(
             prop.market_supported !== false
@@ -1215,7 +1217,7 @@ function renderDailyBriefing(data) {
             <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
               <input class="opportunity-select" type="checkbox" data-select-opportunity="${prop._sourceIndex}" ${expired || !actionable ? "disabled" : ""} />
             </label>
-            <span class="stars">${escapeHtml(prop.stars || "★★★☆☆")}</span>
+            ${window.EdgeIQOpportunityScore?.render(prop.edgeiq_score, escapeHtml, true) || `<span class="subtle">Not scored</span>`}
             <strong>
               <span class="risk-profile-label risk-${escapeHtml(prop.risk_profile?.key || "aggressive")}">${escapeHtml(prop.risk_profile?.label || "Aggressive")}</span>
               ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")}
@@ -1232,7 +1234,7 @@ function renderDailyBriefing(data) {
               <span>Updated ${formatDateTime(prop.feature_as_of || data.as_of)}</span>
               <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
                 expired
-                  ? "Expired · refresh required"
+                  ? prop.edgeiq_score_freshness?.label || "Expired · refresh required"
                   : eligibility.label
                     ? `${eligibility.label}${eligibility.paper_ready && !eligibility.paid_ready ? " · calibration tracking" : ""}`
                     : !actionable
@@ -1642,6 +1644,7 @@ function opportunityExplanation(opportunity) {
     trust: opportunity.trust || { score: 0, label: "Not scored" },
     why: `${receipt.probability_source || "EdgeIQ model"} estimates this leg at ${Number(receipt.probability || 0).toFixed(1)}%.`,
     evidence: [
+      ...(opportunity.edgeiq_score ? [`EdgeIQ Score ${opportunity.edgeiq_score.score}/100 (${opportunity.edgeiq_score.label}). ${opportunity.edgeiq_score.summary} ${opportunity.edgeiq_score.meaning}`] : []),
       `Projection ${receipt.projection ?? "unavailable"} versus line ${opportunity.line}.`,
       marketAvailable
         ? `Multi-book no-vig probability ${Number(receipt.market_probability).toFixed(1)}% from ${Number(receipt.market_book_count || 0)} exact-line sportsbook${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}; model-market edge ${Number(receipt.model_market_edge || 0) >= 0 ? "+" : ""}${Number(receipt.model_market_edge || 0).toFixed(1)} pts.`
@@ -2128,9 +2131,9 @@ async function loadAdvantageCenter() {
   const freshness = data.data_freshness || {};
   const providerRows = freshness.providers || [];
   const providerReady = providerRows.length > 0 && providerRows.every((row) => ["fresh", "available", "connected"].includes(row.status));
-  $("advantage-center-status").textContent = top
+  $("advantage-center-status").textContent = data.shared_feed?.message || (top
     ? `${data.competitive_features.length} competitive features active · ${data.sport} · Updated ${formatDateTime(freshness.as_of || data.as_of)}`
-    : "Advantage Center is active, but no top recommendation is available for this board.";
+    : "Advantage Center is active, but no top recommendation is available for this board.");
   $("advantage-journey").innerHTML = [
     ["Live Props", providerReady, providerRows.map((row) => `${row.name}: ${friendlyStatus(row.status)}`).join(" · ") || "Provider check"],
     ["Freshness", providerReady, providerReady ? "Ready" : "Review"],
@@ -4410,42 +4413,7 @@ async function classifyDefaultWagers() {
 }
 
 async function shopLines(event) {
-  event.preventDefault();
-  const player = $("shop-player").value.trim();
-  const stat = $("shop-stat").value.trim();
-  if (!player || !stat) return;
-  const params = new URLSearchParams({
-    player,
-    stat,
-    sport: $("shop-sport").value,
-    platform: $("shop-platform").value,
-  });
-  if ($("shop-over-odds").value) params.set("over_odds", $("shop-over-odds").value);
-  if ($("shop-under-odds").value) params.set("under_odds", $("shop-under-odds").value);
-  const data = await api(`/api/market/line-shop?${params.toString()}`);
-  $("line-shop-result").classList.remove("muted-card");
-  if (!data.available) {
-    $("line-shop-result").innerHTML = `<h2>No Match</h2><p>${data.message}</p>`;
-    return;
-  }
-  $("line-shop-result").innerHTML = `
-    <div class="suggestion-top">
-      <div>
-        <span class="pill">${data.sport}</span>
-        <strong>${data.player} · ${data.stat}</strong>
-      </div>
-      <span class="subtle">${data.provider_count || 0} provider${Number(data.provider_count || 0) === 1 ? "" : "s"} · ${data.market_count || data.lines.length} active lines</span>
-    </div>
-    <div class="stats-grid line-shop-metrics" style="margin-top:14px">
-      <div class="line-shop-metric"><strong>${data.best_over.platform}</strong><span>Best Over ${data.best_over.line}</span></div>
-      <div class="line-shop-metric"><strong>${data.best_under.platform}</strong><span>Best Under ${data.best_under.line}</span></div>
-      <div class="line-shop-metric"><strong>${data.consensus_line}</strong><span>Consensus Line</span></div>
-      <div class="line-shop-metric"><strong>${data.line_spread}</strong><span>Line Spread</span></div>
-    </div>
-    <p>${data.value_note}</p>
-    ${data.adjusted_market_count ? `<p class="subtle">${data.adjusted_market_count} payout-adjusted line${data.adjusted_market_count === 1 ? " was" : "s were"} excluded from the standard-line comparison.</p>` : ""}
-    ${data.no_vig ? `<p>No-vig fair price: Over ${pct(data.no_vig.over_probability)} (${data.no_vig.over_fair_odds}) · Under ${pct(data.no_vig.under_probability)} (${data.no_vig.under_fair_odds}) · Hold ${data.no_vig.hold == null ? "unavailable" : pct(data.no_vig.hold)}</p><p class="subtle">${escapeHtml(data.no_vig_source || "Supplied odds")}${data.no_vig.book_count ? ` · ${Number(data.no_vig.book_count)} exact-line books` : ""}</p>` : `<p class="subtle">No paired exact-line sportsbook price is available. You can enter over and under odds manually.</p>`}
-  `;
+  return window.EdgeIQBestLines.search(event);
 }
 
 async function loadPlayerResearch(event) {
@@ -4498,11 +4466,12 @@ async function loadPlayerResearch(event) {
   $("player-research-result").innerHTML = `
     <div class="suggestion-top">
       <div>
-        <span class="pill">${data.sport}</span>
-        <strong>${data.player} · ${data.stat}</strong>
+        <span class="pill">${escapeHtml(data.sport)}</span>
+        <strong>${escapeHtml(data.player)} · ${escapeHtml(data.stat)}</strong>
       </div>
       <span class="subtle">${data.history_count} finals · ${data.active_props.length} active</span>
     </div>
+    ${window.EdgeIQOpportunityScore?.render(data.edgeiq_score, escapeHtml) || `<p class="subtle">No scored provider opportunity is available for this research selection.</p>`}
     <section class="season-assessment">
       <div class="suggestion-top"><div><p class="eyebrow">Season Assessment</p><h3>${escapeHtml(assessment.headline || "Season evidence is still building")}</h3></div><span class="status-pill ${assessment.strength === "Strong" ? "status-positive" : "status-warning"}">${escapeHtml(assessment.strength || "Not ready")}</span></div>
       <p>${escapeHtml(assessment.summary || "Sync the selected sport to collect verified season game logs.")}</p>
@@ -4514,6 +4483,7 @@ async function loadPlayerResearch(event) {
         <span><strong>${assessment.opponent_average ?? "-"}</strong><small>Average vs opponent</small></span>
       </div>
     </section>
+    <details class="consumer-research-section"><summary>Recent Form and Hit Rankings</summary>
     <section class="best-hitting-stats">
       <div class="section-heading compact-heading">
         <div><p class="eyebrow">Best-Hitting Stats</p><h3>Strongest current lines for this player</h3></div>
@@ -4538,6 +4508,8 @@ async function loadPlayerResearch(event) {
       <div class="stat-card"><div class="stat-value">${trend.delta > 0 ? "+" : ""}${Number(trend.delta || 0).toFixed(1)}</div><div class="stat-label">Recent Trend</div></div>
       <div class="stat-card"><div class="stat-value">${pct(trend.consistency_score || 0)}</div><div class="stat-label">Consistency</div></div>
     </div>
+    </details>
+    <details class="consumer-research-section"><summary>Projection and Uncertainty</summary>
     <section class="research-distribution">
       <div class="section-heading compact-heading">
         <div><p class="eyebrow">Projection Distribution</p><h3>Range, not just one number</h3></div>
@@ -4548,7 +4520,7 @@ async function loadPlayerResearch(event) {
         <span><strong>${distribution.median ?? "-"}</strong><small>Median</small></span>
         <span><strong>${distribution.percentile_25 ?? "-"}–${distribution.percentile_75 ?? "-"}</strong><small>Middle 50%</small></span>
         <span><strong>${distribution.floor ?? "-"}–${distribution.ceiling ?? "-"}</strong><small>Floor–Ceiling</small></span>
-        <span><strong>${pct(distribution.probability_over_exact_line ?? 50)}</strong><small>Exact-line Over</small></span>
+        <span><strong>${distribution.probability_over_exact_line == null ? "Unavailable" : pct(distribution.probability_over_exact_line)}</strong><small>Exact-line Over</small></span>
         <span><strong>${distribution.expected_minutes ?? distribution.expected_opportunities ?? "-"}</strong><small>Minutes / Chances</small></span>
       </div>
       <div class="sensitivity-grid">
@@ -4556,11 +4528,15 @@ async function loadPlayerResearch(event) {
       </div>
       ${(sensitivity.drivers || []).map((driver) => `<p class="subtle">What changes this: ${escapeHtml(driver)}</p>`).join("")}
     </section>
+    </details>
+    <details class="consumer-research-section"><summary>Matchup and Game Context</summary>
     ${window.EdgeIQGames?.propContextMarkup(
       gameContext,
       data.forecast?.projection,
       data.forecast?.features?.game_aware_shadow_projection,
-    ) || ""}
+    ) || `<p class="subtle">Verified game context is not available yet.</p>`}
+    </details>
+    <details class="consumer-research-section"><summary>Game Logs</summary>
     <div class="player-research-bars">
       ${(data.chart || []).map((row) => `
         <div class="research-bar-row">
@@ -4571,19 +4547,25 @@ async function loadPlayerResearch(event) {
         </div>
       `).join("") || `<p class="subtle">No final-stat chart data yet.</p>`}
     </div>
+    </details>
+    <details class="consumer-research-section"><summary>Market and Recorded Lines</summary>
     <div class="research-market-lines">
       ${(data.market_lines || []).map((row) => `
         <span>
           <strong>${escapeHtml(row.platform)}</strong>
           ${escapeHtml(row.direction || "Over")} ${row.line}
-          <small>${escapeHtml(humanizeCopilotText(row.offer_type || "standard"))} · ${pct(row.confidence || 0)}</small>
+          <small>${escapeHtml(humanizeCopilotText(row.offer_type || "standard"))} · ${row.confidence == null ? "Probability unavailable" : pct(row.confidence)}</small>
         </span>
       `).join("") || `<p class="subtle">No active market lines found.</p>`}
     </div>
     ${(data.closing_lines || []).length ? `<p class="subtle">Recent recorded lines: ${(data.closing_lines || []).slice(0, 6).map((row) => Number(row.line).toFixed(1)).join(" → ")}</p>` : `<p class="subtle">Historical closing lines are not available for this exact market yet.</p>`}
+    </details>
+    <details class="consumer-research-section"><summary>Evidence and Limitations</summary>
+    <ul>${(data.evidence_citations || []).map((row) => `<li>${escapeHtml(row.source || "Unknown source")} · ${row.fresh ? "Current" : "Expired"} · ${escapeHtml(formatDateTime(row.captured_at))}</li>`).join("") || `<li>No timestamped evidence is available yet.</li>`}</ul>
     ${(data.teammate_splits || []).map((row) => `<p class="subtle">With ${escapeHtml(row.teammate)}: ${pct(row.with.hit_rate || 0)} · Without: ${pct(row.without.hit_rate || 0)}</p>`).join("") || `<p class="subtle">With/without teammate splits will appear when lineup participation history is available.</p>`}
     ${data.recommendation ? `<p>Best active look: ${data.recommendation.platform} ${directionBadge(data.recommendation.direction || "Over")} ${data.recommendation.line} · confidence ${pct(data.recommendation.confidence)}</p>` : ""}
     ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
+    </details>
   `;
   $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
   $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });

@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from web.application.opportunity_presentation import presented_score
 from web.application.player_service import PlayerLookupError
 from web.application.season_history_service import season_history_status, start_season_history_sync
 
@@ -91,7 +92,13 @@ def player_research(
     deps: DepsPlayer = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
-    return _deps.research(player_name, stat, sport, platform, line)
+    payload = _deps.research(player_name, stat, sport, platform, line)
+    recommendation = payload.get("recommendation")
+    return {
+        **payload,
+        "edgeiq_score": presented_score(recommendation)
+        if recommendation and recommendation.get("line") == payload.get("line") else None,
+    }
 
 
 @router.post("/api/players/season-history/sync")

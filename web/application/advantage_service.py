@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from utils.entity_normalization import canonical_matchup_key
 from utils.time import iso_utc, utc_now
+from web.application.shared_recommendations import select_daily_snapshot
 
 
 def advantage_center_payload(
@@ -18,8 +20,13 @@ def advantage_center_payload(
     line_shop_summary: Callable[[list[dict]], dict],
     sportsbook_integrations: Callable[[], dict],
     bankroll_strategy: Callable[[], dict],
+    shared_feed: Callable[[], dict] | None = None,
 ) -> dict:
-    command = command_center(platform, sport_filter)
+    shared = select_daily_snapshot(shared_feed(), platform, sport_filter) if shared_feed else None
+    briefing = (shared or {}).get("briefing") or {}
+    command: dict = ({"cards": (briefing.get("sections") or {}).get("bet") or (briefing.get("sections") or {}).get("paper") or [],
+                "as_of": briefing.get("as_of")}
+               if shared is not None else command_center(platform, sport_filter))
     clv = clv_report()
     health = data_health()
     profile = personal_profile()
@@ -28,12 +35,15 @@ def advantage_center_payload(
     opportunity_cards = list(command.get("cards", []))
     if command.get("ranked_props"):
         opportunity_cards.append({"score": 0.0, "props": command["ranked_props"]})
-    command_opportunities = _command_opportunities(opportunity_cards)
+    command_opportunities = (list(briefing.get("top_opportunities") or [])
+                             if shared is not None else _command_opportunities(opportunity_cards))
     selected_providers = {"PrizePicks", "Underdog"} if platform == "Both" else {platform}
     return {
         "as_of": iso_utc(utc_now()),
         "platform": platform,
         "sport": sport_filter or "All Sports",
+        "shared_feed": {key: value for key, value in (shared or {}).items() if key != "briefing"},
+        "recommendation_snapshot_id": briefing.get("recommendation_snapshot_id"),
         "top_recommendation": top_card,
         "data_freshness": {
             "as_of": command.get("as_of"),
@@ -120,7 +130,8 @@ def _command_game_contexts(opportunities: list[dict], limit: int = 3) -> list[di
         game = str(prop.get("game", "")).strip()
         sport = str(prop.get("sport") or prop.get("league") or "").strip().upper()
         if game:
-            grouped.setdefault((sport, canonical_matchup_key(game)), []).append(prop)
+            matchup = re.sub(r"^([A-Z]{2,4})-([A-Z]{2,4})$", r"\1 @ \2", game)
+            grouped.setdefault((sport, canonical_matchup_key(matchup)), []).append(prop)
     return [
         {
             "game": props[0].get("game", ""),

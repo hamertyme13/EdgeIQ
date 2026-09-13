@@ -6,6 +6,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from web.application.opportunity_presentation import scored_opportunities
+
 router = APIRouter(tags=["advantage"])
 
 
@@ -41,4 +43,4 @@ def advantage_center(
 ) -> dict:
     _deps = deps if isinstance(deps, AdvantageDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
-    return _deps.advantage_center(platform, sport_filter)
+    return scored_opportunities(_deps.advantage_center(platform, sport_filter), "opportunity_feed")

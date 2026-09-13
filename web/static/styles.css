@@ -3465,7 +3465,9 @@ tr.sport-group-row:hover td {
   flex: 0 0 auto;
 }
 
-.tool-group[open] summary::after { content: "-"; }
+.tool-group[open] > summary::after { content: "-"; }
+.consumer-research-section[open] > summary::after,
+.edgeiq-score-summary details[open] > summary::after { content: "-"; }
 
 .tool-group summary span { min-width: max-content; }
 .tool-group summary small {
@@ -6765,6 +6767,48 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
 .game-intelligence-card details { margin-top: 14px; }
 .game-to-props { width: 100%; margin-top: 12px; }
 .research-game-context { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+
+.edgeiq-score-compact { display: grid; gap: 2px; min-width: 0; }
+.best-lines-list { display: grid; gap: 0; }
+.best-line-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .7fr) minmax(0, 1.5fr); gap: 16px; padding: 18px 0; border-bottom: 1px solid var(--border); }
+.best-line-row p { margin: 5px 0; overflow-wrap: anywhere; }
+.best-line-row > details { grid-column: 1 / -1; }
+#best-lines .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#best-lines label { display: grid; gap: 6px; min-width: 0; }
+#best-lines input, #best-lines select { width: 100%; min-width: 0; }
+#best-lines #line-shop-form > button { align-self: end; min-height: 44px; padding: 10px; }
+.best-lines-manual { grid-column: 1 / -1; }
+.best-lines-manual summary { padding: 12px 0; cursor: pointer; }
+@media (max-width: 700px) {
+  #best-lines .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .best-line-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .best-line-row > :nth-child(3) { grid-column: 1 / -1; }
+}
+.edgeiq-score-compact b { font-size: 22px; line-height: 1.1; }
+.edgeiq-score-compact small { font-size: 12px; color: var(--muted); white-space: normal; }
+.edgeiq-score-summary { padding: 16px 0; border-bottom: 1px solid var(--border); }
+.edgeiq-score-heading { display: flex; align-items: center; gap: 16px; }
+.edgeiq-score-heading > strong { font-size: 36px; flex-shrink: 0; }
+.edgeiq-score-heading > strong small { font-size: 14px; color: var(--muted); }
+.edgeiq-score-heading h3 { font-size: 18px; margin: 0; }
+.edgeiq-score-heading p { margin: 4px 0 0; color: var(--muted); }
+.edgeiq-score-components { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.edgeiq-score-components dt { text-transform: capitalize; }
+.edgeiq-score-components dd { margin: 4px 0 0; }
+.consumer-research-section { border-top: 1px solid var(--border); padding: 8px 0; min-width: 0; }
+.consumer-research-section > summary,
+.edgeiq-score-summary summary { padding: 12px 0; cursor: pointer; min-height: 44px; font-weight: 600; }
+.consumer-research-section > summary:focus-visible,
+.edgeiq-score-summary summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.consumer-research-section li,
+.edgeiq-score-summary li { margin: 8px 0; overflow-wrap: anywhere; }
+.consumer-research-section .stats-grid { grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+
+@media (max-width: 480px) {
+  .edgeiq-score-heading { align-items: flex-start; gap: 12px; }
+  .edgeiq-score-heading h3 { font-size: 16px; }
+  .edgeiq-score-heading p { font-size: 14px; }
+}
 
 @media (max-width: 640px) {
   .game-intelligence-metrics,
