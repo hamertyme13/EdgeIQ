@@ -4,7 +4,9 @@ from typing import Any
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///edgeiq.db")
+from utils.database_url import normalize_database_url
+
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///edgeiq.db"))
 
 _ENGINE_ARGS: dict[str, Any] = {"echo": False}
 

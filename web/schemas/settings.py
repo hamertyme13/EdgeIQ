@@ -24,6 +24,7 @@ class RefreshSchedulePayload(BaseModel):
     line_snapshots: str = "*/30"
     result_check: str = "23:30"
     nightly_calibration: str = "02:00"
+    season_history: str = Field(default="06:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
 
 

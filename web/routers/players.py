@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from web.application.opportunity_presentation import presented_score
 from web.application.player_service import PlayerLookupError
+from web.application.prop_win_history import player_prop_win_history
 from web.application.season_history_service import season_history_status, start_season_history_sync
 
 router = APIRouter(tags=["players"])
@@ -96,19 +97,20 @@ def player_research(
     recommendation = payload.get("recommendation")
     return {
         **payload,
+        "prop_win_history": player_prop_win_history(player_name, sport, stat, payload.get("line")),
         "edgeiq_score": presented_score(recommendation)
         if recommendation and recommendation.get("line") == payload.get("line") else None,
     }
 
 
 @router.post("/api/players/season-history/sync")
-def sync_season_history(sport: str) -> dict:
-    return start_season_history_sync(sport)
+def sync_season_history(sport: str, full_history: bool = False) -> dict:
+    return start_season_history_sync(sport, full_history=full_history)
 
 
 @router.get("/api/players/season-history/status")
-def get_season_history_status() -> dict:
-    return season_history_status()
+def get_season_history_status(sport: str = "") -> dict:
+    return season_history_status(sport)
 
 
 @router.get("/api/research/evidence")

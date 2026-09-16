@@ -670,15 +670,16 @@ async function loadResearchHistory() {
 
 async function syncSeasonHistory() {
   const sport = $("research-context-sport").value;
-  const data = await api(`/api/players/season-history/sync?sport=${encodeURIComponent(sport)}`, { method: "POST" });
+  const fullHistory = $("season-history-full").checked;
+  const data = await api(`/api/players/season-history/sync?sport=${encodeURIComponent(sport)}&full_history=${fullHistory}`, { method: "POST" });
   $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
-  if (data.accepted) pollSeasonHistoryStatus();
+  if (data.accepted) window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
 }
 
-async function pollSeasonHistoryStatus() {
-  const data = await api("/api/players/season-history/status");
+async function pollSeasonHistoryStatus(sport) {
+  const data = await api(`/api/players/season-history/status?sport=${encodeURIComponent(sport)}`);
   $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
-  if (data.state === "running") window.setTimeout(pollSeasonHistoryStatus, 2500);
+  if (["running", "queued"].includes(data.state)) window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
 }
 
 function restoreResearchHistory(item) {
@@ -4484,6 +4485,11 @@ async function loadPlayerResearch(event) {
       </div>
     </section>
     <details class="consumer-research-section"><summary>Recent Form and Hit Rankings</summary>
+    <section>
+      <h3>Recorded prop results</h3>
+      ${(data.prop_win_history || []).map((row) => `<p><span class="status-pill">${escapeHtml(row.direction)} · ${escapeHtml(row.label)}</span><br><span class="subtle">At this exact line: ${Number(row.exact_line_wins || 0)} wins, ${Number(row.exact_line_losses || 0)} losses</span></p>`).join("") || `<p class="subtle">No verified settled lines recorded for this player and stat yet.</p>`}
+      <p class="subtle">Includes winning legs from losing entries. Recent recorded lines may differ from today's line; past wins do not predict the next result.</p>
+    </section>
     <section class="best-hitting-stats">
       <div class="section-heading compact-heading">
         <div><p class="eyebrow">Best-Hitting Stats</p><h3>Strongest current lines for this player</h3></div>

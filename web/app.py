@@ -242,6 +242,7 @@ from web.application.provider_health_service import (
 )
 from web.application.recommendation_policy import recommendation_eligibility
 from web.application.schedule_service import elapsed_job_due, scheduled_job_due, scheduled_job_overdue
+from web.application.season_history_service import run_daily_season_updates
 from web.application.shared_recommendations import shared_opportunity_feed
 from web.version import STATIC_ASSET_VERSION
 
@@ -11734,6 +11735,7 @@ def _refresh_schedule_payload() -> dict:
         "shadow_cohort": "08:15",
         "auto_paper_samples": "08:30",
         "player_features": "03:15",
+        "season_history": "06:00",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -11746,9 +11748,10 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
         {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
         {"name": "Player feature store", "time": schedule["player_features"], "action": "Materialize season, recent-form, role, and opponent features for active props."},
+        {"name": "Season history", "time": schedule["season_history"], "action": "Update recent official results across supported leagues using saved checkpoints."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features")
+    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -11914,6 +11917,7 @@ def _run_due_daily_operations_locked() -> dict:
         "shadow_cohort": _queue_daily_shadow_cohort,
         "auto_paper_samples": _run_automatic_paper_samples,
         "player_features": _materialize_player_features,
+        "season_history": run_daily_season_updates,
     }
     for name, callback in timed_jobs.items():
         scheduled_time = str(schedule.get(name) or "")
