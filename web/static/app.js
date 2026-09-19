@@ -673,13 +673,21 @@ async function syncSeasonHistory() {
   const fullHistory = $("season-history-full").checked;
   const data = await api(`/api/players/season-history/sync?sport=${encodeURIComponent(sport)}&full_history=${fullHistory}`, { method: "POST" });
   $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
-  if (data.accepted) window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
+  if (data.accepted || (data.sport === sport && ["running", "queued"].includes(data.state))) {
+    window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
+  }
 }
 
 async function pollSeasonHistoryStatus(sport) {
-  const data = await api(`/api/players/season-history/status?sport=${encodeURIComponent(sport)}`);
-  $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
-  if (["running", "queued"].includes(data.state)) window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
+  if ($("research-context-sport").value !== sport) return;
+  try {
+    const data = await api(`/api/players/season-history/status?sport=${encodeURIComponent(sport)}`);
+    if ($("research-context-sport").value !== sport) return;
+    $("season-history-status").textContent = ` ${humanizeCopilotText(data.message)}`;
+    if (["running", "queued"].includes(data.state)) window.setTimeout(() => pollSeasonHistoryStatus(sport), 2500);
+  } catch {
+    $("season-history-status").textContent = " Progress could not be retrieved. Saved results are retained; retry Update Selected Sport to reconnect.";
+  }
 }
 
 function restoreResearchHistory(item) {
@@ -2058,12 +2066,28 @@ async function loadRefreshSchedule() {
   $("refresh-schedule-list").innerHTML = data.jobs.map((job) => `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
-        <strong>${job.name}</strong>
-        <span class="pill">${job.time}</span>
+        <strong>${escapeHtml(job.name)}</strong>
+        <span class="pill">${escapeHtml(job.time)} Eastern</span>
       </div>
-      <p>${job.action}</p>
+      <p>${escapeHtml(job.action)}</p>
+      <p class="subtle">Last completed: ${escapeHtml(job.last_run || "Not recorded")}${job.overdue ? " · Update overdue" : ""}</p>
     </div>
   `).join("");
+  const historyPanel = document.createElement("section");
+  historyPanel.setAttribute("aria-label", "Season update progress");
+  $("refresh-schedule-list").append(historyPanel);
+  historyPanel.textContent = "Checking league update records...";
+  try {
+    const history = await api("/api/players/season-history/overview");
+    historyPanel.innerHTML = `<h3>Season update progress</h3>${history.leagues.map((league) => `
+      <div class="suggestion compact-suggestion">
+        <strong>${escapeHtml(league.sport)} · ${league.completed_today ? "Daily update completed" : "Daily update not completed today"}</strong>
+        <p>History checked through ${escapeHtml(league.checkpoint || "Not recorded")} · Last daily success: ${escapeHtml(league.last_daily_success || "Not recorded")}</p>
+        <p class="subtle">${escapeHtml(league.message)}</p>
+      </div>`).join("")}`;
+  } catch {
+    historyPanel.textContent = "League update records could not be loaded. Please refresh to try again.";
+  }
 }
 
 async function waitForBackgroundJob(job, onProgress, { maxAttempts = 300 } = {}) {
@@ -2731,7 +2755,7 @@ function renderProgressLeg(leg) {
         </span>
       </span>
       <span class="leg-meta">
-        <span class="leg-clv ${leg.clv && leg.clv.clv < 0 ? "danger-text" : ""}">CLV ${leg.clv && leg.clv.clv != null ? Number(leg.clv.clv).toFixed(1) : "-"}</span>
+        <span class="leg-clv ${leg.clv && leg.clv.clv < 0 ? "danger-text" : ""}" title="${escapeHtml(leg.clv?.note || "No verified closing line is available.")}">CLV ${leg.clv && leg.clv.clv != null ? Number(leg.clv.clv).toFixed(1) : "Unavailable"}</span>
         <span class="leg-result ${leg.status === "Loss" ? "danger-text" : ""}">${leg.status}</span>
       </span>
       ${leg.settlement_note ? `<span class="leg-settlement-note">${escapeHtml(leg.settlement_note)}</span>` : ""}

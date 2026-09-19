@@ -20,6 +20,20 @@ for a failed league do not repeatedly fetch leagues that already succeeded.
 Explicit manual updates remain available after the daily run.
 Other maintenance jobs retain their existing locking behavior.
 
+The refresh schedule view shows recorded job completion times and per-league
+season checkpoints. Its daily-success indicator is separate from manual sync
+status. A successful catch-up run can still have a checkpoint behind today;
+check both fields before treating season history as current.
+
+Progress records include an update timestamp. A running record with no progress
+for 30 minutes is displayed as stalled, without changing the underlying worker
+state or releasing its lock. Browser polling failures show a recoverable message,
+and changing the selected league stops the old league's polling updates.
+
+Hosted verification requires observing a new daily-success record after the
+scheduled time on the deployed server. Local tests and a successful Git push
+do not establish that Railway is running the latest branch or remains awake.
+
 PostgreSQL URLs using postgres:// or postgresql:// are normalized to the
 installed psycopg driver in both application startup and Alembic. This does
 not migrate the local SQLite records into Railway or verify a deployed server.

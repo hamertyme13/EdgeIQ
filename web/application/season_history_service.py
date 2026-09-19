@@ -45,6 +45,7 @@ def start_season_history_sync(sport: str, full_history: bool = False) -> dict:
             "state": "queued", "sport": sport_key,
             "message": f"Collecting completed {sport_key} games from {start:%B %-d} through {end:%B %-d}.",
             "started_at": utc_now().isoformat(), "completed_at": "",
+            "updated_at": utc_now().isoformat(),
             "days_checked": 0, "days_total": (end - start).days + 1,
             "rows_imported": 0, "records_inserted": 0, "records_updated": 0,
             "duplicates_removed": 0, "errors": [],
@@ -54,15 +55,64 @@ def start_season_history_sync(sport: str, full_history: bool = False) -> dict:
 
 
 def season_history_status(sport: str = "") -> dict:
+    with _lock:
+        local = {**_status, "errors": list(_status.get("errors") or [])}
     if sport:
         try:
             saved = json.loads(SettingsRepository.get(f"season_history:status:{sport.upper()}", "{}"))
-            if saved:
-                return saved
+            if isinstance(saved, dict) and saved:
+                local_time = str(local.get("updated_at") or local.get("started_at") or "")
+                saved_time = str(saved.get("updated_at") or saved.get("started_at") or "")
+                if local.get("sport") != sport.upper() or saved_time > local_time:
+                    return _visible_status(saved)
         except (ValueError, TypeError):
             pass
-    with _lock:
-        return {**_status, "errors": list(_status.get("errors") or [])}
+        if local.get("sport") != sport.upper():
+            return {"state": "idle", "sport": sport.upper(), "message": "No season update has been recorded for this league."}
+    return _visible_status(local)
+
+
+def _visible_status(status: dict) -> dict:
+    result = dict(status)
+    if result.get("state") not in {"running", "queued"}:
+        return result
+    try:
+        stamp = datetime.fromisoformat(str(result.get("updated_at") or result.get("started_at") or "").replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=ZoneInfo("UTC"))
+        now = utc_now()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo("UTC"))
+        stale = (now - stamp).total_seconds() > 1800
+    except (ValueError, TypeError):
+        stale = True
+    if stale:
+        result.update(state="stalled", message="No season-sync progress has been reported for 30 minutes. The worker may be delayed or interrupted. Saved results are retained; active worker locks remain in place.")
+    return result
+
+
+def season_history_overview() -> dict:
+    today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    leagues = []
+    for sport in sorted(SUPPORTED_SPORTS):
+        try:
+            status = json.loads(SettingsRepository.get(f"season_history:status:{sport}", "{}"))
+            if not isinstance(status, dict):
+                status = {}
+        except (ValueError, TypeError):
+            status = {}
+        status = _visible_status(status)
+        last_success = SettingsRepository.get(f"season_history:daily_success:{sport}", "")
+        leagues.append({
+            "sport": sport,
+            "checkpoint": SettingsRepository.get(f"season_history:checkpoint:{sport}", ""),
+            "last_daily_success": last_success,
+            "completed_today": last_success == today,
+            "state": status.get("state", "not_started"),
+            "message": status.get("message", "No season update has been recorded yet."),
+            "completed_at": status.get("completed_at", ""),
+        })
+    return {"timezone": "America/New_York", "date": today, "leagues": leagues}
 
 
 def season_window(sport: str, today: date | None = None) -> tuple[date, date]:
@@ -133,7 +183,8 @@ def _run_sync(sport: str, start: date, end: date, *, daily: bool = False) -> dic
             with _lock:
                 _status.update(state="running", sport=sport, days_checked=0, days_total=(end-start).days+1,
                                rows_imported=0, records_inserted=0, records_updated=0,
-                               duplicates_removed=0, errors=[], started_at=utc_now().isoformat(), completed_at="")
+                               duplicates_removed=0, errors=[], started_at=utc_now().isoformat(),
+                               updated_at=utc_now().isoformat(), completed_at="")
             SettingsRepository.set(f"season_history:status:{sport}", json.dumps(season_history_status()))
             _run_sync_locked(sport, start, end)
             result = season_history_status()
@@ -176,6 +227,7 @@ def _run_sync_locked(sport: str, start: date, end: date) -> None:
             errors.append(f"{cursor:%b %-d}: ESPN final box scores were temporarily unavailable.")
         with _lock:
             _status.update({
+                "updated_at": utc_now().isoformat(),
                 "days_checked": (cursor - start).days + 1,
                 "rows_imported": imported,
                 "records_inserted": inserted,

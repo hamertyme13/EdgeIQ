@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260912-daily-agent";
+const CACHE_NAME = "edgeiq-shell-20260915-game-borders";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

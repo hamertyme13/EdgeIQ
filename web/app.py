@@ -8893,7 +8893,11 @@ def _clv_for_prop(
         "note": (
             "Positive CLV means the closing line moved in the selected direction."
             if clv is not None
-            else "CLV excluded because a same-game, same-offer closing snapshot is unavailable."
+            else {
+                "missing_game_context": "CLV unavailable: the exact game or start time is missing.",
+                "legacy_offer_metadata_missing": "CLV unavailable: this older prop has no recorded offer provenance.",
+                "no_same_game_closing_snapshot": "CLV unavailable: no matching line was saved between entry placement and game start. Live entries may have no eligible pregame snapshot.",
+            }.get(reliability_reason, "CLV unavailable: no verified closing line was captured.")
         ),
     }
 

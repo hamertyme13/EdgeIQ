@@ -6733,15 +6733,28 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
   gap: 16px;
   margin: 18px 0;
+  align-items: start;
 }
 
 .game-intelligence-card {
   min-width: 0;
   padding: 18px;
-  border: 1px solid var(--border);
+  border: 2px solid var(--line-bright);
   border-radius: 8px;
-  background: var(--panel);
+  background: var(--raised);
+  overflow-wrap: anywhere;
 }
+
+.game-intelligence-card > .suggestion-top {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line-bright);
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.game-intelligence-card h3 { margin: 8px 0 0; }
+.game-intelligence-card .suggestion-top > div { min-width: 0; }
+.game-intelligence-card strong { min-width: 0; }
 
 .game-win-bars,
 .game-intelligence-metrics {
@@ -6758,13 +6771,12 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
   justify-content: space-between;
   gap: 8px;
   padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border-bottom: 1px solid var(--line);
 }
 
 .game-intelligence-metrics > span { flex-direction: column; }
 .game-intelligence-metrics small { color: var(--muted); }
-.game-intelligence-card details { margin-top: 14px; }
+.game-intelligence-card details { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-bright); }
 .game-to-props { width: 100%; margin-top: 12px; }
 .research-game-context { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
 

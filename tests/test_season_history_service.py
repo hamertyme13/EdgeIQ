@@ -1,5 +1,5 @@
 from contextlib import nullcontext
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -117,3 +117,41 @@ def test_postgres_advisory_lock_release(monkeypatch, acquired):
     statements = [str(call.args[0]) for call in connection.execute.call_args_list]
     assert statements[0] == "SELECT pg_try_advisory_lock(731904128)"
     assert ("SELECT pg_advisory_unlock(731904128)" in statements) is acquired
+
+
+def test_overview_does_not_confuse_manual_success_with_daily_completion(monkeypatch):
+    saved = {
+        "season_history:status:WNBA": '{"state":"complete","message":"Manual sync complete"}',
+        "season_history:checkpoint:WNBA": "2026-09-14",
+        "season_history:status:NFL": "invalid json",
+        "season_history:status:MLB": "[]",
+    }
+    monkeypatch.setattr(service.SettingsRepository, "get", lambda key, default="": saved.get(key, default))
+    report = service.season_history_overview()
+    assert len(report["leagues"]) == len(service.SUPPORTED_SPORTS)
+    wnba = next(row for row in report["leagues"] if row["sport"] == "WNBA")
+    assert wnba["state"] == "complete"
+    assert wnba["completed_today"] is False
+    saved["season_history:daily_success:WNBA"] = report["date"]
+    assert next(row for row in service.season_history_overview()["leagues"] if row["sport"] == "WNBA")["completed_today"] is True
+
+
+def test_stale_status_is_reported_without_changing_worker_state():
+    state = {"state": "running", "updated_at": (service.utc_now() - timedelta(hours=1)).isoformat()}
+    assert service._visible_status(state)["state"] == "stalled"
+    assert state["state"] == "running"
+    assert service._visible_status({"state": "running", "updated_at": service.utc_now().isoformat()})["state"] == "running"
+
+
+def test_missing_sport_status_does_not_report_another_league(monkeypatch):
+    monkeypatch.setattr(service, "_status", {"state": "complete", "sport": "NBA"})
+    monkeypatch.setattr(service.SettingsRepository, "get", lambda *args: "[]")
+    result = service.season_history_status("WNBA")
+    assert result["sport"] == "WNBA"
+    assert result["state"] == "idle"
+
+
+def test_new_local_queue_takes_priority_over_old_saved_status(monkeypatch):
+    monkeypatch.setattr(service, "_status", {"state": "queued", "sport": "WNBA", "updated_at": service.utc_now().isoformat()})
+    monkeypatch.setattr(service.SettingsRepository, "get", lambda *args: '{"state":"complete","sport":"WNBA","started_at":"2020-01-01"}')
+    assert service.season_history_status("WNBA")["state"] == "queued"

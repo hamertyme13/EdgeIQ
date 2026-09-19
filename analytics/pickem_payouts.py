@@ -105,13 +105,21 @@ def settlement_return_multiplier(
     leg_results: list[dict],
     displayed_multiplier: float | None = None,
 ) -> float:
+    if any(str(row.get("result") or "") not in {"Win", "Loss", "Push", "DNP"} for row in leg_results):
+        raise ValueError("Every leg needs a final result before the payout can be calculated.")
     active = [row for row in leg_results if str(row.get("result") or "") not in {"DNP", "Push"}]
     if len(active) < 2:
         return 1.0
     wins = sum(1 for row in active if row.get("result") == "Win")
+    if wins == len(leg_results) and displayed_multiplier is not None:
+        multiplier = float(displayed_multiplier)
+        if math.isfinite(multiplier) and multiplier >= 1:
+            return round(multiplier, 4)
     schedule = _scale_schedule(payout_schedule(platform, payout_type, len(active)), displayed_multiplier)
     if not schedule and displayed_multiplier not in (None, 0, "") and normalize_payout_type(payout_type) == "standard":
         schedule = {len(active): float(displayed_multiplier)}
+    if not schedule:
+        raise ValueError("The payout for this entry format is not verified. Confirm the payout before settling the entry.")
     return round(float(schedule.get(wins, 0.0)), 4)
 
 

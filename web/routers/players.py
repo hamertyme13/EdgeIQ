@@ -10,7 +10,11 @@ from repository.repositories.player_identity_repository import PlayerIdentityRep
 from web.application.opportunity_presentation import presented_score
 from web.application.player_service import PlayerLookupError
 from web.application.prop_win_history import player_prop_win_history
-from web.application.season_history_service import season_history_status, start_season_history_sync
+from web.application.season_history_service import (
+    season_history_overview,
+    season_history_status,
+    start_season_history_sync,
+)
 
 router = APIRouter(tags=["players"])
 
@@ -111,6 +115,11 @@ def sync_season_history(sport: str, full_history: bool = False) -> dict:
 @router.get("/api/players/season-history/status")
 def get_season_history_status(sport: str = "") -> dict:
     return season_history_status(sport)
+
+
+@router.get("/api/players/season-history/overview")
+def get_season_history_overview() -> dict:
+    return season_history_overview()
 
 
 @router.get("/api/research/evidence")

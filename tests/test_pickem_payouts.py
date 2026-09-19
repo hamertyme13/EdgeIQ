@@ -1,3 +1,5 @@
+import pytest
+
 from analytics.pickem_payouts import payout_analysis, payout_schedule, settlement_return_multiplier
 
 
@@ -37,6 +39,27 @@ def test_flex_settlement_uses_partial_win_multiplier():
     )
 
     assert multiplier == 1.09
+
+
+def test_all_winning_pick6_flex_uses_recorded_multiplier():
+    assert settlement_return_multiplier("DraftKings Pick6", "flex", [{"result": "Win"}] * 3, 5.0) == 5.0
+
+
+def test_unknown_flex_payout_is_not_silently_a_loss():
+    with pytest.raises(ValueError, match="not verified"):
+        settlement_return_multiplier("DraftKings Pick6", "flex", [{"result": "Win"}] * 2 + [{"result": "Loss"}], 5.0)
+
+
+def test_unresolved_leg_cannot_be_settled_as_loss():
+    with pytest.raises(ValueError, match="final result"):
+        settlement_return_multiplier("PrizePicks", "flex", [{"result": "Win"}] * 2 + [{"result": "Unknown"}])
+
+
+def test_complete_winning_leg_set_overrides_contradictory_entry_loss():
+    from repository.repositories.entry_repository import EntryRepository
+    result, profit = EntryRepository._settlement_profit("Loss", 10, 5, 3, leg_results=[{"result": "Win"}] * 3)
+    assert result == "Win"
+    assert profit == 40
 
 
 def test_exact_offer_and_correlation_are_used_for_ev() -> None:
