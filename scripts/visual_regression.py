@@ -75,7 +75,9 @@ def visual_issues(page: Page) -> dict:
 
 def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
     if view_name == "Research":
+        page.locator('.consumer-more').evaluate('(element) => { element.open = true; }')
         page.locator('button[data-display-mode="advanced"]').click()
+        page.locator('.consumer-more').evaluate('(element) => { element.open = false; }')
     page.locator(f'button[data-view="{VIEW_TARGETS[view_name]}"]:visible').first.click()
     page.wait_for_timeout(900)
     issues = visual_issues(page)
@@ -124,6 +126,8 @@ def main() -> int:
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
                 results.extend(capture_research_details(page, viewport_name))
+                results.append(capture_entry_summary(page, viewport_name))
+                results.append(capture_model_track_record(page, viewport_name))
                 results.append(capture_best_lines(page, viewport_name))
                 page.close()
             browser.close()
@@ -138,6 +142,58 @@ def main() -> int:
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")
     return 0
+
+
+def capture_model_track_record(page: Page, viewport_name: str) -> dict:
+    page.route("**/api/analytics/model-track-record?*", lambda route: route.fulfill(json={
+        "locked_predictions": 12, "settled_predictions": 8, "wins": 5, "losses": 3,
+        "pushes": 0, "unresolved_or_excluded": 4, "truncated": False,
+        "counting_note": "Fixture: separate model/provider records.",
+        "versions": [{"model_version": "v2.4", "platform": "PrizePicks", "direction": "Over",
+                      "settled_predictions": 8, "small_sample": True, "actual_hit_rate": 62.5,
+                      "predicted_hit_rate": 60, "calibration_gap": 2.5, "brier_score": .22}],
+    }))
+    page.evaluate("setView('performance'); document.querySelector('.consumer-model-track').open = true")
+    page.locator('#model-track-form input[name="sport"]').fill("WNBA")
+    page.locator('#model-track-form button').click()
+    page.locator('.model-track-segment').wait_for()
+    assert "Small sample" in page.locator('#model-track-output').inner_text()
+    page.locator('.consumer-model-track').scroll_into_view_if_needed()
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-model-track-record.png"
+    page.screenshot(path=screenshot, full_page=True)
+    page.unroute("**/api/analytics/model-track-record?*")
+    return {"viewport": viewport_name, "view": "Model track record", "screenshot": str(screenshot), **issues}
+
+
+def capture_entry_summary(page: Page, viewport_name: str) -> dict:
+    page.evaluate("""() => {
+        setView('entries');
+        const data = {
+            entry: {platform:'PrizePicks', props:[
+                {player:'Example Player One',team:'AAA',game:'AAA @ BBB',stat:'Points',direction:'Over'},
+                {player:'Example Player Two',team:'BBB',game:'AAA @ BBB',stat:'Rebounds',direction:'Under'}]},
+            risk:{level:'Medium'}, platform_value:{payout_verified:false},
+            payout_analysis:{displayed_multiplier:3,expected_value:15},
+            model_payout_analysis:{all_hit_probability:30,independent_all_hit_probability:28,correlation_matrix:[[1,.2],[.2,1]]}
+        };
+        const panel = document.getElementById('entry-analysis');
+        panel.innerHTML = window.EdgeIQEntrySummary.render(data, escapeHtml);
+        panel.querySelector('details').open = true;
+        panel.scrollIntoView();
+    }""")
+    panel = page.locator(".consumer-entry-summary")
+    assert "Unverified payout" in panel.inner_text()
+    assert "2.0 percentage points" in panel.inner_text()
+    assert "AAA @ BBB (2 legs)" in panel.inner_text()
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-entry-summary.png"
+    page.screenshot(path=screenshot, full_page=True)
+    return {"viewport": viewport_name, "view": "Entry summary", "screenshot": str(screenshot), **issues}
 
 
 def capture_research_details(page: Page, viewport_name: str) -> list[dict]:
@@ -160,7 +216,12 @@ def capture_research_details(page: Page, viewport_name: str) -> list[dict]:
         await loadPlayerResearch({preventDefault() {}});
     }""")
     panel = page.locator("#player-research-result")
-    assert panel.locator(".consumer-research-section").count() == 6
+    assert panel.locator(".consumer-research-section").count() == 7
+    assert panel.locator(".player-workspace-nav a").count() == 8
+    assert "Research only" in panel.locator(".player-workspace-overview").inner_text()
+    panel.locator(".player-workspace-nav a").filter(has_text="Model Performance").click()
+    assert panel.locator("details[open]").count() == 1
+    panel.locator("details[open]").evaluate_all("els => els.forEach(el => el.open = false)")
     assert panel.locator(".consumer-research-section[open]").count() == 0
     results = []
     for expanded in (False, True):
@@ -191,8 +252,51 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
                                            {**offer, "platform": "Underdog", "line": 21.5}]})
     page.route("**/api/market/best-lines?*", lambda route: route.fulfill(json=payload))
     page.locator('button[data-view="best-lines"]:visible').first.click()
+    page.locator('.consumer-more').evaluate('(element) => { element.open = true; }')
     page.locator('button[data-display-mode="basic"]').click()
+    page.locator('.consumer-more').evaluate('(element) => { element.open = false; }')
     assert page.locator("#best-lines").is_visible()
+    page.locator('button[data-view="analysis"]:visible').first.click()
+    assert page.locator("#analysis").is_visible()
+    assert page.locator("#view-title").inner_text() == "Players"
+    assert page.locator('[data-view="analysis"]:visible').first.get_attribute('aria-current') == 'page'
+    page.evaluate('setView("unknown-destination")')
+    assert page.locator('#analysis').is_visible()
+    assert page.locator('#dashboard #data-health-list').count() == 0
+    assert page.locator('#systems #data-health-list').count() == 1
+    assert page.locator('#dashboard #decision-desk').count() == 0
+    for pane in ['value', 'alerts', 'builder', 'board']:
+        page.locator('.consumer-more > summary').click()
+        page.locator(f'.consumer-more [data-workspace-jump="decision-desk:{pane}"]').click()
+        assert page.locator('#tools').is_visible()
+        assert page.locator(f'#decision-desk [data-workspace-pane="{pane}"]').is_visible()
+        assert page.locator('body').get_attribute('data-display-mode') == 'basic'
+    page.evaluate('setView("props")')
+    assert page.locator('#tools').is_visible()
+    assert page.locator('#decision-desk [data-workspace-pane="board"]').is_visible()
+    page.screenshot(path=OUTPUT / f'{viewport_name}-tools.png', full_page=True)
+    page.locator('.consumer-more > summary').click()
+    page.locator('[data-more-target="runtime-status-title"]').click()
+    assert page.locator('#systems').is_visible()
+    assert page.locator('body').get_attribute('data-display-mode') == 'basic'
+    assert page.locator('#view-title').inner_text() == 'System + Settings'
+    issues = visual_issues(page)
+    assert not issues['horizontal_overflow'], issues
+    assert not issues['clipped_buttons'], issues
+    page.screenshot(path=OUTPUT / f'{viewport_name}-systems.png', full_page=True)
+    for selector, target in [
+        ('[data-more-target="data-health-list"]', '#data-health-list'),
+        ('.consumer-more [data-workspace-jump="research-workspace:imports"]', '#upload-result'),
+        ('.consumer-more [data-workspace-jump="results-workspace:model"]', '#performance [data-workspace-pane="model"]'),
+    ]:
+        page.locator('.consumer-more > summary').click()
+        page.locator(selector).click()
+        assert page.locator(target).first.is_visible()
+        assert not page.locator('.consumer-more').evaluate('(element) => element.open')
+    page.locator('.consumer-more > summary').click()
+    page.keyboard.press("Escape")
+    assert not page.locator('.consumer-more').evaluate('(element) => element.open')
+    page.locator('button[data-view="best-lines"]:visible').first.click()
     page.locator("#shop-player").fill("Example Player")
     page.locator("#shop-stat").fill("Points")
     page.locator("#shop-sport").select_option("WNBA")

@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260915-game-borders"
+STATIC_ASSET_VERSION = "20260920-consumer-tools"

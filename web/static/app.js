@@ -491,7 +491,7 @@ function setupDisplayModes() {
       details.open = normalized === "advanced";
     });
     if (normalized === "basic") $("performance")?.classList.remove("show-performance-details");
-    if (normalized === "basic" && $("analysis")?.classList.contains("active")) setView("dashboard");
+    if (normalized === "basic") activateWorkspace($("analysis"), "prop", { load: false });
     if (normalized === "basic") {
       const generateTab = document.querySelector('[data-entry-mode="generate"].active');
       if (generateTab) document.querySelector('[data-entry-mode="build"]')?.click();
@@ -549,6 +549,7 @@ function renderEmptyEntryAnalysis() {
   if (!$("entry-analysis")) return;
   $("entry-analysis").className = "analysis-card muted-card compact-analysis-empty";
   $("entry-analysis").innerHTML = `
+    ${window.EdgeIQEntrySummary?.render(data, escapeHtml) || ""}
     <strong>Ready when your card is</strong>
     <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>`;
 }
@@ -577,8 +578,15 @@ function jumpToWorkspace(button) {
   const [workspaceId, paneName] = String(button?.dataset.workspaceJump || "").split(":");
   const root = document.querySelector(`[data-workspace="${workspaceId}"]`);
   const view = root?.closest(".view");
+  const tab = root?.querySelector(`[data-workspace-tab="${paneName}"]`);
+  if (root?.hasAttribute("data-advanced-only") || tab?.hasAttribute("data-advanced-only")) {
+    document.querySelector('[data-display-mode="advanced"]')?.click();
+  }
+  if (root?.tagName === "DETAILS") root.open = true;
+  activateWorkspace(root, paneName, { load: false });
   if (view) setView(view.id);
   activateWorkspace(root, paneName, { focus: true });
+  button?.closest(".consumer-more")?.removeAttribute("open");
 }
 
 function setResearchToolValue(id, value) {
@@ -700,18 +708,23 @@ function restoreResearchHistory(item) {
 }
 
 function setView(viewId) {
-  if (document.body.dataset.displayMode !== "advanced" && viewId === "analysis") viewId = "dashboard";
+  if (viewId !== "props" && !$(viewId)?.classList.contains("view")) return;
   if (viewId === "props") {
-    viewId = "dashboard";
-    const advancedSignals = document.querySelector(".dashboard-support-drawer:nth-of-type(2)");
+    viewId = "tools";
+    const advancedSignals = $("decision-desk");
     if (advancedSignals) advancedSignals.open = true;
+    activateWorkspace(advancedSignals, "board", { load: false });
   }
   document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
   document.querySelectorAll(".nav-item").forEach((button) => button.classList.remove("active"));
+  document.querySelectorAll(".nav-item[aria-current]").forEach((button) => button.removeAttribute("aria-current"));
   $(viewId).classList.add("active");
-  document.querySelectorAll(`[data-view="${viewId}"]`).forEach((button) => button.classList.add("active"));
+  document.querySelectorAll(`[data-view="${viewId}"]`).forEach((button) => {
+    button.classList.add("active");
+    button.setAttribute("aria-current", "page");
+  });
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
-  const titles = { dashboard: "Today", games: "Game Intelligence", entries: "Entries", performance: "Results", analysis: "Research", bets: "Results · Ledger" };
+  const titles = { dashboard: "Today", games: "Games", entries: "Entries", performance: "Results", analysis: "Players", systems: "System + Settings", tools: "Tools + Signals", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
   if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
   loadViewData(viewId);
@@ -742,12 +755,16 @@ function loadViewData(viewId) {
     bets: [loadBets, loadGradingReport, loadLossReview, loadBankrollTransactions],
     entries: [loadLossProtection, loadPreferences],
     analysis: [],
+    systems: [loadRuntimeStatus, loadDataHealth, loadNotifications, loadProductAnalytics, loadDeployReadiness, loadRefreshSchedule],
     games: [() => window.EdgeIQGames?.load(false)],
   }[viewId] || [];
   if (!tasks.length) return;
   Promise.allSettled(tasks.map((task) => task())).then((results) => {
     const failure = results.find((result) => result.status === "rejected");
-    if (failure) console.warn(`${viewId} view refresh failed`, failure.reason);
+    if (failure) {
+      state.loadedViews.delete(viewId);
+      console.warn(`${viewId} view refresh failed`, failure.reason);
+    }
   });
 }
 
@@ -4527,6 +4544,7 @@ async function loadPlayerResearch(event) {
     <div class="stats-grid" style="margin-top:14px">
       ${researchSplitCard("Last 5", split.last_5)}
       ${researchSplitCard("Last 10", split.last_10)}
+      ${researchSplitCard("Last 15", split.last_15)}
       ${researchSplitCard("Last 20", split.last_20)}
       ${researchSplitCard("Season", split.season)}
       ${researchSplitCard("Home", split.home)}
@@ -4598,6 +4616,7 @@ async function loadPlayerResearch(event) {
     </details>
   `;
   $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
+  window.EdgeIQPlayerWorkspace?.mount($("player-research-result"), data, { escapeHtml, pct, formatDateTime });
   $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -4605,7 +4624,7 @@ function researchSplitCard(label, split = {}) {
   return `
     <div class="stat-card">
       <div class="stat-value">${split.hit_rate === null || split.hit_rate === undefined ? "-" : pct(split.hit_rate)}</div>
-      <div class="stat-label">${label} · ${split.sample || 0} games · avg ${split.average ?? "-"}</div>
+      <div class="stat-label">${label} · ${escapeHtml(split.direction || "Over")} · ${split.sample || 0} games · avg ${split.average ?? "-"}</div>
     </div>
   `;
 }
@@ -6152,7 +6171,31 @@ function bindEvents() {
   setupEntryBuilderSteps();
   setupPerformanceDetails();
   setupButtonSounds();
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const more = document.querySelector(".consumer-more[open]");
+    if (more) {
+      more.open = false;
+      more.querySelector("summary")?.focus();
+    }
+  });
   document.addEventListener("click", (event) => {
+    const more = document.querySelector(".consumer-more");
+    if (more && !more.contains(event.target)) more.open = false;
+    const systemButton = event.target.closest("[data-more-target]");
+    if (systemButton) {
+      const target = $(systemButton.dataset.moreTarget);
+      if (target) {
+        setView(target.closest(".view").id);
+        for (let parent = target.parentElement; parent; parent = parent.parentElement) {
+          if (parent.tagName === "DETAILS") parent.open = true;
+        }
+        more.open = false;
+        target.setAttribute("tabindex", "-1");
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: "center" });
+      }
+    }
     const button = event.target.closest("[data-workspace-jump]");
     if (button) jumpToWorkspace(button);
     const opportunityButton = event.target.closest("[data-focus-opportunity-board]");
@@ -6456,6 +6499,7 @@ function startLiveEntryPolling() {
 
 async function loadDeferredSignals() {
   const root = document.querySelector('[data-workspace="decision-desk"]');
+  if (!root?.closest(".view")?.classList.contains("active")) return;
   const activeTab = root?.querySelector("[data-workspace-tab].active");
   if (root && activeTab) loadWorkspacePaneData(root, activeTab.dataset.workspaceTab);
 }

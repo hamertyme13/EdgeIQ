@@ -4431,6 +4431,7 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
     assert body["history_count"] == 3
     assert body["splits"]["last_5"]["hit_rate"] == 66.7
     assert "last_20" in body["splits"]
+    assert body["splits"]["last_15"]["sample"] == 3
     assert "trend" in body
     assert body["market_lines"][0]["platform"] == "PrizePicks"
     assert body["active_props"][0]["platform"] == "PrizePicks"
@@ -4441,6 +4442,14 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
     assert "bench" in body["splits"]
     assert "closing_lines" in body
     assert body["best_hitting_stats"][0]["uncertainty"]["percentile_25"] is not None
+
+    extended = [dict(history[0], game=f"game-{index}", game_date=f"2026-07-{30-index:02d}", actual=index) for index in range(25)]
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: extended)
+    recent = player_research("A", "Points", sport="WNBA", platform="Both", line=20.5)
+    assert recent["splits"]["last_5"]["sample"] == 5
+    assert recent["splits"]["last_10"]["sample"] == 10
+    assert recent["splits"]["last_15"]["sample"] == 15
+    assert [row["actual"] for row in recent["chart"]] == list(reversed(range(15)))
 
 
 def test_sharp_consensus_returns_fair_line_and_market_width(monkeypatch):

@@ -7080,7 +7080,7 @@ def _player_research_payload(
         team=str((active_props[0] if active_props else {}).get("team") or ""),
     )
     chart_rows = []
-    for row in list(reversed(history[-12:])):
+    for row in reversed(history[:15]):
         actual = float(row.get("actual") or 0)
         chart_rows.append({
             "game": row.get("game") or row.get("game_date") or "Tracked game",
@@ -7096,6 +7096,9 @@ def _player_research_payload(
         default=None,
     )
     direction = str((recommendation or {}).get("direction") or "Over")
+    for row in chart_rows:
+        row["hit"] = _history_hit(row["actual"], target_line, direction)
+        row["direction"] = direction
     forecast = (
         forecast_prop(
             player,
@@ -7120,18 +7123,19 @@ def _player_research_payload(
         str((recommendation or {}).get("team") or ""),
     )
     splits = {
-        "last_5": _history_split(history[:5], target_line),
-        "last_10": _history_split(history[:10], target_line),
-        "last_20": _history_split(history[:20], target_line),
-        "season": _history_split(history, target_line),
-        "home": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "home"], target_line),
-        "away": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "away"], target_line),
-        "starter": _history_split([row for row in history if row.get("starter") is True], target_line),
-        "bench": _history_split([row for row in history if row.get("starter") is False], target_line),
+        "last_5": _history_split(history[:5], target_line, direction),
+        "last_10": _history_split(history[:10], target_line, direction),
+        "last_15": _history_split(history[:15], target_line, direction),
+        "last_20": _history_split(history[:20], target_line, direction),
+        "season": _history_split(history, target_line, direction),
+        "home": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "home"], target_line, direction),
+        "away": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "away"], target_line, direction),
+        "starter": _history_split([row for row in history if row.get("starter") is True], target_line, direction),
+        "bench": _history_split([row for row in history if row.get("starter") is False], target_line, direction),
         "opponent": _history_split([
             row for row in history
             if current_opponent and _research_opponent(str(row.get("game") or ""), str(row.get("team") or "")) == current_opponent
-        ], target_line),
+        ], target_line, direction),
         "provider_lines": len(active_props),
     }
     market_lines = [
@@ -7458,11 +7462,12 @@ def _history_hit(actual: float, line: float | None, direction: str) -> bool | No
     return actual > line if direction == "Over" else actual < line
 
 
-def _history_split(rows: list[dict], line: float | None) -> dict:
+def _history_split(rows: list[dict], line: float | None, direction: str = "Over") -> dict:
     values = [float(row.get("actual") or 0) for row in rows]
-    hits = [value for value in values if _history_hit(value, line, "Over")] if line is not None else []
+    hits = [value for value in values if _history_hit(value, line, direction)] if line is not None else []
     return {
         "sample": len(values),
+        "direction": direction,
         "average": round(sum(values) / len(values), 2) if values else None,
         "hit_rate": round((len(hits) / len(values)) * 100, 1) if values and line is not None else None,
     }
@@ -10978,14 +10983,16 @@ def _entry_release_verdict(
 
 
 def _entry_payout_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
-    return payout_analysis(
+    matrix = estimate_correlation_matrix(entry.props)
+    result = payout_analysis(
         [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
         payload.platform if payload else entry.platform.value,
         payload.payout_type if payload else "standard",
         displayed_multiplier=payload.multiplier if payload else None,
-        correlation_matrix=estimate_correlation_matrix(entry.props),
+        correlation_matrix=matrix,
         exact_schedule=payload.payout_schedule or None if payload else None,
     )
+    return {**result, "correlation_matrix": matrix}
 
 
 def _entry_espn_notes(props: list[Prop]) -> list[str]:

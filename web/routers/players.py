@@ -6,8 +6,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.opportunity_score import score_source_freshness
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from web.application.opportunity_presentation import presented_score
+from web.application.player_performance import player_performance
 from web.application.player_service import PlayerLookupError
 from web.application.prop_win_history import player_prop_win_history
 from web.application.season_history_service import (
@@ -102,6 +104,8 @@ def player_research(
     return {
         **payload,
         "prop_win_history": player_prop_win_history(player_name, sport, stat, payload.get("line")),
+        "model_performance": player_performance(player_name, sport, stat, platform),
+        "edgeiq_score_freshness": score_source_freshness(recommendation or {}),
         "edgeiq_score": presented_score(recommendation)
         if recommendation and recommendation.get("line") == payload.get("line") else None,
     }

@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260915-game-borders";
+const CACHE_NAME = "edgeiq-shell-20260920-consumer-tools";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -13,6 +13,9 @@ const SHELL_ASSETS = [
   "/static/js/state.js",
   "/static/js/opportunity-score.js",
   "/static/js/best-lines.js",
+  "/static/js/player-workspace.js",
+  "/static/js/entry-summary.js",
+  "/static/js/model-track-record.js",
   "/static/edgeiq-icon.png",
   "/static/manifest.webmanifest"
 ];
