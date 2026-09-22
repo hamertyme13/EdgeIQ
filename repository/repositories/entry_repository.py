@@ -1033,6 +1033,8 @@ class EntryRepository:
         payout_type: str = "standard",
         leg_results: list[dict] | None = None,
     ) -> tuple[str, float]:
+        if leg_results and len(leg_results) == leg_count and all(leg.get("result") == "Win" for leg in leg_results):
+            result = "Win"
         if payout_type == "flex" and leg_results:
             returned = settlement_return_multiplier(
                 platform,

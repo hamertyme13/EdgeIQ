@@ -61,6 +61,20 @@ def test_recommendation_snapshots_are_immutable(tmp_path, monkeypatch):
     assert len(history) == 2
 
 
+def test_daily_snapshot_pointers_survive_switching_provider_and_sport(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    first = ModelRehabilitationRepository.save_feed({"daily_briefing": {
+        "platform": "PrizePicks", "requested_platform": "Both", "sport": "WNBA", "top_opportunities": [],
+    }})
+    second = ModelRehabilitationRepository.save_feed({"daily_briefing": {
+        "platform": "Underdog", "sport": "NFL", "top_opportunities": [],
+    }})
+    assert ModelRehabilitationRepository.load_daily_feed("PrizePicks", "WNBA")["snapshot_id"] == first["snapshot_id"]
+    assert ModelRehabilitationRepository.load_daily_feed("Both", "WNBA")["snapshot_id"] == first["snapshot_id"]
+    assert ModelRehabilitationRepository.load_daily_feed("Underdog", "NFL")["snapshot_id"] == second["snapshot_id"]
+    assert ModelRehabilitationRepository.load_daily_feed("prizepicks", "wnba")["snapshot_id"] == first["snapshot_id"]
+
+
 def test_actionable_rows_receive_the_persisted_snapshot_identity(tmp_path, monkeypatch):
     _isolated_database(tmp_path, monkeypatch)
     saved = ModelRehabilitationRepository.save_feed({
@@ -71,6 +85,35 @@ def test_actionable_rows_receive_the_persisted_snapshot_identity(tmp_path, monke
     opportunity = history["payload"]["opportunity_feed"]["opportunities"][0]
     assert opportunity["recommendation_snapshot_id"] == saved["snapshot_id"]
     assert opportunity["model_version"] == "edgeiq-test"
+
+
+def test_new_feed_keeps_retained_section_identity_and_locks_scores(tmp_path, monkeypatch):
+    from copy import deepcopy
+
+    _isolated_database(tmp_path, monkeypatch)
+    original = {
+        "feed": {"platform": "PrizePicks", "sport": "WNBA"},
+        "daily_briefing": {"top_opportunities": [{
+            "player": "Player", "stat": "Points", "line": 18.5, "confidence": 60,
+        }]},
+    }
+    before = deepcopy(original)
+    first = ModelRehabilitationRepository.save_feed(original, model_version="score-test")
+    assert original == before
+    saved_prop = first["daily_briefing"]["top_opportunities"][0]
+    assert saved_prop["edgeiq_score"]["snapshot_id"] == first["snapshot_id"]
+    second = ModelRehabilitationRepository.save_feed({
+        "feed": {"platform": "Underdog", "sport": "NFL"},
+        "opportunity_feed": {"opportunities": [{"player": "Another", "stat": "Passing Yards", "line": 200}]},
+    })
+    retained = second["daily_briefing"]["top_opportunities"][0]
+    assert retained == saved_prop
+    assert second["daily_briefing"]["recommendation_snapshot_id"] == first["snapshot_id"]
+    assert second["opportunity_feed"]["recommendation_snapshot_id"] == second["snapshot_id"]
+    history = ModelRehabilitationRepository.snapshot_history(2)
+    assert history[0]["platform"] == "Underdog"
+    assert history[0]["sport"] == "NFL"
+    assert history[1]["payload"]["daily_briefing"]["top_opportunities"][0] == saved_prop
 
 
 def test_snapshot_automatically_queues_complete_props_for_shadow_evidence(tmp_path, monkeypatch):

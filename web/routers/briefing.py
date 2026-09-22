@@ -6,6 +6,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from web.application.opportunity_presentation import scored_opportunities
+
 router = APIRouter(tags=["briefing"])
 
 
@@ -50,7 +52,9 @@ def daily_briefing(
     deps: DepsBriefing = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, BriefingDependencies) else get_deps()
-    return _deps.briefing(platform, _sport_filter(sport), refresh, cached_only)
+    return scored_opportunities(
+        _deps.briefing(platform, _sport_filter(sport), refresh, cached_only), "top_opportunities",
+    )
 
 
 @router.post("/api/daily-briefing/scan")

@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from services import odds as sportsbook_odds
+from web.application.best_lines_service import best_lines_payload
 from web.schemas import BoostAnalysisPayload, HedgeCalculatorPayload, MiddleCalculatorPayload
 
 router = APIRouter(prefix="/api/market", tags=["market"])
@@ -41,6 +42,18 @@ def get_deps() -> MarketDependencies:
 
 
 DepsMark = Annotated[MarketDependencies, Depends(get_deps)]
+
+
+@router.get("/best-lines")
+def best_lines(player: str, stat: str, sport: str, platform: str = "Both",
+               direction: str = "Over", over_odds: int | None = None,
+               under_odds: int | None = None, deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    if direction not in {"Over", "Under"}:
+        raise HTTPException(status_code=400, detail="Choose Over or Under.")
+    payload = _deps.line_shop(player, stat, None if sport == "All Sports" else sport.upper(), platform, over_odds, under_odds)
+    return {**best_lines_payload(payload, direction),
+            "manual_no_vig": payload.get("no_vig") if payload.get("no_vig_source") == "Manual odds" else None}
 
 
 @router.get("/line-shop")

@@ -6,7 +6,16 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from web.application.model_track_record import model_track_record
+
 router = APIRouter(tags=["results"])
+
+
+@router.get("/api/analytics/model-track-record")
+def get_model_track_record(sport: str = "", provider: str = "", stat: str = "", direction: str = "", model_version: str = "") -> dict:
+    if direction not in {"", "Over", "Under"}:
+        raise HTTPException(status_code=400, detail="Choose Over, Under, or both directions.")
+    return model_track_record(sport, provider, stat, direction, model_version)
 
 
 @dataclass(frozen=True)

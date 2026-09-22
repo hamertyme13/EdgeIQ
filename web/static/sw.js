@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260912-game-evidence";
+const CACHE_NAME = "edgeiq-shell-20260922-best-lines-filters";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -11,6 +11,11 @@ const SHELL_ASSETS = [
   "/static/js/beta.js",
   "/static/js/games.js",
   "/static/js/state.js",
+  "/static/js/opportunity-score.js",
+  "/static/js/best-lines.js",
+  "/static/js/player-workspace.js",
+  "/static/js/entry-summary.js",
+  "/static/js/model-track-record.js",
   "/static/edgeiq-icon.png",
   "/static/manifest.webmanifest"
 ];

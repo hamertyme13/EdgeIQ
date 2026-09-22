@@ -19,7 +19,7 @@ class RecommendationDependencies:
     confirmed_props: Callable[[str, str, int], dict]
     dashboard_parlay: Callable[[str, str], dict]
     command_center: Callable[[str, str, bool], dict]
-    opportunity_feed: Callable[[str, str, float, int, int], dict]
+    opportunity_feed: Callable[[str, str, float | None, int, int], dict]
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
     start_auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
     paper_calibration_status: Callable[[], dict]
@@ -94,7 +94,7 @@ def dashboard_command_center(
 def opportunity_feed(
     platform: str = "Both",
     sport: str = "All Sports",
-    min_ev: float = 0.0,
+    min_ev: float | None = None,
     limit: int = 12,
     odds: int = -110,
     deps: DepsRec = None,  # type: ignore[assignment]

@@ -6,9 +6,17 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.opportunity_score import score_source_freshness
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from web.application.opportunity_presentation import presented_score
+from web.application.player_performance import player_performance
 from web.application.player_service import PlayerLookupError
-from web.application.season_history_service import season_history_status, start_season_history_sync
+from web.application.prop_win_history import player_prop_win_history
+from web.application.season_history_service import (
+    season_history_overview,
+    season_history_status,
+    start_season_history_sync,
+)
 
 router = APIRouter(tags=["players"])
 
@@ -91,17 +99,31 @@ def player_research(
     deps: DepsPlayer = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
-    return _deps.research(player_name, stat, sport, platform, line)
+    payload = _deps.research(player_name, stat, sport, platform, line)
+    recommendation = payload.get("recommendation")
+    return {
+        **payload,
+        "prop_win_history": player_prop_win_history(player_name, sport, stat, payload.get("line")),
+        "model_performance": player_performance(player_name, sport, stat, platform),
+        "edgeiq_score_freshness": score_source_freshness(recommendation or {}),
+        "edgeiq_score": presented_score(recommendation)
+        if recommendation and recommendation.get("line") == payload.get("line") else None,
+    }
 
 
 @router.post("/api/players/season-history/sync")
-def sync_season_history(sport: str) -> dict:
-    return start_season_history_sync(sport)
+def sync_season_history(sport: str, full_history: bool = False) -> dict:
+    return start_season_history_sync(sport, full_history=full_history)
 
 
 @router.get("/api/players/season-history/status")
-def get_season_history_status() -> dict:
-    return season_history_status()
+def get_season_history_status(sport: str = "") -> dict:
+    return season_history_status(sport)
+
+
+@router.get("/api/players/season-history/overview")
+def get_season_history_overview() -> dict:
+    return season_history_overview()
 
 
 @router.get("/api/research/evidence")

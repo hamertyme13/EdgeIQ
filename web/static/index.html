@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260912-game-evidence" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260922-best-lines-filters" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,9 +26,10 @@
         <nav class="nav">
           <button class="nav-item active" data-view="dashboard">Today</button>
           <button class="nav-item" data-view="games">Games</button>
+          <button class="nav-item" data-view="analysis">Players</button>
+          <button class="nav-item" data-view="best-lines">Best Lines</button>
           <button class="nav-item" data-view="entries">Entries</button>
           <button class="nav-item" data-view="performance">Results</button>
-          <button class="nav-item" data-view="analysis" data-advanced-only>Research</button>
         </nav>
       </aside>
 
@@ -39,12 +40,28 @@
             <h1 id="view-title">Today</h1>
           </div>
           <div class="topbar-actions">
+            <details class="consumer-more">
+              <summary>More</summary>
+              <div class="consumer-more-content">
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:value">Watchlists + Value Tools</button>
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:alerts">Timing Alerts</button>
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:builder">Ask EdgeIQ</button>
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:board">Provider Lines</button>
+                <button class="secondary" type="button" data-more-target="runtime-status-title">System Status</button>
+                <button class="secondary" type="button" data-more-target="data-health-list">Provider Health</button>
+                <button class="secondary" type="button" data-workspace-jump="results-workspace:model">Model Validation</button>
+                <button class="secondary" type="button" data-workspace-jump="results-workspace:settlement">Settlement Diagnostics</button>
+                <button class="secondary" type="button" data-more-target="refresh-schedule-list">Automation</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:market">Market Settings</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:imports">Import Center</button>
             <div class="display-mode-toggle" role="group" aria-label="Interface detail level">
               <button class="display-mode-button active" type="button" data-display-mode="basic">Core</button>
               <button class="display-mode-button" type="button" data-display-mode="advanced">Model Lab</button>
             </div>
-            <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="beta-center-toggle" class="secondary beta-center-toggle" type="button" aria-expanded="false" aria-controls="beta-center-drawer">Founding Beta</button>
+              </div>
+            </details>
+            <button id="notification-center-toggle" class="secondary notification-center-toggle" type="button" aria-expanded="false" aria-controls="notification-center-drawer">Alerts <span id="notification-center-count" class="notification-count" hidden>0</span></button>
             <button id="install-app" class="secondary install-button" hidden>Install</button>
             <button id="refresh-all" class="secondary">Refresh</button>
           </div>
@@ -225,86 +242,9 @@
             </details>
           </section>
           <div id="recommendation-accuracy" class="panel recommendation-accuracy-panel" data-advanced-only></div>
-          <section class="runtime-status-panel" aria-labelledby="runtime-status-title" data-advanced-only>
-            <div class="runtime-status-heading">
-              <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
-              <button id="refresh-runtime-status" class="secondary" type="button">Refresh</button>
-            </div>
-            <div id="runtime-status-list" class="runtime-status-grid" aria-live="polite">
-              <div class="runtime-status-loading">Checking Ollama, automation, settlement, providers, and model release...</div>
-            </div>
-          </section>
-          <details class="dashboard-support-drawer" data-advanced-only>
-            <summary>
-              <span>System + Settings</span>
-              <small>Providers, automation, preferences, alerts, and imports</small>
-            </summary>
-          <div class="reliability-grid">
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Data Health</p>
-                  <h2>Provider Status</h2>
-                </div>
-                <button id="refresh-data-health" class="secondary">Refresh</button>
-              </div>
-              <div id="data-health-list" class="suggestion-list"></div>
-              <div class="button-row">
-                <button id="backup-database" class="secondary" type="button">Create Backup</button>
-                <button id="export-database" class="secondary" type="button">Export Data</button>
-                <button id="compact-board-history" class="secondary" type="button">Optimize History</button>
-              </div>
-              <p id="data-management-status" class="subtle" aria-live="polite"></p>
-            </div>
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Notifications</p>
-                  <h2>Smart Alerts</h2>
-                </div>
-                <button id="refresh-notifications" class="secondary">Refresh</button>
-              </div>
-              <div id="notification-list" class="suggestion-list"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-header"><div><p class="eyebrow">Product Journey</p><h2>Recommendation Funnel</h2></div><button id="refresh-product-analytics" class="secondary" type="button">Refresh</button></div>
-              <div id="product-analytics-list" class="suggestion-list"><p class="subtle">Journey metrics appear after recommendations are viewed and entries are analyzed.</p></div>
-            </div>
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Desktop + Mobile</p>
-                  <h2>App Readiness</h2>
-                </div>
-                <button id="refresh-deploy-readiness" class="secondary">Check</button>
-              </div>
-              <div id="deploy-readiness-list" class="suggestion-list"></div>
-            </div>
-            <div class="panel">
-              <div class="panel-header">
-                <div>
-                  <p class="eyebrow">Automation</p>
-                  <h2>Daily Refresh Schedule</h2>
-                </div>
-                <button id="run-daily-refresh" class="secondary">Run Now</button>
-              </div>
-              <div id="refresh-schedule-list" class="suggestion-list"></div>
-            </div>
-            <div class="panel settings-hub">
-              <div>
-                <p class="eyebrow">Settings Hub</p>
-                <h2>Manage EdgeIQ</h2>
-              </div>
-              <div class="button-row">
-                <button class="secondary" type="button" data-view-shortcut="entries">Betting Preferences</button>
-                <button class="secondary" type="button" data-workspace-jump="decision-desk:value">Bankroll + Watchlist</button>
-                <button class="secondary" type="button" data-workspace-jump="research-workspace:market">Alerts + Market Settings</button>
-                <button class="secondary" type="button" data-workspace-jump="research-workspace:imports">Import Center</button>
-              </div>
-            </div>
-          </div>
-          </details>
-          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk" data-advanced-only>
+        </section>
+        <section id="tools" class="view" aria-label="Tools and signals">
+          <details id="decision-desk" class="dashboard-support-drawer" data-workspace="decision-desk" open>
             <summary>
               <span>Tools + Signals</span>
               <small>Watchlists, alerts, custom analysis, and raw provider lines</small>
@@ -1165,12 +1105,95 @@
           </div>
         </section>
 
+        <section id="best-lines" class="view">
+          <div class="panel"><h2>Best Lines</h2><div id="best-lines-host"></div></div>
+        </section>
+        <section id="systems" class="view" aria-label="System and settings">
+          <section class="runtime-status-panel" aria-labelledby="runtime-status-title">
+            <div class="runtime-status-heading">
+              <div><p class="eyebrow">Runtime Status</p><h2 id="runtime-status-title">EdgeIQ Systems</h2></div>
+              <button id="refresh-runtime-status" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="runtime-status-list" class="runtime-status-grid" aria-live="polite">
+              <div class="runtime-status-loading">Checking Ollama, automation, settlement, providers, and model release...</div>
+            </div>
+          </section>
+          <details class="dashboard-support-drawer" open>
+            <summary>
+              <span>System + Settings</span>
+              <small>Providers, automation, preferences, alerts, and imports</small>
+            </summary>
+          <div class="reliability-grid">
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Data Health</p>
+                  <h2>Provider Status</h2>
+                </div>
+                <button id="refresh-data-health" class="secondary">Refresh</button>
+              </div>
+              <div id="data-health-list" class="suggestion-list"></div>
+              <div class="button-row">
+                <button id="backup-database" class="secondary" type="button">Create Backup</button>
+                <button id="export-database" class="secondary" type="button">Export Data</button>
+                <button id="compact-board-history" class="secondary" type="button">Optimize History</button>
+              </div>
+              <p id="data-management-status" class="subtle" aria-live="polite"></p>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Notifications</p>
+                  <h2>Smart Alerts</h2>
+                </div>
+                <button id="refresh-notifications" class="secondary">Refresh</button>
+              </div>
+              <div id="notification-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header"><div><p class="eyebrow">Product Journey</p><h2>Recommendation Funnel</h2></div><button id="refresh-product-analytics" class="secondary" type="button">Refresh</button></div>
+              <div id="product-analytics-list" class="suggestion-list"><p class="subtle">Journey metrics appear after recommendations are viewed and entries are analyzed.</p></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Desktop + Mobile</p>
+                  <h2>App Readiness</h2>
+                </div>
+                <button id="refresh-deploy-readiness" class="secondary">Check</button>
+              </div>
+              <div id="deploy-readiness-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Automation</p>
+                  <h2>Daily Refresh Schedule</h2>
+                </div>
+                <button id="run-daily-refresh" class="secondary">Run Now</button>
+              </div>
+              <div id="refresh-schedule-list" class="suggestion-list"></div>
+            </div>
+            <div class="panel settings-hub">
+              <div>
+                <p class="eyebrow">Settings Hub</p>
+                <h2>Manage EdgeIQ</h2>
+              </div>
+              <div class="button-row">
+                <button class="secondary" type="button" data-view-shortcut="entries">Betting Preferences</button>
+                <button class="secondary" type="button" data-workspace-jump="decision-desk:value">Bankroll + Watchlist</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:market">Alerts + Market Settings</button>
+                <button class="secondary" type="button" data-workspace-jump="research-workspace:imports">Import Center</button>
+              </div>
+            </div>
+          </div>
+          </details>
+        </section>
         <section id="analysis" class="view" data-workspace="research-workspace">
           <div class="workspace-hub">
             <div>
               <p class="eyebrow">Prop Research Workspace</p>
-              <h2>Research Once, Then Compare</h2>
-              <p>Projection, history, market value, risk tools, and imports are grouped by purpose.</p>
+              <h2>Players</h2>
             </div>
             <div class="workspace-tab-strip" role="tablist" aria-label="Research sections">
               <button class="workspace-tab active" type="button" data-workspace-tab="prop">Prop Research</button>
@@ -1218,8 +1241,9 @@
             <div id="research-selection-preview" class="research-selection-preview" hidden></div>
             <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
             <div class="recent-research-heading">
-              <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Sync a league once, then EdgeIQ keeps the verified game history.</span></div>
-              <div class="button-row"><button id="sync-season-history" class="secondary compact-button" type="button">Sync Selected Sport</button><button id="refresh-research-history" class="secondary compact-button" type="button">Refresh History</button></div>
+              <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Daily updates scheduled for 6 AM Eastern when maintenance is enabled.</span></div>
+              <label><input id="season-history-full" type="checkbox"> Full season rescan</label>
+              <div class="button-row"><button id="sync-season-history" class="secondary compact-button" type="button">Update Selected Sport</button><button id="refresh-research-history" class="secondary compact-button" type="button">Refresh History</button></div>
             </div>
             <div id="research-history-list" class="research-history-list"><span class="subtle">Your recent player research will appear here.</span></div>
           </form>
@@ -1335,8 +1359,8 @@
                 <small>Line shopping, EV, consensus, hedges, and movement</small>
               </summary>
               <div class="tool-group-body two-col">
-                <div class="mini-tool">
-                  <h2>Line Shop + Fair Price</h2>
+                <div class="mini-tool" id="best-lines-tool">
+                  <h2>Compare Provider Offers</h2>
                   <form id="line-shop-form" class="form-grid">
                     <input id="shop-player" placeholder="Player" />
                     <input id="shop-stat" placeholder="Stat" />
@@ -1363,11 +1387,13 @@
                       <option>PrizePicks</option>
                       <option>Underdog</option>
                       <option>Sleeper</option>
+                      <option>DraftKings Pick6</option>
                       <option>Ball Don't Lie</option>
                     </select>
                     <input id="shop-over-odds" type="number" placeholder="Over odds" />
                     <input id="shop-under-odds" type="number" placeholder="Under odds" />
-                    <button type="submit">Shop Lines</button>
+                    <select id="shop-direction" aria-label="Comparison direction"><option>Over</option><option>Under</option></select>
+                    <button type="submit">Compare Lines</button>
                   </form>
                   <div id="line-shop-result" class="analysis-card muted-card">No line shop loaded.</div>
                 </div>
@@ -1698,6 +1724,20 @@
             </details>
             <div id="performance-recovery-summary" class="performance-recovery-summary"></div>
           </div>
+          <details class="consumer-model-track">
+            <summary>Model Performance</summary>
+            <form id="model-track-form" class="model-track-filters">
+              <label>Sport<input name="sport" placeholder="All sports" maxlength="20"></label>
+              <label>Provider<select name="provider"><option value="">All providers</option><option>PrizePicks</option><option>Underdog</option><option>DraftKings Pick6</option><option>Sleeper</option></select></label>
+              <label>Stat<input name="stat" placeholder="All stats" maxlength="80"></label>
+              <label>Direction<select name="direction"><option value="">Both directions</option><option>Over</option><option>Under</option></select></label>
+              <label>Model version<input name="model_version" placeholder="All versions" maxlength="100"></label>
+              <label>Score bucket<select disabled aria-describedby="model-score-unavailable"><option>Unavailable</option></select></label>
+              <button type="submit" class="secondary">View Record</button>
+            </form>
+            <p id="model-score-unavailable" class="subtle">Score-bucket results require verified stored-score linkage.</p>
+            <div id="model-track-output" aria-live="polite"><p>No model record loaded.</p></div>
+          </details>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
               <button class="workspace-tab" type="button" data-workspace-tab="model" data-advanced-only>Model Validation</button>
@@ -1858,47 +1898,53 @@
     <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
       <button class="nav-item active" data-view="dashboard" type="button">Today</button>
       <button class="nav-item" data-view="games" type="button">Games</button>
-      <button class="nav-item" data-view="entries" type="button">Entry</button>
+      <button class="nav-item" data-view="analysis" type="button">Players</button>
+      <button class="nav-item" data-view="best-lines" type="button">Best Lines</button>
+      <button class="nav-item" data-view="entries" type="button">Entries</button>
       <button class="nav-item" data-view="performance" type="button">Results</button>
-      <button class="nav-item" data-view="analysis" type="button">Research</button>
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
-    <script src="/static/ui-shell.js?v=20260912-game-evidence"></script>
+    <script src="/static/ui-shell.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQShellLoaded) {
         document.write('<script src="ui-shell.js"><\/script>');
       }
     </script>
-    <script src="/static/ui-utils.js?v=20260912-game-evidence"></script>
+    <script src="/static/ui-utils.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQUi) {
         document.write('<script src="ui-utils.js"><\/script>');
       }
     </script>
-    <script src="/static/circuit-audio.js?v=20260912-game-evidence"></script>
+    <script src="/static/circuit-audio.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQAudio) {
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260912-game-evidence"></script>
+    <script src="/static/js/state.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260912-game-evidence"></script>
+    <script src="/static/js/api.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
       }
     </script>
-    <script src="/static/js/beta.js?v=20260912-game-evidence"></script>
-    <script src="/static/js/player-hit-rankings.js?v=20260912-game-evidence"></script>
-    <script src="/static/js/model-version-evaluation.js?v=20260912-game-evidence"></script>
-    <script src="/static/js/games.js?v=20260912-game-evidence"></script>
-    <script src="/static/app.js?v=20260912-game-evidence"></script>
+    <script src="/static/js/beta.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/player-hit-rankings.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/opportunity-score.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/games.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/best-lines.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/model-track-record.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/entry-summary.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/js/player-workspace.js?v=20260922-best-lines-filters"></script>
+    <script src="/static/app.js?v=20260922-best-lines-filters"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260912-game-evidence"
+STATIC_ASSET_VERSION = "20260922-best-lines-filters"

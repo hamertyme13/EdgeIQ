@@ -175,6 +175,7 @@ from web.application.briefing_service import update_daily_scan as update_briefin
 from web.application.copilot_service import copilot_query_payload as build_copilot_query_payload
 from web.application.copilot_service import explain_recommendation_payload as build_explain_recommendation_payload
 from web.application.copilot_service import model_evaluation_payload as build_model_evaluation_payload
+from web.application.daily_agent_service import daily_agent_summary, evaluate_provider_candidates
 from web.application.entry_creation_service import (
     analyze_entry_payload as build_analyze_entry_payload,
 )
@@ -241,6 +242,8 @@ from web.application.provider_health_service import (
 )
 from web.application.recommendation_policy import recommendation_eligibility
 from web.application.schedule_service import elapsed_job_due, scheduled_job_due, scheduled_job_overdue
+from web.application.season_history_service import run_daily_season_updates
+from web.application.shared_recommendations import shared_opportunity_feed
 from web.version import STATIC_ASSET_VERSION
 
 _elapsed_job_due = elapsed_job_due
@@ -535,7 +538,6 @@ SETTLEMENT_AUTOMATIC_RETRY_HOURS = max(
     float(os.getenv("EDGEIQ_SETTLEMENT_AUTOMATIC_RETRY_HOURS", "24")),
 )
 COMMAND_CENTER_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_COMMAND_CENTER_CACHE_SECONDS", "120")))
-OPPORTUNITY_FEED_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_OPPORTUNITY_FEED_CACHE_SECONDS", "120")))
 BACKTEST_CACHE_SECONDS = max(15, int(os.getenv("EDGEIQ_BACKTEST_CACHE_SECONDS", "30")))
 SETTLEMENT_REFRESH_STATUS_KEY = "settlement_refresh_status"
 AUTO_PAPER_CALIBRATION_SPORTS: tuple[str, ...] = (
@@ -563,7 +565,6 @@ _SETTLEMENT_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix=
 _SETTLEMENT_JOB_GUARD = threading.Lock()
 _SETTLEMENT_JOB_FUTURE = None
 _COMMAND_CENTER_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
-_OPPORTUNITY_FEED_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
 _BACKTEST_CACHE: TTLCache[tuple[tuple[object, object], dict]] = TTLCache()
 _BACKTEST_LOCK = threading.RLock()
 _TRENDING_PROPS_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
@@ -4799,6 +4800,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         },
         "loss_protection": loss_protection,
         "top_opportunities": top_opportunities,
+        "daily_agent": daily_agent_summary(confirmed.get("pipeline_counts"), top_opportunities),
         "games_today": games_today,
         "provider_availability": provider_availability,
         "provider_badges": _daily_provider_badges(platform if requested == "Both" else active_platform),
@@ -4840,23 +4842,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         },
         model_version=PRODUCT_MODEL_VERSION,
     )
-    _stamp_actionable_snapshot(payload, str(snapshot["snapshot_id"]), PRODUCT_MODEL_VERSION)
-    return payload
-
-
-def _stamp_actionable_snapshot(payload: dict, snapshot_id: str, model_version: str) -> None:
-    payload["recommendation_snapshot_id"] = snapshot_id
-    payload["model_version"] = model_version
-    groups = [
-        payload.get("top_opportunities") or [],
-        payload.get("suggested_entries") or [],
-        *[(payload.get("sections") or {}).get(key) or [] for key in ("bet", "paper", "watch", "avoid")],
-    ]
-    for group in groups:
-        for row in group:
-            if isinstance(row, dict):
-                row["recommendation_snapshot_id"] = snapshot_id
-                row["model_version"] = model_version
+    return snapshot["daily_briefing"]
 
 
 def _daily_bet_cards(cards: list[dict]) -> list[dict]:
@@ -6197,6 +6183,7 @@ def _advantage_center_payload(platform: str, sport_filter: str | None) -> dict:
         line_shop_summary=lambda props: _line_shop_summary_for_props(props),
         sportsbook_integrations=lambda: _sportsbook_integrations_payload(),
         bankroll_strategy=lambda: _bankroll_strategy(),
+        shared_feed=lambda: ModelRehabilitationRepository.load_daily_feed(platform, sport_filter),
     )
 
 
@@ -6204,190 +6191,12 @@ def _sportsbook_integrations_payload() -> dict:
     return build_sportsbook_integrations_payload()
 
 
-def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: float, limit: int, odds: int) -> dict:
-    cache_key = (
-        _canonical_platform(platform),
-        str(sport_filter or "All Sports").strip().upper(),
-        round(float(min_ev), 2),
-        max(1, min(int(limit), 50)),
-        int(odds),
+def _opportunity_feed_payload(platform: str, sport_filter: str | None, min_ev: float | None, limit: int, odds: int) -> dict:
+    return shared_opportunity_feed(
+        ModelRehabilitationRepository.load_daily_feed(platform, sport_filter), platform, sport_filter, min_ev, limit, odds,
     )
-    cached = _OPPORTUNITY_FEED_CACHE.get(cache_key)
-    if cached is not None:
-        return {
-            **cached,
-            "cache": {"hit": True, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
-        }
-    ev_rows = _ev_scanner_rows(platform, sport_filter, min_ev=min_ev, limit=max(limit * 2, 20), odds=odds)
-    timing_rows = _market_timing_alert_rows(
-        platform,
-        sport_filter,
-        limit=max(limit, 8),
-        odds=odds,
-        min_ev=min_ev,
-        hide_outliers=True,
-        scan_limit=60,
-        rows=ev_rows,
-    )
-    watch_rows = _watchlist_alerts()
-    opportunities: list[dict] = []
-    seen: set[tuple[str, str, str, str]] = set()
-
-    for row in ev_rows:
-        opportunities.append(_opportunity_from_ev_row(row))
-    for row in timing_rows:
-        opportunities.append(_opportunity_from_timing_row(row))
-    for row in watch_rows:
-        opportunities.append(_opportunity_from_watch_row(row))
-
-    deduped = []
-    for item in opportunities:
-        key = (
-            canonical_person_key(item.get("player")),
-            item.get("stat", "").strip().lower(),
-            item.get("direction", "").strip().lower(),
-            item.get("platform", "").strip().lower(),
-        )
-        if key in seen or not key[0]:
-            continue
-        seen.add(key)
-        deduped.append(item)
-    deduped.sort(key=lambda row: (row["priority_score"], row.get("expected_value", 0.0), row.get("confidence", 0.0)), reverse=True)
-    payload = {
-        "feed": {
-            "id": "edgeiq-opportunity-feed-v1",
-            "canonical": True,
-            "purpose": "Shared recommendation source for Today, Value Tools, generators, and portfolio review.",
-        },
-        "as_of": iso_utc(utc_now()),
-        "platform": platform,
-        "sport": sport_filter or "All Sports",
-        "min_ev": min_ev,
-        "odds": odds,
-        "count": len(deduped[: max(1, min(limit, 50))]),
-        "opportunities": deduped[: max(1, min(limit, 50))],
-        "summary": {
-            "ev_candidates": len(ev_rows),
-            "timing_alerts": len(timing_rows),
-            "watchlist_hits": len(watch_rows),
-        },
-    }
-    snapshot = ModelRehabilitationRepository.save_feed(
-        {
-            "feed": {
-                "id": "edgeiq-opportunity-feed-v2.2.1",
-                "canonical": True,
-                "purpose": "Shared actionable recommendation feed.",
-                "platform": platform,
-                "sport": sport_filter or "All Sports",
-            },
-            "opportunity_feed": payload,
-        },
-        model_version=PRODUCT_MODEL_VERSION,
-    )
-    payload["recommendation_snapshot_id"] = snapshot["snapshot_id"]
-    payload["model_version"] = PRODUCT_MODEL_VERSION
-    for opportunity in payload["opportunities"]:
-        opportunity["recommendation_snapshot_id"] = snapshot["snapshot_id"]
-        opportunity["model_version"] = PRODUCT_MODEL_VERSION
-    ModelRehabilitationRepository.queue_shadow(
-        payload["opportunities"],
-        model_version=OPPORTUNITY_CHALLENGER_VERSION,
-    )
-    _OPPORTUNITY_FEED_CACHE.set(cache_key, payload, ttl=OPPORTUNITY_FEED_CACHE_SECONDS)
-    return {
-        **payload,
-        "cache": {"hit": False, "ttl_seconds": OPPORTUNITY_FEED_CACHE_SECONDS},
-    }
 
 
-def _opportunity_from_ev_row(row: dict) -> dict:
-    ev = float(row.get("expected_value") or 0.0)
-    confidence = float(row.get("confidence") or 0.0)
-    quality = float((row.get("data_quality") or {}).get("score") or 50.0)
-    priority = ev + (confidence - 50.0) * 0.55 + (quality - 50.0) * 0.15
-    if row.get("is_discounted_line"):
-        priority += 5.0
-    if row.get("auto_projected"):
-        priority -= 6.0
-    return {
-        "type": "Positive EV",
-        "action": "Research then add to slip" if ev >= 0 else "Watch",
-        "priority_score": round(priority, 1),
-        "player": row.get("player", ""),
-        "sport": row.get("sport", ""),
-        "platform": row.get("platform", ""),
-        "game": row.get("game", ""),
-        "game_time": row.get("game_time", ""),
-        "direction": row.get("direction", "Over"),
-        "stat": row.get("stat", ""),
-        "line": row.get("line"),
-        "projection": row.get("projection"),
-        "confidence": round(confidence, 1),
-        "edge": round(float(row.get("edge") or 0.0), 2),
-        "expected_value": round(ev, 2),
-        "reason": row.get("probability_adjustment") or "Positive expected value versus assumed odds.",
-        "data_quality": row.get("data_quality", {}),
-        "data_strength": row.get("data_strength", []),
-        "auto_projected": row.get("auto_projected", False),
-        "provider_backed": row.get("provider_backed", False),
-        "best_over": row.get("best_over"),
-        "best_under": row.get("best_under"),
-        "consensus_line": row.get("consensus_line"),
-    }
-
-
-def _opportunity_from_timing_row(row: dict) -> dict:
-    priority = float(row.get("priority_score") or 0.0) + 8.0
-    return {
-        "type": row.get("type", "Timing"),
-        "action": row.get("action", "Review timing"),
-        "priority_score": round(priority, 1),
-        "player": row.get("player", ""),
-        "sport": row.get("sport", ""),
-        "platform": row.get("platform", ""),
-        "game": row.get("game", ""),
-        "game_time": row.get("game_time", ""),
-        "direction": row.get("direction", "Over"),
-        "stat": row.get("stat", ""),
-        "line": row.get("line"),
-        "projection": row.get("projection"),
-        "confidence": row.get("confidence", 0.0),
-        "edge": row.get("edge", 0.0),
-        "expected_value": row.get("expected_value", 0.0),
-        "reason": row.get("reason", "Market timing alert."),
-        "data_quality": row.get("data_quality", {}),
-        "data_strength": row.get("data_strength", []),
-        "auto_projected": row.get("auto_projected", False),
-        "provider_backed": row.get("provider_backed", False),
-        "movement": row.get("movement", {}),
-    }
-
-
-def _opportunity_from_watch_row(row: dict) -> dict:
-    prop = row.get("prop") or {}
-    return {
-        "type": "Watchlist",
-        "action": "Target reached",
-        "priority_score": 62.0 + float(prop.get("confidence") or 0.0) * 0.2,
-        "player": row.get("player", ""),
-        "sport": prop.get("sport", ""),
-        "platform": row.get("platform", ""),
-        "game": prop.get("game", ""),
-        "game_time": prop.get("game_time", ""),
-        "direction": row.get("direction", "Over"),
-        "stat": row.get("stat", ""),
-        "line": row.get("line"),
-        "projection": prop.get("projection"),
-        "confidence": prop.get("confidence", 0.0),
-        "edge": prop.get("edge", 0.0),
-        "expected_value": 0.0,
-        "reason": row.get("reason", "Watchlist condition matched."),
-        "data_quality": prop.get("data_quality", {}),
-        "data_strength": prop.get("data_strength", []),
-        "auto_projected": prop.get("auto_projected", False),
-        "provider_backed": prop.get("provider_backed", False),
-    }
 
 
 def _advantage_game_contexts(platform: str, sport_filter: str | None) -> list[dict]:
@@ -6908,25 +6717,12 @@ def _confirmed_props_payload(
 ) -> dict:
     raw_props = _fetch_props(platform, sport_filter)
     _record_plausibility_rejections(raw_props, fallback_provider=platform)
-    confirmed: list[dict] = []
-    eligible = [
-        raw
-        for raw in raw_props
-        if _is_prop_on_entry_day(raw) and _end_to_end_prop_eligibility(raw)["eligible"]
-    ]
-    eligible.sort(key=_confirmed_prop_prefilter_key, reverse=True)
-    pool_limit = (
-        max(1, int(analysis_limit))
-        if analysis_limit is not None
-        else max(24, min(80, max(1, limit) * 2))
+    confirmed, pipeline_counts = evaluate_provider_candidates(
+        raw_props, limit=limit, analysis_limit=analysis_limit,
+        is_today=_is_prop_on_entry_day, eligibility=_end_to_end_prop_eligibility,
+        prefilter_key=_confirmed_prop_prefilter_key, analyze=_analyzed_feed_prop,
+        candidate=_confirmed_prop_candidate,
     )
-
-    for raw in eligible[:pool_limit]:
-        analyzed = _analyzed_feed_prop(raw)
-        candidate = _confirmed_prop_candidate(raw, analyzed)
-        if candidate is None:
-            continue
-        confirmed.append(candidate)
 
     confirmed.sort(key=lambda prop: (prop["confirmed_score"], prop["confidence"], prop["edge"], prop["trending_count"]), reverse=True)
     confirmed_raw_by_id = {id(row["_raw"]): row["_raw"] for row in confirmed}
@@ -6937,8 +6733,9 @@ def _confirmed_props_payload(
         "platform": platform,
         "sport": selected_sport or "All Sports",
         "count": len(confirmed),
-        "rejected_count": max(0, len(raw_props) - len(confirmed)),
-        "analyzed_count": len(raw_props),
+        "rejected_count": pipeline_counts["eligibility_rejected"] + pipeline_counts["analysis_rejected"],
+        "analyzed_count": pipeline_counts["analyzed"],
+        "pipeline_counts": pipeline_counts,
         "slate": slate,
         "props": [{key: value for key, value in row.items() if key != "_raw"} for row in confirmed[:limit]],
         "raw_props": sorted_raw[:limit],
@@ -7283,7 +7080,7 @@ def _player_research_payload(
         team=str((active_props[0] if active_props else {}).get("team") or ""),
     )
     chart_rows = []
-    for row in list(reversed(history[-12:])):
+    for row in reversed(history[:15]):
         actual = float(row.get("actual") or 0)
         chart_rows.append({
             "game": row.get("game") or row.get("game_date") or "Tracked game",
@@ -7299,6 +7096,9 @@ def _player_research_payload(
         default=None,
     )
     direction = str((recommendation or {}).get("direction") or "Over")
+    for row in chart_rows:
+        row["hit"] = _history_hit(row["actual"], target_line, direction)
+        row["direction"] = direction
     forecast = (
         forecast_prop(
             player,
@@ -7323,18 +7123,19 @@ def _player_research_payload(
         str((recommendation or {}).get("team") or ""),
     )
     splits = {
-        "last_5": _history_split(history[:5], target_line),
-        "last_10": _history_split(history[:10], target_line),
-        "last_20": _history_split(history[:20], target_line),
-        "season": _history_split(history, target_line),
-        "home": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "home"], target_line),
-        "away": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "away"], target_line),
-        "starter": _history_split([row for row in history if row.get("starter") is True], target_line),
-        "bench": _history_split([row for row in history if row.get("starter") is False], target_line),
+        "last_5": _history_split(history[:5], target_line, direction),
+        "last_10": _history_split(history[:10], target_line, direction),
+        "last_15": _history_split(history[:15], target_line, direction),
+        "last_20": _history_split(history[:20], target_line, direction),
+        "season": _history_split(history, target_line, direction),
+        "home": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "home"], target_line, direction),
+        "away": _history_split([row for row in history if _game_side(row.get("game", ""), row.get("team", "")) == "away"], target_line, direction),
+        "starter": _history_split([row for row in history if row.get("starter") is True], target_line, direction),
+        "bench": _history_split([row for row in history if row.get("starter") is False], target_line, direction),
         "opponent": _history_split([
             row for row in history
             if current_opponent and _research_opponent(str(row.get("game") or ""), str(row.get("team") or "")) == current_opponent
-        ], target_line),
+        ], target_line, direction),
         "provider_lines": len(active_props),
     }
     market_lines = [
@@ -7661,11 +7462,12 @@ def _history_hit(actual: float, line: float | None, direction: str) -> bool | No
     return actual > line if direction == "Over" else actual < line
 
 
-def _history_split(rows: list[dict], line: float | None) -> dict:
+def _history_split(rows: list[dict], line: float | None, direction: str = "Over") -> dict:
     values = [float(row.get("actual") or 0) for row in rows]
-    hits = [value for value in values if _history_hit(value, line, "Over")] if line is not None else []
+    hits = [value for value in values if _history_hit(value, line, direction)] if line is not None else []
     return {
         "sample": len(values),
+        "direction": direction,
         "average": round(sum(values) / len(values), 2) if values else None,
         "hit_rate": round((len(hits) / len(values)) * 100, 1) if values and line is not None else None,
     }
@@ -9096,7 +8898,11 @@ def _clv_for_prop(
         "note": (
             "Positive CLV means the closing line moved in the selected direction."
             if clv is not None
-            else "CLV excluded because a same-game, same-offer closing snapshot is unavailable."
+            else {
+                "missing_game_context": "CLV unavailable: the exact game or start time is missing.",
+                "legacy_offer_metadata_missing": "CLV unavailable: this older prop has no recorded offer provenance.",
+                "no_same_game_closing_snapshot": "CLV unavailable: no matching line was saved between entry placement and game start. Live entries may have no eligible pregame snapshot.",
+            }.get(reliability_reason, "CLV unavailable: no verified closing line was captured.")
         ),
     }
 
@@ -11177,14 +10983,16 @@ def _entry_release_verdict(
 
 
 def _entry_payout_analysis(entry: Entry, payload: EntryPayload | None = None) -> dict:
-    return payout_analysis(
+    matrix = estimate_correlation_matrix(entry.props)
+    result = payout_analysis(
         [float(prop.confidence or 0.0) / 100.0 for prop in entry.props],
         payload.platform if payload else entry.platform.value,
         payload.payout_type if payload else "standard",
         displayed_multiplier=payload.multiplier if payload else None,
-        correlation_matrix=estimate_correlation_matrix(entry.props),
+        correlation_matrix=matrix,
         exact_schedule=payload.payout_schedule or None if payload else None,
     )
+    return {**result, "correlation_matrix": matrix}
 
 
 def _entry_espn_notes(props: list[Prop]) -> list[str]:
@@ -11938,6 +11746,7 @@ def _refresh_schedule_payload() -> dict:
         "shadow_cohort": "08:15",
         "auto_paper_samples": "08:30",
         "player_features": "03:15",
+        "season_history": "06:00",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -11950,9 +11759,10 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
         {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
         {"name": "Player feature store", "time": schedule["player_features"], "action": "Materialize season, recent-form, role, and opponent features for active props."},
+        {"name": "Season history", "time": schedule["season_history"], "action": "Update recent official results across supported leagues using saved checkpoints."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features")
+    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -12118,6 +11928,7 @@ def _run_due_daily_operations_locked() -> dict:
         "shadow_cohort": _queue_daily_shadow_cohort,
         "auto_paper_samples": _run_automatic_paper_samples,
         "player_features": _materialize_player_features,
+        "season_history": run_daily_season_updates,
     }
     for name, callback in timed_jobs.items():
         scheduled_time = str(schedule.get(name) or "")
