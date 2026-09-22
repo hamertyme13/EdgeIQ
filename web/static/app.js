@@ -3305,7 +3305,14 @@ function addFeedProp(prop) {
   const existingPlatforms = entrySourcePlatforms();
   if (existingPlatforms.length && nextProp.platform && !existingPlatforms.includes(nextProp.platform)) {
     $("entry-status").textContent = `This entry already contains ${existingPlatforms[0]} props. Build a separate ${nextProp.platform} entry.`;
-    return;
+    setView("entries");
+    return false;
+  }
+  if (state.entryProps.length >= providerMaximumLegs(nextProp.platform)
+      || state.entryProps.some((item) => item.player === nextProp.player && item.stat === nextProp.stat && item.game_time === nextProp.game_time)) {
+    $("entry-status").textContent = "This prop is already in the entry, or the sportsbook's leg limit has been reached. Review the entry before adding more.";
+    setView("entries");
+    return false;
   }
   state.entryProps.push(nextProp);
   trackProductEvent("recommendation_added", "prop", nextProp.recommendation_snapshot_id || `${nextProp.player}|${nextProp.stat}`, { platform: nextProp.platform, sport: nextProp.sport });
@@ -3317,6 +3324,7 @@ function addFeedProp(prop) {
     ? " PrizePicks Demon lines are Over-only."
     : "";
   $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.${demonNote}`;
+  return true;
 }
 
 function loadPaperProps(props) {

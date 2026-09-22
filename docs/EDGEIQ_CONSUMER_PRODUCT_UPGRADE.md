@@ -22,7 +22,7 @@ Living status: September 20, 2026. The consumer reset is **not complete**.
 | Entry analyzer | Compact independent/adjusted probability summary, correlation difference, positive/negative pairs, five exposure dimensions, payout caveats | Final workflow acceptance and portfolio-level integration |
 | Model track record | On-demand Results panel, five filters, bounded chronological ledger query, locked/settled/win/loss/push counts, existing evaluation metrics | Stored score-version linkage, verified CLV/ROI, broader acceptance testing |
 | Navigation | Six consumer destinations; Players, System + Settings, and Tools + Signals accessible in Core; advanced panels moved off Today; More shortcuts preserve workspace IDs and legacy props route; hidden tools defer loading | Full deep-link acceptance and remaining mobile polish |
-| Best Lines | Single-player comparison | Multi-player browsing, filters, safe exact-offer entry transfer |
+| Best Lines | Single-player comparison, local sportsbook/offer-type filters, exact-offer entry transfer through the existing builder; restricted directions, duplicate legs, provider mixing and leg limits guarded | Multi-player browsing, pre-handoff live availability confirmation |
 | Notifications | Existing delivery/settings | Event preferences and stale-event suppression tests |
 | Beta onboarding | Existing sessions, acknowledgment and general preferences | One user-scoped preference flow, responsible-use step, feedback polish |
 | Mobile | Responsive research overview and section links | All-route sheets, tables, navigation, sticky actions and installation checks |

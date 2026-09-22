@@ -303,6 +303,11 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     page.locator('#line-shop-form button[type="submit"]').click()
     page.locator(".best-line-row").first.wait_for()
     assert page.locator(".best-line-row").count() == 2
+    page.locator('[data-best-provider]').select_option('Underdog')
+    assert page.locator('.best-line-row:visible').count() == 1
+    assert 'Underdog' in page.locator('.best-line-row:visible').inner_text()
+    page.locator('[data-best-provider]').select_option('')
+    assert page.locator('.best-line-row:visible').count() == 2
     assert "Best threshold" in page.locator("#line-shop-result").inner_text()
     issues = visual_issues(page)
     assert not issues["horizontal_overflow"], issues
@@ -310,6 +315,18 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     screenshot = OUTPUT / f"{viewport_name}-best-lines.png"
     page.screenshot(path=screenshot, full_page=True)
     page.unroute("**/api/market/best-lines?*")
+    page.evaluate('state.entryProps = []')
+    page.locator('[data-add-best-line="0"]').click()
+    assert page.locator('#entries').is_visible()
+    transferred = page.evaluate('state.entryProps[0]')
+    assert transferred['player'] == 'Example Player'
+    assert transferred['line'] == 20.5
+    assert transferred['platform'] == 'PrizePicks'
+    assert transferred['direction'] == 'Over'
+    page.evaluate('setView("best-lines")')
+    page.locator('[data-add-best-line="1"]').click()
+    assert page.evaluate('state.entryProps.length') == 1
+    assert 'separate' in page.locator('#entry-status').inner_text()
     return {"viewport": viewport_name, "view": "Best Lines", "screenshot": str(screenshot), **issues}
 
 

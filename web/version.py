@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260920-consumer-tools"
+STATIC_ASSET_VERSION = "20260922-best-lines-filters"

@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20260920-consumer-tools";
+const CACHE_NAME = "edgeiq-shell-20260922-best-lines-filters";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

@@ -6201,6 +6201,7 @@ body[data-display-mode="basic"] [data-advanced-only] {
   display: none !important;
 }
 
+.best-line-row[hidden] { display: none !important; }
 .consumer-more { position: relative; }
 .consumer-more > summary { cursor: pointer; padding: 12px; }
 .consumer-more-content {
