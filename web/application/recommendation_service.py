@@ -95,7 +95,7 @@ def trending_props_payload(
             analyzed_rows.append({
                 **raw,
                 "direction": raw.get("direction") or "Over",
-                "allowed_directions": raw.get("allowed_directions") or ["Over", "Under"],
+                "allowed_directions": raw.get("allowed_directions", ["Over", "Under"]),
                 "projection": None,
                 "confidence": None,
                 "grade": "Watch",

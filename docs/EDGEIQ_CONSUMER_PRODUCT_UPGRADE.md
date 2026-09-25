@@ -22,7 +22,7 @@ Living status: September 20, 2026. The consumer reset is **not complete**.
 | Entry analyzer | Compact independent/adjusted probability summary, correlation difference, positive/negative pairs, five exposure dimensions, payout caveats | Final workflow acceptance and portfolio-level integration |
 | Model track record | On-demand Results panel, five filters, bounded chronological ledger query, locked/settled/win/loss/push counts, existing evaluation metrics | Stored score-version linkage, verified CLV/ROI, broader acceptance testing |
 | Navigation | Six consumer destinations; Players, System + Settings, and Tools + Signals accessible in Core; advanced panels moved off Today; More shortcuts preserve workspace IDs and legacy props route; hidden tools defer loading | Full deep-link acceptance and remaining mobile polish |
-| Best Lines | Single-player comparison, local sportsbook/offer-type filters, exact-offer entry transfer through the existing builder; restricted directions, duplicate legs, provider mixing and leg limits guarded | Multi-player browsing, pre-handoff live availability confirmation |
+| Best Lines | Bounded five-player same-stat comparison with partial-failure reporting, local sportsbook/offer-type filters, exact-offer entry transfer; restricted directions, duplicate legs, provider mixing and leg limits guarded | Full-board browsing, pre-handoff live availability confirmation |
 | Notifications | Existing delivery/settings | Event preferences and stale-event suppression tests |
 | Beta onboarding | Existing sessions, acknowledgment and general preferences | One user-scoped preference flow, responsible-use step, feedback polish |
 | Mobile | Responsive research overview and section links | All-route sheets, tables, navigation, sticky actions and installation checks |
@@ -35,6 +35,35 @@ Living status: September 20, 2026. The consumer reset is **not complete**.
 - Railway verification, deferred after its public URL returned Application not found.
 
 ## Known Limitations
+
+- Handoff now distinguishes line changes, missing identity, stale provider evidence,
+  unavailable verification time, and forecast age. A cached line match alone no
+  longer receives positive styling; stale flags override recent timestamp claims.
+
+- Sleeper configured feeds preserve supplied player/event/offer identifiers and
+  offer type. Missing identity stays explicit; generated display IDs are not
+  provider offer IDs. Configured URLs and local files do not claim direct provider
+  verification. Sleeper public roster/trending APIs do not verify betting offers.
+
+- Pick6 cache reads now retain the original collector retrieval time and expose
+  cache age/staleness without additional billable actor runs. Collector retrieval
+  is not promoted to direct sportsbook verification; handoff remains conservative.
+
+- Best Lines distinguishes model-input timestamps from offer refresh timestamps.
+  PrizePicks and Underdog now retain successful HTTP fetch/revalidation timestamps,
+  including original cache times; stale fallbacks do not receive verification.
+  Handoff requires an exact identified offer verified within five minutes, separate
+  from forecast freshness. Other providers remain unverified without this evidence.
+  This is board evidence, not guaranteed account-specific availability or payout.
+  Handoff also rejects conflicting event IDs or start times; without shared event
+  IDs it requires the same timezone-aware start and matchup. Rescheduled games
+  require refreshed identity evidence rather than silently matching another event.
+
+- Best Lines shows completed player comparisons progressively and supports stopping
+  further lookups while retaining results. Each lookup has a ten-second timeout;
+  stopping the browser request does not guarantee server-side provider work stops.
+  Missing and unfinished players can be retried independently using the original
+  search parameters without reloading successful player comparisons.
 
 - Research splits now display the recommended direction explicitly; Over remains
   the labeled fallback when no recommendation exists. Recorded ledger results remain separate.

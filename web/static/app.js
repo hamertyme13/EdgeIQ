@@ -3228,9 +3228,17 @@ function formatMovement(movement) {
   return `${movement.direction} ${prefix}${Number(movement.change).toFixed(1)}`;
 }
 
+function entryDirectionAllowed(prop, direction) {
+  return entryPropFromFeed(prop).allowed_directions.includes(direction);
+}
+
 function entryPropFromFeed(prop) {
   const demonOnly = String(prop.platform || "").toLowerCase() === "prizepicks"
     && (String(prop.line_offer_type || "").toLowerCase() === "demon" || Boolean(prop.is_premium_line));
+  const declaredDirections = Object.prototype.hasOwnProperty.call(prop, "allowed_directions")
+    ? (Array.isArray(prop.allowed_directions) ? prop.allowed_directions : []) : ["Over", "Under"];
+  const allowedDirections = declaredDirections.filter((value) =>
+    ["Over", "Under"].includes(value) && (!demonOnly || value === "Over"));
   return {
     player: prop.player,
     player_identity_id: prop.player_identity_id ?? null,
@@ -3251,8 +3259,8 @@ function entryPropFromFeed(prop) {
     is_premium_line: Boolean(prop.is_premium_line),
     line_discount: Number(prop.line_discount || 0),
     projection: prop.projection ?? null,
-    direction: demonOnly ? "Over" : (prop.direction || "Over"),
-    allowed_directions: demonOnly ? ["Over"] : (prop.allowed_directions || ["Over", "Under"]),
+    direction: prop.direction || "Over",
+    allowed_directions: allowedDirections,
     platform: prop.platform || $("entry-platform").value,
     game: prop.game || "",
     game_time: prop.game_time || "",
@@ -3302,6 +3310,11 @@ function providerMaximumLegs(platform) {
 
 function addFeedProp(prop) {
   const nextProp = entryPropFromFeed(prop);
+  if (!nextProp.allowed_directions.includes(nextProp.direction)) {
+    $("entry-status").textContent = `This offer does not support ${nextProp.direction}. Refresh the sportsbook offer and choose an available direction.`;
+    setView("entries");
+    return false;
+  }
   const existingPlatforms = entrySourcePlatforms();
   if (existingPlatforms.length && nextProp.platform && !existingPlatforms.includes(nextProp.platform)) {
     $("entry-status").textContent = `This entry already contains ${existingPlatforms[0]} props. Build a separate ${nextProp.platform} entry.`;
@@ -3321,16 +3334,31 @@ function addFeedProp(prop) {
   renderEntryProps();
   setView("entries");
   const demonNote = nextProp.allowed_directions?.length === 1
-    ? " PrizePicks Demon lines are Over-only."
+    ? ` This ${nextProp.platform} offer supports ${nextProp.allowed_directions[0]} only.`
     : "";
   $("entry-status").textContent = `${prop.player} added. Projection will auto-fill unless you enter one.${demonNote}`;
   return true;
 }
 
+function invalidateEntryReview() {
+  state.entryAnalysisRequestId = (state.entryAnalysisRequestId || 0) + 1;
+  state.lastAnalysis = null;
+  state.lastEntryPayload = null;
+  state.recommendationSnapshotId = "";
+  ["ai-review-entry", "prepare-handoff", "place-entry"].forEach((id) => {
+    if ($(id)) $(id).disabled = true;
+  });
+  if ($("entry-analysis")) {
+    $("entry-analysis").textContent = "Analyze this entry to see its current assessment.";
+    $("entry-analysis").classList.add("muted-card");
+  }
+}
+
 function loadPaperProps(props) {
+  invalidateEntryReview();
   state.entryProps = (props || []).map(entryPropFromFeed);
   if ($("entry-mode")) $("entry-mode").value = "paper";
-  if ($("entry-platform") && props[0]?.platform) $("entry-platform").value = props[0].platform;
+  if ($("entry-platform") && props?.[0]?.platform) $("entry-platform").value = props[0].platform;
   renderEntryProps();
   setView("entries");
   $("entry-status").textContent = `${state.entryProps.length} paper ${state.entryProps.length === 1 ? "prop" : "props"} loaded for review.`;
@@ -3373,9 +3401,11 @@ function renderEntryProps() {
     const edge = prop.projection == null ? "Auto" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
     const correction = corrections.get(index);
     const differs = correction?.action === "flip";
+    const directionWarning = !gameWinner && !entryDirectionAllowed(prop, prop.direction || "Over")
+      ? `<small class="danger-text">Direction unavailable for this offer. Review before continuing.</small>` : "";
     return `
       <tr data-entry-leg="${index}">
-        <td>${escapeHtml(prop.player)}</td>
+        <td>${escapeHtml(prop.player)}${directionWarning}</td>
         <td>${gameWinner ? `<span class="direction-badge direction-over">WIN</span>` : directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
         <td>${escapeHtml(prop.stat)}</td>
         <td>${gameWinner ? "Wins game" : prop.line}</td>
@@ -3390,7 +3420,7 @@ function renderEntryProps() {
             <label>Stat<input data-edit-field="stat" value="${escapeHtml(prop.stat)}"></label>
             <label>Line<input data-edit-field="line" type="number" step="0.1" value="${Number(prop.line)}"></label>
             <label>Projection<input data-edit-field="projection" type="number" step="0.1" value="${prop.projection == null ? "" : Number(prop.projection)}"></label>
-            <label>Pick<select data-edit-field="direction"><option${prop.direction === "Over" ? " selected" : ""}>Over</option><option${prop.direction === "Under" ? " selected" : ""}>Under</option></select></label>
+            <label>Pick<select data-edit-field="direction">${["Over", "Under"].map((direction) => `<option${prop.direction === direction ? " selected" : ""}${entryDirectionAllowed(prop, direction) ? "" : " disabled"}>${direction}</option>`).join("")}</select></label>
             <button class="secondary compact-button" data-save-prop="${index}">Apply</button>
           </div>
         </td>
@@ -3408,6 +3438,10 @@ function renderEntryProps() {
       const index = Number(button.dataset.saveProp);
       const editor = document.querySelector(`[data-entry-editor="${index}"]`);
       const value = (field) => editor?.querySelector(`[data-edit-field="${field}"]`)?.value ?? "";
+      if (!entryDirectionAllowed(state.entryProps[index], value("direction"))) {
+        $("entry-status").textContent = "This direction is not available for the selected offer. Choose an allowed direction or reload the sportsbook offer.";
+        return;
+      }
       state.entryProps[index] = {
         ...state.entryProps[index],
         player: value("player").trim(),
@@ -3794,6 +3828,10 @@ function renderAnalysis(data) {
       const correction = (corrections.legs || []).find((leg) => Number(leg.index) === index);
       if (!correction || !state.entryProps[index]) return;
       if (action === "flip") {
+        if (!entryDirectionAllowed(state.entryProps[index], correction.suggested_direction)) {
+          $("entry-status").textContent = "This suggestion is not available for the selected sportsbook offer. Choose a different offer before changing direction.";
+          return;
+        }
         state.entryProps[index].direction = correction.suggested_direction;
         $("entry-status").textContent = `${correction.player} changed to ${correction.suggested_direction}. Analyze again to refresh the verdict.`;
       } else if (action === "remove") {
@@ -3829,6 +3867,11 @@ async function analyzeEntry() {
     playCircuitSound("warning");
     return;
   }
+  const requestId = (state.entryAnalysisRequestId || 0) + 1;
+  state.entryAnalysisRequestId = requestId;
+  const requestedEntry = JSON.stringify(payload);
+  const isCurrent = () => state.entryAnalysisRequestId === requestId
+    && JSON.stringify(entryPayload()) === requestedEntry;
   $("entry-status").textContent = "Checking projections, player history, and calibration...";
   let data;
   try {
@@ -3838,14 +3881,17 @@ async function analyzeEntry() {
       timeoutMs: 20000,
     });
   } catch (error) {
+    if (!isCurrent()) return;
     $("entry-status").textContent = `Analysis could not finish: ${humanizeErrorText(error.message)} Your entry is still in the builder.`;
     return;
   }
+  if (!isCurrent()) return;
+  renderEntryPropsFromAnalyzed(data.entry.props);
   state.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
-  renderEntryPropsFromAnalyzed(data.entry.props);
   state.lastEntryPayload = entryPayload();
+  renderEntryProps();
   $("ai-review-entry").disabled = false;
   const isPaper = payload.entry_mode === "paper";
   $("prepare-handoff").disabled = !isPaper && !data.release_verdict?.paid_allowed;
@@ -3917,13 +3963,14 @@ function renderEntryHandoff(data) {
     ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
     <div class="suggestion-list">
       ${(data.legs || []).map((leg, index) => `
-        <div class="suggestion compact-suggestion ${leg.offer_status === "current" ? "insight-positive" : "insight-warning"}">
+        <div class="suggestion compact-suggestion ${leg.offer_status === "current" && leg.identity_verified && leg.offer_freshness_status === "fresh" ? "insight-positive" : "insight-warning"}">
           <div class="suggestion-top">
             <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
             <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
           </div>
           <p>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat)} ${leg.line ?? ""}${leg.game ? ` · ${escapeHtml(leg.game)}` : ""}</p>
-          <p class="subtle">Live offer: ${escapeHtml(leg.offer_status || "not checked")} · requested ${leg.requested_line ?? leg.line}${leg.current_line == null ? "" : ` · current ${leg.current_line}`}</p>
+          <p class="subtle">Provider board: ${escapeHtml(({current: 'Matching line', changed: 'Line changed', unavailable: 'No exact match'})[leg.offer_status] || 'Not checked')} · requested ${leg.requested_line ?? leg.line}${leg.current_line == null ? "" : ` · found ${leg.current_line}`}</p>
+          <p class="subtle">Offer evidence: ${escapeHtml(({fresh: 'Recently verified', expired: 'Refresh needed'})[leg.offer_freshness_status] || 'Not verified')} · Forecast: ${escapeHtml(({fresh: 'Recent', expired: 'Reanalyze'})[leg.freshness_status] || 'Not dated')}</p>
           <p class="subtle">${escapeHtml(leg.blocking_reason || leg.value_note || "")}</p>
         </div>
       `).join("")}
@@ -4003,6 +4050,7 @@ function renderPlacementAudit(data) {
 }
 
 function renderEntryPropsFromAnalyzed(props) {
+  invalidateEntryReview();
   state.entryProps = uniqueUploadedProps(props).map(entryPropFromFeed);
   syncEntryPlatformFromProps();
   renderEntryProps();

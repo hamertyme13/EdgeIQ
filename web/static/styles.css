@@ -5831,6 +5831,14 @@ td,
     bottom: 72px;
   }
 
+  #entries:has(.entry-leg-editor:not([hidden])) .entry-action-dock {
+    position: static;
+  }
+
+  .entry-leg-editor [data-save-prop] {
+    scroll-margin-bottom: 90px;
+  }
+
   .entry-action-dock .button-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));

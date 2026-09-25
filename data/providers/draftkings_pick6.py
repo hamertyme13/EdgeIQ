@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,10 @@ def fetch_projections(*, refresh: bool = False) -> list[dict]:
         payload = response.json()
         items = payload if isinstance(payload, list) else payload.get("items", [])
         rows = [row for item in items if (row := normalize_offer(item)) is not None]
+        observed_at = datetime.now(UTC).isoformat()
+        rows = [{**row, "provider_offer_observed_at": observed_at,
+                 "offer_evidence_source": "Apify collector", "stale": False,
+                 "cache_age_seconds": 0} for row in rows]
         _write_cache(rows)
         return rows
 
@@ -126,9 +131,15 @@ def _token() -> str:
 def _read_cache() -> tuple[int, list[dict]] | None:
     try:
         payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-        age = max(0, int(time.time() - float(payload["saved_at"])))
-        return age, list(payload.get("rows") or [])
-    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        saved_at = float(payload["saved_at"])
+        now = time.time()
+        age = max(0, int(now - saved_at))
+        observed_at = datetime.fromtimestamp(saved_at, UTC).isoformat()
+        rows = [{**row, "provider_offer_observed_at": row.get("provider_offer_observed_at") or observed_at,
+                 "offer_evidence_source": "Apify collector", "cache_age_seconds": age,
+                 "stale": saved_at > now or age > CACHE_TTL_SECONDS} for row in payload.get("rows", []) if isinstance(row, dict)]
+        return age, rows
+    except (OSError, OverflowError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 

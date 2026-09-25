@@ -327,6 +327,82 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     page.locator('[data-add-best-line="1"]').click()
     assert page.evaluate('state.entryProps.length') == 1
     assert 'separate' in page.locator('#entry-status').inner_text()
+    page.evaluate('''() => {
+        state.lastAnalysis = {score: 90};
+        state.lastEntryPayload = {old: true};
+        document.getElementById('place-entry').disabled = false;
+        loadPaperProps([{player:'Restricted Example', platform:'Sleeper', sport:'WNBA',
+            stat:'Points', line:20.5, direction:'Over', allowed_directions:['Under']}]);
+    }''')
+    assert page.evaluate('state.lastAnalysis === null && state.lastEntryPayload === null')
+    assert page.locator('#place-entry').is_disabled()
+    assert page.evaluate('state.entryProps[0].direction') == 'Over'
+    assert 'Direction unavailable' in page.locator('#entry-props').inner_text()
+    page.locator('[data-edit-prop="0"]').click()
+    assert page.locator('[data-edit-field="direction"] option', has_text='Over').get_attribute('disabled') is not None
+    page.locator('[data-edit-field="direction"]').select_option(label='Under')
+    page.locator('[data-save-prop="0"]').click()
+    assert page.evaluate('state.entryProps[0].direction') == 'Under'
+    assert 'Direction unavailable' not in page.locator('#entry-props').inner_text()
+    page.screenshot(path=OUTPUT / f'{viewport_name}-entry-direction-review.png', full_page=True)
+    from urllib.parse import parse_qs, urlparse
+
+    requests = []
+
+    def batch_response(route):
+        player = parse_qs(urlparse(route.request.url).query)['player'][0]
+        assert parse_qs(urlparse(route.request.url).query)['stat'][0] == 'Points'
+        requests.append(player)
+        if player == 'Another Player' and requests.count(player) == 1:
+            route.fulfill(json={**payload, 'player': player, 'lines': []})
+            return
+        route.fulfill(json={**payload, 'player': player,
+                           'lines': [{**row, 'player': player} for row in payload['lines']]})
+
+    page.route('**/api/market/best-lines?*', batch_response)
+    page.evaluate('setView("best-lines")')
+    page.locator('#shop-player').fill('Example Player, Another Player, example player')
+    page.locator('#line-shop-form button[type="submit"]').click()
+    page.locator('[data-retry-best-lines]').wait_for()
+    assert page.locator('.best-line-row').count() == 2
+    page.locator('#shop-stat').fill('Assists')
+    page.locator('[data-retry-best-lines]').click()
+    page.wait_for_function("document.querySelectorAll('.best-line-row').length === 4")
+    page.wait_for_function("document.querySelector('#line-shop-result').getAttribute('aria-busy') === 'false'")
+    assert 'Another Player' in page.locator('#line-shop-result').inner_text()
+    assert requests.count('Another Player') == 2
+    assert requests.count('example player') == 1
+    page.unroute('**/api/market/best-lines?*')
+    requests.clear()
+    stalled_routes = []
+
+    def stopped_response(route):
+        player = parse_qs(urlparse(route.request.url).query)['player'][0]
+        requests.append(player)
+        if player == 'Slow Player' and requests.count(player) == 1:
+            stalled_routes.append(route)
+            return
+        route.fulfill(json={**payload, 'player': player,
+                           'lines': [{**row, 'player': player} for row in payload['lines']]})
+
+    page.route('**/api/market/best-lines?*', stopped_response)
+    page.locator('#shop-stat').fill('Points')
+    page.locator('#shop-player').fill('Fast Player, Slow Player')
+    page.locator('#line-shop-form button[type="submit"]').click()
+    page.wait_for_function("document.querySelector('#best-lines-progress')?.textContent.includes('Slow Player')")
+    assert page.locator('.best-line-row').count() == 2
+    page.get_by_role('button', name='Stop comparison', exact=True).click()
+    page.locator('[data-retry-best-lines]').wait_for()
+    assert page.locator('.best-line-row').count() == 2
+    assert 'stopped' in page.locator('#best-lines-progress').inner_text()
+    for route in stalled_routes:
+        route.abort()
+    page.locator('[data-retry-best-lines]').click()
+    page.wait_for_function("document.querySelectorAll('.best-line-row').length === 4")
+    page.wait_for_function("document.querySelector('#line-shop-result').getAttribute('aria-busy') === 'false'")
+    assert requests.count('Fast Player') == 1
+    assert requests.count('Slow Player') == 2
+    page.unroute('**/api/market/best-lines?*')
     return {"viewport": viewport_name, "view": "Best Lines", "screenshot": str(screenshot), **issues}
 
 

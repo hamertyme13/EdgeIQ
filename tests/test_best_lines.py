@@ -1,3 +1,5 @@
+import pytest
+
 from web.application.best_lines_service import best_lines_payload
 
 
@@ -41,3 +43,18 @@ def test_missing_game_identity_and_invalid_lines_are_not_ranked():
 def test_equivalent_timezone_offsets_group_together():
     data = {"lines": [row("A", 20), row("B", 21, game_time="2026-09-12T16:00:00-04:00")]}
     assert best_lines_payload(data)["lines"][0]["best_threshold"]
+
+
+@pytest.mark.parametrize("allowed", [[], None, "Over", {"Over": True}])
+def test_explicit_invalid_or_empty_restrictions_never_enable_directions(allowed):
+    for direction in ("Over", "Under"):
+        data = {"lines": [row("A", 20, allowed_directions=allowed), row("B", 21)]}
+        result = best_lines_payload(data, direction)["lines"]
+        assert result[0]["allowed_directions"] == []
+        assert not result[0]["comparable"]
+        assert not any(item["best_threshold"] for item in result)
+
+
+def test_premium_offer_does_not_override_explicit_empty_restriction():
+    data = {"lines": [row("PrizePicks", 20, line_offer_type="demon", allowed_directions=[])]}
+    assert best_lines_payload(data)["lines"][0]["allowed_directions"] == []

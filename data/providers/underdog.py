@@ -311,6 +311,7 @@ def fetch_projections() -> list[dict]:
             "platform":      "Underdog",
             "stale":         cached.stale,
             "cache_age_seconds": cached.age_seconds,
+            "provider_offer_verified_at": getattr(cached, "verified_at", "") if not cached.stale else "",
         })
 
     return results

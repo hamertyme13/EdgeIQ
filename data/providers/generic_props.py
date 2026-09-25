@@ -43,7 +43,10 @@ def fetch_configured_props(platform: str, env_prefix: str) -> list[dict]:
     else:
         return []
 
-    return normalize_props(payload, platform)
+    rows = normalize_props(payload, platform)
+    source_type = "Configured feed" if url else "Local file"
+    return [{**row, "offer_evidence_source": source_type,
+             "provider_offer_verified_at": ""} for row in rows]
 
 
 def normalize_props(payload: Any, platform: str) -> list[dict]:
@@ -120,6 +123,9 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
 
     normalized = {
         "projection_id": _first_value(row, "projection_id", "id", "line_id") or f"{platform.lower()}-{index}",
+        "provider_offer_id": _first_value(row, "provider_offer_id", "offer_id", "projection_id", "id", "line_id"),
+        "provider_event_id": _first_value(row, "provider_event_id", "event_id", "game_id"),
+        "line_offer_type": _first_value(row, "line_offer_type", "offer_type", "odds_type") or "unknown",
         "player": player,
         "team": _first_value(row, "team", "team_abbr", "team_id", "team_abbreviation"),
         "league": league,
@@ -139,7 +145,31 @@ def _normalize_row(row: dict, platform: str, index: int) -> dict | None:
     player_id = _first_value(row, "player_id", "athlete_id", "provider_player_id")
     if player_id:
         normalized["player_id"] = player_id
+        normalized["provider_player_id"] = player_id
+    fields = {_clean_key(key): value for key, value in row.items()}
+    if "allowed_directions" in fields:
+        normalized["allowed_directions"] = _allowed_directions(fields["allowed_directions"])
     return normalized
+
+
+def _allowed_directions(value: Any) -> list[str]:
+    """Keep explicit restrictions; malformed values must not enable both sides."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = value.split(",")
+    if not isinstance(value, list):
+        return []
+    aliases = {"over": "Over", "under": "Under", "more": "Over", "less": "Under"}
+    result = []
+    for item in value:
+        direction = aliases.get(str(item).strip().lower())
+        if direction is None:
+            return []
+        if direction not in result:
+            result.append(direction)
+    return result
 
 
 def _first_value(row: dict, *keys: str) -> str:

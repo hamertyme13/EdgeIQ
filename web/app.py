@@ -203,6 +203,7 @@ from web.application.intelligence_service import game_context_response as build_
 from web.application.intelligence_service import parlay_chat_payload as build_parlay_chat_payload
 from web.application.intelligence_service import projection_assist_payload as build_projection_assist_payload
 from web.application.intelligence_service import trending_games_response as build_trending_games_response
+from web.application.offer_evidence import handoff_blocking_reason, offer_freshness, same_offer_game, select_offer_line
 from web.application.operations_service import delete_watchlist_payload as build_delete_watchlist_payload
 from web.application.operations_service import deploy_readiness_payload as build_deploy_readiness_payload
 from web.application.operations_service import run_daily_refresh_payload as build_run_daily_refresh_payload
@@ -6678,6 +6679,11 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
         "projection_source": projection_source,
         "model_version": forecast.model_version if forecast is not None else EDGEIQ_LOCAL_MODEL_VERSION,
         "feature_as_of": forecast.feature_as_of if forecast is not None else "",
+        "provider_offer_verified_at": raw.get("provider_offer_verified_at", ""),
+        "provider_offer_observed_at": raw.get("provider_offer_observed_at", ""),
+        "allowed_directions": raw.get("allowed_directions", ["Over", "Under"]),
+        "offer_evidence_source": raw.get("offer_evidence_source", ""),
+        "stale": bool(raw.get("stale")),
         "forecast_snapshot": forecast_snapshot,
         "forecast_paid_eligible": bool(
             forecast
@@ -7818,7 +7824,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     if payload.entry_mode == "real" and not release.get("paid_allowed"):
         release_blocks.append(str((release.get("reasons") or ["This entry did not clear paid release checks."])[0]))
     if payload.entry_mode == "real" and not live_verification["all_current"]:
-        release_blocks.append("One or more provider offers changed or disappeared. Refresh the card before handoff.")
+        release_blocks.append("One or more provider offers changed, disappeared, or lack recent provider verification. Confirm the exact offers before handoff.")
     if payload.entry_mode == "real" and not platform_value.get("payout_verified"):
         release_blocks.append("Expected value is unverified until the exact provider payout is captured.")
     stale_legs = [leg for leg in legs if leg.get("freshness_status") != "fresh"]
@@ -7867,6 +7873,7 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
         candidates = [
             row for row in _matching_market_props(prop.player, prop.stat, prop.sport, platform)
             if _canonical_platform(row.get("platform", "")) == platform
+            and same_offer_game(prop.model_dump(), row)
             and (not prop.game or canonical_matchup_key(row.get("game"), EntryRepository.TEAM_ALIASES)
                  == canonical_matchup_key(prop.game, EntryRepository.TEAM_ALIASES))
             and str(row.get("line_offer_type") or row.get("odds_type") or "standard").strip().lower() == requested_offer
@@ -7875,36 +7882,34 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
                 for direction in row.get("allowed_directions", ["Over", "Under"])
             }
         ]
-        exact = next((row for row in candidates if abs(float(row.get("line") or 0) - float(prop.line)) < 0.001), None)
-        closest = min(candidates, key=lambda row: abs(float(row.get("line") or 0) - float(prop.line)), default=None)
+        requested_offer_id = str(prop.provider_offer_id or "")
+        exact, closest = select_offer_line(candidates, float(prop.line), requested_offer_id)
         status = "current" if exact else "changed" if closest else "unavailable"
-        current_line = float((exact or closest or {}).get("line") or prop.line)
+        current_line = float((exact or closest)["line"]) if exact or closest else float(prop.line)
         leg = _handoff_leg(prop, platform)
         age = _age_minutes(prop.feature_as_of)
         live_offer_id = str((exact or {}).get("provider_offer_id") or (exact or {}).get("projection_id") or (exact or {}).get("offer_id") or "")
-        requested_offer_id = str(prop.provider_offer_id or "")
         identity_verified = bool(live_offer_id) and (not requested_offer_id or live_offer_id == requested_offer_id)
+        freshness = offer_freshness(exact or {})
         leg.update({
             "offer_status": status,
             "requested_line": float(prop.line),
             "current_line": current_line if closest or exact else None,
             "verified_at": verified_at,
             "freshness_status": "unknown" if age is None else "expired" if age > 30 else "fresh",
+            "offer_freshness_status": freshness,
             "provider_offer_id": live_offer_id,
             "provider_event_id": str((exact or {}).get("provider_event_id") or (exact or {}).get("event_id") or ""),
             "identity_verified": identity_verified,
-            "blocking_reason": (
-                "" if status == "current"
-                else f"The live line is now {current_line:g}." if status == "changed"
-                else "This exact player, game, stat, side, and offer type is no longer on the provider board."
-            ),
+            "blocking_reason": handoff_blocking_reason(status, current_line, identity_verified, freshness),
         })
         legs.append(leg)
     return {
         "verified_at": verified_at,
         "platform": platform,
         "all_current": bool(legs) and all(
-            leg["offer_status"] == "current" and leg.get("identity_verified") for leg in legs
+            leg["offer_status"] == "current" and leg.get("identity_verified")
+            and leg.get("offer_freshness_status") == "fresh" for leg in legs
         ),
         "current": sum(leg["offer_status"] == "current" for leg in legs),
         "changed": sum(leg["offer_status"] == "changed" for leg in legs),

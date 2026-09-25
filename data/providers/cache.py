@@ -13,6 +13,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -37,6 +38,7 @@ class CachedResponse:
     age_seconds: int
     etag: str = ""
     last_modified: str = ""
+    verified_at: str = ""
 
 
 def get_json(
@@ -95,6 +97,7 @@ def get_json(
                         data=cached.data,
                         stale=False,
                         age_seconds=0,
+                        verified_at=datetime.now(UTC).isoformat(),
                         etag=cached.etag,
                         last_modified=cached.last_modified,
                     )
@@ -109,6 +112,7 @@ def get_json(
                     data=data,
                     stale=False,
                     age_seconds=0,
+                    verified_at=datetime.now(UTC).isoformat(),
                     etag=etag,
                     last_modified=last_modified,
                 )
@@ -211,6 +215,7 @@ def _read_cache(path: Path) -> CachedResponse | None:
             data=payload["data"],
             stale=False,
             age_seconds=max(0, int(time.time() - saved_at)),
+            verified_at=datetime.fromtimestamp(saved_at, UTC).isoformat(),
             etag=str(payload.get("etag") or ""),
             last_modified=str(payload.get("last_modified") or ""),
         )

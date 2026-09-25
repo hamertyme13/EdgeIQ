@@ -73,13 +73,14 @@
 
   async function api(path, options = {}) {
     const method = String(options.method || "GET").toUpperCase();
-    const requestKey = method === "GET" ? `${API_BASE}${path}` : "";
+    const requestKey = method === "GET" && !options.signal ? `${API_BASE}${path}` : "";
     if (requestKey && inflightGetRequests.has(requestKey)) return inflightGetRequests.get(requestKey);
     const request = (async () => {
       const { timeoutMs = method === "GET" ? 20000 : 60000, signal, ...fetchOptions } = options;
       const controller = new AbortController();
       const abortFromCaller = () => controller.abort();
       if (signal) signal.addEventListener("abort", abortFromCaller, { once: true });
+      if (signal?.aborted) controller.abort();
       const timeout = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 20000));
       try {
         const betaToken = global.localStorage?.getItem("edgeiq.beta.token") || "";

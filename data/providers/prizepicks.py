@@ -175,6 +175,7 @@ def fetch_projections(limit: int = 500) -> list[dict]:
             "image_url":     player_attrs.get("image_url", ""),
             "stale":         cached.stale,
             "cache_age_seconds": cached.age_seconds,
+            "provider_offer_verified_at": getattr(cached, "verified_at", "") if not cached.stale else "",
         })
 
     return results

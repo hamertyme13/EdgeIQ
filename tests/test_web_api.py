@@ -2487,6 +2487,9 @@ def test_generic_prop_normalizer_accepts_csv_payload():
     assert props == [
         {
             "projection_id": "custom feed-0",
+            "provider_offer_id": "",
+            "provider_event_id": "",
+            "line_offer_type": "unknown",
             "player": "A",
             "team": "AAA",
             "league": "WNBA",

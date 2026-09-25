@@ -26,9 +26,11 @@ def best_lines_payload(payload: dict, direction: str = "Over") -> dict:
         except ValueError:
             start = ""
         offer = str(prop.get("line_offer_type") or "").lower()
-        allowed = prop.get("allowed_directions") or ["Over", "Under"]
+        allowed = prop.get("allowed_directions", ["Over", "Under"])
+        if not isinstance(allowed, list):
+            allowed = []
         if offer == "demon" or prop.get("is_premium_line"):
-            allowed = ["Over"]
+            allowed = [item for item in allowed if str(item).casefold() == "over"]
         eligible = (
             offer == "standard" and not prop.get("adjusted_line")
             and not prop.get("is_discounted_line") and not prop.get("is_premium_line")
@@ -36,7 +38,7 @@ def best_lines_payload(payload: dict, direction: str = "Over") -> dict:
             and bool(game and start)
         )
         row = {
-            **prop, "line": line, "comparison_direction": direction,
+            **prop, "line": line, "comparison_direction": direction, "allowed_directions": allowed,
             "best_threshold": False, "comparable": eligible,
             "comparison_note": "Standard threshold; verify availability and complete-card payout."
             if eligible else "Not ranked: adjusted offer, restricted direction, or incomplete game identity.",
