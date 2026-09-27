@@ -53,3 +53,28 @@ def test_fresh_cache_avoids_billable_run(monkeypatch, tmp_path):
     sleeper_apify._write_cache([{"player": "Cached"}])
     monkeypatch.setattr(sleeper_apify.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
     assert sleeper_apify.fetch_projections() == [{"player": "Cached"}]
+
+
+def test_selected_sport_has_own_actor_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("APIFY_TOKEN", "test-token")
+    monkeypatch.setenv("EDGEIQ_SLEEPER_APIFY_ENABLED", "1")
+    monkeypatch.setattr(sleeper_apify, "CACHE_PATH", tmp_path / "sleeper_apify.json")
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [_offer(league="WNBA")]
+
+    def post(*args, **kwargs):
+        calls.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr(sleeper_apify.requests, "post", post)
+    assert len(sleeper_apify.fetch_projections("WNBA")) == 1
+    assert calls == [{"leagues": ["WNBA"], "includeAlternateLines": False}]
+    assert (tmp_path / "sleeper_apify_wnba.json").exists()
+    assert len(sleeper_apify.fetch_projections("WNBA")) == 1
+    assert len(calls) == 1

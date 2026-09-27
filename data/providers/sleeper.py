@@ -26,9 +26,9 @@ _HEADERS = {
 }
 
 
-def fetch_projections() -> list[dict]:
+def fetch_projections(sport: str | None = None) -> list[dict]:
     configured_rows = fetch_configured_props("Sleeper", "SLEEPER")
-    return configured_rows if configured_rows else sleeper_apify.fetch_projections()
+    return configured_rows if configured_rows else sleeper_apify.fetch_projections(sport)
 
 
 def public_api_status(sport: str = "NFL") -> dict:

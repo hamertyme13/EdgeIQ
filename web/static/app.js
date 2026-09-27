@@ -179,6 +179,46 @@ function propPickList(props) {
   return (props || []).map(propPickText).join(", ");
 }
 
+function confidenceLabel(value) {
+  const confidence = Number(value);
+  return Number.isFinite(confidence) && confidence > 0 ? `${confidence.toFixed(1)}% confidence` : "Confidence unavailable";
+}
+
+function confidenceBucketLabel(value) {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence) || confidence <= 0) return "Unassigned";
+  const lower = Math.min(90, Math.floor(confidence / 10) * 10);
+  return `${lower}-${lower + 10}%`;
+}
+
+function calibrationTarget(entry) {
+  try {
+    const audit = JSON.parse(entry.audit_snapshot || "{}");
+    return audit.source === "auto_paper_calibration" && audit.target?.type === "Confidence"
+      ? String(audit.target.name || "") : "";
+  } catch {
+    return "";
+  }
+}
+
+function entryModelScore(entry) {
+  try {
+    const audit = JSON.parse(entry.audit_snapshot || "{}");
+    const rawScore = audit.recommendation?.score ?? audit.analysis?.recommendation?.score;
+    if (rawScore === null || rawScore === undefined || rawScore === "") return null;
+    const score = Number(rawScore);
+    return Number.isFinite(score) ? score : null;
+  } catch {
+    return null;
+  }
+}
+
+function highConfidenceCard(entry) {
+  return ((entry.props || []).length > 0
+    && entry.props.every((prop) => Number(prop.confidence) >= 90))
+    || Number(entryModelScore(entry)) >= 90;
+}
+
 function shortPropPickText(prop) {
   return `<span class="prop-pick-text">${directionBadge(prop.direction || "Over")} <span>${escapeHtml(prop.player)} ${escapeHtml(prop.stat)}</span></span>`;
 }
@@ -1239,14 +1279,15 @@ function renderDailyBriefing(data) {
             </div>` : "";
           return `
           ${profileHeader}
-          <div class="opportunity-row ${expired ? "opportunity-expired" : ""}" data-risk-lane="${escapeHtml(currentProfile)}">
+          <div class="opportunity-row ${expired ? "opportunity-expired" : ""} ${!expired && (Number(prop.confidence) >= 90 || Number(prop.edgeiq_score?.score) >= 90) ? "high-confidence-card" : ""}" data-risk-lane="${escapeHtml(currentProfile)}">
+            ${!expired && (Number(prop.confidence) >= 90 || Number(prop.edgeiq_score?.score) >= 90) ? `<span class="high-confidence-banner">${Number(prop.confidence) >= 90 ? "High model confidence" : "High EdgeIQ score"}</span>` : ""}
             <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
               <input class="opportunity-select" type="checkbox" data-select-opportunity="${prop._sourceIndex}" ${expired || !actionable ? "disabled" : ""} />
             </label>
             ${window.EdgeIQOpportunityScore?.render(prop.edgeiq_score, escapeHtml, true) || `<span class="subtle">Not scored</span>`}
             <strong>
               <span class="risk-profile-label risk-${escapeHtml(prop.risk_profile?.key || "aggressive")}">${escapeHtml(prop.risk_profile?.label || "Aggressive")}</span>
-              ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")}
+              ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")} <span class="opportunity-confidence">${confidenceLabel(prop.confidence)}</span>
               <small>
                 ${escapeHtml(prop.platform || data.platform || "Provider")} · ${escapeHtml(prop.sport || data.sport || "All Sports")}
                 ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : (String(prop.line_offer_type || "").toLowerCase() === "demon" ? "Demon · Over only" : "Adjusted payout")}` : " · Standard line"}
@@ -2293,14 +2334,15 @@ async function loadTrendingProps() {
   $("trending-props-count").textContent = `Top ${data.count || 0}`;
   $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
   $("trending-props-list").innerHTML = state.trendingProps.map((prop, index) => `
-    <div class="trending-prop-row ${prop.research_only ? "research-only-market" : ""}">
+    <div class="trending-prop-row ${prop.research_only ? "research-only-market" : ""} ${!prop.research_only && (Number(prop.confidence) >= 90 || Number(prop.grade_score) >= 90) ? "high-confidence-card" : ""}">
+      ${!prop.research_only && (Number(prop.confidence) >= 90 || Number(prop.grade_score) >= 90) ? `<span class="high-confidence-banner">${Number(prop.confidence) >= 90 ? "High model confidence" : "High EdgeIQ score"}</span>` : ""}
       <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" ${prop.research_only ? "disabled" : ""} />
       <span class="trending-rank">#${Number(prop.rank || index + 1)}</span>
       <span class="grade-chip" title="${prop.research_only ? "Live provider market; model grade unavailable" : "Grade combines model confidence and data quality"}">${escapeHtml(prop.research_only ? "Live" : (prop.grade || "-"))}</span>
       <strong>${escapeHtml(prop.player || "Player")}<small>${escapeHtml(prop.platform || platform)} · ${escapeHtml(prop.game || "Matchup")}</small></strong>
       <span class="trending-stat">${escapeHtml(prop.stat || "Stat")} ${prop.line ?? "-"}</span>
       <span class="trending-direction">${directionBadge(prop.direction || "Over")}</span>
-      <span class="trending-count">${prop.research_only ? "Provider market · results source needed" : `Score ${Number(prop.grade_score || 0).toFixed(1)}`}</span>
+      <span class="trending-count">${prop.research_only ? "Provider market · results source needed" : `EdgeIQ score ${Number(prop.grade_score || 0).toFixed(1)} · ${confidenceLabel(prop.confidence)}`}</span>
       <button class="secondary" type="button" data-add-trending-prop="${index}" ${prop.research_only ? 'disabled title="Automatic result verification is not connected yet"' : ""}>${prop.research_only ? "View only" : "Add"}</button>
     </div>
   `).join("") || `<div class="suggestion compact-suggestion">No ${escapeHtml(sport)} provider markets are available right now.</div>`;
@@ -3869,7 +3911,7 @@ async function analyzeEntry() {
     data = await api("/api/entries/analyze", {
       method: "POST",
       body: JSON.stringify(payload),
-      timeoutMs: 20000,
+      timeoutMs: 60000,
     });
   } catch (error) {
     if (!isCurrent()) return;
@@ -4399,7 +4441,8 @@ async function loadPending() {
     const maxDnp = Math.max(0, entry.props.length - 1);
     const isPaper = entry.entry_mode === "paper";
     return `
-    <div class="suggestion">
+    <div class="suggestion ${highConfidenceCard(entry) ? "high-confidence-card" : ""}">
+      ${highConfidenceCard(entry) ? `<div class="high-confidence-banner">${(entry.props || []).every((prop) => Number(prop.confidence) >= 90) ? "High model confidence · every leg at least 90%" : "High EdgeIQ score · 90+"}</div>` : ""}
       <div class="suggestion-top">
         <span class="pill">#${entry.id}</span>
         <strong>${entry.platform}</strong>
@@ -4407,6 +4450,7 @@ async function loadPending() {
         <span class="subtle">${formatDateTime(entry.placed_at)}</span>
       </div>
       <p>${propPickList(entry.props)}</p>
+      <p class="subtle">${confidenceLabel(entry.average_confidence)} average${entryModelScore(entry) !== null ? ` · EdgeIQ score ${entryModelScore(entry).toFixed(0)}` : ""}${isPaper ? ` · Avg leg bucket ${confidenceBucketLabel(entry.average_confidence)}` : ""} · ${entry.props.map((prop) => `${escapeHtml(prop.player)} ${confidenceLabel(prop.confidence)}`).join(" · ")}${calibrationTarget(entry) ? ` · Calibration target ${escapeHtml(calibrationTarget(entry))}` : ""}</p>
       <p>${isPaper ? "Paper calibration entry · no bankroll impact" : `${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout`}</p>
       <div class="form-grid compact-controls">
         <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" aria-label="DNP legs for entry ${entry.id}" />
@@ -5360,7 +5404,8 @@ function renderCompletedEntryHistory(entries) {
     ? `${entries.length} completed entries · ${entries.reduce((sum, entry) => sum + Number(entry.calibration_legs || 0), 0)} provider-backed calibration legs`
     : "No completed entries with leg details yet.";
   target.innerHTML = entries.map((entry) => `
-    <div class="suggestion entry-history-card">
+    <div class="suggestion entry-history-card ${entry.result === "Win" ? "winning-entry-card" : ""}">
+      ${entry.result === "Win" ? `<div class="winning-entry-banner">WIN · Entry settled</div>` : ""}
       <div class="suggestion-top">
         <div>
           <span class="pill">#${entry.id}</span>

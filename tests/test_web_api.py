@@ -3872,6 +3872,27 @@ def test_standard_calibration_batch_uses_fixed_leg_plan_and_distinct_targets(mon
     assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5]
 
 
+def test_standard_calibration_batch_samples_healthy_buckets_when_available(monkeypatch):
+    observed = []
+    created = []
+    monkeypatch.setattr(web_app, "_paper_calibration_suggestions", lambda *args, **kwargs: [object()])
+
+    def fake_append(suggestion, target, payload, backtest_data, signatures, rows, skipped):
+        observed.append(target["name"])
+        rows.append({"suggestion": {"leg_count": payload.leg_count}})
+        return True
+
+    monkeypatch.setattr(web_app, "_append_calibration_entry", fake_append)
+    web_app._create_standard_calibration_batch(
+        AutoPaperCalibrationPayload(sport="WNBA", standard_batch=True),
+        [{"type": "Confidence", "name": "40-50%", "sport": "WNBA"}],
+        {"calibration": [{"label": f"{low}-{low + 10}%", "bets": 100} for low in (40, 50, 60, 70, 80, 90)]},
+        set(), created, [], {}, {},
+    )
+
+    assert observed == ["90-100%", "80-90%", "70-80%", "60-70%", "50-60%"]
+
+
 def test_automatic_paper_samples_balances_providers_across_all_sports(monkeypatch):
     captured = {}
     def fake_auto_paper(payload):

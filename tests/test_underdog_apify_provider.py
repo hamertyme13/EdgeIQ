@@ -50,3 +50,28 @@ def test_fresh_cache_avoids_paid_run(monkeypatch, tmp_path):
     underdog_apify._write_cache([{"player": "Cached"}])
     monkeypatch.setattr(underdog_apify.requests, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network")))
     assert underdog_apify.fetch_projections() == [{"player": "Cached"}]
+
+
+def test_selected_sport_uses_separate_actor_run_and_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("APIFY_TOKEN", "test-token")
+    monkeypatch.setenv("EDGEIQ_UNDERDOG_APIFY_ENABLED", "1")
+    monkeypatch.setattr(underdog_apify, "CACHE_PATH", tmp_path / "underdog_apify.json")
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [_offer(league="NFL", stat="rushing_yds")]
+
+    def post(*args, **kwargs):
+        calls.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr(underdog_apify.requests, "post", post)
+    assert len(underdog_apify.fetch_projections("NFL")) == 1
+    assert calls == [{"leagues": ["NFL"]}]
+    assert (tmp_path / "underdog_apify_nfl.json").exists()
+    assert len(underdog_apify.fetch_projections("NFL")) == 1
+    assert len(calls) == 1

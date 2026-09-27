@@ -219,7 +219,8 @@ EdgeIQ currently normalizes player prop data from:
 - Underdog through an optional Zen Studio Apify fallback when `APIFY_TOKEN`
   and `EDGEIQ_UNDERDOG_APIFY_ENABLED=1` are set. Set
   `EDGEIQ_UNDERDOG_APIFY_LEAGUES=MLB,NFL,WNBA` to control the billable scope;
-  the actor result is cached for one hour. This is third-party offer evidence,
+  selected-sport generators fetch that league separately, and each actor result
+  is cached for one hour. This is third-party offer evidence,
   not an official sportsbook API or verified entry payout.
 - SharpAPI as an optional Underdog player-prop fallback when the direct feed
   returns no offers (`SHARPAPI_API_KEY`). SharpAPI's Underdog and PrizePicks
@@ -229,8 +230,9 @@ EdgeIQ currently normalizes player prop data from:
 - Sleeper when configured with a prop feed URL or file
 - Sleeper Picks through the optional Zen Studio Apify actor when `APIFY_TOKEN`
   and `EDGEIQ_SLEEPER_APIFY_ENABLED=1` are set. The default actor league is NFL;
-  set `EDGEIQ_SLEEPER_APIFY_LEAGUES=NFL,MLB,WNBA` to change it. Actor runs can
-  incur charges, so this feed is opt-in and cached for one hour. Codex's Apify
+  set `EDGEIQ_SLEEPER_APIFY_LEAGUES=NFL,MLB,WNBA` to change the unfiltered feed.
+  Selected-sport generators fetch their own league and cache it for one hour.
+  Actor runs can incur charges, so this feed is opt-in. Codex's Apify
   MCP sign-in does not provide credentials to the running EdgeIQ app. EdgeIQ
   keeps actor offers labeled as third-party data and verifies settlement
   eligibility before recommending them.

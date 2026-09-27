@@ -89,7 +89,7 @@ def test_underdog_fallback_failure_does_not_serve_stale_offers(monkeypatch):
         raise RuntimeError("tier restricted")
 
     monkeypatch.setattr(app.sharpapi, "fetch_player_props", denied)
-    monkeypatch.setattr(app.underdog_apify, "fetch_projections", lambda: [])
+    monkeypatch.setattr(app.underdog_apify, "fetch_projections", lambda _sport=None: [])
     assert app._fetch_underdog_platform_props() == []
 
 
@@ -98,5 +98,25 @@ def test_underdog_actor_fallback_after_sharpapi_rejection(monkeypatch):
 
     monkeypatch.setattr(app.underdog, "fetch_projections", lambda: [{"stale": True}])
     monkeypatch.setattr(app.sharpapi, "fetch_player_props", lambda _book: [])
-    monkeypatch.setattr(app.underdog_apify, "fetch_projections", lambda: [{"player": "Actor"}])
+    monkeypatch.setattr(app.underdog_apify, "fetch_projections", lambda _sport=None: [{"player": "Actor"}])
     assert app._fetch_underdog_platform_props() == [{"player": "Actor"}]
+
+
+def test_selected_underdog_sport_reaches_actor_fetch_boundary(monkeypatch):
+    from web import app
+
+    monkeypatch.setattr(app.underdog_apify, "configured", lambda: True)
+    monkeypatch.setattr(app.sleeper_apify, "configured", lambda: True)
+    calls = []
+
+    def fetch(platform, **kwargs):
+        calls.append((platform, kwargs))
+        return []
+
+    monkeypatch.setattr(app, "_fetch_platform_props", fetch)
+    app._fetch_selected_platform_props("Underdog", "NFL")
+    app._fetch_selected_platform_props("Sleeper", "NFL")
+    assert calls == [
+        ("Underdog", {"sport_filter": "NFL"}),
+        ("Sleeper", {"sport_filter": "NFL"}),
+    ]

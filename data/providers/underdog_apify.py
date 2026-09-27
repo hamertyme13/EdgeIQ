@@ -18,6 +18,11 @@ CACHE_PATH = Path(".edgeiq_cache/providers/underdog_apify.json")
 CACHE_TTL_SECONDS = 3600
 _LOCK = threading.Lock()
 _LEAGUES = {"CFB": "NCAAF", "CS": "CS2", "LOL": "LOL", "VALORANT": "VALORANT"}
+_ACTOR_LEAGUES = {
+    "NBA": "NBA", "WNBA": "WNBA", "NFL": "NFL", "NCAAF": "CFB",
+    "MLB": "MLB", "NHL": "NHL", "MMA": "MMA", "CS2": "CS",
+    "VALORANT": "Valorant", "LOL": "LoL", "DOTA2": "Dota",
+}
 
 
 def configured() -> bool:
@@ -26,15 +31,33 @@ def configured() -> bool:
     )
 
 
-def fetch_projections() -> list[dict]:
+def cache_status() -> dict:
+    cached = _read_cache()
+    return {
+        "configured": configured(),
+        "cached": cached is not None,
+        "age_seconds": cached[0] if cached else None,
+        "row_count": len(cached[1]) if cached else 0,
+        "fresh": bool(cached and cached[0] <= CACHE_TTL_SECONDS),
+    }
+
+
+def fetch_projections(sport: str | None = None) -> list[dict]:
     if not configured():
         return []
+    requested = str(sport or "").upper()
+    if requested and requested not in _ACTOR_LEAGUES:
+        return []
+    cache_path = CACHE_PATH.with_name(f"underdog_apify_{requested.lower()}.json") if requested else CACHE_PATH
     with _LOCK:
-        cached = _read_cache()
+        cached = _read_cache(cache_path)
         if cached and cached[0] <= CACHE_TTL_SECONDS:
             return cached[1]
         token = (os.getenv("APIFY_TOKEN") or os.getenv("APIFY_API_TOKEN") or "").strip()
-        leagues = [value.strip() for value in os.getenv("EDGEIQ_UNDERDOG_APIFY_LEAGUES", "MLB,NFL,WNBA").split(",") if value.strip()]
+        leagues = (
+            [_ACTOR_LEAGUES[requested]] if requested else
+            [value.strip() for value in os.getenv("EDGEIQ_UNDERDOG_APIFY_LEAGUES", "MLB,NFL,WNBA").split(",") if value.strip()]
+        )
         try:
             response = requests.post(
                 ACTOR_URL, params={"timeout": 45},
@@ -46,7 +69,7 @@ def fetch_projections() -> list[dict]:
             items = payload if isinstance(payload, list) else payload.get("items", [])
             observed_at = datetime.now(UTC).isoformat()
             rows = [prop for item in items if (prop := normalize_offer(item, observed_at)) is not None]
-            _write_cache(rows)
+            _write_cache(rows, cache_path)
             return rows
         except (requests.RequestException, ValueError, TypeError):
             return cached[1] if cached and cached[0] <= CACHE_TTL_SECONDS else []
@@ -104,17 +127,18 @@ def normalize_offer(item: dict, observed_at: str) -> dict | None:
     }
 
 
-def _read_cache() -> tuple[int, list[dict]] | None:
+def _read_cache(path: Path | None = None) -> tuple[int, list[dict]] | None:
     try:
-        payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        payload = json.loads((path or CACHE_PATH).read_text(encoding="utf-8"))
         age = max(0, int(time.time() - float(payload["saved_at"])))
         return age, [row for row in payload["rows"] if isinstance(row, dict)]
     except (OSError, KeyError, TypeError, ValueError):
         return None
 
 
-def _write_cache(rows: list[dict]) -> None:
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = CACHE_PATH.with_suffix(".tmp")
+def _write_cache(rows: list[dict], path: Path | None = None) -> None:
+    path = path or CACHE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps({"saved_at": time.time(), "rows": rows}), encoding="utf-8")
-    temporary.replace(CACHE_PATH)
+    temporary.replace(path)

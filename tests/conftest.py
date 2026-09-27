@@ -15,6 +15,12 @@ from repository.database import SessionLocal, initialize_database
 initialize_database()
 
 
+@pytest.fixture(autouse=True)
+def disable_billable_actor_runs(monkeypatch):
+    monkeypatch.delenv("EDGEIQ_SLEEPER_APIFY_ENABLED", raising=False)
+    monkeypatch.delenv("EDGEIQ_UNDERDOG_APIFY_ENABLED", raising=False)
+
+
 @pytest.fixture()
 def db_session():
     """Yield a SQLAlchemy session wrapped in a savepoint that is rolled back after each test.

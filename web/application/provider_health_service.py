@@ -5,7 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from data.providers import draftkings_pick6, pandascore, sleeper, statshawk
+from data.providers import draftkings_pick6, pandascore, sleeper, sleeper_apify, statshawk, underdog_apify
 from data.providers.cache import cache_metrics
 from repository.repositories.settings_repository import SettingsRepository
 from utils.time import utc_now
@@ -21,7 +21,7 @@ def build_data_health_payload(
 ) -> dict:
     providers = [
         provider_health_row("PrizePicks", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
-        provider_health_row("Underdog", "props", configured=True, key_env="", settlement_status_key=settlement_status_key),
+        underdog_health_row(settlement_status_key),
         draftkings_pick6_health_row(settlement_status_key),
         sleeper_health_row(),
         provider_health_row(
@@ -285,6 +285,36 @@ def draftkings_pick6_health_row(settlement_status_key: str) -> dict:
     return row
 
 
+def underdog_health_row(settlement_status_key: str) -> dict:
+    row = provider_health_row(
+        "Underdog", "player props from direct or optional third-party feeds",
+        configured=True, key_env="", settlement_status_key=settlement_status_key,
+    )
+    actor = underdog_apify.cache_status()
+    row["actor_fallback"] = actor
+    if actor["configured"] and actor["fresh"] and actor["row_count"]:
+        row.update({
+            "status": "fresh", "row_count": actor["row_count"],
+            "age_minutes": actor["age_seconds"] // 60,
+            "producing_data": True, "verified_connection": True,
+            "message": (
+                f"Underdog has {actor['row_count']} recent third-party actor offers. "
+                "Confirm each line in Underdog before placing an entry."
+            ),
+        })
+    elif row["status"] == "available":
+        row.update({
+            "status": "configured",
+            "message": (
+                "Underdog has not completed a verified prop refresh. "
+                "The optional Apify fallback is enabled."
+                if actor["configured"] else
+                "Underdog has not completed a verified prop refresh; the optional Apify fallback is off."
+            ),
+        })
+    return row
+
+
 def provider_health_message(
     name: str,
     status: str,
@@ -356,27 +386,40 @@ def pandascore_health_row(settlement_status_key: str) -> dict:
 
 def sleeper_health_row() -> dict:
     status = sleeper.public_api_status()
+    actor = sleeper_apify.cache_status()
     player_cache = status["player_cache"]
     cache_label = "fresh" if player_cache["fresh"] else "not warmed"
     if player_cache["cached"] and not player_cache["fresh"]:
         cache_label = "stale"
-    return {
+    row = {
         "name": "Sleeper",
         "purpose": "public NFL player metadata/trends; optional prop-feed import",
         "status": "available" if status["props_configured"] else "context_only",
         "configured": status["props_configured"],
-        "key_env": "",
-        "has_key": False,
-        "auth_required": False,
+        "key_env": "APIFY_TOKEN" if actor["configured"] else "",
+        "has_key": actor["configured"],
+        "auth_required": actor["configured"],
         "read_only": True,
         "props_configured": status["props_configured"],
         "player_cache": player_cache,
+        "actor_fallback": actor,
         "message": (
-            "No API key needed. Public read-only trends are available; "
+            "Public read-only trends need no key; "
             f"player cache is {cache_label}. "
-            f"{'Pick em prop feed configured.' if status['props_configured'] else 'Pick em lines are not connected; configure EDGEIQ_SLEEPER_PROPS_URL or EDGEIQ_SLEEPER_PROPS_FILE to enable its generator.'}"
+            f"{'Apify Pick em actor is enabled.' if actor['configured'] else 'Pick em prop feed configured.' if status['props_configured'] else 'Pick em lines are not connected; configure a feed or enable the Apify actor.'}"
         ),
     }
+    if actor["configured"] and actor["fresh"] and actor["row_count"]:
+        row.update({
+            "status": "fresh", "row_count": actor["row_count"],
+            "age_minutes": actor["age_seconds"] // 60,
+            "producing_data": True, "verified_connection": True,
+            "message": (
+                f"Sleeper has {actor['row_count']} recent third-party actor offers. "
+                "Confirm each line in Sleeper before placing an entry."
+            ),
+        })
+    return row
 
 
 def _safe_json_loads(value: str) -> dict:

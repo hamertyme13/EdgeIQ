@@ -36,6 +36,7 @@ import data.providers.pandascore as pandascore
 import data.providers.prizepicks as prizepicks
 import data.providers.sharpapi as sharpapi
 import data.providers.sleeper as sleeper
+import data.providers.sleeper_apify as sleeper_apify
 import data.providers.sportsdataio as sportsdataio
 import data.providers.statshawk as statshawk
 import data.providers.underdog as underdog
@@ -1528,10 +1529,10 @@ def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
             ]
     elif len(selected) > 1:
         with ThreadPoolExecutor(max_workers=len(selected)) as pool:
-            batches = list(pool.map(_fetch_platform_props, selected))
+            batches = list(pool.map(lambda name: _fetch_selected_platform_props(name, sport_filter), selected))
         props = [prop for batch in batches for prop in batch]
     else:
-        props = _fetch_platform_props(selected[0]) if selected else []
+        props = _fetch_selected_platform_props(selected[0], sport_filter) if selected else []
 
     if sport_filter:
         props = [prop for prop in props if prop.get("league", "").upper() == sport_filter]
@@ -1556,6 +1557,16 @@ def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
     return rows
 
 
+def _fetch_selected_platform_props(platform: str, sport_filter: str | None) -> list[dict]:
+    canonical = _canonical_platform(platform)
+    if sport_filter and (
+        (canonical == "Underdog" and underdog_apify.configured())
+        or (canonical == "Sleeper" and sleeper_apify.configured())
+    ):
+        return _fetch_platform_props(platform, sport_filter=sport_filter)
+    return _fetch_platform_props(platform)
+
+
 def _cached_props(platform: str, sport_filter: str | None) -> list[dict]:
     """Return already-loaded provider offers without starting network work."""
     rows: list[dict] = []
@@ -1563,7 +1574,8 @@ def _cached_props(platform: str, sport_filter: str | None) -> list[dict]:
         for platform_name in _selected_platforms(platform):
             canonical = _canonical_platform(platform_name)
             cache_key = f"{canonical}:{_platform_fetcher_cache_token(canonical)}"
-            cached = _PROP_FETCH_CACHE.get(cache_key)
+            scoped_key = f"{cache_key}:{sport_filter}" if canonical in {"Underdog", "Sleeper"} and sport_filter else cache_key
+            cached = _PROP_FETCH_CACHE.get(scoped_key) or _PROP_FETCH_CACHE.get(cache_key)
             if cached:
                 rows.extend(dict(prop) for prop in cached[1])
     if sport_filter:
@@ -1574,12 +1586,20 @@ def _cached_props(platform: str, sport_filter: str | None) -> list[dict]:
     return rows
 
 
-def _fetch_platform_props(platform: str, *, force_refresh: bool = False) -> list[dict]:
+def _fetch_platform_props(
+    platform: str, *, force_refresh: bool = False, sport_filter: str | None = None,
+) -> list[dict]:
     canonical = _canonical_platform(platform)
     fetcher = _platform_prop_fetcher(canonical)
     if fetcher is None:
         return []
     cache_key = f"{canonical}:{_platform_fetcher_cache_token(canonical)}"
+    if canonical == "Underdog" and sport_filter:
+        cache_key = f"{cache_key}:{sport_filter}"
+        fetcher = lambda: _fetch_underdog_platform_props(sport_filter)
+    elif canonical == "Sleeper" and sport_filter:
+        cache_key = f"{cache_key}:{sport_filter}"
+        fetcher = lambda: sleeper.fetch_projections(sport_filter)
     now = time.monotonic()
     with _PROP_FETCH_LOCK:
         cached = _PROP_FETCH_CACHE.get(cache_key)
@@ -1634,7 +1654,7 @@ def _fetch_prizepicks_platform_props() -> list[dict]:
     return prizepicks.fetch_projections(limit=1000)
 
 
-def _fetch_underdog_platform_props() -> list[dict]:
+def _fetch_underdog_platform_props(sport_filter: str | None = None) -> list[dict]:
     try:
         direct = underdog.fetch_projections()
     except Exception:
@@ -1649,7 +1669,7 @@ def _fetch_underdog_platform_props() -> list[dict]:
     except Exception as exc:
         _log.warning("Underdog fallback unavailable: %s", type(exc).__name__)
     try:
-        return underdog_apify.fetch_projections()
+        return underdog_apify.fetch_projections(sport_filter)
     except Exception as exc:
         _log.warning("Underdog actor fallback unavailable: %s", type(exc).__name__)
         return []
@@ -2630,6 +2650,24 @@ def _create_standard_calibration_batch(
 ) -> None:
     plan = list(payload.batch_plan or [2, 2, 3, 4, 5])
     confidence_targets = [target for target in targets if target.get("type") == "Confidence"]
+    existing_buckets = {target.get("name") for target in confidence_targets}
+    for bucket in backtest_data.get("calibration", []):
+        bounds = _confidence_bucket_bounds(bucket.get("label", ""))
+        if bounds is None:
+            continue
+        low, high = bounds
+        name = f"{low:g}-{high:g}%"
+        if name in existing_buckets:
+            continue
+        confidence_targets.append({
+            "type": "Confidence", "name": name,
+            "sport": None if payload.sport == "All Sports" else payload.sport.upper(),
+            "confidence_low": low, "confidence_high": high,
+            "sample_size": int(bucket.get("bets") or 0),
+            "reason": f"Collect an independent sample for the {name} confidence bucket.",
+        })
+        existing_buckets.add(name)
+    confidence_targets.sort(key=lambda target: float(target.get("confidence_low") or 0), reverse=True)
     other_targets = [target for target in targets if target.get("type") != "Confidence"]
     ordered_targets = confidence_targets + other_targets
     used_targets: set[tuple[str, str, str]] = set()
@@ -2639,10 +2677,9 @@ def _create_standard_calibration_batch(
         fresh_targets = [target for target in ordered_targets if _calibration_target_key(target) not in used_targets]
         coverage_targets = [target for target in ordered_targets if target.get("type") == "Coverage"]
         candidate_targets: list[dict] = []
-        # A missing confidence segment should not force dozens of repeated
-        # combination searches. Try the three highest-priority fresh targets,
-        # then the verified-board fallback for this card size.
-        for target in fresh_targets[:3] + coverage_targets:
+        # Try distinct confidence buckets first; only use general coverage
+        # when today's verified offers cannot form a card for a bucket.
+        for target in fresh_targets + coverage_targets:
             if target not in candidate_targets:
                 candidate_targets.append(target)
         created_for_slot = False

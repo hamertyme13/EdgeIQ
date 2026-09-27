@@ -1693,6 +1693,39 @@ p { color: var(--muted); margin: 5px 0 0; }
   padding: 8px 4px;
   border-bottom: 1px solid rgba(255, 255, 255, .07);
 }
+.high-confidence-card {
+  border-color: rgba(57, 255, 136, .65) !important;
+  box-shadow: inset 0 0 0 1px rgba(57, 255, 136, .18), 0 0 16px rgba(57, 255, 136, .12);
+}
+.high-confidence-banner,
+.winning-entry-banner {
+  display: block;
+  padding: 7px 10px;
+  border: 1px solid rgba(57, 255, 136, .7);
+  border-radius: 6px;
+  background: rgba(57, 255, 136, .16);
+  color: #75ffae;
+  font-size: .8rem;
+  font-weight: 900;
+  line-height: 1.3;
+}
+.trending-prop-row .high-confidence-banner {
+  grid-column: 1 / -1;
+}
+.opportunity-row .high-confidence-banner {
+  grid-column: 1 / -1;
+}
+.opportunity-confidence {
+  display: inline-block;
+  margin-left: 5px;
+  color: #75ffae;
+  font-size: .74rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.winning-entry-card {
+  border-color: rgba(57, 255, 136, .75) !important;
+}
 .trending-prop-row .opportunity-select {
   justify-self: center;
 }

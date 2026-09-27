@@ -33,3 +33,40 @@ def test_statshawk_api_usage_is_attributed_to_provider():
     row = provider_health_service.provider_api_usage("StatsHawk", usage)
     assert row["network_requests"] == 2
     assert row["requests_avoided"] == 3
+def test_underdog_health_distinguishes_unverified_direct_feed_and_actor(monkeypatch):
+    from web.application import provider_health_service as service
+
+    monkeypatch.setattr(service, "provider_health_row", lambda *args, **kwargs: {
+        "status": "available", "row_count": 0, "producing_data": False,
+    })
+    monkeypatch.setattr(service.underdog_apify, "cache_status", lambda: {
+        "configured": False, "fresh": False, "row_count": 0, "age_seconds": None,
+    })
+    row = service.underdog_health_row("settlement")
+    assert row["status"] == "configured"
+    assert not row["producing_data"]
+
+    monkeypatch.setattr(service.underdog_apify, "cache_status", lambda: {
+        "configured": True, "fresh": True, "row_count": 20, "age_seconds": 90,
+    })
+    row = service.underdog_health_row("settlement")
+    assert row["status"] == "fresh"
+    assert row["row_count"] == 20
+    assert "third-party" in row["message"]
+
+
+def test_sleeper_health_labels_actor_auth_and_freshness(monkeypatch):
+    from web.application import provider_health_service as service
+
+    monkeypatch.setattr(service.sleeper, "public_api_status", lambda: {
+        "props_configured": True,
+        "player_cache": {"cached": False, "fresh": False},
+    })
+    monkeypatch.setattr(service.sleeper_apify, "cache_status", lambda: {
+        "configured": True, "fresh": True, "row_count": 37, "age_seconds": 120,
+    })
+    row = service.sleeper_health_row()
+    assert row["status"] == "fresh"
+    assert row["auth_required"]
+    assert row["key_env"] == "APIFY_TOKEN"
+    assert "third-party" in row["message"]
