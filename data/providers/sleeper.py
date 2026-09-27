@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from data.providers import sleeper_apify
 from data.providers.cache import cache_status, get_json
 from data.providers.generic_props import fetch_configured_props
 from utils.entity_normalization import canonical_person_key
@@ -26,7 +27,8 @@ _HEADERS = {
 
 
 def fetch_projections() -> list[dict]:
-    return fetch_configured_props("Sleeper", "SLEEPER")
+    configured_rows = fetch_configured_props("Sleeper", "SLEEPER")
+    return configured_rows if configured_rows else sleeper_apify.fetch_projections()
 
 
 def public_api_status(sport: str = "NFL") -> dict:
@@ -36,6 +38,7 @@ def public_api_status(sport: str = "NFL") -> dict:
     props_configured = bool(
         os.getenv("EDGEIQ_SLEEPER_PROPS_URL", "").strip()
         or os.getenv("EDGEIQ_SLEEPER_PROPS_FILE", "").strip()
+        or sleeper_apify.configured()
     )
     return {
         "base_url": _BASE,

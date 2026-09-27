@@ -14,14 +14,18 @@ const assert = require('node:assert/strict');
 const source = require('fs').readFileSync('web/static/app.js', 'utf8');
 const elements = {};
 global.$ = id => elements[id] ||= {disabled:true, textContent:''};
-global.state = {entryProps:[{line:1},{line:2}]};
+global.state = {entryProps:[{line:1},{line:2}], recommendationSnapshotId:'snapshot-123'};
 global.entryPayload = () => ({props:state.entryProps, entry_mode:'paper'});
 global.entrySourcePlatforms = () => ['Sleeper'];
 global.entryAnalysisValidationMessage = () => '';
 global.trackProductEvent = global.renderEntryProps = global.syncEntryActionLabels = () => {};
 let rendered = null;
 global.renderAnalysis = data => rendered = data;
-global.renderEntryPropsFromAnalyzed = props => {state.lastAnalysis=null; state.entryProps=props;};
+global.renderEntryPropsFromAnalyzed = (props, invalidateReview) => {
+  assert.equal(invalidateReview, false);
+  state.lastAnalysis=null;
+  state.entryProps=props;
+};
 eval(source.slice(source.indexOf('async function analyzeEntry('), source.indexOf('async function reviewEntryWithAi(')));
 (async () => {
   let finish;
@@ -39,6 +43,7 @@ eval(source.slice(source.indexOf('async function analyzeEntry('), source.indexOf
   await second;
   assert.equal(state.lastAnalysis,data);
   assert.equal(rendered,data);
+  assert.equal(state.recommendationSnapshotId,'snapshot-123');
   assert.equal($('place-entry').disabled,false);
 })().catch(error => {console.error(error); process.exit(1);});
 '''

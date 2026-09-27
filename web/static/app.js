@@ -1628,6 +1628,7 @@ function bindDailyBriefingSummaryActions() {
       const game = state.dailyBriefing?.games_today?.[Number(button.dataset.addGamePrediction)];
       const prediction = game?.prediction_leg;
       if (!prediction) return;
+      invalidateEntryReview();
       state.entryProps = uniqueUploadedProps([...state.entryProps, prediction]).map(entryPropFromFeed);
       syncEntryPlatformFromProps();
       if ($("entry-mode")) $("entry-mode").value = "paper";
@@ -3327,6 +3328,7 @@ function addFeedProp(prop) {
     setView("entries");
     return false;
   }
+  invalidateEntryReview();
   state.entryProps.push(nextProp);
   trackProductEvent("recommendation_added", "prop", nextProp.recommendation_snapshot_id || `${nextProp.player}|${nextProp.stat}`, { platform: nextProp.platform, sport: nextProp.sport });
   state.recommendationSnapshotId = nextProp.recommendation_snapshot_id || state.recommendationSnapshotId;
@@ -3442,6 +3444,7 @@ function renderEntryProps() {
         $("entry-status").textContent = "This direction is not available for the selected offer. Choose an allowed direction or reload the sportsbook offer.";
         return;
       }
+      invalidateEntryReview();
       state.entryProps[index] = {
         ...state.entryProps[index],
         player: value("player").trim(),
@@ -3450,22 +3453,14 @@ function renderEntryProps() {
         projection: value("projection") === "" ? null : Number(value("projection")),
         direction: value("direction"),
       };
-      state.lastAnalysis = null;
-      state.lastEntryPayload = null;
-      $("ai-review-entry").disabled = true;
-      $("prepare-handoff").disabled = true;
-      $("place-entry").disabled = true;
       renderEntryProps();
       $("entry-status").textContent = "Leg updated. Analyze the entry again before saving.";
     });
   });
   document.querySelectorAll("[data-remove-prop]").forEach((button) => {
     button.addEventListener("click", () => {
+      invalidateEntryReview();
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
-      state.lastEntryPayload = null;
-      $("ai-review-entry").disabled = true;
-      $("prepare-handoff").disabled = true;
-      $("place-entry").disabled = true;
       renderEntryProps();
     });
   });
@@ -3838,11 +3833,7 @@ function renderAnalysis(data) {
         state.entryProps.splice(index, 1);
         $("entry-status").textContent = `${correction.player} removed. Analyze again to refresh the verdict.`;
       }
-      state.lastAnalysis = null;
-      state.lastEntryPayload = null;
-      $("ai-review-entry").disabled = true;
-      $("prepare-handoff").disabled = true;
-      $("place-entry").disabled = true;
+      invalidateEntryReview();
       renderEntryProps();
       $("entry-analysis").classList.add("muted-card");
       $("entry-analysis").innerHTML = "Analyze the revised entry to see its updated score, payout economics, and release checks.";
@@ -3886,7 +3877,7 @@ async function analyzeEntry() {
     return;
   }
   if (!isCurrent()) return;
-  renderEntryPropsFromAnalyzed(data.entry.props);
+  renderEntryPropsFromAnalyzed(data.entry.props, false);
   state.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
@@ -4049,8 +4040,9 @@ function renderPlacementAudit(data) {
   `;
 }
 
-function renderEntryPropsFromAnalyzed(props) {
-  invalidateEntryReview();
+function renderEntryPropsFromAnalyzed(props, invalidateReview = true) {
+  if (props == null) return;
+  if (invalidateReview) invalidateEntryReview();
   state.entryProps = uniqueUploadedProps(props).map(entryPropFromFeed);
   syncEntryPlatformFromProps();
   renderEntryProps();
@@ -4111,36 +4103,45 @@ function chooseEntrySaveMode(reasons, paidAllowed = true) {
 
 async function placeEntry(triggerButton = $("place-entry")) {
   if (!state.lastEntryPayload) return false;
+  const reviewedPayload = state.lastEntryPayload;
+  const reviewRevision = state.entryAnalysisRequestId;
+  const reviewIsCurrent = () => state.lastEntryPayload === reviewedPayload
+    && state.entryAnalysisRequestId === reviewRevision;
+  const payload = {...reviewedPayload, props: state.entryProps.map((prop) => ({...prop}))};
   const sourcePlatforms = syncEntryPlatformFromProps();
   if (sourcePlatforms.length > 1) {
     $("entry-status").textContent = `This entry mixes ${sourcePlatforms.join(" and ")}. Build one entry per sportsbook.`;
     finishCircuitFeedback(triggerButton, "warning");
     return false;
   }
-  state.lastEntryPayload.entry_mode = $("entry-mode")?.value || state.lastEntryPayload.entry_mode || "real";
-  state.lastEntryPayload.wager = state.lastEntryPayload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || state.lastEntryPayload.wager || 0);
-  state.lastEntryPayload.multiplier = Number($("entry-multiplier").value || state.lastEntryPayload.multiplier || 1);
-  state.lastEntryPayload.payout_type = $("entry-payout-type")?.value || state.lastEntryPayload.payout_type || "standard";
-  state.lastEntryPayload.payout_schedule = parsePayoutSchedule($("entry-payout-schedule")?.value || "");
-  state.lastEntryPayload.platform = sourcePlatforms[0] || $("entry-platform").value || state.lastEntryPayload.platform || "PrizePicks";
-  state.lastEntryPayload.props = state.entryProps;
-  state.lastEntryPayload.tracking_override = false;
-  if (state.lastEntryPayload.entry_mode !== "paper" && state.lastEntryPayload.wager <= 0) {
+  payload.entry_mode = $("entry-mode")?.value || payload.entry_mode || "real";
+  payload.wager = payload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || payload.wager || 0);
+  payload.multiplier = Number($("entry-multiplier").value || payload.multiplier || 1);
+  payload.payout_type = $("entry-payout-type")?.value || payload.payout_type || "standard";
+  payload.payout_schedule = parsePayoutSchedule($("entry-payout-schedule")?.value || "");
+  payload.platform = sourcePlatforms[0] || $("entry-platform").value || payload.platform || "PrizePicks";
+  payload.tracking_override = false;
+  if (payload.entry_mode !== "paper" && payload.wager <= 0) {
     $("entry-status").textContent = "Enter the amount wagered before placing.";
     playCircuitSound("warning");
     finishCircuitFeedback(triggerButton, "warning");
     return false;
   }
-  let isPaper = state.lastEntryPayload.entry_mode === "paper";
+  let isPaper = payload.entry_mode === "paper";
   let placementCheck = { ok: true, blocks: [], warnings: [] };
   let modeChoiceConfirmed = false;
   if (!isPaper) {
     try {
-      placementCheck = await api("/api/entries/placement-check", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
+      placementCheck = await api("/api/entries/placement-check", { method: "POST", body: JSON.stringify(payload) });
     } catch (error) {
+      if (!reviewIsCurrent()) return false;
       $("entry-status").textContent = `Provider check needs review: ${humanizeErrorText(error.message)}`;
       playCircuitSound("warning");
       finishCircuitFeedback(triggerButton, "warning");
+      return false;
+    }
+    if (!reviewIsCurrent()) {
+      $("entry-status").textContent = "Entry changed during the provider check. Analyze the revised entry before saving.";
       return false;
     }
     renderPlacementAudit(placementCheck);
@@ -4150,6 +4151,7 @@ async function placeEntry(triggerButton = $("place-entry")) {
         ? placementCheck.blocks || [blockMessage]
         : placementCheck.tracking_blocks || [blockMessage];
       const choice = await chooseEntrySaveMode(choiceReasons, Boolean(placementCheck.tracking_override_allowed));
+      if (!reviewIsCurrent()) return false;
       if (choice === "cancel") {
         $("entry-status").textContent = "Entry save canceled. No wager or paper result was recorded.";
         playCircuitSound("warning");
@@ -4157,14 +4159,14 @@ async function placeEntry(triggerButton = $("place-entry")) {
         return false;
       }
       if (choice === "paper") {
-        state.lastEntryPayload.entry_mode = "paper";
-        state.lastEntryPayload.wager = 0;
-        state.lastEntryPayload.tracking_override = false;
+        payload.entry_mode = "paper";
+        payload.wager = 0;
+        payload.tracking_override = false;
         $("entry-mode").value = "paper";
         isPaper = true;
         syncEntryActionLabels();
       } else {
-        state.lastEntryPayload.tracking_override = true;
+        payload.tracking_override = true;
       }
       modeChoiceConfirmed = true;
     }
@@ -4182,36 +4184,34 @@ async function placeEntry(triggerButton = $("place-entry")) {
     ? "Loss Protection is active and EdgeIQ recommends that you do not place this entry. Did you place it and want EdgeIQ to track it?"
     : "Will you place this entry?";
   const confirmed = modeChoiceConfirmed || window.confirm(
-    (state.lastEntryPayload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : paidPrompt)
+    (payload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : paidPrompt)
     + checkText
     + valueText
   );
-  if (!confirmed) return false;
+  if (!confirmed || !reviewIsCurrent()) return false;
   triggerButton.textContent = "Saving...";
   let data;
   try {
-    data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(state.lastEntryPayload) });
-    trackProductEvent("entry_saved", "entry", data.id, { mode: state.lastEntryPayload.entry_mode, platform: state.lastEntryPayload.platform, legs: state.lastEntryPayload.props.length });
+    data = await api("/api/entries/place", { method: "POST", body: JSON.stringify(payload) });
+    trackProductEvent("entry_saved", "entry", data.id, { mode: payload.entry_mode, platform: payload.platform, legs: payload.props.length });
   } catch (error) {
     $("entry-status").textContent = humanizeErrorText(error.message);
     playCircuitSound("warning");
     finishCircuitFeedback(triggerButton, "warning");
     return false;
   }
-  $("entry-status").textContent = state.lastEntryPayload.entry_mode === "paper"
+  $("entry-status").textContent = payload.entry_mode === "paper"
     ? `Paper entry #${data.id} saved${data.settlement_tracking === "verified" ? " for verified calibration." : " with manual final-stat verification required."}`
-    : `Entry #${data.id} saved as pending${data.tracking_override ? " by user override" : ""}. Bankroll reserved ${money(state.lastEntryPayload.wager)}.${data.settlement_tracking === "verified" ? "" : " Manual final-stat verification is required for at least one leg."}`;
+    : `Entry #${data.id} saved as pending${data.tracking_override ? " by user override" : ""}. Bankroll reserved ${money(payload.wager)}.${data.settlement_tracking === "verified" ? "" : " Manual final-stat verification is required for at least one leg."}`;
   playCircuitSound("success");
   finishCircuitFeedback(triggerButton, "success");
-  state.entryProps = [];
-  state.lastEntryPayload = null;
-  state.lastAnalysis = null;
-  state.recommendationOrigin = false;
-  state.recommendationSnapshotId = "";
-  if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
-  $("prepare-handoff").disabled = true;
-  $("place-entry").disabled = true;
-  renderEntryProps();
+  if (reviewIsCurrent()) {
+    state.entryProps = [];
+    invalidateEntryReview();
+    state.recommendationOrigin = false;
+    if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
+    renderEntryProps();
+  }
   Promise.allSettled([loadPending(), loadDashboard(), loadCommandCenter()]).then((results) => {
     const failure = results.find((result) => result.status === "rejected");
     if (failure) console.warn("Post-save panel refresh did not finish", failure.reason);
@@ -6372,6 +6372,8 @@ function bindEvents() {
       payoutType: $("entry-payout-type").value,
       sport: $("prop-sport").value,
     };
+    invalidateEntryReview();
+    state.recommendationOrigin = false;
     state.entryProps.push(prop);
     $("prop-form").reset();
     $("entry-platform").value = entryDefaults.platform;
@@ -6395,26 +6397,27 @@ function bindEvents() {
       playCircuitSound("warning");
       return;
     }
-    state.lastEntryPayload = null;
-    state.lastAnalysis = null;
+    invalidateEntryReview();
     state.recommendationOrigin = false;
-    state.recommendationSnapshotId = "";
-    $("ai-review-entry").disabled = true;
-    $("prepare-handoff").disabled = true;
-    $("place-entry").disabled = true;
     renderEntryProps();
     $("entry-status").textContent = `New props will be validated against ${platform}.`;
   });
   $("entry-mode").addEventListener("change", () => {
-    state.lastEntryPayload = null;
-    state.lastAnalysis = null;
-    $("ai-review-entry").disabled = true;
-    $("prepare-handoff").disabled = true;
-    $("place-entry").disabled = true;
+    invalidateEntryReview();
     syncEntryActionLabels();
     $("entry-status").textContent = $("entry-mode").value === "paper"
       ? "Paper mode selected. Analyze, then save a zero-wager calibration entry."
       : "Paid mode selected. Analyze again to run provider EV and release checks.";
+  });
+  ["entry-wager", "entry-multiplier", "entry-payout-schedule"].forEach((id) => {
+    $(id)?.addEventListener("input", () => {
+      invalidateEntryReview();
+      $("entry-status").textContent = "Entry terms changed. Analyze again before saving.";
+    });
+  });
+  $("entry-payout-type")?.addEventListener("change", () => {
+    invalidateEntryReview();
+    $("entry-status").textContent = "Payout type changed. Analyze again before saving.";
   });
   $("analyze-entry").addEventListener("click", () => withButtonBusy("analyze-entry", "Analyzing...", analyzeEntry));
   $("ai-review-entry").addEventListener("click", reviewEntryWithAi);
@@ -6422,13 +6425,9 @@ function bindEvents() {
   $("place-entry").addEventListener("click", (event) => placeEntryFromButton(event.currentTarget));
   syncEntryActionLabels();
   $("clear-entry").addEventListener("click", () => {
+    invalidateEntryReview();
     state.entryProps = [];
-    state.lastEntryPayload = null;
-    state.lastAnalysis = null;
     state.recommendationOrigin = false;
-    $("ai-review-entry").disabled = true;
-    $("prepare-handoff").disabled = true;
-    $("place-entry").disabled = true;
     $("entry-handoff").classList.add("muted-card");
     $("entry-handoff").textContent = "No handoff prepared yet.";
     renderEmptyEntryAnalysis();
@@ -6537,8 +6536,14 @@ function bindEvents() {
   $("mobile-slip-toggle").addEventListener("click", toggleMobileSlip);
   $("mobile-analyze-entry").addEventListener("click", () => withButtonBusy("mobile-analyze-entry", "Analyzing...", mobileAnalyzeEntry));
   $("mobile-place-entry").addEventListener("click", mobilePlaceEntry);
-  $("mobile-slip-wager").addEventListener("input", () => { $("entry-wager").value = $("mobile-slip-wager").value; });
-  $("mobile-slip-multiplier").addEventListener("input", () => { $("entry-multiplier").value = $("mobile-slip-multiplier").value; });
+  $("mobile-slip-wager").addEventListener("input", () => {
+    $("entry-wager").value = $("mobile-slip-wager").value;
+    invalidateEntryReview();
+  });
+  $("mobile-slip-multiplier").addEventListener("input", () => {
+    $("entry-multiplier").value = $("mobile-slip-multiplier").value;
+    invalidateEntryReview();
+  });
   $("onboarding-form").addEventListener("submit", saveOnboarding);
   $("onboarding-skip").addEventListener("click", skipOnboarding);
   $("onboarding-upload-history").addEventListener("click", openHistoryUploadFromOnboarding);

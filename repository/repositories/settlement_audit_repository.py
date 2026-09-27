@@ -427,6 +427,7 @@ def _provider_label(value: object) -> str:
         "espn_live": "ESPN official box score",
         "sportsdataio": "SportsDataIO cross-check",
         "pandascore_verified": "PandaScore",
+        "statshawk": "StatsHawk final box score",
     }
     return aliases.get(label.lower(), label)
 

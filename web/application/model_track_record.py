@@ -36,7 +36,7 @@ def summarize_track_record(rows: list[dict]) -> dict:
             valid_push = isfinite(float(row["actual"])) and isfinite(float(row["line"])) and float(row["actual"]) == float(row["line"])
         except (ValueError, TypeError, KeyError):
             valid_push = False
-        if (row.get("result") == "Push" and row.get("outcome_source") in {"espn", "mlb_statsapi", "nba_api", "pandascore"}
+        if (row.get("result") == "Push" and row.get("outcome_source") in {"espn", "mlb_statsapi", "nba_api", "pandascore", "statshawk"}
                 and settled and game and settled >= game and valid_push):
             pushes += 1
     decisions = sum(item["settled_predictions"] for item in summary["versions"])

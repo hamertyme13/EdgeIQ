@@ -65,6 +65,7 @@ NEWSAPI_KEY=your_newsapi_key
 OPENWEATHER_API_KEY=your_openweather_api_key
 SPORTSDATAIO_API_KEY=your_sportsdataio_api_key
 PANDASCORE_API_KEY=your_pandascore_api_key
+STATSHAWK_API_KEY=your_statshawk_rest_api_key  # optional team-sport final box score fallback
 PANDASCORE_HISTORICAL_STATS_ENABLED=true  # only after the player-stat endpoint succeeds
 # Optional alert delivery. Email uses SMTP; SMS uses Twilio.
 EDGEIQ_SMTP_HOST=smtp.example.com
@@ -81,6 +82,16 @@ DATABASE_URL=sqlite:///edgeiq.db
 
 `DATABASE_URL` defaults to `sqlite:///edgeiq.db`. Runtime files such as the
 SQLite database, provider cache, and logs are intentionally ignored by git.
+
+StatsHawk is an optional final-stat fallback for unresolved NBA, WNBA, NCAAM,
+NCAAW, MLB, NFL, NCAAF, NHL, MLS, EPL, and UCL legs with supported stat phases. Set
+`STATSHAWK_API_KEY` in the app's runtime environment (and in Railway separately
+if hosted). Connecting the Codex plugin alone does not provide the running app
+with REST credentials. EdgeIQ only imports finalized, exact-match box scores;
+this source does not verify sportsbook lines, offer availability, or payouts.
+Only markets with a matching final game and an available player stat phase are
+eligible; missing phases remain unresolved. Tennis, golf, MMA, racing, and
+esports continue to use their existing evidence paths.
 
 ## Run
 
@@ -205,7 +216,24 @@ EdgeIQ currently normalizes player prop data from:
 
 - PrizePicks
 - Underdog
+- Underdog through an optional Zen Studio Apify fallback when `APIFY_TOKEN`
+  and `EDGEIQ_UNDERDOG_APIFY_ENABLED=1` are set. Set
+  `EDGEIQ_UNDERDOG_APIFY_LEAGUES=MLB,NFL,WNBA` to control the billable scope;
+  the actor result is cached for one hour. This is third-party offer evidence,
+  not an official sportsbook API or verified entry payout.
+- SharpAPI as an optional Underdog player-prop fallback when the direct feed
+  returns no offers (`SHARPAPI_API_KEY`). SharpAPI's Underdog and PrizePicks
+  books require an eligible SharpAPI subscription and book selection. The
+  fallback uses active, pregame main lines only; its third-party prices do not
+  establish an exact pick'em payout or official final-stat verification.
 - Sleeper when configured with a prop feed URL or file
+- Sleeper Picks through the optional Zen Studio Apify actor when `APIFY_TOKEN`
+  and `EDGEIQ_SLEEPER_APIFY_ENABLED=1` are set. The default actor league is NFL;
+  set `EDGEIQ_SLEEPER_APIFY_LEAGUES=NFL,MLB,WNBA` to change it. Actor runs can
+  incur charges, so this feed is opt-in and cached for one hour. Codex's Apify
+  MCP sign-in does not provide credentials to the running EdgeIQ app. EdgeIQ
+  keeps actor offers labeled as third-party data and verifies settlement
+  eligibility before recommending them.
 - The Odds API for game odds, exact-line multi-book player-prop consensus,
   no-vig probabilities, and indicative PrizePicks/Underdog DFS offer
   multipliers when `ODDS_API_KEY` is configured

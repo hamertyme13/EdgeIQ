@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260924-mobile-editor"
+STATIC_ASSET_VERSION = "20260926-entry-review"

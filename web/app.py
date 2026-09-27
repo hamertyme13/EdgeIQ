@@ -34,9 +34,12 @@ import data.providers.newsapi as newsapi
 import data.providers.openweather as openweather
 import data.providers.pandascore as pandascore
 import data.providers.prizepicks as prizepicks
+import data.providers.sharpapi as sharpapi
 import data.providers.sleeper as sleeper
 import data.providers.sportsdataio as sportsdataio
+import data.providers.statshawk as statshawk
 import data.providers.underdog as underdog
+import data.providers.underdog_apify as underdog_apify
 from analytics.backtesting import backtest_summary
 from analytics.correlation import detect_correlations, estimate_correlation_matrix
 from analytics.defense_vs_position import analyze_matchup
@@ -1619,7 +1622,7 @@ def _platform_prop_fetcher(platform: str):
     canonical = _canonical_platform(platform)
     providers = {
         "PrizePicks": _fetch_prizepicks_platform_props,
-        "Underdog": underdog.fetch_projections,
+        "Underdog": _fetch_underdog_platform_props,
         "DraftKings Pick6": draftkings_pick6.fetch_projections,
         "Sleeper": sleeper.fetch_projections,
         "Ball Don't Lie": _fetch_balldontlie_platform_props,
@@ -1629,6 +1632,27 @@ def _platform_prop_fetcher(platform: str):
 
 def _fetch_prizepicks_platform_props() -> list[dict]:
     return prizepicks.fetch_projections(limit=1000)
+
+
+def _fetch_underdog_platform_props() -> list[dict]:
+    try:
+        direct = underdog.fetch_projections()
+    except Exception:
+        direct = []
+    fresh = [prop for prop in direct if not prop.get("stale")]
+    if fresh:
+        return fresh
+    try:
+        sharp_rows = sharpapi.fetch_player_props("underdog")
+        if sharp_rows:
+            return sharp_rows
+    except Exception as exc:
+        _log.warning("Underdog fallback unavailable: %s", type(exc).__name__)
+    try:
+        return underdog_apify.fetch_projections()
+    except Exception as exc:
+        _log.warning("Underdog actor fallback unavailable: %s", type(exc).__name__)
+        return []
 
 
 def _fetch_balldontlie_platform_props() -> list[dict]:
@@ -2027,9 +2051,16 @@ def _canonical_platform(value: str) -> str:
 
 def _refresh_final_stats(pending_entries: list[dict]) -> dict:
     espn_refresh = refresh_final_stats_for_entries(pending_entries)
+    statshawk_refresh = statshawk.refresh_final_stats_for_entries(pending_entries)
     sportsdataio_refresh = _sportsdataio_refresh(pending_entries)
     summer_league_refresh = nba_summer_league.refresh_final_stats_for_entries(pending_entries)
     pandascore_refresh = pandascore.refresh_final_stats_for_entries(pending_entries)
+    if not statshawk_refresh.get("skipped"):
+        _record_provider_fetch_status(
+            "StatsHawk", iso_utc(utc_now()),
+            row_count=int(statshawk_refresh.get("fetched_rows") or 0),
+            error="; ".join(statshawk_refresh.get("errors") or []),
+        )
     if not pandascore_refresh.get("skipped"):
         _record_provider_fetch_status(
             "PandaScore",
@@ -2039,20 +2070,23 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
         )
     imported = (
         espn_refresh.get("imported", 0)
+        + statshawk_refresh.get("imported", 0)
         + sportsdataio_refresh.get("imported", 0)
         + summer_league_refresh.get("imported", 0)
         + pandascore_refresh.get("imported", 0)
     )
     fetched_rows = (
         espn_refresh.get("fetched_rows", 0)
+        + statshawk_refresh.get("fetched_rows", 0)
         + sportsdataio_refresh.get("fetched_rows", 0)
         + summer_league_refresh.get("fetched_rows", 0)
         + pandascore_refresh.get("fetched_rows", 0)
     )
     return {
-        "providers": ["espn", "sportsdataio", "nba_summer_league", "pandascore"],
-        "provider": "espn+sportsdataio+nba_summer_league+pandascore",
+        "providers": ["espn", "statshawk", "sportsdataio", "nba_summer_league", "pandascore"],
+        "provider": "espn+statshawk+sportsdataio+nba_summer_league+pandascore",
         "espn": espn_refresh,
+        "statshawk": statshawk_refresh,
         "sportsdataio": sportsdataio_refresh,
         "nba_summer_league": summer_league_refresh,
         "pandascore": pandascore_refresh,
@@ -2060,6 +2094,7 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
         "fetched_rows": fetched_rows,
         "errors": (
             espn_refresh.get("errors", [])
+            + statshawk_refresh.get("errors", [])
             + sportsdataio_refresh.get("errors", [])
             + summer_league_refresh.get("errors", [])
             + pandascore_refresh.get("errors", [])

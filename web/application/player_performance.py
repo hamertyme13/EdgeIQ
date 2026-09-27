@@ -30,7 +30,7 @@ def performance_summary(rows: list[dict]) -> dict:
         if (row.get("legacy_quarantined") or not row.get("player_identity_id")
                 or not row.get("independent_market_key") or not version or "legacy" in version.lower()
                 or row.get("result") not in {"Win", "Loss"}
-                or row.get("outcome_source") not in {"espn", "mlb_statsapi", "nba_api", "pandascore"}
+                or row.get("outcome_source") not in {"espn", "mlb_statsapi", "nba_api", "pandascore", "statshawk"}
                 or not predicted or not game or not settled or not feature_time
                 or not feature_time <= predicted < game <= settled):
             continue

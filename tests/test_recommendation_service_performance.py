@@ -51,7 +51,10 @@ def test_gaming_entry_generator_prevents_unsettleable_cards() -> None:
     assert "preventing stuck entries" in result["message"]
 
 
-def test_sleeper_generator_explains_missing_pickem_feed() -> None:
+def test_sleeper_generator_explains_missing_pickem_feed(monkeypatch) -> None:
+    monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_URL", raising=False)
+    monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_FILE", raising=False)
+    monkeypatch.delenv("EDGEIQ_SLEEPER_APIFY_ENABLED", raising=False)
     result = entry_suggestions_payload(
         "NFL", "Sleeper", 3,
         canonical_platform=lambda value: value,

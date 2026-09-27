@@ -5,7 +5,7 @@ import os
 import re
 from datetime import UTC, datetime
 
-from data.providers import draftkings_pick6, pandascore, sleeper
+from data.providers import draftkings_pick6, pandascore, sleeper, statshawk
 from data.providers.cache import cache_metrics
 from repository.repositories.settings_repository import SettingsRepository
 from utils.time import utc_now
@@ -81,6 +81,13 @@ def build_data_health_payload(
             settlement_status_key=settlement_status_key,
         ),
         pandascore_health_row(settlement_status_key),
+        provider_health_row(
+            "StatsHawk",
+            "optional final box-score verification for supported team sports",
+            configured=statshawk.configured(),
+            key_env="STATSHAWK_API_KEY",
+            settlement_status_key=settlement_status_key,
+        ),
     ]
     providers = [enrich_provider_health(provider) for provider in providers]
     api_usage = dict(cache_metrics())
@@ -178,6 +185,7 @@ def provider_api_usage(name: str, usage: dict) -> dict:
         "Sleeper": ("sleeper.app",),
         "OpenAI": ("openai.com",),
         "SportsDataIO": ("sportsdata.io",),
+        "StatsHawk": ("statshawk.ai",),
         "NewsAPI": ("newsapi.org",),
         "OpenWeather": ("openweathermap.org",),
         "The Odds API": ("the-odds-api.com",),

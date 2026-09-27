@@ -128,6 +128,15 @@ _CONTRACTS = {
         "Settlement for supported fields with Historical plan access and exact map scope",
         ("CS2", "LOL", "VALORANT", "DOTA2", "COD"),
     ),
+    "StatsHawk": ProviderContract(
+        "official_authenticated_api",
+        "statshawk-v1-boxscore",
+        True,
+        "https://www.statshawk.ai/docs/reference/data-model/contests/ContestBoxscore",
+        "Final team-sport player box scores for supported stat phases",
+        "Settlement for supported fields after final game, player, team, and time checks",
+        ("NBA", "WNBA", "NCAAM", "NCAAW", "MLB", "NFL", "NCAAF", "NHL", "MLS", "EPL", "UCL"),
+    ),
 }
 
 _UNKNOWN = ProviderContract(

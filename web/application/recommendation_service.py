@@ -362,13 +362,17 @@ def entry_suggestions_payload(
             }
         return {
             "suggestions": [],
-            "mode": "waiting_for_same_day_lines",
+            "mode": "provider_lines_unavailable" if entry_platform == "Underdog" and not raw_props else "waiting_for_same_day_lines",
             "platform": entry_platform,
             "leg_count": leg_count,
             "maximum_legs": maximum_legs,
             "next_available_slate": next_slate,
             "message": (
-                f"No same-day {entry_platform} card is available for this filter. "
+                (
+                    "No fresh Underdog lines are available. The direct feed may be unavailable, and the configured fallback may need provider access. "
+                    if entry_platform == "Underdog" and not raw_props
+                    else f"No same-day {entry_platform} card is available for this filter. "
+                )
                 + (f"The next posted slate begins {next_slate}. " if next_slate else "")
                 + "EdgeIQ does not mix tomorrow's props into today's entry."
             ),

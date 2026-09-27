@@ -1961,6 +1961,10 @@ def test_model_health_returns_actionable_components():
 
 def test_data_health_schedule_notifications_and_availability(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_URL", raising=False)
+    monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_FILE", raising=False)
+    monkeypatch.delenv("EDGEIQ_SLEEPER_APIFY_ENABLED", raising=False)
+    web_app._DATA_HEALTH_CACHE.clear()
     monkeypatch.setattr(web_app, "_market_timing_alert_rows", lambda *args, **kwargs: [])
     monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
     monkeypatch.setattr(web_app, "fetch_injuries", lambda sport: [{"player": "A", "team": "AAA", "status": "🟡 Questionable", "detail": "ankle", "sport": sport}])
