@@ -69,6 +69,16 @@ def offer_freshness(row: dict, *, now: datetime | None = None) -> str:
     return "fresh" if age <= 300 else "expired"
 
 
+def game_start_status(row: dict, *, now: datetime | None = None) -> str:
+    try:
+        start = datetime.fromisoformat(str(row.get("game_time") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return "unavailable"
+    if start.tzinfo is None:
+        return "unavailable"
+    return "started" if start <= (now or datetime.now(UTC)) else "upcoming"
+
+
 def handoff_blocking_reason(status: str, line: float, identity: bool, freshness: str) -> str:
     if status == "changed":
         return f"The saved provider line is now {line:g}. Review the new line and reanalyze."

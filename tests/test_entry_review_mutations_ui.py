@@ -87,3 +87,127 @@ eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('
 })().catch(error => {console.error(error); process.exit(1);});
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_analysis_preserves_offer_rules_and_snapshot_identity():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+global.state = {entryProps:[{player:'A', allowed_directions:['Over'], recommendation_snapshot_id:'snapshot-1', end_to_end_confirmed:true, settlement_provider:'ESPN'}]};
+global.entryPropFromFeed = value => value;
+global.uniqueUploadedProps = value => value;
+global.syncEntryPlatformFromProps = global.renderEntryProps = () => {};
+global.invalidateEntryReview = () => {throw Error('review should remain current')};
+eval(source.slice(source.indexOf('function renderEntryPropsFromAnalyzed('), source.indexOf('function uniqueUploadedProps(')));
+renderEntryPropsFromAnalyzed([{player:'A', confidence:91, projection:12.5}], false, true);
+assert.deepEqual(state.entryProps[0].allowed_directions,['Over']);
+assert.equal(state.entryProps[0].recommendation_snapshot_id,'snapshot-1');
+assert.equal(state.entryProps[0].end_to_end_confirmed,true);
+assert.equal(state.entryProps[0].confidence,91);
+state.entryProps=[{player:'A'},{player:'A'}];
+renderEntryPropsFromAnalyzed([{player:'A',line:12.5},{player:'A',line:12.5}], false, true);
+assert.equal(state.entryProps.length,2);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_entry_market_duplicate_check_normalizes_player_and_stat():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+global.uploadedStatKey = value => String(value).toLowerCase().replace(/[^a-z0-9]/g,'');
+eval(source.slice(source.indexOf('function sameEntryMarket('), source.indexOf('function syncEntryPlatformFromProps(')));
+const existing = {player:'Azurá Stevens', sport:'WNBA', stat:'Points', line:12.5, game_time:''};
+assert.equal(sameEntryMarket(existing,{player:'Azura Stevens',sport:'WNBA',stat:'Points',line:12.5,game_time:''}),true);
+assert.equal(sameEntryMarket(existing,{player:'Azura Stevens',sport:'WNBA',stat:'Points',line:13.5,game_time:''}),false);
+assert.equal(sameEntryMarket(existing,{player:'Azura Stevens',sport:'WNBA',stat:'Points',line:12.5,game_time:'2026-09-27T20:00:00Z'}),true);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_analysis_rejects_duplicate_markets_before_request():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+global.entrySourcePlatforms = () => ['PrizePicks'];
+global.providerMaximumLegs = () => 6;
+global.sameEntryMarket = (left,right) => left.player === right.player && left.stat === right.stat && left.line === right.line;
+eval(source.slice(source.indexOf('function entryAnalysisValidationMessage('), source.indexOf('function parsePayoutSchedule(')));
+const prop = {player:'A',sport:'WNBA',stat:'Points',line:12.5,direction:'Over'};
+const message = entryAnalysisValidationMessage({platform:'PrizePicks',props:[prop,{...prop,direction:'Under'}]});
+assert.match(message,/repeats a player, stat, and line/);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_editing_player_discards_old_provider_and_forecast_identity():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const original = {player:'Old', stat:'Points', line:12.5, projection:14, direction:'Over',
+  platform:'PrizePicks', provider_player_id:'old-player', provider_event_id:'old-event',
+  provider_offer_id:'old-offer', player_identity_id:8, game:'OLD @ OPP', game_time:'2026-09-27T20:00:00Z',
+  team:'OLD', confidence:92, forecast_snapshot:{model:'old'}, recommendation_snapshot_id:'old-snapshot',
+  end_to_end_confirmed:true, projection_source:'provider', auto_projected:false};
+global.state = {entryProps:[original], lastAnalysis:null, recommendationOrigin:true};
+const elements = {};
+global.$ = id => elements[id] ||= {innerHTML:'', textContent:'', value:'PrizePicks'};
+global.escapeHtml = value => String(value);
+global.directionBadge = value => value;
+global.pct = value => String(value);
+global.entryDirectionAllowed = () => true;
+global.entrySourcePlatforms = () => ['PrizePicks'];
+global.syncMobileSlip = () => {};
+global.invalidateEntryReview = () => {};
+const fields = {player:'New', stat:'Points', line:'12.5', projection:'14', direction:'Over'};
+const editor = {querySelector: selector => ({value:fields[selector.match(/data-edit-field="([^"]+)/)[1]]})};
+let saveHandler;
+global.document = {
+  querySelector: () => editor,
+  querySelectorAll: selector => selector === '[data-save-prop]'
+    ? [{dataset:{saveProp:'0'}, addEventListener:(_event, handler) => {saveHandler=handler}}]
+    : [],
+};
+eval(source.slice(source.indexOf('function renderEntryProps()'), source.indexOf('function propFromForm()')));
+renderEntryProps();
+saveHandler();
+const updated = state.entryProps[0];
+for (const key of ['provider_player_id','provider_event_id','provider_offer_id','game','game_time','team','recommendation_snapshot_id']) assert.equal(updated[key],'');
+assert.equal(updated.player_identity_id,null);
+assert.equal(updated.projection,null);
+assert.equal(updated.confidence,null);
+assert.deepEqual(updated.forecast_snapshot,{});
+assert.equal(updated.end_to_end_confirmed,false);
+assert.equal(state.recommendationOrigin,false);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_clear_entry_renders_empty_state_without_analysis_data():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const element = {className:'',innerHTML:''};
+global.$ = () => element;
+eval(source.slice(source.indexOf('function renderEmptyEntryAnalysis('), source.indexOf('function setupProviderGeneratorTabs(')));
+renderEmptyEntryAnalysis();
+assert.match(element.innerHTML,/Ready when your card is/);
+assert.ok(!element.innerHTML.includes('Complete-card outlook'));
+assert.match(source.slice(source.indexOf('function renderAnalysis('), source.indexOf('async function analyzeEntry(')),/EdgeIQEntrySummary\?\.render\(data/);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)

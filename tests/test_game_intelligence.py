@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from analytics.game_features import prop_opportunity_context
 from analytics.game_model_evaluation import (
@@ -15,6 +15,7 @@ from analytics.game_model_registry import (
 from analytics.game_prediction import predict_game
 from analytics.probabilistic_forecast import forecast_prop
 from repository.repositories.game_prediction_repository import GamePredictionRepository
+from services import game_intelligence
 from services.game_intelligence import latest_slate_predictions
 from services.game_team_features import team_history_features
 
@@ -221,6 +222,44 @@ def test_saved_slate_groups_champion_and_challenger_by_game():
     assert len(grouped) == 1
     assert grouped[0]["champion"]["model_version"] == "game-market-baseline-v1"
     assert grouped[0]["challenger"]["model_version"] == GAME_CONTEXT_CHALLENGER_VERSION
+
+
+def test_game_day_uses_new_york_start_date():
+    day = date(2026, 9, 27)
+    assert game_intelligence._game_on_day("2026-09-28T03:30:00Z", day)
+    assert not game_intelligence._game_on_day("2026-09-28T04:30:00Z", day)
+    assert not game_intelligence._game_on_day("", day)
+
+
+def test_saved_slate_only_shows_selected_game_day():
+    day = date(2026, 9, 27)
+    generated_at = datetime.now(UTC).isoformat()
+    for game_id, start in (
+        ("day-slate-yesterday", "2026-09-27T03:30:00Z"),
+        ("day-slate-today", "2026-09-28T03:30:00Z"),
+        ("day-slate-tomorrow", "2026-09-28T04:30:00Z"),
+    ):
+        snapshot = predict_game(_features(game_id=game_id, game_start=start)).snapshot()
+        GamePredictionRepository.save(snapshot | {"generated_at": generated_at})
+
+    rows = latest_slate_predictions("WNBA", 100, game_day=day)
+    assert {row["champion"]["game_id"] for row in rows} == {"day-slate-today"}
+
+
+def test_refresh_slate_only_predicts_selected_game_day(monkeypatch):
+    day = date(2026, 9, 27)
+    games = [
+        {"id": "today", "commence_time": "2026-09-28T03:30:00Z"},
+        {"id": "tomorrow", "commence_time": "2026-09-28T04:30:00Z"},
+    ]
+    monkeypatch.setattr(game_intelligence.odds, "get_games", lambda sport: games)
+    monkeypatch.setattr(game_intelligence, "fetch_injuries", lambda sport: [])
+    monkeypatch.setattr(game_intelligence, "build_game_features", lambda game, sport, injuries: _features(
+        game_id=game["id"], game_start=game["commence_time"],
+    ))
+
+    rows = game_intelligence.predict_slate("WNBA", persist=False, game_day=day)
+    assert [row["champion"]["game_id"] for row in rows] == ["today"]
 
 
 def test_game_detail_keeps_latest_snapshot_per_model():

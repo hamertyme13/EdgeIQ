@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
-from utils.entity_normalization import canonical_matchup_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 
 def best_lines_payload(payload: dict, direction: str = "Over") -> dict:
@@ -45,7 +45,8 @@ def best_lines_payload(payload: dict, direction: str = "Over") -> dict:
         }
         rows.append(row)
         if eligible:
-            key = (str(prop.get("sport") or prop.get("league") or payload.get("sport")),
+            key = (canonical_person_key(str(prop.get("player") or payload.get("player") or "")),
+                   str(prop.get("sport") or prop.get("league") or payload.get("sport")),
                    canonical_matchup_key(game), start, str(prop.get("stat") or payload.get("stat")))
             groups.setdefault(key, []).append(row)
     for group in groups.values():

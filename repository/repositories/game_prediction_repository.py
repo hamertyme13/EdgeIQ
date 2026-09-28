@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from repository.database import SessionLocal
@@ -61,6 +63,26 @@ class GamePredictionRepository:
                 if sport:
                     query = query.filter(GamePredictionModel.sport == sport.upper())
                 rows = query.order_by(GamePredictionModel.generated_at.desc()).limit(limit).all()
+                return [_row(row) for row in rows]
+        except SQLAlchemyError:
+            return []
+
+    @staticmethod
+    def latest_for_game_day(sport: str, game_day: date, limit: int = 5000) -> list[dict]:
+        local_start = datetime.combine(game_day, datetime.min.time(), ZoneInfo("America/New_York"))
+        utc_start = local_start.astimezone(UTC)
+        utc_end = (local_start + timedelta(days=1)).astimezone(UTC)
+        utc_dates = {utc_start.date().isoformat(), utc_end.date().isoformat()}
+        try:
+            with SessionLocal() as session:
+                rows = (
+                    session.query(GamePredictionModel)
+                    .filter(GamePredictionModel.sport == sport.upper())
+                    .filter(or_(*(GamePredictionModel.game_start.like(f"{day}%") for day in utc_dates)))
+                    .order_by(GamePredictionModel.generated_at.desc())
+                    .limit(limit)
+                    .all()
+                )
                 return [_row(row) for row in rows]
         except SQLAlchemyError:
             return []

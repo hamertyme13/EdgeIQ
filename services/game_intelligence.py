@@ -22,12 +22,17 @@ from utils.ttl_cache import TTLMap
 _MATCHUP_CACHE: TTLMap[tuple[str, str], dict] = TTLMap(max_size=128)
 
 
-def predict_slate(sport: str, *, persist: bool = True) -> list[dict]:
+def predict_slate(sport: str, *, persist: bool = True, game_day: date | None = None) -> list[dict]:
     predictions: list[dict] = []
     sport_key = sport.upper()
+    games = odds.get_games(sport)
+    if game_day is not None:
+        games = [game for game in games if _game_on_day(game.get("commence_time"), game_day)]
+    if not games:
+        return predictions
     history_status = collect_team_history(sport_key) if persist else {"stored": 0, "mode": "read_only"}
     injuries = fetch_injuries(sport_key) if sport_key in {"NBA", "WNBA"} else []
-    for game in odds.get_games(sport):
+    for game in games:
         features = build_game_features(game, sport, injuries=injuries)
         features["history_collection"] = history_status
         generated_at = datetime.now(UTC).isoformat()
@@ -108,12 +113,30 @@ def latest_predictions(sport: str = "", limit: int = 50) -> list[dict]:
     return GamePredictionRepository.latest(sport=sport, limit=limit)
 
 
-def latest_slate_predictions(sport: str = "", limit: int = 50) -> list[dict]:
+def _game_on_day(game_start: object, game_day: date) -> bool:
+    if not game_start:
+        return False
+    try:
+        start = datetime.fromisoformat(str(game_start).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    return start.astimezone(ZoneInfo("America/New_York")).date() == game_day
+
+
+def latest_slate_predictions(sport: str = "", limit: int = 50, *, game_day: date | None = None) -> list[dict]:
     """Return one display row per game while preserving both model snapshots."""
-    rows = latest_predictions(sport, max(limit * 4, 100))
+    rows = (
+        GamePredictionRepository.latest_for_game_day(sport, game_day)
+        if game_day is not None
+        else latest_predictions(sport, max(limit * 4, 100))
+    )
     grouped: dict[str, dict[str, dict]] = {}
     order: list[str] = []
     for row in rows:
+        if game_day is not None and not _game_on_day(row.get("game_start"), game_day):
+            continue
         game_key = str(row.get("game_id") or row.get("game") or "")
         if not game_key:
             continue

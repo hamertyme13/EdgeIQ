@@ -48,3 +48,31 @@ eval(source.slice(source.indexOf('async function analyzeEntry('), source.indexOf
 })().catch(error => {console.error(error); process.exit(1);});
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_failed_reanalysis_cannot_place_using_previous_review():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const elements = {};
+global.$ = id => elements[id] ||= {disabled:false,textContent:''};
+global.state = {entryProps:[{line:1},{line:2}],lastAnalysis:{score:90},lastEntryPayload:{props:[]}};
+global.entryPayload = () => ({props:state.entryProps,entry_mode:'real'});
+global.entrySourcePlatforms = () => ['PrizePicks'];
+global.entryAnalysisValidationMessage = () => '';
+global.renderEntryProps = global.playCircuitSound = () => {};
+global.humanizeErrorText = value => value;
+global.api = () => Promise.reject(new Error('provider unavailable'));
+eval(source.slice(source.indexOf('async function analyzeEntry('), source.indexOf('async function reviewEntryWithAi(')));
+(async () => {
+  await analyzeEntry();
+  assert.equal(state.lastAnalysis,null);
+  assert.equal(state.lastEntryPayload,null);
+  assert.equal($('place-entry').disabled,true);
+  assert.match($('entry-status').textContent,/provider unavailable/);
+})().catch(error => {console.error(error); process.exit(1)});
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)

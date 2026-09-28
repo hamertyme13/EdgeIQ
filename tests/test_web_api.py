@@ -2035,6 +2035,40 @@ def test_web_entry_analysis_auto_projects_missing_projection():
     assert all(prop["forecast_paid_eligible"] is False for prop in props)
 
 
+@pytest.mark.parametrize("entry_mode", ["paper", "real"])
+def test_analyzed_entry_can_be_saved_without_losing_leg_context(monkeypatch, entry_mode):
+    saved = []
+    monkeypatch.setattr(web_app, "_end_to_end_placement_blocks", lambda payload: [])
+    monkeypatch.setattr(web_app, "_generated_entry_day_blocks", lambda payload: [])
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app.EntryRepository, "save", lambda entry, **kwargs: saved.append((entry, kwargs)) or 818)
+    payload = EntryPayload.model_validate({
+        "platform": "PrizePicks", "entry_mode": entry_mode,
+        "wager": 0 if entry_mode == "paper" else 10,
+        "multiplier": 3,
+        "props": [
+            {"player": "Workflow A", "team": "AAA", "sport": "WNBA", "stat": "Points", "line": 12.5,
+             "projection": 14, "direction": "Over", "game": "AAA @ BBB", "game_time": _today_game_time(),
+             "provider_player_id": "player-a", "provider_event_id": "game-a", "provider_offer_id": "offer-a"},
+            {"player": "Workflow B", "team": "BBB", "sport": "WNBA", "stat": "Rebounds", "line": 6.5,
+             "projection": 7, "direction": "Over", "game": "AAA @ BBB", "game_time": _today_game_time(),
+             "provider_player_id": "player-b", "provider_event_id": "game-a", "provider_offer_id": "offer-b"},
+        ],
+    })
+
+    analyzed = analyze_entry(payload)
+    reviewed_payload = EntryPayload.model_validate({
+        **payload.model_dump(),
+        "tracking_override": entry_mode == "real",
+        "props": analyzed["entry"]["props"],
+    })
+    placed = place_entry(reviewed_payload)
+
+    assert placed["id"] == 818
+    assert placed["entry_mode"] == entry_mode
+    assert [prop.provider_offer_id for prop in saved[0][0].props] == ["offer-a", "offer-b"]
+
+
 def test_web_entry_analysis_uses_espn_history_for_auto_projection(monkeypatch):
     history = [
         {"actual": 30.0, "status": "played"},

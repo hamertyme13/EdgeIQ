@@ -4,10 +4,11 @@
     const date = new Date(value || "");
     return Number.isNaN(date.getTime()) ? "Time unavailable" : date.toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"});
   };
-  function transferable(row, direction) {
+  function transferable(row, direction, now = Date.now()) {
     const allowed = Array.isArray(row.allowed_directions) ? row.allowed_directions : ["Over", "Under"];
     const premium = row.platform === "PrizePicks" && (row.line_offer_type === "demon" || row.is_premium_line);
-    return Boolean(row.platform && row.game_time && row.game && Number.isFinite(Date.parse(row.game_time))
+    return Boolean(!row.stale && row.platform && row.game_time && row.game
+      && Number.isFinite(Date.parse(row.game_time)) && Date.parse(row.game_time) > now
       && Number.isFinite(Number(row.line)) && row.line != null && String(row.line).trim() !== ""
       && allowed.includes(direction) && !(premium && direction === "Under"));
   }
@@ -27,8 +28,41 @@
       <p class="subtle">${escape(availabilityLabel(row))}</p>
       ${row.provider_offer_observed_at ? `<p class="subtle">Collector retrieved: ${escape(dateLabel(row.provider_offer_observed_at))}. This is not direct sportsbook verification.</p>` : ''}
       <details><summary>Evidence</summary><p>Projection: ${escape(row.projection ?? "Unavailable")}</p><p>Model inputs as of: ${escape(dateLabel(row.feature_as_of))}</p><p>Offer refresh time: ${row.provider_offer_verified_at ? escape(dateLabel(row.provider_offer_verified_at)) : 'unavailable'}. Model input time does not confirm line freshness.</p><p>EV unverified. Confirm the offer and complete entry payout in the provider app.</p></details>
-      <button type="button" class="secondary" data-add-best-line="${index}" ${transferable(row, data.direction) ? "" : 'disabled title="Game details are missing or this direction is unavailable"'}>Add to Entry</button>
+      <button type="button" class="secondary" data-add-best-line="${index}" ${transferable(row, data.direction) ? "" : 'disabled title="Offer is stale, the game has started, game details are missing, or this direction is unavailable"'}>Add to Entry</button>
     </article>`).join("")}</div>`;
+  }
+  function bindAddButtons(result, data) {
+    result.querySelectorAll('[data-add-best-line]').forEach((control) => control.addEventListener('click', () => {
+      const row = data.lines[Number(control.dataset.addBestLine)];
+      if (!transferable(row, data.direction)) return;
+      const added = window.addFeedProp({ ...row, player: row.player || data.player,
+        sport: row.sport || row.league || data.sport, stat: row.stat || data.stat, direction: data.direction });
+      if (added) { control.disabled = true; control.textContent = "Added"; }
+    }));
+  }
+  async function browse() {
+    const button = document.getElementById('best-lines-browse');
+    const result = document.getElementById('line-shop-result');
+    const sport = document.getElementById('shop-sport').value;
+    if (sport === 'All Sports') { result.textContent = 'Choose one sport to browse cached offers.'; return; }
+    const params = new URLSearchParams({sport, stat: document.getElementById('shop-stat').value.trim(),
+      platform: document.getElementById('shop-platform').value, direction: document.getElementById('shop-direction').value});
+    button.disabled = true;
+    result.setAttribute('aria-busy', 'true');
+    result.textContent = 'Loading cached offers...';
+    try {
+      const data = await window.EdgeIQApi.api(`/api/market/best-lines/browse?${params}`, {timeoutMs: 10000});
+      result.innerHTML = render(data);
+      const count = document.createElement('p');
+      count.textContent = `Showing ${data.lines.length} of ${data.total_matching} matching cached offers.`;
+      result.prepend(count);
+      bindAddButtons(result, data);
+    } catch (_) {
+      result.textContent = 'Cached offers could not be loaded. Refresh providers and try again.';
+    } finally {
+      button.disabled = false;
+      result.setAttribute('aria-busy', 'false');
+    }
   }
   async function search(event, retry = null) {
     event.preventDefault();
@@ -123,13 +157,7 @@
         filters.addEventListener('change', update);
         update();
       }
-      result.querySelectorAll('[data-add-best-line]').forEach((control) => control.addEventListener('click', () => {
-        const row = data.lines[Number(control.dataset.addBestLine)];
-        if (!transferable(row, data.direction)) return;
-        const added = window.addFeedProp({ ...row, player: row.player || data.player,
-          sport: row.sport || row.league || data.sport, stat: row.stat || data.stat, direction: data.direction });
-        if (added) { control.disabled = true; control.textContent = "Added"; }
-      }));
+      bindAddButtons(result, data);
     } catch (error) {
       result.textContent = "The comparison could not finish. Provider data may be unavailable or still loading. Refresh providers and try again.";
     } finally {
@@ -159,6 +187,13 @@
       label.append(document.getElementById(`shop-${field}-odds`)); manual.append(label);
     }
     document.getElementById("line-shop-form").append(manual);
+    const browseButton = document.createElement('button');
+    browseButton.type = 'button';
+    browseButton.id = 'best-lines-browse';
+    browseButton.className = 'secondary';
+    browseButton.textContent = 'Browse cached offers';
+    browseButton.addEventListener('click', browse);
+    document.getElementById('line-shop-form').after(browseButton);
   });
-  window.EdgeIQBestLines = { search, render, transferable, availabilityLabel };
+  window.EdgeIQBestLines = { search, browse, render, transferable, availabilityLabel };
 }());

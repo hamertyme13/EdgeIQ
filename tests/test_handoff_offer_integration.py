@@ -18,8 +18,10 @@ def offer_case(monkeypatch):
     )
     row = {**prop.model_dump(), "provider_offer_verified_at": now.isoformat()}
     rows = [row]
-    monkeypatch.setattr(app, "_matching_market_props", lambda *args: rows)
-    monkeypatch.setattr(app, "_handoff_leg", lambda *args: {})
+    monkeypatch.setattr(app, "_matching_market_props", lambda *args, **kwargs: (
+        kwargs["source_props"] if kwargs.get("source_props") is not None else rows
+    ))
+    monkeypatch.setattr(app, "_handoff_leg", lambda *args, **kwargs: {})
     return EntryPayload(props=[prop]), rows
 
 
@@ -29,6 +31,56 @@ def verify(case):
 
 def test_fresh_exact_offer_passes(offer_case):
     assert verify(offer_case)["all_current"] is True
+
+
+def test_handoff_verification_reuses_supplied_board_without_fetch(offer_case, monkeypatch):
+    monkeypatch.setattr(app, "_fetch_props", lambda *args: pytest.fail("handoff re-fetched provider board"))
+    result = app._verify_handoff_live_offers(
+        offer_case[0], "PrizePicks", source_props_by_sport={"WNBA": offer_case[1]},
+    )
+    assert result["all_current"] is True
+
+
+def test_handoff_reuses_one_board_for_value_and_offer_checks_after_analysis(offer_case, monkeypatch):
+    payload, rows = offer_case
+    payload.props.append(payload.props[0].model_copy(update={
+        "player": "Second Player", "provider_offer_id": "offer-2",
+    }))
+    rows.append({**rows[0], "player": "Second Player", "provider_offer_id": "offer-2"})
+    calls = []
+    monkeypatch.setattr(app, "_fetch_props", lambda platform, sport: calls.append((platform, sport)) or rows)
+    monkeypatch.setattr(app, "_entry_from_payload", lambda value: None)
+    monkeypatch.setattr(app, "_entry_analysis", lambda *args: {"risk_guardrails": [], "release_verdict": {"paid_allowed": True}})
+    monkeypatch.setattr(app, "_platform_value_check", lambda *args, **kwargs: {
+        "recommended_platform": "PrizePicks", "payout_verified": True,
+    })
+    monkeypatch.setattr(app, "_handoff_copy_text", lambda *args: "Slip")
+    result = app._entry_handoff_payload(payload)
+    assert calls == [("Both", "WNBA")]
+    assert result["live_verification"]["current"] == 2
+    assert result["live_verification"]["all_current"] is True
+
+
+def test_recent_offer_for_started_game_cannot_be_handed_off(offer_case):
+    started = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    offer_case[0].props[0].game_time = started
+    offer_case[1][0]["game_time"] = started
+    result = verify(offer_case)
+    assert result["all_current"] is False
+    assert result["legs"][0]["game_started"] is True
+    assert "game has started" in result["legs"][0]["blocking_reason"]
+
+
+@pytest.mark.parametrize("missing_side", ["saved", "provider"])
+def test_verified_offer_without_both_start_times_cannot_be_handed_off(offer_case, missing_side):
+    if missing_side == "saved":
+        offer_case[0].props[0].game_time = ""
+    else:
+        offer_case[1][0]["game_time"] = "invalid"
+    result = verify(offer_case)
+    assert result["all_current"] is False
+    assert result["legs"][0]["game_start_status"] == "unavailable"
+    assert "start time is unavailable" in result["legs"][0]["blocking_reason"]
 
 
 @pytest.mark.parametrize("changes", [
@@ -61,6 +113,34 @@ def test_exact_requested_identity_wins_over_same_line_duplicate(offer_case):
     result = verify(offer_case)
     assert result["all_current"] is True
     assert result["legs"][0]["provider_offer_id"] == "offer-1"
+
+
+def test_other_book_offer_uses_its_own_verified_identity(offer_case):
+    payload, rows = offer_case
+    rows[0]["platform"] = "Underdog"
+    rows[0]["provider_offer_id"] = "underdog-offer-1"
+    result = app._verify_handoff_live_offers(payload, "Underdog")
+    assert result["all_current"] is True
+    assert result["legs"][0]["provider_offer_id"] == "underdog-offer-1"
+
+
+def test_other_book_still_needs_a_provider_offer_id(offer_case):
+    payload, rows = offer_case
+    rows[0]["platform"] = "Underdog"
+    rows[0]["provider_offer_id"] = ""
+    result = app._verify_handoff_live_offers(payload, "Underdog")
+    assert result["all_current"] is False
+    assert "offer ID is missing" in result["legs"][0]["blocking_reason"]
+
+
+@pytest.mark.parametrize("change", [{"line": 11.5}, {"provider_event_id": "other-event"},
+                                    {"allowed_directions": ["Under"]}])
+def test_other_book_does_not_accept_changed_market(offer_case, change):
+    payload, rows = offer_case
+    rows[0].update({"platform": "Underdog", "provider_offer_id": "underdog-offer-1", **change})
+    result = app._verify_handoff_live_offers(payload, "Underdog")
+    assert result["all_current"] is False
+    assert result["legs"][0]["blocking_reason"]
 
 
 @pytest.mark.parametrize("line", [None, "", "unavailable", "NaN", "Infinity", float("-inf"), True, []])

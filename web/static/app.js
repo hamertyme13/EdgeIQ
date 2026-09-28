@@ -589,7 +589,6 @@ function renderEmptyEntryAnalysis() {
   if (!$("entry-analysis")) return;
   $("entry-analysis").className = "analysis-card muted-card compact-analysis-empty";
   $("entry-analysis").innerHTML = `
-    ${window.EdgeIQEntrySummary?.render(data, escapeHtml) || ""}
     <strong>Ready when your card is</strong>
     <span>1. Add at least two legs</span><span>2. Analyze the card</span><span>3. Review corrections</span><span>4. Save paid or paper</span>`;
 }
@@ -3302,6 +3301,7 @@ function entryPropFromFeed(prop) {
     is_premium_line: Boolean(prop.is_premium_line),
     line_discount: Number(prop.line_discount || 0),
     projection: prop.projection ?? null,
+    confidence: prop.confidence ?? null,
     direction: prop.direction || "Over",
     allowed_directions: allowedDirections,
     platform: prop.platform || $("entry-platform").value,
@@ -3326,6 +3326,16 @@ function entryPropFromFeed(prop) {
 
 function entrySourcePlatforms(props = state.entryProps) {
   return [...new Set((props || []).map((prop) => String(prop.platform || "").trim()).filter(Boolean))];
+}
+
+function sameEntryMarket(left, right) {
+  const playerKey = (value) => String(value || "").normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return playerKey(left.player) === playerKey(right.player)
+    && String(left.sport || "").toUpperCase() === String(right.sport || "").toUpperCase()
+    && uploadedStatKey(left.stat) === uploadedStatKey(right.stat)
+    && Number(left.line) === Number(right.line)
+    && (!left.game_time || !right.game_time || String(left.game_time) === String(right.game_time));
 }
 
 function syncEntryPlatformFromProps(props = state.entryProps) {
@@ -3482,26 +3492,79 @@ function renderEntryProps() {
       const index = Number(button.dataset.saveProp);
       const editor = document.querySelector(`[data-entry-editor="${index}"]`);
       const value = (field) => editor?.querySelector(`[data-edit-field="${field}"]`)?.value ?? "";
+      if (!value("player").trim() || !value("stat").trim()
+          || value("line").trim() === "" || !Number.isFinite(Number(value("line")))) {
+        $("entry-status").textContent = "Enter a player, stat, and numeric line before applying this leg.";
+        return;
+      }
       if (!entryDirectionAllowed(state.entryProps[index], value("direction"))) {
         $("entry-status").textContent = "This direction is not available for the selected offer. Choose an allowed direction or reload the sportsbook offer.";
         return;
       }
+      const previous = state.entryProps[index];
+      const playerChanged = value("player").trim() !== previous.player;
+      const statChanged = value("stat").trim() !== previous.stat;
+      const marketChanged = playerChanged || statChanged
+        || Number(value("line")) !== Number(previous.line);
+      const offerChanged = marketChanged || value("direction") !== previous.direction;
+      const editedProjection = value("projection") === "" ? null : Number(value("projection"));
+      const projectionChanged = editedProjection !== previous.projection;
       invalidateEntryReview();
+      state.recommendationOrigin = false;
       state.entryProps[index] = {
-        ...state.entryProps[index],
+        ...previous,
         player: value("player").trim(),
         stat: value("stat").trim(),
         line: Number(value("line")),
-        projection: value("projection") === "" ? null : Number(value("projection")),
+        projection: (playerChanged || statChanged) && !projectionChanged ? null : editedProjection,
         direction: value("direction"),
+        confidence: null,
+        ...((offerChanged || projectionChanged) ? {
+          projection_source: editedProjection !== null && projectionChanged
+            ? "user" : playerChanged || statChanged ? "" : previous.projection_source || "",
+          auto_projected: editedProjection !== null && !projectionChanged && !playerChanged && !statChanged
+            ? previous.auto_projected : false,
+          model_version: "",
+          data_quality: null,
+        } : {}),
+        ...(offerChanged ? {
+          provider_offer_id: "",
+          recommendation_snapshot_id: "",
+          forecast_snapshot: {},
+          feature_as_of: "",
+          end_to_end_confirmed: false,
+          forecast_paid_eligible: false,
+        } : {}),
+        ...(playerChanged ? {
+          player_identity_id: null,
+          provider_player_id: "",
+          provider_event_id: "",
+          team: "",
+          game: "",
+          game_time: "",
+        } : {}),
+        ...((playerChanged || statChanged) ? {
+          baseline_line: null,
+          standard_line: null,
+          line_offer_type: "standard",
+          adjusted_line: false,
+          is_discounted_line: false,
+          is_premium_line: false,
+          line_discount: 0,
+        } : {}),
       };
       renderEntryProps();
-      $("entry-status").textContent = "Leg updated. Analyze the entry again before saving.";
+      $("entry-status").textContent = playerChanged
+        ? "Player changed. Old team, game, and provider offer were cleared. Confirm the new matchup, then analyze again."
+        : offerChanged
+          ? "Market changed. The previous offer verification was cleared. Analyze again before saving."
+          : "Leg updated. Analyze the entry again before saving.";
     });
   });
   document.querySelectorAll("[data-remove-prop]").forEach((button) => {
     button.addEventListener("click", () => {
       invalidateEntryReview();
+      state.recommendationOrigin = false;
       state.entryProps.splice(Number(button.dataset.removeProp), 1);
       renderEntryProps();
     });
@@ -3637,6 +3700,9 @@ function entryAnalysisValidationMessage(payload) {
   }
   for (const [index, prop] of props.entries()) {
     const leg = `Leg ${index + 1}`;
+    if (props.slice(0, index).some((earlier) => sameEntryMarket(earlier, prop))) {
+      return `${leg} repeats a player, stat, and line already on this entry. Remove or edit the duplicate leg.`;
+    }
     if (!String(prop.player || "").trim()) return `${leg} needs a player name.`;
     if (!String(prop.sport || "").trim()) return `${leg} needs a sport.`;
     if (!String(prop.stat || "").trim()) return `${leg} needs a stat.`;
@@ -3796,6 +3862,10 @@ function renderAnalysis(data) {
       <span><strong>${pct(risk.average_confidence)}</strong><small>Average leg confidence</small></span>
       <span><strong>${Number(risk.average_edge || 0).toFixed(2)}</strong><small>Average projection cushion</small></span>
     </div>
+    <details class="entry-analysis-details">
+      <summary>Complete-card outlook</summary>
+      ${window.EdgeIQEntrySummary?.render(data, escapeHtml) || '<p class="subtle">Complete-card estimates are unavailable.</p>'}
+    </details>
     ${warnings.length ? `<div class="entry-analysis-alert"><strong>Before you continue</strong>${analysisBulletList(warnings)}</div>` : ""}
     <section class="entry-analysis-section correction-plan">
       <div class="suggestion-top">
@@ -3869,13 +3939,24 @@ function renderAnalysis(data) {
           $("entry-status").textContent = "This suggestion is not available for the selected sportsbook offer. Choose a different offer before changing direction.";
           return;
         }
-        state.entryProps[index].direction = correction.suggested_direction;
+        state.entryProps[index] = {
+          ...state.entryProps[index],
+          direction: correction.suggested_direction,
+          provider_offer_id: "",
+          recommendation_snapshot_id: "",
+          confidence: null,
+          forecast_snapshot: {},
+          feature_as_of: "",
+          end_to_end_confirmed: false,
+          forecast_paid_eligible: false,
+        };
         $("entry-status").textContent = `${correction.player} changed to ${correction.suggested_direction}. Analyze again to refresh the verdict.`;
       } else if (action === "remove") {
         state.entryProps.splice(index, 1);
         $("entry-status").textContent = `${correction.player} removed. Analyze again to refresh the verdict.`;
       }
       invalidateEntryReview();
+      state.recommendationOrigin = false;
       renderEntryProps();
       $("entry-analysis").classList.add("muted-card");
       $("entry-analysis").innerHTML = "Analyze the revised entry to see its updated score, payout economics, and release checks.";
@@ -3905,6 +3986,13 @@ async function analyzeEntry() {
   const requestedEntry = JSON.stringify(payload);
   const isCurrent = () => state.entryAnalysisRequestId === requestId
     && JSON.stringify(entryPayload()) === requestedEntry;
+  state.lastAnalysis = null;
+  state.lastEntryPayload = null;
+  ["ai-review-entry", "prepare-handoff", "place-entry"].forEach((id) => {
+    if ($(id)) $(id).disabled = true;
+  });
+  renderEntryProps();
+  $("entry-analysis").textContent = "Analyzing this entry. Previous review cleared.";
   $("entry-status").textContent = "Checking projections, player history, and calibration...";
   let data;
   try {
@@ -3916,10 +4004,11 @@ async function analyzeEntry() {
   } catch (error) {
     if (!isCurrent()) return;
     $("entry-status").textContent = `Analysis could not finish: ${humanizeErrorText(error.message)} Your entry is still in the builder.`;
+    $("entry-analysis").textContent = "Analysis did not finish. Review the status and try again.";
     return;
   }
   if (!isCurrent()) return;
-  renderEntryPropsFromAnalyzed(data.entry.props, false);
+  renderEntryPropsFromAnalyzed(data.entry.props, false, true);
   state.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
@@ -3996,7 +4085,7 @@ function renderEntryHandoff(data) {
     ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
     <div class="suggestion-list">
       ${(data.legs || []).map((leg, index) => `
-        <div class="suggestion compact-suggestion ${leg.offer_status === "current" && leg.identity_verified && leg.offer_freshness_status === "fresh" ? "insight-positive" : "insight-warning"}">
+        <div class="suggestion compact-suggestion ${leg.offer_status === "current" && leg.identity_verified && leg.offer_freshness_status === "fresh" && leg.game_start_status === "upcoming" ? "insight-positive" : "insight-warning"}">
           <div class="suggestion-top">
             <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
             <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
@@ -4082,10 +4171,20 @@ function renderPlacementAudit(data) {
   `;
 }
 
-function renderEntryPropsFromAnalyzed(props, invalidateReview = true) {
+function renderEntryPropsFromAnalyzed(props, invalidateReview = true, preserveOffer = false) {
   if (props == null) return;
   if (invalidateReview) invalidateEntryReview();
-  state.entryProps = uniqueUploadedProps(props).map(entryPropFromFeed);
+  const original = state.entryProps;
+  state.entryProps = (preserveOffer ? props : uniqueUploadedProps(props)).map((prop, index) => entryPropFromFeed(
+    preserveOffer ? {
+      ...original[index],
+      ...prop,
+      allowed_directions: original[index]?.allowed_directions ?? prop.allowed_directions,
+      recommendation_snapshot_id: original[index]?.recommendation_snapshot_id || prop.recommendation_snapshot_id,
+      end_to_end_confirmed: original[index]?.end_to_end_confirmed ?? prop.end_to_end_confirmed,
+      settlement_provider: original[index]?.settlement_provider || prop.settlement_provider,
+    } : prop,
+  ));
   syncEntryPlatformFromProps();
   renderEntryProps();
 }
@@ -6402,7 +6501,16 @@ function bindEvents() {
       $("entry-status").textContent = "Choose a sport before selecting a player.";
       return;
     }
-    if (!prop.player || !prop.line) return;
+    if (!prop.player || $("prop-line").value.trim() === "" || !Number.isFinite(prop.line)) {
+      $("entry-status").textContent = "Enter a player name and a numeric line before adding this prop.";
+      playCircuitSound("warning");
+      return;
+    }
+    if (state.entryProps.some((existing) => sameEntryMarket(existing, prop))) {
+      $("entry-status").textContent = "This player, stat, and line are already on the entry. Edit the existing leg instead.";
+      playCircuitSound("warning");
+      return;
+    }
     const maximumLegs = providerMaximumLegs(prop.platform);
     if (state.entryProps.length >= maximumLegs) {
       $("entry-status").textContent = `${prop.platform} entries support at most ${maximumLegs} legs.`;

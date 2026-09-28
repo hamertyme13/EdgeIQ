@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from analytics.game_features import prop_opportunity_context
 from analytics.game_model_evaluation import promotion_evidence
 from analytics.game_model_registry import (
@@ -15,8 +18,9 @@ from web.schemas.games import GamePropContextPayload
 
 
 def slate_payload(sport: str, refresh: bool) -> dict:
-    rows = predict_slate(sport, persist=True) if refresh else latest_slate_predictions(sport, 100)
-    return {"sport": sport.upper(), "games": rows, "registry": game_model_registry(), "guaranteed": False}
+    game_day = datetime.now(ZoneInfo("America/New_York")).date()
+    rows = predict_slate(sport, persist=True, game_day=game_day) if refresh else latest_slate_predictions(sport, 100, game_day=game_day)
+    return {"sport": sport.upper(), "game_day": game_day.isoformat(), "games": rows, "registry": game_model_registry(), "guaranteed": False}
 
 
 def prop_context_payload(payload: GamePropContextPayload) -> dict:

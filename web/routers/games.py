@@ -1,3 +1,6 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Query
 
 from services.background_jobs import background_jobs
@@ -25,7 +28,7 @@ def refresh_game_slate(sport: str = "WNBA") -> dict:
 
     def task(context) -> dict:
         context.update(10, f"Loading {normalized_sport} market evidence...")
-        games = predict_slate(normalized_sport, persist=True)
+        games = predict_slate(normalized_sport, persist=True, game_day=datetime.now(ZoneInfo("America/New_York")).date())
         context.update(90, "Saving immutable game predictions...")
         return {"message": f"{len(games)} {normalized_sport} games refreshed.", "sport": normalized_sport, "count": len(games)}
 

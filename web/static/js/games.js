@@ -90,9 +90,9 @@
         await waitForJob(job);
       }
       const data = await request(`/api/game-intelligence/slate?sport=${encodeURIComponent(sport)}`);
-      list.innerHTML = (data.games || []).map(predictionCard).join("") || '<div class="empty-state"><strong>No saved game predictions yet.</strong><p>Refresh Games after provider lines become available.</p></div>';
+      list.innerHTML = (data.games || []).map(predictionCard).join("") || '<div class="empty-state"><strong>No games for this sport today.</strong><p>Refresh Games when today\'s provider lines become available.</p></div>';
       byId("game-intelligence-governance").innerHTML = governance(data);
-      status.textContent = `${(data.games || []).length} ${sport} game predictions · challenger remains shadow-only.`;
+      status.textContent = `${(data.games || []).length} ${sport} games on ${data.game_day || "today"} · challenger remains shadow-only.`;
       window.trackProductEvent?.("game_prediction_viewed", "game_prediction", sport, { count: (data.games || []).length });
     } catch (error) {
       list.innerHTML = `<div class="empty-state"><strong>Game predictions are temporarily unavailable.</strong><p>${escape(error.message)}</p></div>`;

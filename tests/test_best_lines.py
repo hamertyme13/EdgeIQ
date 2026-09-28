@@ -1,6 +1,7 @@
 import pytest
 
 from web.application.best_lines_service import best_lines_payload
+from web.routers.market import MarketDependencies, browse_best_lines
 
 
 def row(platform, line, **extra):
@@ -58,3 +59,29 @@ def test_explicit_invalid_or_empty_restrictions_never_enable_directions(allowed)
 def test_premium_offer_does_not_override_explicit_empty_restriction():
     data = {"lines": [row("PrizePicks", 20, line_offer_type="demon", allowed_directions=[])]}
     assert best_lines_payload(data)["lines"][0]["allowed_directions"] == []
+
+
+def test_different_players_cannot_be_compared_in_browse():
+    data = {"lines": [row("PrizePicks", 20, player="Player A"),
+                      row("Underdog", 21, player="Player B")]}
+    assert not any(item["best_threshold"] for item in best_lines_payload(data)["lines"])
+
+
+def test_browse_is_bounded_to_cached_future_offers():
+    from datetime import UTC, datetime, timedelta
+
+    future = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    offers = [row("PrizePicks", 20, player=f"Player {i}", game_time=future,
+                  league="WNBA", trending_count=100 - i) for i in range(60)]
+    offers.append(row("PrizePicks", 20, player="Past", game_time=past, league="WNBA"))
+    deps = MarketDependencies(
+        line_shop=lambda *args: {}, cached_props=lambda platform, sport: offers,
+        sharp_consensus=lambda *args: {}, hedge_calculator=lambda value: {},
+        middle_calculator=lambda value: {}, boost_analysis=lambda value: {},
+        ev_scanner=lambda *args: [], timing_alerts=lambda *args: [], clv_report=lambda: {},
+    )
+    result = browse_best_lines("WNBA", deps=deps)
+    assert result["total_matching"] == 60
+    assert len(result["lines"]) == 50
+    assert all(item["player"] != "Past" for item in result["lines"])

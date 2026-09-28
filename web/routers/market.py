@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/market", tags=["market"])
 @dataclass(frozen=True)
 class MarketDependencies:
     line_shop: Callable[..., dict]
+    cached_props: Callable[[str, str | None], list[dict]]
     sharp_consensus: Callable[..., dict]
     hedge_calculator: Callable[[HedgeCalculatorPayload], dict]
     middle_calculator: Callable[[MiddleCalculatorPayload], dict]
@@ -54,6 +55,42 @@ def best_lines(player: str, stat: str, sport: str, platform: str = "Both",
     payload = _deps.line_shop(player, stat, None if sport == "All Sports" else sport.upper(), platform, over_odds, under_odds)
     return {**best_lines_payload(payload, direction),
             "manual_no_vig": payload.get("no_vig") if payload.get("no_vig_source") == "Manual odds" else None}
+
+
+@router.get("/best-lines/browse")
+def browse_best_lines(sport: str, stat: str = "", platform: str = "Both",
+                      direction: str = "Over", deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    if sport == "All Sports" or not sport.strip():
+        raise HTTPException(status_code=400, detail="Choose one sport to browse offers.")
+    if direction not in {"Over", "Under"}:
+        raise HTTPException(status_code=400, detail="Choose Over or Under.")
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    rows = []
+    for prop in _deps.cached_props(platform, sport.upper()):
+        if stat and str(prop.get("stat") or "").casefold() != stat.casefold():
+            continue
+        try:
+            start = datetime.fromisoformat(str(prop.get("game_time") or "").replace("Z", "+00:00"))
+            if start.tzinfo is None or start <= now:
+                continue
+            line_value = prop.get("line")
+            if line_value is None:
+                continue
+            line = float(line_value)
+            if not (-10000 < line < 10000):
+                continue
+        except (TypeError, ValueError):
+            continue
+        rows.append({**prop, "sport": prop.get("league") or prop.get("sport"), "line": line})
+    rows.sort(key=lambda item: (-int(item.get("trending_count") or 0), str(item.get("game_time"))))
+    result = best_lines_payload({"sport": sport.upper(), "stat": stat, "lines": rows[:50]}, direction)
+    result["total_matching"] = len(rows)
+    result["limit"] = 50
+    result["message"] = "Cached offers only; showing up to 50. Refresh providers for newer lines. Live availability and EV are unverified."
+    return result
 
 
 @router.get("/line-shop")

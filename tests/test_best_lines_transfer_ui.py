@@ -15,7 +15,7 @@ global.document = {addEventListener() {}};
 require('./web/static/js/best-lines.js');
 const assert = require('node:assert/strict');
 const check = window.EdgeIQBestLines.transferable;
-const row = {platform:'PrizePicks', game:'A vs B', game_time:'2026-09-22T23:00:00Z', line:20.5};
+const row = {platform:'PrizePicks', game:'A vs B', game_time:'2099-09-22T23:00:00Z', line:20.5};
 assert.equal(check(row, 'Over'), true);
 assert.equal(check(row, 'Under'), true);
 assert.equal(check({...row, line_offer_type:'demon'}, 'Under'), false);
@@ -28,12 +28,16 @@ assert.equal(check({...row, line:0}, 'Over'), true);
 assert.equal(check({...row, game_time:'invalid'}, 'Over'), false);
 assert.equal(check({...row, game:''}, 'Over'), false);
 assert.equal(check({...row, platform:''}, 'Over'), false);
+assert.equal(check({...row, stale:true}, 'Over'), false);
+assert.equal(check(row, 'Over', Date.parse('2099-09-22T23:00:00Z')), false);
+assert.equal(check(row, 'Over', Date.parse('2099-09-22T22:00:00Z')), true);
 const availability = window.EdgeIQBestLines.availabilityLabel;
-assert.match(availability(row, Date.parse('2026-09-22T22:00:00Z')), /freshness are unverified/);
-assert.match(availability(row, Date.parse('2026-09-22T23:00:00Z')), /start has passed/);
+assert.match(availability(row, Date.parse('2099-09-22T22:00:00Z')), /freshness are unverified/);
+assert.match(availability(row, Date.parse('2099-09-22T23:00:00Z')), /start has passed/);
 assert.match(availability({...row, game_time:'invalid'}), /time unavailable/);
 const html = window.EdgeIQBestLines.render({direction:'Over', lines:[{...row, feature_as_of:'2026-09-22T20:00:00Z'}]});
 assert.match(html, /Model inputs as of/);
 assert.match(html, /Offer refresh time: unavailable/);
+assert.match(window.EdgeIQBestLines.render({direction:'Over', lines:[{...row, stale:true}]}), /disabled title="Offer is stale/);
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)

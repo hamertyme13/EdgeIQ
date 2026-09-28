@@ -207,7 +207,13 @@ from web.application.intelligence_service import game_context_response as build_
 from web.application.intelligence_service import parlay_chat_payload as build_parlay_chat_payload
 from web.application.intelligence_service import projection_assist_payload as build_projection_assist_payload
 from web.application.intelligence_service import trending_games_response as build_trending_games_response
-from web.application.offer_evidence import handoff_blocking_reason, offer_freshness, same_offer_game, select_offer_line
+from web.application.offer_evidence import (
+    game_start_status,
+    handoff_blocking_reason,
+    offer_freshness,
+    same_offer_game,
+    select_offer_line,
+)
 from web.application.operations_service import delete_watchlist_payload as build_delete_watchlist_payload
 from web.application.operations_service import deploy_readiness_payload as build_deploy_readiness_payload
 from web.application.operations_service import run_daily_refresh_payload as build_run_daily_refresh_payload
@@ -1583,6 +1589,23 @@ def _cached_props(platform: str, sport_filter: str | None) -> list[dict]:
             row for row in rows
             if str(row.get("league") or row.get("sport") or "").upper() == sport_filter
         ]
+    return rows
+
+
+def _cached_best_lines_props(platform: str, sport_filter: str | None) -> list[dict]:
+    """Browse cached offers without treating an expired cache as actionable."""
+    rows: list[dict] = []
+    now = time.monotonic()
+    with _PROP_FETCH_LOCK:
+        for platform_name in _selected_platforms(platform):
+            canonical = _canonical_platform(platform_name)
+            cache_key = f"{canonical}:{_platform_fetcher_cache_token(canonical)}"
+            scoped_key = f"{cache_key}:{sport_filter}" if canonical in {"Underdog", "Sleeper"} and sport_filter else cache_key
+            cached = _PROP_FETCH_CACHE.get(scoped_key) or _PROP_FETCH_CACHE.get(cache_key)
+            if cached:
+                rows.extend({**prop, "stale": bool(prop.get("stale")) or cached[0] <= now} for prop in cached[1])
+    if sport_filter:
+        rows = [row for row in rows if str(row.get("league") or row.get("sport") or "").upper() == sport_filter]
     return rows
 
 
@@ -7616,9 +7639,12 @@ def _matching_market_props(
     ]
 
 
-def _platform_value_check(payload: EntryPayload, *, live_refresh: bool = False) -> dict:
+def _platform_value_check(
+    payload: EntryPayload, *, live_refresh: bool = False,
+    source_props_by_sport: dict[str, list[dict]] | None = None,
+) -> dict:
     selected_platform = _canonical_platform(payload.platform)
-    props_by_sport = {
+    props_by_sport = source_props_by_sport if source_props_by_sport is not None else {
         sport: (_fetch_props("Both", sport) if live_refresh else _cached_props("Both", sport))
         for sport in {prop.sport for prop in payload.props}
     }
@@ -7886,11 +7912,18 @@ def _platform_value_recommendation(
 
 def _entry_handoff_payload(payload: EntryPayload) -> dict:
     analysis = _entry_analysis(_entry_from_payload(payload), payload)
-    platform_value = _platform_value_check(payload, live_refresh=True)
+    source_props_by_sport = {
+        sport: _fetch_props("Both", sport) for sport in {prop.sport for prop in payload.props}
+    }
+    platform_value = _platform_value_check(
+        payload, live_refresh=True, source_props_by_sport=source_props_by_sport,
+    )
     recommended_platform = platform_value.get("recommended_platform") or _canonical_platform(payload.platform)
     release_blocks = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
     release_warnings = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") != "danger"]
-    live_verification = _verify_handoff_live_offers(payload, recommended_platform)
+    live_verification = _verify_handoff_live_offers(
+        payload, recommended_platform, source_props_by_sport=source_props_by_sport,
+    )
     legs = live_verification["legs"]
     release = analysis.get("release_verdict") or {}
     if payload.entry_mode == "real" and not release.get("paid_allowed"):
@@ -7936,14 +7969,20 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     }
 
 
-def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
+def _verify_handoff_live_offers(
+    payload: EntryPayload, platform: str, *,
+    source_props_by_sport: dict[str, list[dict]] | None = None,
+) -> dict:
     verified_at = iso_utc(utc_now())
     legs = []
     for prop in payload.props:
         requested_offer = str(prop.line_offer_type or "standard").strip().lower()
         requested_direction = _normalize_direction(prop.direction or "Over")
+        source_props = source_props_by_sport.get(prop.sport, []) if source_props_by_sport is not None else None
         candidates = [
-            row for row in _matching_market_props(prop.player, prop.stat, prop.sport, platform)
+            row for row in _matching_market_props(
+                prop.player, prop.stat, prop.sport, platform, source_props=source_props,
+            )
             if _canonical_platform(row.get("platform", "")) == platform
             and same_offer_game(prop.model_dump(), row)
             and (not prop.game or canonical_matchup_key(row.get("game"), EntryRepository.TEAM_ALIASES)
@@ -7954,15 +7993,20 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
                 for direction in row.get("allowed_directions", ["Over", "Under"])
             }
         ]
-        requested_offer_id = str(prop.provider_offer_id or "")
+        original_platform = _canonical_platform(prop.platform or payload.platform)
+        requested_offer_id = str(prop.provider_offer_id or "") if original_platform == platform else ""
         exact, closest = select_offer_line(candidates, float(prop.line), requested_offer_id)
         status = "current" if exact else "changed" if closest else "unavailable"
         current_line = float((exact or closest)["line"]) if exact or closest else float(prop.line)
-        leg = _handoff_leg(prop, platform)
+        leg = _handoff_leg(prop, platform, source_props=source_props)
         age = _age_minutes(prop.feature_as_of)
         live_offer_id = str((exact or {}).get("provider_offer_id") or (exact or {}).get("projection_id") or (exact or {}).get("offer_id") or "")
         identity_verified = bool(live_offer_id) and (not requested_offer_id or live_offer_id == requested_offer_id)
         freshness = offer_freshness(exact or {})
+        game_statuses = (game_start_status(prop.model_dump()), game_start_status(exact or {}))
+        game_status = "started" if "started" in game_statuses else (
+            "unavailable" if "unavailable" in game_statuses else "upcoming"
+        )
         leg.update({
             "offer_status": status,
             "requested_line": float(prop.line),
@@ -7973,7 +8017,14 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
             "provider_offer_id": live_offer_id,
             "provider_event_id": str((exact or {}).get("provider_event_id") or (exact or {}).get("event_id") or ""),
             "identity_verified": identity_verified,
-            "blocking_reason": handoff_blocking_reason(status, current_line, identity_verified, freshness),
+            "game_started": game_status == "started",
+            "game_start_status": game_status,
+            "blocking_reason": "This game has started. Do not use this as a pregame handoff; review it in the sportsbook."
+            if game_status == "started" else (
+                "Game start time is unavailable. Confirm the event and reload the offer before pregame handoff."
+                if game_status == "unavailable" and status == "current"
+                else handoff_blocking_reason(status, current_line, identity_verified, freshness)
+            ),
         })
         legs.append(leg)
     return {
@@ -7981,7 +8032,8 @@ def _verify_handoff_live_offers(payload: EntryPayload, platform: str) -> dict:
         "platform": platform,
         "all_current": bool(legs) and all(
             leg["offer_status"] == "current" and leg.get("identity_verified")
-            and leg.get("offer_freshness_status") == "fresh" for leg in legs
+            and leg.get("offer_freshness_status") == "fresh"
+            and leg.get("game_start_status") == "upcoming" for leg in legs
         ),
         "current": sum(leg["offer_status"] == "current" for leg in legs),
         "changed": sum(leg["offer_status"] == "changed" for leg in legs),
@@ -8083,11 +8135,15 @@ def _html_escape(value: object) -> str:
     )
 
 
-def _handoff_leg(prop: PropPayload, recommended_platform: str) -> dict:
+def _handoff_leg(
+    prop: PropPayload, recommended_platform: str, *, source_props: list[dict] | None = None,
+) -> dict:
     direction = prop.direction or "Over"
     best_line = prop.line
     best_platform = prop.platform or recommended_platform
-    comparison = _platform_value_for_prop(prop, _canonical_platform(prop.platform or recommended_platform))
+    comparison = _platform_value_for_prop(
+        prop, _canonical_platform(prop.platform or recommended_platform), source_props,
+    )
     if comparison.get("best_platform"):
         best_platform = comparison["best_platform"]
         best_line = comparison.get("best_line", prop.line)
@@ -13044,6 +13100,7 @@ app.include_router(recommendation_router)
 configure_market_router(
     MarketDependencies(
         line_shop=lambda *args: _line_shop_payload(*args),
+        cached_props=lambda platform, sport: _cached_best_lines_props(platform, sport),
         sharp_consensus=lambda *args: _sharp_consensus_payload(*args),
         hedge_calculator=lambda payload: _hedge_calculator_payload(payload),
         middle_calculator=lambda payload: _middle_calculator_payload(payload),
