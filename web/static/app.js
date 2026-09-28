@@ -3321,6 +3321,7 @@ function entryPropFromFeed(prop) {
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
     recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
+    offer_snapshot_id: prop.offer_snapshot_id || "",
   };
 }
 
@@ -3529,6 +3530,7 @@ function renderEntryProps() {
         } : {}),
         ...(offerChanged ? {
           provider_offer_id: "",
+          offer_snapshot_id: "",
           recommendation_snapshot_id: "",
           forecast_snapshot: {},
           feature_as_of: "",
@@ -3753,6 +3755,7 @@ function renderAnalysis(data) {
   const checklist = data.confirmation_checklist || [];
   const payout = data.payout_analysis || {};
   const payoutVerified = Boolean(data.platform_value?.payout_verified);
+  const evidence = data.evidence_validation || {};
   const release = data.release_verdict || {};
   const corrections = data.corrections || {};
   const analyzedProp = data.entry?.props?.[0] || {};
@@ -3862,6 +3865,14 @@ function renderAnalysis(data) {
       <span><strong>${pct(risk.average_confidence)}</strong><small>Average leg confidence</small></span>
       <span><strong>${Number(risk.average_edge || 0).toFixed(2)}</strong><small>Average projection cushion</small></span>
     </div>
+    ${evidence.legs?.length ? `<details class="entry-analysis-details">
+      <summary><span>Offer evidence</span><small>${evidence.verified_offer ? "Provider terms verified" : "Review provider terms"}</small></summary>
+      <div class="entry-analysis-detail-body">
+        <p class="subtle">A saved offer snapshot records the observed line. It does not guarantee the sportsbook still offers it or that the complete card payout is available.</p>
+        ${evidence.legs.map((leg) => `<p>Leg ${Number(leg.index)}: ${escapeHtml(leg.offer_freshness || "UNKNOWN")}${leg.verified_offer ? " · Verified source" : " · Confirm at sportsbook"}${leg.recommendation_verified ? " · Recommendation linked" : ""}</p>`).join("")}
+        ${analysisBulletList([...(evidence.invalidations || []), ...(evidence.warnings || [])])}
+      </div>
+    </details>` : ""}
     <details class="entry-analysis-details">
       <summary>Complete-card outlook</summary>
       ${window.EdgeIQEntrySummary?.render(data, escapeHtml) || '<p class="subtle">Complete-card estimates are unavailable.</p>'}
@@ -3943,6 +3954,7 @@ function renderAnalysis(data) {
           ...state.entryProps[index],
           direction: correction.suggested_direction,
           provider_offer_id: "",
+          offer_snapshot_id: "",
           recommendation_snapshot_id: "",
           confidence: null,
           forecast_snapshot: {},
@@ -4181,6 +4193,7 @@ function renderEntryPropsFromAnalyzed(props, invalidateReview = true, preserveOf
       ...prop,
       allowed_directions: original[index]?.allowed_directions ?? prop.allowed_directions,
       recommendation_snapshot_id: original[index]?.recommendation_snapshot_id || prop.recommendation_snapshot_id,
+      offer_snapshot_id: original[index]?.offer_snapshot_id || prop.offer_snapshot_id,
       end_to_end_confirmed: original[index]?.end_to_end_confirmed ?? prop.end_to_end_confirmed,
       settlement_provider: original[index]?.settlement_provider || prop.settlement_provider,
     } : prop,

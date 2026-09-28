@@ -24,6 +24,7 @@ class EntryDependencies:
     shared_entry: Callable[[str], dict]
     shared_entry_html: Callable[[str], str]
     place: Callable[[EntryPayload], dict]
+    validate_evidence: Callable[[EntryPayload], dict]
 
 
 _deps_store: list[EntryDependencies] = []
@@ -49,6 +50,12 @@ DepsEntry = Annotated[EntryDependencies, Depends(get_deps)]
 def analyze_entry(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
     return _deps.analyze(payload)
+
+
+@router.post("/api/entries/validate-evidence")
+def validate_entry_evidence(payload: EntryPayload, deps: DepsEntry = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, EntryDependencies) else get_deps()
+    return _deps.validate_evidence(payload)
 
 
 @router.post("/api/entries/payout-analysis")

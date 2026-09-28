@@ -22,6 +22,7 @@ from repository.models.player_identity_model import PlayerAliasModel, PlayerIden
 from repository.models.prediction_record_model import PredictionRecordModel  # noqa: F401
 from repository.models.product_event_model import ProductEventModel  # noqa: F401
 from repository.models.prop_line_history_model import PropLineHistoryModel  # noqa: F401
+from repository.models.provider_offer_snapshot_model import ProviderOfferSnapshotModel  # noqa: F401
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel  # noqa: F401
 from repository.models.research_evidence_model import ResearchEvidenceModel  # noqa: F401
 from repository.models.research_session_model import ResearchSessionModel  # noqa: F401

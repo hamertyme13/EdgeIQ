@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/market", tags=["market"])
 class MarketDependencies:
     line_shop: Callable[..., dict]
     cached_props: Callable[[str, str | None], list[dict]]
+    capture_offers: Callable[[list[dict]], list[dict]]
     sharp_consensus: Callable[..., dict]
     hedge_calculator: Callable[[HedgeCalculatorPayload], dict]
     middle_calculator: Callable[[MiddleCalculatorPayload], dict]
@@ -53,7 +54,9 @@ def best_lines(player: str, stat: str, sport: str, platform: str = "Both",
     if direction not in {"Over", "Under"}:
         raise HTTPException(status_code=400, detail="Choose Over or Under.")
     payload = _deps.line_shop(player, stat, None if sport == "All Sports" else sport.upper(), platform, over_odds, under_odds)
-    return {**best_lines_payload(payload, direction),
+    result = best_lines_payload(payload, direction)
+    result["lines"] = _deps.capture_offers(result["lines"])
+    return {**result,
             "manual_no_vig": payload.get("no_vig") if payload.get("no_vig_source") == "Manual odds" else None}
 
 
@@ -87,6 +90,7 @@ def browse_best_lines(sport: str, stat: str = "", platform: str = "Both",
         rows.append({**prop, "sport": prop.get("league") or prop.get("sport"), "line": line})
     rows.sort(key=lambda item: (-int(item.get("trending_count") or 0), str(item.get("game_time"))))
     result = best_lines_payload({"sport": sport.upper(), "stat": stat, "lines": rows[:50]}, direction)
+    result["lines"] = _deps.capture_offers(result["lines"])
     result["total_matching"] = len(rows)
     result["limit"] = 50
     result["message"] = "Cached offers only; showing up to 50. Refresh providers for newer lines. Live availability and EV are unverified."

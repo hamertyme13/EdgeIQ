@@ -127,11 +127,13 @@ def place_entry_payload(
     analyze_entry: Callable[[Any, EntryPayload], dict],
     audit_snapshot: Callable[[Any, EntryPayload, dict, list[str]], dict],
     save_entry: Callable[..., int] | None = None,
+    validate_evidence: Callable[[EntryPayload], dict] | None = None,
 ) -> dict:
     if save_entry is None:
         from repository.repositories.entry_repository import EntryRepository as _ER
         save_entry = _ER.save
     reject_combined_props(payload.props)
+    evidence = validate_evidence(payload) if validate_evidence else None
     if payload.entry_mode == "real" and payload.wager <= 0:
         raise EntryCreationError(
             400,
@@ -147,8 +149,26 @@ def place_entry_payload(
             400,
             "Entry cannot be tracked automatically: " + verification_warnings[0],
         )
+    if evidence is not None:
+        if not evidence["valid"]:
+            raise EntryCreationError(409, evidence["invalidations"][0])
+        for prop, leg in zip(payload.props, evidence["legs"], strict=True):
+            if leg["recommendation_verified"]:
+                authoritative = leg["authoritative_recommendation"]
+                prop.projection = authoritative.get("projection")
+                prop.confidence = authoritative.get("confidence")
+                prop.model_version = authoritative.get("model_version") or ""
+                prop.feature_as_of = authoritative.get("feature_as_of") or ""
+            else:
+                prop.confidence = None
+                prop.forecast_paid_eligible = False
+                prop.projection_source = "user" if prop.projection is not None else ""
+        if not evidence["recommendation_verified"]:
+            payload.recommended_by_app = False
     entry = entry_from_payload(payload)
     analysis = analyze_entry(entry, payload)
+    if evidence is not None:
+        analysis["evidence_validation"] = evidence
     release = analysis.get("release_verdict") or {}
     if (
         payload.entry_mode == "real"
@@ -212,4 +232,5 @@ def place_entry_payload(
         ),
         "verification_warnings": verification_warnings,
         "analysis": analysis,
+        "evidence_validation": evidence,
     }

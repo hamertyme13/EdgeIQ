@@ -34,3 +34,25 @@ def stamp_snapshot_payload(payload: dict, snapshot_id: str, model_version: str,
                 stamp_rows(section.get(field) or [])
             for rows in (section.get("sections") or {}).values():
                 stamp_rows(rows)
+
+
+def attach_offer_snapshots(payload: dict, updated_sections: set[str], capture) -> None:
+    """Link only newly generated recommendations to immutable provider terms."""
+    candidates: list[dict] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("player") and value.get("stat") and value.get("line") is not None and value.get("platform"):
+                candidates.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for section in updated_sections:
+        visit(payload.get(section))
+    if not candidates:
+        return
+    for original, stamped in zip(candidates, capture(candidates), strict=True):
+        original["offer_snapshot_id"] = stamped.get("offer_snapshot_id") or ""

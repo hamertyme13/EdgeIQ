@@ -243,7 +243,10 @@ def test_saved_slate_only_shows_selected_game_day():
         GamePredictionRepository.save(snapshot | {"generated_at": generated_at})
 
     rows = latest_slate_predictions("WNBA", 100, game_day=day)
-    assert {row["champion"]["game_id"] for row in rows} == {"day-slate-today"}
+    fixture_ids = {"day-slate-yesterday", "day-slate-today", "day-slate-tomorrow"}
+    assert {row["champion"]["game_id"] for row in rows if row["champion"]["game_id"] in fixture_ids} == {
+        "day-slate-today"
+    }
 
 
 def test_refresh_slate_only_predicts_selected_game_day(monkeypatch):

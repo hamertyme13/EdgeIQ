@@ -64,6 +64,7 @@ def initialize_database():
     from repository.models.prediction_record_model import PredictionRecordModel
     from repository.models.product_event_model import ProductEventModel
     from repository.models.prop_line_history_model import PropLineHistoryModel
+    from repository.models.provider_offer_snapshot_model import ProviderOfferSnapshotModel
     from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
     from repository.models.research_evidence_model import ResearchEvidenceModel
     from repository.models.research_session_model import ResearchSessionModel

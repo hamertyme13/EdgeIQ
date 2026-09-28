@@ -5,6 +5,7 @@ from repository.models.game_prediction_model import GamePredictionModel
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
 from repository.models.player_feature_model import PlayerFeatureModel
 from repository.models.prediction_record_model import PredictionRecordModel
+from repository.models.provider_offer_snapshot_model import ProviderOfferSnapshotModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
 
@@ -49,7 +50,13 @@ def test_plausibility_rejection_schema_preserves_diagnostics() -> None:
 def test_entry_leg_schema_preserves_exact_provider_identity() -> None:
     columns = set(EntryPropModel.__table__.columns.keys())
 
-    assert {"provider_event_id", "provider_offer_id"} <= columns
+    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id"} <= columns
+
+
+def test_provider_offer_snapshot_schema_preserves_stable_terms_and_observation() -> None:
+    columns = set(ProviderOfferSnapshotModel.__table__.columns.keys())
+    assert {"snapshot_id", "provider_offer_id", "player_key", "game_start", "line",
+            "allowed_directions", "first_observed_at", "last_observed_at", "expires_at"} <= columns
 
 
 def test_player_feature_schema_materializes_verified_history() -> None:

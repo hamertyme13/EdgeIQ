@@ -34,6 +34,10 @@ class EntryPropModel(Base):
 
     provider_offer_id = Column(String, default="", index=True)
 
+    offer_snapshot_id = Column(String(64), default="", index=True)
+
+    recommendation_snapshot_id = Column(String, default="", index=True)
+
     team = Column(String)
 
     sport = Column(String)

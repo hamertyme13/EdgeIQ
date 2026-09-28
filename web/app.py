@@ -93,6 +93,7 @@ from repository.repositories.plausibility_rejection_repository import Plausibili
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
@@ -193,6 +194,7 @@ from web.application.entry_creation_service import (
     prepare_entry_analysis,
     validated_call,
 )
+from web.application.entry_evidence_validation import validate_entry_evidence as validate_entry_evidence_payload
 from web.application.game_feed_service import game_group_key as _game_group_key
 from web.application.game_feed_service import trending_games_payload as _trending_games_payload
 from web.application.import_service import analyze_upload_payload as build_analyze_upload_payload
@@ -7911,6 +7913,7 @@ def _platform_value_recommendation(
 
 
 def _entry_handoff_payload(payload: EntryPayload) -> dict:
+    evidence_validation = validate_entry_evidence_payload(payload)
     analysis = _entry_analysis(_entry_from_payload(payload), payload)
     source_props_by_sport = {
         sport: _fetch_props("Both", sport) for sport in {prop.sport for prop in payload.props}
@@ -7921,6 +7924,8 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     recommended_platform = platform_value.get("recommended_platform") or _canonical_platform(payload.platform)
     release_blocks = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
     release_warnings = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") != "danger"]
+    release_blocks.extend(evidence_validation["invalidations"])
+    release_warnings.extend(evidence_validation["warnings"])
     live_verification = _verify_handoff_live_offers(
         payload, recommended_platform, source_props_by_sport=source_props_by_sport,
     )
@@ -7951,6 +7956,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
         "legs": legs,
         "ready_for_handoff": not release_blocks and bool(payload.props) and live_verification["all_current"],
         "live_verification": live_verification,
+        "evidence_validation": evidence_validation,
         "recommendation_freshness": "refresh_required" if stale_legs else "fresh",
         "ev_status": platform_value.get("ev_status", "unverified"),
         "blocks": release_blocks,
@@ -10399,6 +10405,8 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str, *, hydrate_pro
         provider_player_id=payload.provider_player_id or str(provider_context.get("player_id") or ""),
         provider_event_id=payload.provider_event_id or str(provider_context.get("game_id") or provider_context.get("event_id") or ""),
         provider_offer_id=payload.provider_offer_id or str(provider_context.get("projection_id") or provider_context.get("offer_id") or ""),
+        offer_snapshot_id=payload.offer_snapshot_id,
+        recommendation_snapshot_id=payload.recommendation_snapshot_id,
         model_version=str(forecast_snapshot.get("model_version") or payload.model_version or EDGEIQ_LOCAL_MODEL_VERSION),
         feature_as_of=str(forecast_snapshot.get("feature_as_of") or payload.feature_as_of or ""),
         forecast_snapshot={
@@ -11539,6 +11547,7 @@ def _entry_audit_snapshot(
         "entry_mode": payload.entry_mode,
         "recommended_by_app": payload.recommended_by_app,
         "recommendation_snapshot_id": payload.recommendation_snapshot_id,
+        "evidence_validation": analysis.get("evidence_validation") or {},
         "tracking_override": bool(payload.tracking_override),
         "settlement_tracking": "manual_verification_required" if settlement_warnings else "verified",
         "settlement_warnings": settlement_warnings,
@@ -12324,6 +12333,8 @@ def _serialize_prop(prop: Prop) -> dict:
         "provider_projection_id": prop.provider_projection_id,
         "provider_event_id": prop.provider_event_id,
         "provider_offer_id": prop.provider_offer_id,
+        "offer_snapshot_id": prop.offer_snapshot_id,
+        "recommendation_snapshot_id": prop.recommendation_snapshot_id,
         "provider_offer_verified": prop.provider_offer_verified,
         "team": prop.player.team,
         "position": prop.position,
@@ -13101,6 +13112,7 @@ configure_market_router(
     MarketDependencies(
         line_shop=lambda *args: _line_shop_payload(*args),
         cached_props=lambda platform, sport: _cached_best_lines_props(platform, sport),
+        capture_offers=lambda rows: ProviderOfferSnapshotRepository.capture_many(rows),
         sharp_consensus=lambda *args: _sharp_consensus_payload(*args),
         hedge_calculator=lambda payload: _hedge_calculator_payload(payload),
         middle_calculator=lambda payload: _middle_calculator_payload(payload),
@@ -13138,12 +13150,15 @@ app.include_router(results_router)
 
 configure_entry_router(
     EntryDependencies(
-        analyze=lambda payload: build_analyze_entry_payload(
-            payload,
-            lambda props: _reject_combined_player_props(props),
-            lambda value: _entry_from_payload(value, hydrate_provider=False),
-            lambda entry, value: _entry_analysis(entry, value),
-        ),
+        analyze=lambda payload: {
+            **build_analyze_entry_payload(
+                payload,
+                lambda props: _reject_combined_player_props(props),
+                lambda value: _entry_from_payload(value, hydrate_provider=False),
+                lambda entry, value: _entry_analysis(entry, value),
+            ),
+            "evidence_validation": validate_entry_evidence_payload(payload),
+        },
         payout_analysis=lambda payload: build_entry_payout_analysis_payload(
             payload,
             lambda props: _reject_combined_player_props(props),
@@ -13187,7 +13202,9 @@ configure_entry_router(
                 blocks,
             ),
             save_entry=lambda *args, **kwargs: EntryRepository.save(*args, **kwargs),
+            validate_evidence=validate_entry_evidence_payload,
         ),
+        validate_evidence=validate_entry_evidence_payload,
     )
 )
 app.include_router(entry_router)

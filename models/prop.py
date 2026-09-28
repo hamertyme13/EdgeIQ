@@ -80,6 +80,10 @@ class Prop:
 
     provider_offer_id: str = ""
 
+    offer_snapshot_id: str = ""
+
+    recommendation_snapshot_id: str = ""
+
     provider_offer_verified: bool = False
 
     model_version: str = ""

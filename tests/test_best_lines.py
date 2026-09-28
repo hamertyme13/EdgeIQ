@@ -77,6 +77,7 @@ def test_browse_is_bounded_to_cached_future_offers():
     offers.append(row("PrizePicks", 20, player="Past", game_time=past, league="WNBA"))
     deps = MarketDependencies(
         line_shop=lambda *args: {}, cached_props=lambda platform, sport: offers,
+        capture_offers=lambda rows: rows,
         sharp_consensus=lambda *args: {}, hedge_calculator=lambda value: {},
         middle_calculator=lambda value: {}, boost_analysis=lambda value: {},
         ev_scanner=lambda *args: [], timing_alerts=lambda *args: [], clv_report=lambda: {},

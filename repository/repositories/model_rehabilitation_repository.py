@@ -15,8 +15,9 @@ from repository.database import SessionLocal, initialize_database
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from repository.repositories.settings_repository import SettingsRepository
-from services.recommendation_snapshot import stamp_snapshot_payload
+from services.recommendation_snapshot import attach_offer_snapshots, stamp_snapshot_payload
 from utils.time import utc_now
 
 VERIFIED_SOURCES_EXCLUDED = {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
@@ -59,6 +60,7 @@ class ModelRehabilitationRepository:
         purpose = str(feed.get("purpose") or "recommendation_feed")
         snapshot_id = f"{captured_at.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
         stamp_snapshot_payload(merged, snapshot_id, model_version, captured_at, updated_sections=set(payload))
+        attach_offer_snapshots(merged, set(payload), ProviderOfferSnapshotRepository.capture_many)
         with SessionLocal() as session:
             session.add(RecommendationSnapshotModel(
                 snapshot_id=snapshot_id,
@@ -121,6 +123,14 @@ class ModelRehabilitationRepository:
                 "captured_at": row.captured_at.isoformat() if row.captured_at else "",
                 "payload": _json(row.payload, {}),
             } for row in rows]
+
+    @staticmethod
+    def get_snapshot(snapshot_id: str) -> dict | None:
+        if not snapshot_id:
+            return None
+        with SessionLocal() as session:
+            row = session.query(RecommendationSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
+            return _json(row.payload, {}) if row else None
 
     @staticmethod
     def queue_shadow(

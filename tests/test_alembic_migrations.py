@@ -54,9 +54,10 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "beta_feedback",
         "beta_issues",
         "game_predictions",
+        "provider_offer_snapshots",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
-    assert {"provider_event_id", "provider_offer_id"} <= entry_prop_columns
+    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id"} <= entry_prop_columns
     assert {"user_id", "session_id"} <= product_event_columns
 
 
@@ -105,7 +106,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_board_offer_pending_retry'"
         ).fetchone()[0]
 
-    assert revision == "l65c9a3d8e42"
+    assert revision == "m76e2b4c9a13"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1
@@ -168,6 +169,6 @@ def test_beta_migration_reconciles_tables_created_before_alembic_upgrade(tmp_pat
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'beta_%'"
         ).fetchone()[0]
 
-    assert revision == "l65c9a3d8e42"
+    assert revision == "m76e2b4c9a13"
     assert beta_table_count == 4
     assert {"user_id", "session_id"} <= product_event_columns

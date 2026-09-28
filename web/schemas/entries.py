@@ -12,6 +12,7 @@ class PropPayload(BaseModel):
     provider_player_id: str = ""
     provider_event_id: str = ""
     provider_offer_id: str = ""
+    offer_snapshot_id: str = ""
     team: str = ""
     position: str = ""
     sport: str
