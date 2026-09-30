@@ -2,22 +2,74 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from threading import RLock
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, or_
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from analytics.prediction_evidence import offer_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
+from repository.models.settings_model import SettingsModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 from utils.time import utc_now
 from utils.ttl_cache import TTLCache
+
+
+def _bounded_due_rows(session, cursor_key: str, now: datetime, due_text: str,
+                      limit: int, *, eligible_only: bool = False) -> list[BoardOfferObservationModel]:
+    """Walk pending observations by primary key without grouping the entire board."""
+    cursor = session.get(SettingsModel, cursor_key)
+    after_id = int(cursor.value) if cursor and cursor.value.isdigit() else 0
+    filters = (
+        BoardOfferObservationModel.outcome == "",
+        BoardOfferObservationModel.scheduled_start != "",
+        func.substr(BoardOfferObservationModel.scheduled_start, 1, 19) <= due_text,
+        or_(BoardOfferObservationModel.next_settlement_retry_at.is_(None),
+            BoardOfferObservationModel.next_settlement_retry_at <= now),
+    )
+    if eligible_only:
+        filters += (BoardOfferObservationModel.eligibility_status.in_(
+            ("trackable", "paid_eligible", "paper_only")
+        ),)
+
+    scan_limit = min(50_000, max(limit * 100, limit))
+
+    def fetch(start_id: int) -> list[tuple[int, str]]:
+        return (session.query(BoardOfferObservationModel.id, BoardOfferObservationModel.market_key)
+                .filter(*filters, BoardOfferObservationModel.id > start_id)
+                .order_by(BoardOfferObservationModel.id.asc()).limit(scan_limit).all())
+
+    candidates = fetch(after_id)
+    if not candidates and after_id:
+        candidates = fetch(0)
+    latest_ids: dict[str, int] = {}
+    last_id = 0
+    for row_id, market_key in candidates:
+        if market_key not in latest_ids and len(latest_ids) >= limit:
+            break
+        latest_ids[market_key] = row_id
+        last_id = row_id
+    if cursor is None:
+        cursor = SettingsModel(key=cursor_key, value="0")
+        session.add(cursor)
+    cursor.value = str(last_id)
+    # Multiple hourly observations can represent one market; settlement below
+    # updates all observations for a verified market in the same transaction.
+    if not latest_ids:
+        return []
+    rows = session.query(BoardOfferObservationModel).filter(
+        BoardOfferObservationModel.id.in_(latest_ids.values())
+    ).all()
+    return sorted(rows, key=lambda row: row.id)
 
 
 class BoardOfferRepository:
@@ -82,12 +134,24 @@ class BoardOfferRepository:
             for row in prepared:
                 row["opening_line"] = openings.get(row["market_key"], row["line"])
                 inserts.append({**row, "captured_at": captured})
+            insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
             result = session.execute(
-                sqlite_insert(BoardOfferObservationModel)
+                insert_factory(BoardOfferObservationModel)
                 .values(inserts)
                 .on_conflict_do_nothing(index_elements=["observation_key"])
             )
             created = max(0, int(result.rowcount or 0))
+            links = {
+                row["observation_key"]: row["offer_snapshot_id"]
+                for row in prepared if row.get("offer_snapshot_id")
+            }
+            if links:
+                existing_rows = session.query(BoardOfferObservationModel).filter(
+                    BoardOfferObservationModel.observation_key.in_(links),
+                    BoardOfferObservationModel.offer_snapshot_id == "",
+                ).all()
+                for observation in existing_rows:
+                    observation.offer_snapshot_id = links[observation.observation_key]
             if inserts:
                 session.commit()
             if created:
@@ -176,26 +240,9 @@ class BoardOfferRepository:
         due_before = current - timedelta(hours=2)
         due_text = due_before.strftime("%Y-%m-%dT%H:%M:%S")
         with SessionLocal() as session:
-            latest_unresolved = (
-                session.query(func.max(BoardOfferObservationModel.id).label("id"))
-                .filter(BoardOfferObservationModel.outcome == "")
-                .group_by(BoardOfferObservationModel.market_key)
-                .subquery()
-            )
-            rows = (
-                session.query(BoardOfferObservationModel)
-                .join(latest_unresolved, BoardOfferObservationModel.id == latest_unresolved.c.id)
-                .filter(
-                    BoardOfferObservationModel.scheduled_start != "",
-                    func.substr(BoardOfferObservationModel.scheduled_start, 1, 19) <= due_text,
-                    or_(
-                        BoardOfferObservationModel.next_settlement_retry_at.is_(None),
-                        BoardOfferObservationModel.next_settlement_retry_at <= current,
-                    ),
-                )
-                .order_by(BoardOfferObservationModel.scheduled_start.desc())
-                .limit(max(1, min(int(limit), 2000)))
-                .all()
+            rows = _bounded_due_rows(
+                session, "board_settlement_cursor", current, due_text,
+                max(1, min(int(limit), 2000)),
             )
             settled = 0
             observations_settled = 0
@@ -223,7 +270,9 @@ class BoardOfferRepository:
                     })
                 final = final_cache[lookup_key]
                 source = str((final or {}).get("source") or "").strip()
-                if not final or source.lower() in {"", "unknown", "unmatched", "projection_estimate"}:
+                if not final or source.lower() in {
+                    "", "unknown", "unmatched", "projection_estimate", "integrity_quarantine", "actual_provider",
+                } or str(final.get("status") or "played").lower() not in {"played", "dnp"}:
                     _defer_settlement(
                         row,
                         current,
@@ -231,10 +280,20 @@ class BoardOfferRepository:
                     )
                     unresolved += 1
                     continue
+                if row.offer_snapshot_id:
+                    scheduled_day = scheduled.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+                    if str(final.get("game_date") or "") != scheduled_day:
+                        _defer_settlement(row, current, "Final box score does not match the offer's scheduled game date.")
+                        unresolved += 1
+                        continue
                 try:
                     actual = float(final["actual"])
                 except (KeyError, TypeError, ValueError):
                     _defer_settlement(row, current, "The final-stat provider returned an invalid result.")
+                    unresolved += 1
+                    continue
+                if not math.isfinite(actual):
+                    _defer_settlement(row, current, "The final-stat provider returned a non-finite result.")
                     unresolved += 1
                     continue
                 latest = (
@@ -252,6 +311,7 @@ class BoardOfferRepository:
                 for observation in market_rows:
                     observation.actual = actual
                     observation.outcome_source = source
+                    observation.final_game_date = str(final.get("game_date") or "")
                     observation.outcome = "Push" if actual == observation.line else (
                         "Win"
                         if (actual > observation.line) == (observation.direction.lower() == "over")
@@ -267,8 +327,8 @@ class BoardOfferRepository:
                     observation.settlement_block_reason = ""
                 observations_settled += len(market_rows)
                 settled += 1
+            session.commit()
             if attempted:
-                session.commit()
                 BoardOfferRepository.invalidate_summary()
         return {
             "attempted": attempted,
@@ -278,34 +338,48 @@ class BoardOfferRepository:
         }
 
     @staticmethod
+    def outcome_for_snapshot(snapshot_id: str, direction: str) -> dict:
+        """Read the settled complete-board result without assuming the offered direction."""
+        BoardOfferRepository._ensure_schema()
+        if direction not in {"Over", "Under"}:
+            return {"status": "invalid_direction", "offer_snapshot_id": snapshot_id}
+        with SessionLocal() as session:
+            row = (
+                session.query(BoardOfferObservationModel)
+                .filter_by(offer_snapshot_id=snapshot_id)
+                .order_by(BoardOfferObservationModel.captured_at.desc(), BoardOfferObservationModel.id.desc())
+                .first()
+            )
+            if row is None:
+                return {"status": "not_captured", "offer_snapshot_id": snapshot_id}
+            if not row.outcome or row.actual is None or not row.final_game_date:
+                return {
+                    "status": "pending", "offer_snapshot_id": snapshot_id,
+                    "reason": row.settlement_block_reason or "Waiting for a matching final box score.",
+                    "attempts": int(row.settlement_attempts or 0),
+                }
+            result = "Push" if row.outcome == "Push" or row.actual == row.line else (
+                "Win" if (row.actual > row.line) == (direction == "Over") else "Loss"
+            )
+            return {
+                "status": "settled", "offer_snapshot_id": snapshot_id,
+                "direction": direction, "result": result, "actual": row.actual,
+                "line": row.line, "source": row.outcome_source,
+                "game_date": row.final_game_date,
+                "settled_at": row.settled_at.isoformat() if row.settled_at else "",
+            }
+
+    @staticmethod
     def settlement_entries(limit: int = 500, now: datetime | None = None) -> list[dict]:
         """Build synthetic entries so complete-board offers trigger official final-stat retrieval."""
         BoardOfferRepository._ensure_schema()
         current = (now or utc_now()).astimezone(UTC)
         due_before = current - timedelta(hours=2)
+        due_text = due_before.strftime("%Y-%m-%dT%H:%M:%S")
         with SessionLocal() as session:
-            latest_eligible = (
-                session.query(func.max(BoardOfferObservationModel.id).label("id"))
-                .filter(
-                    BoardOfferObservationModel.outcome == "",
-                    BoardOfferObservationModel.eligibility_status.in_(("trackable", "paid_eligible", "paper_only")),
-                    BoardOfferObservationModel.scheduled_start != "",
-                )
-                .group_by(BoardOfferObservationModel.market_key)
-                .subquery()
-            )
-            rows = (
-                session.query(BoardOfferObservationModel)
-                .join(latest_eligible, BoardOfferObservationModel.id == latest_eligible.c.id)
-                .filter(
-                    or_(
-                        BoardOfferObservationModel.next_settlement_retry_at.is_(None),
-                        BoardOfferObservationModel.next_settlement_retry_at <= current,
-                    )
-                )
-                .order_by(BoardOfferObservationModel.scheduled_start.desc())
-                .limit(max(1, min(int(limit) * 4, 4000)))
-                .all()
+            rows = _bounded_due_rows(
+                session, "board_retrieval_cursor", current, due_text,
+                max(1, min(int(limit), 4000)), eligible_only=True,
             )
             props: list[dict] = []
             seen: set[str] = set()
@@ -332,6 +406,7 @@ class BoardOfferRepository:
                 })
                 if len(props) >= limit:
                     break
+            session.commit()
         return [{"placed_at": current, "entry_mode": "complete_board", "props": props}] if props else []
 
     @staticmethod
@@ -343,25 +418,32 @@ class BoardOfferRepository:
             if cached is not None:
                 return {**deepcopy(cached), "cache": {"hit": True, "ttl_seconds": 300}}
         with SessionLocal() as session:
-            latest_ids = session.query(
+            independent_count = session.query(
+                func.count(func.distinct(BoardOfferObservationModel.market_key))
+            ).scalar() or 0
+            analyzed_count = session.query(
+                func.count(func.distinct(BoardOfferObservationModel.market_key))
+            ).filter(BoardOfferObservationModel.analyzed_at.is_not(None)).scalar() or 0
+            latest_settled_ids = session.query(
                 func.max(BoardOfferObservationModel.id).label("id")
+            ).filter(
+                BoardOfferObservationModel.outcome.in_(("Win", "Loss", "Push"))
             ).group_by(BoardOfferObservationModel.market_key).subquery()
-            independent = session.query(BoardOfferObservationModel).join(
-                latest_ids, BoardOfferObservationModel.id == latest_ids.c.id
+            settled = session.query(BoardOfferObservationModel).join(
+                latest_settled_ids, BoardOfferObservationModel.id == latest_settled_ids.c.id
             ).all()
-        settled = [row for row in independent if row.outcome in {"Win", "Loss", "Push"}]
         decisions = [row for row in settled if row.outcome in {"Win", "Loss"}]
         analyzed = [row for row in decisions if row.analyzed_at is not None and row.probability is not None]
         selected_keys = {row.market_key for row in analyzed}
         baseline = [row for row in decisions if row.market_key not in selected_keys]
         payload = {
             "coverage": {
-                "independent_offers": len(independent),
+                "independent_offers": independent_count,
                 "settled_offers": len(settled),
-                "unresolved_offers": max(0, len(independent) - len(settled)),
-                "analyzed_offers": sum(row.analyzed_at is not None for row in independent),
-                "rejected_or_unselected": sum(row.analyzed_at is None for row in independent),
-                "settlement_rate": round(len(settled) / len(independent) * 100.0, 1) if independent else 0.0,
+                "unresolved_offers": max(0, independent_count - len(settled)),
+                "analyzed_offers": analyzed_count,
+                "rejected_or_unselected": max(0, independent_count - analyzed_count),
+                "settlement_rate": round(len(settled) / independent_count * 100.0, 1) if independent_count else 0.0,
             },
             "model": _evidence_metrics(analyzed),
             "baseline": _evidence_metrics(baseline),
@@ -490,6 +572,7 @@ def _prepared_row(raw: dict, provider: str, bucket: str) -> dict | None:
         "observation_key": observation,
         "market_key": market,
         "offer_key": offer,
+        "offer_snapshot_id": str(raw.get("offer_snapshot_id") or ""),
         "provider": str(raw.get("platform") or provider),
         "provider_offer_id": str(raw.get("provider_offer_id") or raw.get("projection_id") or raw.get("id") or ""),
         "provider_player_id": str(raw.get("provider_player_id") or raw.get("player_id") or ""),

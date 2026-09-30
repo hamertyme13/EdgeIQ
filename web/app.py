@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, suppress
@@ -24,7 +25,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import data.providers.balldontlie as balldontlie
@@ -254,7 +255,13 @@ from web.application.provider_health_service import (
     provider_status_key as _provider_status_key,
 )
 from web.application.recommendation_policy import recommendation_eligibility
-from web.application.schedule_service import elapsed_job_due, scheduled_job_due, scheduled_job_overdue
+from web.application.schedule_service import (
+    SCHEDULED_RETRY_MINUTES,
+    elapsed_job_due,
+    execute_scheduled_job,
+    scheduled_job_due,
+    scheduled_job_overdue,
+)
 from web.application.season_history_service import run_daily_season_updates
 from web.application.shared_recommendations import shared_opportunity_feed
 from web.version import STATIC_ASSET_VERSION
@@ -586,6 +593,7 @@ _PREDICTION_EVIDENCE_LOCK = threading.RLock()
 _MODEL_HEALTH_CACHE: TTLCache[dict] = TTLCache()
 _MODEL_HEALTH_LOCK = threading.RLock()
 _DATA_HEALTH_CACHE: TTLCache[dict] = TTLCache()
+_DATA_HEALTH_COMPACT_CACHE: TTLCache[dict] = TTLCache()
 _DATA_HEALTH_LOCK = threading.RLock()
 _RUNTIME_STATUS_CACHE: TTLCache[dict] = TTLCache()
 _RUNTIME_STATUS_LOCK = threading.RLock()
@@ -685,6 +693,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def private_hosted_access(request: Request, call_next):
+    from web.application.hosted_access import hosted_access_status
+
+    status = hosted_access_status(request.headers.get("authorization"))
+    if request.url.path == "/api/health" and status != "unavailable":
+        return await call_next(request)
+    if status == "unavailable":
+        return JSONResponse({"detail": "Private hosted access is not configured."}, status_code=503)
+    if status == "credentials_required":
+        return JSONResponse(
+            {"detail": "Sign in to the private EdgeIQ beta."}, status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="EdgeIQ Private Beta"'},
+        )
+    return await call_next(request)
 
 
 def _normalized_endpoint_path(path: str) -> str:
@@ -1613,6 +1638,7 @@ def _cached_best_lines_props(platform: str, sport_filter: str | None) -> list[di
 
 def _fetch_platform_props(
     platform: str, *, force_refresh: bool = False, sport_filter: str | None = None,
+    progress: Callable[[int, str], None] | None = None,
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     fetcher = _platform_prop_fetcher(canonical)
@@ -1633,7 +1659,20 @@ def _fetch_platform_props(
             return [dict(prop) for prop in cached[1]]
         key_lock = _PROP_FETCH_KEY_LOCKS.setdefault(cache_key, threading.Lock())
 
-    with key_lock:
+    if not force_refresh and not key_lock.acquire(timeout=1.0):
+        # A forced provider refresh may be waiting on a slow upstream. Never
+        # block a briefing request behind it or serve an expired offer.
+        with _PROP_FETCH_LOCK:
+            cached = _PROP_FETCH_CACHE.get(cache_key)
+            if cached and cached[0] > time.monotonic():
+                _increment_prop_fetch_metric(canonical, "coalesced_hits")
+                return [dict(prop) for prop in cached[1]]
+        return []
+    if force_refresh and not key_lock.acquire(timeout=30.0):
+        raise TimeoutError(
+            f"{canonical} is still refreshing offers. Wait for that refresh to finish before trying again."
+        )
+    try:
         now = time.monotonic()
         with _PROP_FETCH_LOCK:
             cached = _PROP_FETCH_CACHE.get(cache_key)
@@ -1642,11 +1681,14 @@ def _fetch_platform_props(
                 return [dict(prop) for prop in cached[1]]
         if canonical == "DraftKings Pick6":
             fetcher = lambda: draftkings_pick6.fetch_projections(refresh=force_refresh)
-        props = (
-            _fetch_platform_props_uncached(canonical, fetcher, archive_full_board=True)
-            if force_refresh
-            else _fetch_platform_props_uncached(canonical, fetcher)
-        )
+        if force_refresh:
+            props = _fetch_platform_props_uncached(
+                canonical, fetcher, archive_full_board=True, progress=progress,
+            ) if progress else _fetch_platform_props_uncached(
+                canonical, fetcher, archive_full_board=True,
+            )
+        else:
+            props = _fetch_platform_props_uncached(canonical, fetcher)
         with _PROP_FETCH_LOCK:
             _increment_prop_fetch_metric(canonical, "provider_fetches")
             _PROP_FETCH_CACHE[cache_key] = (now + PROP_FETCH_CACHE_SECONDS, [dict(prop) for prop in props])
@@ -1656,6 +1698,8 @@ def _fetch_platform_props(
             force_snapshot=force_refresh,
         )
         return [dict(prop) for prop in props]
+    finally:
+        key_lock.release()
 
 
 def _increment_prop_fetch_metric(platform: str, metric: str) -> None:
@@ -1725,6 +1769,7 @@ def _fetch_platform_props_uncached(
     fetcher,
     *,
     archive_full_board: bool = False,
+    progress: Callable[[int, str], None] | None = None,
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     attempted_at = iso_utc(utc_now())
@@ -1733,6 +1778,8 @@ def _fetch_platform_props_uncached(
     except Exception as exc:
         _record_provider_fetch_status(canonical, attempted_at, error=str(exc))
         return []
+    if progress:
+        progress(45, f"{canonical} returned {len(props):,} offers; checking today's markets.")
     # Capture the provider's complete board before recommendation and
     # settlement filters introduce selection bias.
     if archive_full_board:
@@ -1747,25 +1794,27 @@ def _fetch_platform_props_uncached(
         eligibility = _end_to_end_prop_eligibility(prop)
         prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
         prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
+        prop["settlement_provider"] = eligibility.get("provider") or ""
     actionable = [
         prop for prop in current_props
         if _is_actionable_provider_prop(prop)
     ]
     if canonical == "PrizePicks":
         actionable = _enrich_prizepicks_adjusted_lines(actionable)
+    if progress:
+        progress(70, f"{canonical} checked {len(current_props):,} current offers; verifying final-stat coverage.")
     research_rows = []
     for prop in actionable:
         if str(prop.get("league") or prop.get("sport") or "").upper() not in ESPORT_SPORTS:
             continue
-        eligibility = _end_to_end_prop_eligibility(prop)
-        confirmed = bool(eligibility["eligible"])
+        confirmed = bool(prop["end_to_end_confirmed"])
         research_rows.append({
             **prop,
             "research_only": not confirmed,
             "end_to_end_confirmed": confirmed,
             "forecast_paid_eligible": confirmed,
-            "settlement_provider": eligibility.get("provider") or "PandaScore access needed",
-            "settlement_reason": (eligibility.get("reasons") or [""])[0],
+            "settlement_provider": prop.get("settlement_provider") or "PandaScore access needed",
+            "settlement_reason": prop.get("eligibility_reason") or "",
             "data_strength": (
                 ["Provider-backed", "Final stats verified path"]
                 if confirmed
@@ -1774,9 +1823,11 @@ def _fetch_platform_props_uncached(
         })
     with _PROP_FETCH_LOCK:
         _RESEARCH_PROP_CACHE[canonical] = research_rows
-    eligible = [prop for prop in actionable if _end_to_end_prop_eligibility(prop)["eligible"]]
+    eligible = [prop for prop in actionable if prop["end_to_end_confirmed"]]
     with _PROP_FETCH_LOCK:
         _PROVIDER_BOARD_CONTEXT_CACHE[canonical] = [dict(prop) for prop in current_props]
+    if progress:
+        progress(80, f"{canonical} found {len(eligible):,} trackable offers; saving freshness.")
     _record_provider_fetch_status(
         canonical,
         attempted_at,
@@ -1804,7 +1855,8 @@ def _record_board_offers(props: list[dict], platform: str) -> None:
                 eligibility = _end_to_end_prop_eligibility(prop)
                 prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
                 prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
-            BoardOfferRepository.record_many(batch, platform)
+            captured = ProviderOfferSnapshotRepository.capture_many(batch)
+            BoardOfferRepository.record_many(captured, platform)
     except Exception:
         _log.warning("Failed to record board offers for platform %s", platform, exc_info=True)
 
@@ -4405,6 +4457,9 @@ def _run_daily_briefing_scan(
 ) -> dict:
     with named_operation_lock("daily-briefing-scan") as acquired:
         if not acquired:
+            active = (_daily_scan_status_payload(platform, sport_filter).get("current") or {})
+            if active.get("status") in {"scanning_props", "analyzing_games", "building_entries"}:
+                return active
             scan = _new_daily_scan(platform, sport_filter, trigger)
             if scan_id:
                 scan["id"] = scan_id
@@ -4982,6 +5037,8 @@ def _card_release_status(card: dict, model_health: dict | None = None) -> dict:
 
 
 def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
+    from web.application.opportunity_presentation import best_offer_per_market, best_offer_per_player
+
     rows: list[dict] = []
     seen: set[tuple[str, str, str, float]] = set()
     pending_entries = EntryRepository.pending()
@@ -5065,6 +5122,8 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "projection_source": prop.get("projection_source", ""),
             "model_version": prop.get("model_version", ""),
             "feature_as_of": prop.get("feature_as_of", ""),
+            "provider_offer_verified_at": prop.get("provider_offer_verified_at", ""),
+            "provider_offer_observed_at": prop.get("provider_offer_observed_at", ""),
             "forecast_snapshot": prop.get("forecast_snapshot") or {},
             "forecast_paid_eligible": bool(prop.get("forecast_paid_eligible")),
             "end_to_end_confirmed": bool(prop.get("end_to_end_confirmed")),
@@ -5074,9 +5133,11 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "decision_receipt": {},
         })
         rows[-1]["risk_profile"] = _prop_risk_profile(rows[-1])
-        age = _age_minutes(rows[-1].get("feature_as_of"))
+        age = _age_minutes(
+            rows[-1].get("provider_offer_verified_at") or rows[-1].get("provider_offer_observed_at")
+        )
         rows[-1]["recommendation_freshness"] = {
-            "status": "expired" if age is not None and age > 30 else "fresh",
+            "status": "unknown" if age is None or age < 0 else "expired" if age > 30 else "fresh",
             "age_minutes": round(age, 1) if age is not None else None,
             "expires_after_minutes": 30,
         }
@@ -5089,7 +5150,9 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
         ),
         reverse=True,
     )
-    top_rows = _opportunities_by_risk_lane(rows, per_lane=3, total_limit=9)
+    top_rows = _opportunities_by_risk_lane(
+        best_offer_per_player(best_offer_per_market(rows)), per_lane=3, total_limit=9
+    )
     model_paid_enabled = _model_health_payload().get("paid_entry_mode") == "enabled"
     for row in top_rows:
         row["decision_receipt"] = _opportunity_decision_receipt(
@@ -10407,6 +10470,7 @@ def _prop_from_payload(payload: PropPayload, entry_platform: str, *, hydrate_pro
         provider_offer_id=payload.provider_offer_id or str(provider_context.get("projection_id") or provider_context.get("offer_id") or ""),
         offer_snapshot_id=payload.offer_snapshot_id,
         recommendation_snapshot_id=payload.recommendation_snapshot_id,
+        leg_recommendation_snapshot_id=payload.leg_recommendation_snapshot_id,
         model_version=str(forecast_snapshot.get("model_version") or payload.model_version or EDGEIQ_LOCAL_MODEL_VERSION),
         feature_as_of=str(forecast_snapshot.get("feature_as_of") or payload.feature_as_of or ""),
         forecast_snapshot={
@@ -11728,9 +11792,10 @@ def _apply_provider_weights(signals: list[dict]) -> list[dict]:
     return weighted
 
 
-def _data_health_payload() -> dict:
+def _data_health_payload(compact: bool = False) -> dict:
     with _DATA_HEALTH_LOCK:
-        cached = _DATA_HEALTH_CACHE.get_or_none()
+        cache = _DATA_HEALTH_COMPACT_CACHE if compact else _DATA_HEALTH_CACHE
+        cached = cache.get_or_none()
         if cached is not None:
             return dict(cached)
         with _PROP_FETCH_LOCK:
@@ -11738,24 +11803,28 @@ def _data_health_payload() -> dict:
                 platform: dict(metrics)
                 for platform, metrics in _PROP_FETCH_METRICS.items()
             }
-        payload = build_data_health_payload(
-            _provider_weights(),
-            platform_memory,
-            SETTLEMENT_REFRESH_STATUS_KEY,
-            _endpoint_timing_snapshot(),
-            operational_health={
-                "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
-                "schedule": _refresh_schedule_payload(),
+        operations = {
+            "scheduler": _safe_json_loads(SettingsRepository.get("daily_scheduler_status", "")),
+            "schedule": _refresh_schedule_payload(),
+            "background_jobs": background_jobs.list(limit=20),
+        }
+        if not compact:
+            operations.update({
                 "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
                 "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
                 "research_memory": ResearchEvidenceRepository.summary(),
                 "complete_board": BoardOfferRepository.summary(),
                 "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
-                "background_jobs": background_jobs.list(limit=20),
                 "deployment": _deploy_readiness_payload(),
-            },
+            })
+        payload = build_data_health_payload(
+            _provider_weights(),
+            platform_memory,
+            SETTLEMENT_REFRESH_STATUS_KEY,
+            _endpoint_timing_snapshot(),
+            operational_health=operations,
         )
-        _DATA_HEALTH_CACHE.set(dict(payload), ttl=20.0)
+        cache.set(dict(payload), ttl=20.0)
         return payload
 
 
@@ -11789,7 +11858,7 @@ def _refresh_runtime_status_cache() -> None:
 
 
 def _build_runtime_status_payload() -> dict:
-    data_health = _data_health_payload()
+    data_health = _data_health_payload(compact=True)
     model_health = _model_health_payload()
     ai = build_ai_status_payload(
         os.getenv("OPENAI_API_KEY", ""),
@@ -11881,6 +11950,7 @@ def _verify_odds_provider() -> dict:
 def _refresh_schedule_payload() -> dict:
     defaults = {
         "morning_scan": "08:00",
+        "daily_briefing": "",
         "injury_refresh": "11:00",
         "line_snapshots": "*/30",
         "result_check": "23:30",
@@ -11894,6 +11964,7 @@ def _refresh_schedule_payload() -> dict:
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
     jobs = [
         {"name": "Morning board scan", "time": schedule["morning_scan"], "action": "Refresh props, command center, timing alerts."},
+        {"name": "Daily Briefing", "time": schedule["daily_briefing"], "action": "Rebuild the briefing for your default platform and sport."},
         {"name": "Injury/news refresh", "time": schedule["injury_refresh"], "action": "Update availability, injuries, news context."},
         {"name": "Line movement snapshots", "time": schedule["line_snapshots"], "action": "Record prop lines for CLV and timing alerts."},
         {"name": "Post-game result check", "time": schedule["result_check"], "action": "Auto-check pending entries against final stats."},
@@ -11904,11 +11975,12 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Season history", "time": schedule["season_history"], "action": "Update recent official results across supported leagues using saved checkpoints."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history")
+    job_keys = ("morning_scan", "daily_briefing", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
         job["last_run"] = last_run
+        job["last_status"] = _safe_json_loads(SettingsRepository.get(f"daily_scheduler_job_status:{key}", ""))
         job["overdue"] = scheduled_job_overdue(str(job["time"]), last_run, now)
     return {
         "schedule": schedule,
@@ -11943,6 +12015,15 @@ def _run_daily_refresh_now() -> dict:
         )
 
 
+def _run_scheduled_briefing() -> dict:
+    preferences = _user_preferences()
+    platform = str(preferences.get("default_platform") or "PrizePicks")
+    sport = str(preferences.get("default_sport") or "All Sports")
+    return _run_daily_briefing_scan(
+        platform, None if sport == "All Sports" else sport.upper(), trigger="scheduled"
+    )
+
+
 def _start_daily_refresh_job() -> dict:
     def run(context: JobContext) -> dict:
         context.update(10, "Refreshing provider boards and final-result sources.")
@@ -11974,10 +12055,17 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
         selected = _selected_platforms(canonical_platform)
         if len(selected) > 1:
             with ThreadPoolExecutor(max_workers=len(selected)) as pool:
-                batches = list(pool.map(lambda name: _fetch_platform_props(name, force_refresh=True), selected))
+                batches = list(pool.map(
+                    lambda name: _fetch_platform_props(
+                        name, force_refresh=True, sport_filter=sport_filter, progress=context.update,
+                    ),
+                    selected,
+                ))
             props = [prop for batch in batches for prop in batch]
         else:
-            props = _fetch_platform_props(selected[0], force_refresh=True) if selected else []
+            props = _fetch_platform_props(
+                selected[0], force_refresh=True, sport_filter=sport_filter, progress=context.update,
+            ) if selected else []
         if sport_filter:
             props = [
                 prop for prop in props
@@ -12059,6 +12147,7 @@ def _run_due_daily_operations_locked() -> dict:
     due: list[tuple[str, object]] = []
     timed_jobs = {
         "morning_scan": _run_daily_refresh_now,
+        "daily_briefing": _run_scheduled_briefing,
         "injury_refresh": _run_daily_refresh_now,
         "result_check": lambda: {
             "entries": _auto_check_pending_entries(False, True),
@@ -12076,7 +12165,9 @@ def _run_due_daily_operations_locked() -> dict:
         scheduled_time = str(schedule.get(name) or "")
         run_key = f"daily_scheduler_run:{name}"
         last_run = SettingsRepository.get(run_key, "")
-        if scheduled_time and scheduled_job_due(scheduled_time, last_run, now):
+        last_attempt = SettingsRepository.get(f"daily_scheduler_attempt:{name}", "")
+        if (scheduled_time and scheduled_job_due(scheduled_time, last_run, now)
+                and elapsed_job_due(last_attempt, now, SCHEDULED_RETRY_MINUTES)):
             due.append((name, callback))
     snapshot_rule = str(schedule.get("line_snapshots") or "")
     if snapshot_rule.startswith("*/"):
@@ -12097,15 +12188,16 @@ def _run_due_daily_operations_locked() -> dict:
     for name, callback in due:
         run_key = f"daily_scheduler_run:{name}"
         try:
-            def run_scheduled(context: JobContext, *, job_name=name, job_callback=callback, setting_key=run_key) -> dict:
-                context.update(10, f"Running scheduled {job_name.replace('_', ' ')}.")
-                result = job_callback()
-                SettingsRepository.set(setting_key, iso_utc(utc_now()))
-                return {
-                    "job": job_name,
-                    "result": result,
-                    "message": f"Scheduled {job_name.replace('_', ' ')} complete.",
-                }
+            def run_scheduled(context: JobContext, *, job_name=name, job_callback=callback) -> dict:
+                with named_operation_lock("scheduled-maintenance-execution") as acquired:
+                    if not acquired:
+                        raise RuntimeError("Another scheduled maintenance job is running. EdgeIQ will retry this job.")
+                    context.update(10, f"Running scheduled {job_name.replace('_', ' ')}.")
+                    return execute_scheduled_job(
+                        job_name, job_callback,
+                        save_setting=lambda key, value: SettingsRepository.set(key, value),
+                        timestamp=lambda: iso_utc(utc_now()),
+                    )
 
             job = background_jobs.submit(
                 f"scheduled_{name}",
@@ -12120,6 +12212,7 @@ def _run_due_daily_operations_locked() -> dict:
     status = {
         "ran_at": iso_utc(utc_now()),
         "jobs_run": [row["job"] for row in scheduled],
+        "jobs_queued": [row["job"] for row in scheduled],
         "jobs": scheduled,
         "failures": failures,
         "ok": not failures,
@@ -12153,7 +12246,7 @@ def _queue_daily_shadow_cohort() -> dict:
 
 def _notification_payload() -> dict:
     notices = []
-    health = _data_health_payload()
+    health = _data_health_payload(compact=True)
     for provider in health["providers"]:
         if provider["status"] in {"missing_key", "not_configured"} and provider["name"] in {"OpenAI", "SportsDataIO", "NewsAPI", "OpenWeather"}:
             notices.append({
@@ -12335,6 +12428,7 @@ def _serialize_prop(prop: Prop) -> dict:
         "provider_offer_id": prop.provider_offer_id,
         "offer_snapshot_id": prop.offer_snapshot_id,
         "recommendation_snapshot_id": prop.recommendation_snapshot_id,
+        "leg_recommendation_snapshot_id": prop.leg_recommendation_snapshot_id,
         "provider_offer_verified": prop.provider_offer_verified,
         "team": prop.player.team,
         "position": prop.position,
@@ -12818,6 +12912,7 @@ configure_operations_router(
         refresh_schedule=lambda: _refresh_schedule_payload(),
         update_refresh_schedule=lambda payload: build_update_refresh_schedule_payload(
             payload,
+            current_schedule=lambda: _refresh_schedule_payload()["schedule"],
             save_setting=lambda key, value: SettingsRepository.set(key, value),
             serialize=lambda value: json.dumps(value),
         ),
@@ -13113,6 +13208,7 @@ configure_market_router(
         line_shop=lambda *args: _line_shop_payload(*args),
         cached_props=lambda platform, sport: _cached_best_lines_props(platform, sport),
         capture_offers=lambda rows: ProviderOfferSnapshotRepository.capture_many(rows),
+        offer_outcome=lambda snapshot_id, direction: BoardOfferRepository.outcome_for_snapshot(snapshot_id, direction),
         sharp_consensus=lambda *args: _sharp_consensus_payload(*args),
         hedge_calculator=lambda payload: _hedge_calculator_payload(payload),
         middle_calculator=lambda payload: _middle_calculator_payload(payload),
@@ -13126,7 +13222,7 @@ app.include_router(market_router)
 
 configure_provider_router(
     ProviderDependencies(
-        data_health=lambda: _data_health_payload(),
+        data_health=lambda compact: _data_health_payload(compact=compact),
         sleeper_status=lambda: sleeper.public_api_status(),
         verify_odds=lambda: _verify_odds_provider(),
     )

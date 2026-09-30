@@ -25,6 +25,7 @@ class MarketDependencies:
     ev_scanner: Callable[..., list[dict]]
     timing_alerts: Callable[..., list[dict]]
     clv_report: Callable[[], dict]
+    offer_outcome: Callable[[str, str], dict] | None = None
 
 
 _deps_store: list[MarketDependencies] = []
@@ -44,6 +45,18 @@ def get_deps() -> MarketDependencies:
 
 
 DepsMark = Annotated[MarketDependencies, Depends(get_deps)]
+
+
+@router.get("/offer-outcome/{snapshot_id}")
+def offer_outcome(snapshot_id: str, direction: str = "Over", deps: DepsMark = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
+    if len(snapshot_id) != 64 or any(character not in "0123456789abcdef" for character in snapshot_id.lower()):
+        raise HTTPException(status_code=400, detail="Choose a valid saved offer ID.")
+    if direction not in {"Over", "Under"}:
+        raise HTTPException(status_code=400, detail="Choose Over or Under.")
+    if _deps.offer_outcome is None:
+        raise HTTPException(status_code=503, detail="Offer results are not ready yet.")
+    return _deps.offer_outcome(snapshot_id, direction)
 
 
 @router.get("/best-lines")

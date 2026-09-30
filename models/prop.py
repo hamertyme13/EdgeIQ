@@ -83,6 +83,7 @@ class Prop:
     offer_snapshot_id: str = ""
 
     recommendation_snapshot_id: str = ""
+    leg_recommendation_snapshot_id: str = ""
 
     provider_offer_verified: bool = False
 

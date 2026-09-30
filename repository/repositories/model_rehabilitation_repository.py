@@ -15,9 +15,10 @@ from repository.database import SessionLocal, initialize_database
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.models.shadow_prediction_model import ShadowPredictionModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from repository.repositories.settings_repository import SettingsRepository
-from services.recommendation_snapshot import attach_offer_snapshots, stamp_snapshot_payload
+from services.recommendation_snapshot import attach_leg_recommendations, attach_offer_snapshots, stamp_snapshot_payload
 from utils.time import utc_now
 
 VERIFIED_SOURCES_EXCLUDED = {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
@@ -61,6 +62,13 @@ class ModelRehabilitationRepository:
         snapshot_id = f"{captured_at.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
         stamp_snapshot_payload(merged, snapshot_id, model_version, captured_at, updated_sections=set(payload))
         attach_offer_snapshots(merged, set(payload), ProviderOfferSnapshotRepository.capture_many)
+        attach_leg_recommendations(
+            merged, set(payload),
+            lambda rows: LegRecommendationSnapshotRepository.capture(
+                rows, feed_snapshot_id=snapshot_id, model_version=model_version,
+                captured_at=captured_at.replace(tzinfo=UTC),
+            ),
+        )
         with SessionLocal() as session:
             session.add(RecommendationSnapshotModel(
                 snapshot_id=snapshot_id,

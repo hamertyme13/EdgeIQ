@@ -46,6 +46,7 @@ class BackgroundJobManager:
 
     def __init__(self, *, max_workers: int = 3, history_limit: int = 100, repository=None) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="edgeiq-job")
+        self._scheduled_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-scheduled")
         self._history_limit = max(20, history_limit)
         self._repository = repository
         self._owner_id = uuid.uuid4().hex
@@ -99,7 +100,8 @@ class BackgroundJobManager:
             self._active_keys[key] = job_id
             self._prune_locked()
             self._persist_locked(job_id, force=True)
-            self._futures[job_id] = self._executor.submit(self._run, job_id, task)
+            executor = self._scheduled_executor if kind.startswith("scheduled_") else self._executor
+            self._futures[job_id] = executor.submit(self._run, job_id, task)
             return self._public_job(job)
 
     def get(self, job_id: str) -> dict | None:

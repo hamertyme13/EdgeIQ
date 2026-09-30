@@ -55,7 +55,7 @@ def trending_props_payload(
     requested_limit = max(1, min(int(limit), 15))
     candidate_limit = max(30, requested_limit * 2)
     eligible: list[dict] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen_offers: set[tuple] = set()
     excluded = 0
     for raw in props:
         offer_type = str(raw.get("line_offer_type") or raw.get("odds_type") or "standard").lower()
@@ -76,20 +76,31 @@ def trending_props_payload(
                     "A verified esports result source is not connected."
                 ])[0],
             }
-        key = (
+        market = (
             canonical_person_key(raw.get("player")),
             str(raw.get("stat") or "").strip().lower(),
             str(raw.get("game") or "").strip().lower(),
             str(raw.get("platform") or platform).strip().lower(),
         )
-        if not key[0] or key in seen:
+        offer = (*market, str(raw.get("line") or ""), offer_type)
+        if not market[0] or offer in seen_offers:
             continue
-        seen.add(key)
+        seen_offers.add(offer)
         eligible.append(raw)
 
     eligible.sort(key=_trending_prefilter_key, reverse=True)
+    candidates: list[dict] = []
+    variant_counts: dict[tuple, int] = {}
+    for raw in eligible:
+        market = _trending_market_key(raw, platform)
+        if variant_counts.get(market, 0) >= 2:
+            continue
+        variant_counts[market] = variant_counts.get(market, 0) + 1
+        candidates.append(raw)
+        if len(candidates) >= candidate_limit:
+            break
     analyzed_rows: list[dict] = []
-    for raw in eligible[:candidate_limit]:
+    for raw in candidates:
         if raw.get("research_only"):
             activity_score = min(100.0, max(0.0, float(raw.get("trending_count") or 0)) / 1000.0)
             analyzed_rows.append({
@@ -146,11 +157,24 @@ def trending_props_payload(
             float(row.get("grade_score") or 0.0),
             float(row.get("confidence") or 0.0),
             float((row.get("data_quality") or {}).get("score") or 0.0),
+            int(str(row.get("line_offer_type") or row.get("odds_type") or "standard").lower() == "standard"),
             int(row.get("trending_count") or 0),
         ),
         reverse=True,
     )
-    selected = analyzed_rows[:requested_limit]
+    selected: list[dict] = []
+    selected_markets: set[tuple] = set()
+    selected_players: set[tuple[str, str]] = set()
+    for row in analyzed_rows:
+        market = _trending_market_key(row, platform)
+        player_key = (str(row.get("sport") or row.get("league") or "").upper(), market[0])
+        if market in selected_markets or player_key in selected_players:
+            continue
+        selected_markets.add(market)
+        selected_players.add(player_key)
+        selected.append(row)
+        if len(selected) >= requested_limit:
+            break
     for rank, row in enumerate(selected, start=1):
         row["rank"] = rank
     research_mode = sport_filter in _ESPORT_SPORTS and any(row.get("research_only") for row in selected)
@@ -159,7 +183,7 @@ def trending_props_payload(
         "platform": platform,
         "sport": sport,
         "count": len(selected),
-        "evaluated_count": min(len(eligible), candidate_limit),
+        "evaluated_count": len(candidates),
         "eligible_count": len(eligible),
         "excluded": excluded,
         "mode": "provider_market_research" if research_mode else "graded_shortlist",
@@ -167,9 +191,18 @@ def trending_props_payload(
         "note": (
             f"Showing {len(selected)} live gaming markets for research. Automatic projections, paid recommendations, and settlement stay off until a verified esports results source is connected."
             if research_mode
-            else f"Top {len(selected)} graded props from {min(len(eligible), candidate_limit)} fully analyzed candidates. Verify live lines before entry."
+            else f"Top {len(selected)} graded props from {len(candidates)} fully analyzed candidates. Verify live lines before entry."
         ),
     }
+
+
+def _trending_market_key(prop: dict, platform: str) -> tuple[str, str, str, str]:
+    return (
+        canonical_person_key(prop.get("player")),
+        str(prop.get("stat") or "").strip().lower(),
+        str(prop.get("game") or "").strip().lower(),
+        str(prop.get("platform") or platform).strip().lower(),
+    )
 
 
 def _trending_prefilter_key(prop: dict) -> tuple[int, int, float, int]:

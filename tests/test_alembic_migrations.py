@@ -33,6 +33,10 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
             row[1]
             for row in connection.execute("PRAGMA table_info(entry_props)")
         }
+        board_offer_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(board_offer_observations)")
+        }
         product_event_columns = {
             row[1]
             for row in connection.execute("PRAGMA table_info(product_events)")
@@ -55,9 +59,11 @@ def test_alembic_upgrades_empty_database_to_current_schema(tmp_path: Path) -> No
         "beta_issues",
         "game_predictions",
         "provider_offer_snapshots",
+        "leg_recommendation_snapshots",
     } <= tables
     assert {"payout_type", "payout_table_snapshot", "expected_return", "expected_value"} <= bet_columns
-    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id"} <= entry_prop_columns
+    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id", "leg_recommendation_snapshot_id"} <= entry_prop_columns
+    assert {"offer_snapshot_id", "final_game_date"} <= board_offer_columns
     assert {"user_id", "session_id"} <= product_event_columns
 
 
@@ -106,7 +112,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
             "SELECT sql FROM sqlite_master WHERE type='index' AND name='ix_board_offer_pending_retry'"
         ).fetchone()[0]
 
-    assert revision == "m76e2b4c9a13"
+    assert revision == "p09b5e7f2d46"
     assert evidence_exists == 1
     assert product_events_exist == 1
     assert research_sessions_exist == 1
@@ -115,6 +121,7 @@ def test_alembic_can_downgrade_to_base_and_upgrade_again(tmp_path: Path) -> None
     assert background_jobs_exist == 1
     assert {
         "ix_board_offer_outcome_captured",
+        "ix_board_offer_outcome_id",
         "ix_board_offer_sport_captured",
         "ix_board_offer_market_captured",
         "ix_board_offer_provider_sport_start",
@@ -169,6 +176,6 @@ def test_beta_migration_reconciles_tables_created_before_alembic_upgrade(tmp_pat
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'beta_%'"
         ).fetchone()[0]
 
-    assert revision == "m76e2b4c9a13"
+    assert revision == "p09b5e7f2d46"
     assert beta_table_count == 4
     assert {"user_id", "session_id"} <= product_event_columns

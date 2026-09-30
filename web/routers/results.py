@@ -6,9 +6,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.linked_offer_evaluation import evaluate_linked_offers
+from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from web.application.model_track_record import model_track_record
 
 router = APIRouter(tags=["results"])
+
+
+@router.get("/api/analytics/linked-offer-evaluation")
+def linked_offer_evaluation() -> dict:
+    evidence = LegRecommendationSnapshotRepository.settled_linked_rows()
+    return evaluate_linked_offers(
+        evidence["rows"],
+        settled_board_offers=evidence["settled_board_offers"],
+        truncated=evidence["truncated"],
+    )
 
 
 @router.get("/api/analytics/model-track-record")

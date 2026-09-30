@@ -5,7 +5,9 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import case
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from repository import database
 from repository.models.provider_offer_snapshot_model import ProviderOfferSnapshotModel
@@ -38,36 +40,56 @@ class ProviderOfferSnapshotRepository:
                 "observed": observed, "source": source_kind,
                 "source_hash": hashlib.sha256(source_id.encode()).hexdigest() if source_id else "",
             })
+        unique: dict[str, dict] = {}
+        for item in prepared:
+            if "snapshot_id" in item:
+                group = unique.setdefault(item["snapshot_id"], {
+                    **item, "first_seen": item["observed"], "last_seen": item["observed"],
+                })
+                observed = item["observed"]
+                if observed and (group["first_seen"] is None or observed < group["first_seen"]):
+                    group["first_seen"] = observed
+                if observed and (group["last_seen"] is None or observed > group["last_seen"]):
+                    group["last_seen"] = observed
+                    group["source"] = item["source"]
+                    group["source_hash"] = item["source_hash"]
         with database.SessionLocal() as session:
-            for item in prepared:
-                if "snapshot_id" not in item:
-                    continue
-                offer = item["offer"]
-                seen = item["observed"]
-                observed = seen.isoformat() if seen else ""
-                expires = (seen + OFFER_EVIDENCE_TTL).isoformat() if seen else ""
-                existing = session.query(ProviderOfferSnapshotModel).filter_by(snapshot_id=item["snapshot_id"]).first()
-                if existing is None:
-                    record = ProviderOfferSnapshotModel(
-                        snapshot_id=item["snapshot_id"],
+            if unique:
+                inserts = []
+                for item in unique.values():
+                    offer = item["offer"]
+                    first_seen = item["first_seen"]
+                    last_seen = item["last_seen"]
+                    inserts.append({
+                        "snapshot_id": item["snapshot_id"],
                         **{key: value for key, value in offer.items() if key != "allowed_directions"},
-                        allowed_directions=json.dumps(offer["allowed_directions"]),
-                        source=item["source"], source_hash=item["source_hash"],
-                        first_observed_at=observed, last_observed_at=observed,
-                        expires_at=expires, created_at=now.isoformat(),
-                    )
-                    try:
-                        with session.begin_nested():
-                            session.add(record)
-                            session.flush()
-                    except IntegrityError:
-                        existing = session.query(ProviderOfferSnapshotModel).filter_by(snapshot_id=item["snapshot_id"]).first()
-                if existing is not None and seen and (
-                    not existing.last_observed_at or observed > existing.last_observed_at
-                ):
-                    existing.last_observed_at = observed
-                    existing.expires_at = expires
-            session.commit()
+                        "allowed_directions": json.dumps(offer["allowed_directions"]),
+                        "source": item["source"], "source_hash": item["source_hash"],
+                        "first_observed_at": first_seen.isoformat() if first_seen else "",
+                        "last_observed_at": last_seen.isoformat() if last_seen else "",
+                        "expires_at": (last_seen + OFFER_EVIDENCE_TTL).isoformat() if last_seen else "",
+                        "created_at": now.isoformat(),
+                    })
+                insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+                insert = insert_factory(ProviderOfferSnapshotModel).values(inserts)
+                current = ProviderOfferSnapshotModel
+                incoming = insert.excluded
+                newer = incoming.last_observed_at > current.last_observed_at
+                earlier = (current.first_observed_at == "") | (
+                    (incoming.first_observed_at != "")
+                    & (incoming.first_observed_at < current.first_observed_at)
+                )
+                session.execute(insert.on_conflict_do_update(
+                    index_elements=["snapshot_id"],
+                    set_={
+                        "first_observed_at": case((earlier, incoming.first_observed_at), else_=current.first_observed_at),
+                        "last_observed_at": case((newer, incoming.last_observed_at), else_=current.last_observed_at),
+                        "expires_at": case((newer, incoming.expires_at), else_=current.expires_at),
+                        "source": case((newer, incoming.source), else_=current.source),
+                        "source_hash": case((newer, incoming.source_hash), else_=current.source_hash),
+                    },
+                ))
+                session.commit()
         result = []
         for item in prepared:
             if "snapshot_id" not in item:
@@ -92,7 +114,7 @@ class ProviderOfferSnapshotRepository:
                 "provider_event_id": row.provider_event_id,
                 "player_key": row.player_key, "sport": row.sport, "game": row.game,
                 "game_start": row.game_start, "stat": row.stat,
-                "allowed_directions": json.loads(row.allowed_directions or "[]"),
+                "allowed_directions": json.loads(str(row.allowed_directions or "[]")),
                 "line": row.line, "offer_type": row.offer_type,
                 "standard_line": row.standard_line, "baseline_line": row.baseline_line,
                 "discounted": row.discounted, "premium": row.premium,

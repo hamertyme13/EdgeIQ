@@ -26,7 +26,9 @@ def test_forecast_uses_verified_history_distribution_for_both_sides() -> None:
     assert over.probability > 50
     assert round(over.probability + under.probability, 6) == 100
     assert over.paid_eligible is True
-    assert over.distribution["median"] == 23.5
+    assert over.distribution["median"] == 23.0
+    assert over.features["verified_games"] == 20
+    assert over.features["recent_game_window"] == 15
     assert over.distribution["percentile_25"] <= over.distribution["percentile_75"]
     assert over.distribution["floor"] <= over.distribution["ceiling"]
     assert round(
@@ -34,6 +36,21 @@ def test_forecast_uses_verified_history_distribution_for_both_sides() -> None:
         + over.distribution["probability_under_exact_line"],
         6,
     ) == 100
+
+
+def test_recent_fifteen_games_set_projection_without_older_season_outliers() -> None:
+    recent = _history([22] * 15)
+    older = _history([80] * 10)
+    for index, row in enumerate(older):
+        row["game_date"] = f"2026-05-{30 - index:02d}"
+    first = forecast_prop("Player", "WNBA", "Points", 20.5, history=recent + older[:5])
+    second = forecast_prop("Player", "WNBA", "Points", 20.5, history=recent + older)
+
+    assert first.projection == second.projection
+    assert first.probability == second.probability
+    assert first.sample_size == second.sample_size == 15
+    assert first.features["verified_games"] == 20
+    assert second.features["verified_games"] == 25
 
 
 def test_forecast_routes_thin_history_to_market_prior_and_paper() -> None:
@@ -61,7 +78,7 @@ def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them()
     assert result.features["opportunity_projection"]["verified"] is True
     assert result.features["opportunity_source"] == "verified_game_workload"
     assert result.distribution["production_per_opportunity"] is not None
-    assert result.distribution["opportunity_evidence_games"] == 20
+    assert result.distribution["opportunity_evidence_games"] == 15
 
 
 def test_opportunity_challenger_can_win_walk_forward_but_remains_paper_only() -> None:
@@ -85,7 +102,7 @@ def test_forecast_uses_robust_center_for_zero_inflated_stats() -> None:
 
     assert result.features["projection_method"] == "zero_inflated_recent_median"
     assert result.features["zero_rate_recent_20"] >= 0.35
-    assert result.projection == 0.4
+    assert result.projection == 0.33
     assert result.features["model_selection"]["method"] in {"season_average", "recent_10_average"}
 
 
@@ -101,7 +118,7 @@ def test_forecast_keeps_weighted_mean_for_continuous_distribution() -> None:
     assert result.features["projection_method"] == "recency_weighted_mean"
     validation = result.features["walk_forward_validation"]
     assert validation["selected_method"] in {"season_average", "recent_10_average"}
-    assert all(row["samples"] == 15 for row in validation["baselines"])
+    assert all(row["samples"] == 10 for row in validation["baselines"])
     assert "chronologically" in validation["note"]
     assert result.features["market_prior_weight"] == 0.35
     assert result.model_version.endswith("baseline-v1")

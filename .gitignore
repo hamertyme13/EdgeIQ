@@ -6,6 +6,7 @@ data/*.csv
 .DS_Store
 .env
 edgeiq.db
+*.db
 edgeiq.db-shm
 edgeiq.db-wal
 .edgeiq_cache/

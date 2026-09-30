@@ -1,6 +1,38 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from datetime import datetime, timedelta
+
+SCHEDULED_RETRY_MINUTES = 15
+
+
+def execute_scheduled_job(
+    name: str,
+    callback: Callable[[], dict],
+    *,
+    save_setting: Callable[[str, str], object],
+    timestamp: Callable[[], str],
+) -> dict:
+    attempted_at = timestamp()
+    save_setting(f"daily_scheduler_attempt:{name}", attempted_at)
+    try:
+        result = callback()
+        if result.get("status") in {"failed", "error"} or result.get("ok") is False or result.get("skipped"):
+            raise RuntimeError(f"Scheduled {name.replace('_', ' ')} did not complete.")
+    except Exception:
+        save_setting(f"daily_scheduler_job_status:{name}", json.dumps({
+            "state": "failed", "at": attempted_at,
+            "message": "This job did not finish. EdgeIQ will retry after a short cooldown.",
+        }))
+        raise
+    completed_at = timestamp()
+    save_setting(f"daily_scheduler_run:{name}", completed_at)
+    save_setting(f"daily_scheduler_job_status:{name}", json.dumps({
+        "state": "completed", "at": completed_at,
+        "message": "Scheduled refresh completed.",
+    }))
+    return {"job": name, "result": result, "message": f"Scheduled {name.replace('_', ' ')} complete."}
 
 
 def elapsed_job_due(last_run: str, now: datetime, interval_minutes: int) -> bool:

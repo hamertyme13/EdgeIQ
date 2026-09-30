@@ -142,3 +142,34 @@ def test_background_job_deduplicates_across_managers():
     assert second["external"] is True
     release.set()
     first_manager._futures[first["job_id"]].result(timeout=2)
+
+
+def test_scheduled_jobs_serialize_without_blocking_interactive_refresh():
+    manager = BackgroundJobManager(max_workers=1)
+    scheduled_started = Event()
+    second_started = Event()
+    release = Event()
+
+    def first_scheduled(_context):
+        scheduled_started.set()
+        assert release.wait(timeout=3)
+        return {"message": "First finished"}
+
+    first = manager.submit("scheduled_result_check", first_scheduled)
+    assert scheduled_started.wait(timeout=2)
+    second = manager.submit(
+        "scheduled_line_snapshots",
+        lambda _context: second_started.set() or {"message": "Second finished"},
+    )
+    interactive = manager.submit("selected_provider_refresh", lambda _context: {"message": "Refreshed"})
+
+    try:
+        manager._futures[interactive["job_id"]].result(timeout=2)
+        assert manager.get(interactive["job_id"])["status"] == "complete"
+        assert not second_started.is_set()
+    finally:
+        release.set()
+
+    manager._futures[first["job_id"]].result(timeout=2)
+    manager._futures[second["job_id"]].result(timeout=2)
+    assert second_started.is_set()

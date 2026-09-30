@@ -1387,6 +1387,27 @@ def test_daily_briefing_scan_lock_failure_is_persisted(monkeypatch):
     assert status["runs"][0]["status"] == "failed"
 
 
+def test_daily_briefing_scan_lock_preserves_active_scan(monkeypatch):
+    from contextlib import contextmanager
+
+    active = web_app._new_daily_scan("PrizePicks", "WNBA", "manual")
+    store = {web_app.DAILY_SCAN_STATUS_KEY: json.dumps(active)}
+
+    @contextmanager
+    def unavailable_lock(_name):
+        yield False
+
+    monkeypatch.setattr(web_app, "named_operation_lock", unavailable_lock)
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
+
+    scan = web_app._run_daily_briefing_scan("PrizePicks", "WNBA", scan_id="duplicate")
+
+    assert scan["id"] == active["id"]
+    assert json.loads(store[web_app.DAILY_SCAN_STATUS_KEY])["id"] == active["id"]
+    assert web_app.DAILY_SCAN_LOG_KEY not in store
+
+
 def test_cached_daily_briefing_refreshes_time_sensitive_user_context(monkeypatch):
     monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
     monkeypatch.setattr(web_app, "_user_preferences", lambda: {"display_name": "Joshua"})
@@ -1957,6 +1978,27 @@ def test_model_health_returns_actionable_components():
     assert "trust_score" in body
     assert "calibration" in body["components"]
     assert body["next_steps"]
+
+
+def test_compact_data_health_skips_large_board_and_shadow_queries(monkeypatch):
+    web_app._DATA_HEALTH_COMPACT_CACHE.clear()
+    monkeypatch.setattr(web_app.BoardOfferRepository, "summary", lambda: (_ for _ in ()).throw(
+        AssertionError("Compact health must not scan the complete board")
+    ))
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "shadow_status", lambda: (_ for _ in ()).throw(
+        AssertionError("Compact health must not scan shadow predictions")
+    ))
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {"schedule": {"enabled": True}})
+    monkeypatch.setattr(web_app.background_jobs, "list", lambda **_kwargs: [])
+    monkeypatch.setattr(web_app, "build_data_health_payload", lambda *_args, **kwargs: {
+        "operations": kwargs["operational_health"], "providers": [], "summary": {},
+    })
+
+    result = web_app._data_health_payload(compact=True)
+
+    assert "complete_board" not in result["operations"]
+    assert "scheduler" in result["operations"]
+    web_app._DATA_HEALTH_COMPACT_CACHE.clear()
 
 
 def test_data_health_schedule_notifications_and_availability(monkeypatch):

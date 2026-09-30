@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
+from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from services.offer_snapshot import canonical_offer, evidence_status
 from utils.entity_normalization import canonical_person_key
@@ -12,33 +12,10 @@ from utils.stat_normalization import canonical_stat_label
 from web.schemas.entries import EntryPayload
 
 
-def _recommendation_row(snapshot_id: str, offer_id: str, direction: str) -> dict | None:
-    snapshot = ModelRehabilitationRepository.get_snapshot(snapshot_id)
-    if not snapshot:
-        return None
-
-    def find(value: object) -> dict | None:
-        if isinstance(value, dict):
-            if value.get("offer_snapshot_id") == offer_id and value.get("direction") == direction:
-                return value
-            for child in value.values():
-                found = find(child)
-                if found is not None:
-                    return found
-        elif isinstance(value, list):
-            for child in value:
-                found = find(child)
-                if found is not None:
-                    return found
-        return None
-
-    return find(snapshot)
-
-
 def validate_entry_evidence(
     payload: EntryPayload, *,
     get_offer: Callable[[str], dict | None] = ProviderOfferSnapshotRepository.get,
-    get_recommendation: Callable[[str, str, str], dict | None] = _recommendation_row,
+    get_recommendation: Callable[[str], dict | None] = LegRecommendationSnapshotRepository.get,
 ) -> dict:
     legs = []
     invalidations: list[str] = []
@@ -97,20 +74,25 @@ def validate_entry_evidence(
             )
             if not verified_offer and not errors:
                 notices.append(f"Leg {index} is a collector snapshot, not confirmed live sportsbook availability.")
-        if prop.recommendation_snapshot_id and prop.offer_snapshot_id and not errors:
-            recommendation = get_recommendation(
-                prop.recommendation_snapshot_id, prop.offer_snapshot_id, prop.direction or "Over",
-            )
-            if recommendation is None:
-                notices.append(f"Leg {index} recommendation snapshot does not contain this exact offer and direction.")
-        elif prop.recommendation_snapshot_id and not prop.offer_snapshot_id:
-            notices.append(f"Leg {index} recommendation ID has no linked offer snapshot.")
+        if prop.leg_recommendation_snapshot_id:
+            recommendation = get_recommendation(prop.leg_recommendation_snapshot_id)
+            if recommendation is None or (
+                recommendation.get("offer_snapshot_id") != prop.offer_snapshot_id
+                or recommendation.get("feed_snapshot_id") != prop.recommendation_snapshot_id
+                or recommendation.get("direction") != prop.direction
+                or recommendation.get("line") != float(prop.line)
+            ):
+                recommendation = None
+                notices.append(f"Leg {index} recommendation ID does not match this exact offer and direction.")
+        elif prop.recommendation_snapshot_id:
+            notices.append(f"Leg {index} has only a legacy feed ID, not immutable per-leg model evidence.")
         recommendation_verified = bool(verified_offer and recommendation)
         invalidations.extend(errors)
         warnings.extend(notices)
         legs.append({
             "index": index, "offer_snapshot_id": prop.offer_snapshot_id,
             "recommendation_snapshot_id": prop.recommendation_snapshot_id,
+            "leg_recommendation_snapshot_id": prop.leg_recommendation_snapshot_id,
             "verified_offer": verified_offer,
             "recommendation_verified": recommendation_verified,
             "offer_freshness": status, "warnings": notices, "invalidations": errors,

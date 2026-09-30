@@ -40,6 +40,7 @@ class PropPayload(BaseModel):
     forecast_snapshot: dict = Field(default_factory=dict)
     forecast_paid_eligible: bool = False
     recommendation_snapshot_id: str = ""
+    leg_recommendation_snapshot_id: str = ""
 
 
 class EntryPayload(BaseModel):

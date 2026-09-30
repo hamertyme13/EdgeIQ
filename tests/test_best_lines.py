@@ -1,7 +1,7 @@
 import pytest
 
 from web.application.best_lines_service import best_lines_payload
-from web.routers.market import MarketDependencies, browse_best_lines
+from web.routers.market import MarketDependencies, browse_best_lines, offer_outcome
 
 
 def row(platform, line, **extra):
@@ -81,8 +81,10 @@ def test_browse_is_bounded_to_cached_future_offers():
         sharp_consensus=lambda *args: {}, hedge_calculator=lambda value: {},
         middle_calculator=lambda value: {}, boost_analysis=lambda value: {},
         ev_scanner=lambda *args: [], timing_alerts=lambda *args: [], clv_report=lambda: {},
+        offer_outcome=lambda snapshot_id, direction: {"status": "pending", "direction": direction},
     )
     result = browse_best_lines("WNBA", deps=deps)
     assert result["total_matching"] == 60
     assert len(result["lines"]) == 50
     assert all(item["player"] != "Past" for item in result["lines"])
+    assert offer_outcome("a" * 64, "Under", deps=deps) == {"status": "pending", "direction": "Under"}

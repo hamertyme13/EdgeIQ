@@ -6,7 +6,7 @@ import json
 import math
 from datetime import UTC, datetime
 
-SCORE_VERSION = "edgeiq-score-v1"
+SCORE_VERSION = "edgeiq-score-v2"
 WEIGHTS = {"model": 0.40, "data_quality": 0.25, "history": 0.15, "market": 0.20}
 
 
@@ -37,7 +37,9 @@ def score_source_freshness(prop: dict, *, now: datetime | None = None) -> dict:
     current = current.replace(tzinfo=UTC) if current.tzinfo is None else current.astimezone(UTC)
     age = None
     try:
-        timestamp = datetime.fromisoformat(str(prop.get("feature_as_of") or "").replace("Z", "+00:00"))
+        timestamp = datetime.fromisoformat(str(
+            prop.get("provider_offer_verified_at") or prop.get("provider_offer_observed_at") or ""
+        ).replace("Z", "+00:00"))
         if timestamp.tzinfo is not None:
             age = (current - timestamp.astimezone(UTC)).total_seconds() / 60
     except ValueError:
@@ -46,7 +48,7 @@ def score_source_freshness(prop: dict, *, now: datetime | None = None) -> dict:
     market_stale = ((prop.get("decision_receipt") or {}).get("market_consensus") or {}).get("stale")
     if age is None or age < 0 or source_status == "unknown":
         status = "unknown"
-    elif age > 30 or source_status in {"expired", "stale"} or market_stale:
+    elif age > 30 or source_status in {"expired", "stale"} or market_stale or prop.get("stale"):
         status = "expired"
     else:
         status = "fresh"
@@ -64,6 +66,8 @@ def opportunity_score(prop: dict, *, now: datetime | None = None) -> dict:
         probability = _number(prop.get("confidence"))
     quality = _number((prop.get("data_quality") or {}).get("score"))
     sample = _number((prop.get("hit_rate") or {}).get("sample_size"))
+    if sample is None:
+        sample = _number((forecast.get("features") or {}).get("verified_games"))
     if sample is None:
         sample = _number(forecast.get("effective_sample_size"))
     if sample is None:
@@ -89,18 +93,19 @@ def opportunity_score(prop: dict, *, now: datetime | None = None) -> dict:
         missing.append("Exact-line market comparison is unavailable.")
 
     restrictions = []
+    evidence_restrictions = []
     if not valid_probability or quality is None or not 60 <= quality <= 100:
-        restrictions.append("Evidence quality is not sufficient for a high score.")
+        evidence_restrictions.append("Evidence quality is not sufficient for a high score.")
     if sample is None or sample < 20:
-        restrictions.append("Small sample: fewer than 20 comparable player games.")
+        evidence_restrictions.append("Small sample: fewer than 20 comparable player games.")
+    if score_source_freshness(prop, now=now)["status"] != "fresh":
+        evidence_restrictions.append("Source freshness is unverified or older than 30 minutes.")
+    restrictions.extend(evidence_restrictions)
     if prop.get("forecast_paid_eligible") is not True:
         restrictions.append("This model segment has not cleared paid-use evidence requirements.")
     policy = prop.get("recommendation_eligibility") or {}
     if policy.get("paid_ready") is not True:
         restrictions.append("The recommendation policy has not cleared this market for paid use.")
-
-    if score_source_freshness(prop, now=now)["status"] != "fresh":
-        restrictions.append("Source freshness is unverified or older than 30 minutes.")
 
     penalties = {
         "push_risk": -round(_bounded(_number((prop.get("push_risk") or {}).get("score")) or 0) * .10, 2),
@@ -108,14 +113,23 @@ def opportunity_score(prop: dict, *, now: datetime | None = None) -> dict:
     }
     raw = sum(float(components[key]) * weight for key, weight in WEIGHTS.items())
     before_cap = round(_bounded(raw + sum(penalties.values())), 1)
-    cap = 59.0 if restrictions else 79.0 if not valid_market else 100.0
+    # Paid-use gates control the action, not the quality of a research opportunity.
+    cap = 59.0 if evidence_restrictions else 79.0 if restrictions or not valid_market else 100.0
     score = min(before_cap, cap)
     penalties["evidence_cap"] = round(score - before_cap, 1)
+    cap_reason = (
+        evidence_restrictions[0] if evidence_restrictions
+        else restrictions[0] if restrictions
+        else "Exact-line market comparison is unavailable." if not valid_market
+        else None
+    ) if score < before_cap else None
     return {
         "score": score, "label": score_label(score), "version": SCORE_VERSION,
         "components": {key: round(float(value), 1) for key, value in components.items()},
         "weights": WEIGHTS.copy(), "penalties": penalties,
         "missing_evidence": missing, "restrictions": restrictions,
+        "cap_reason": cap_reason,
+        "paid_ready": policy.get("paid_ready") is True,
         "sample_size": sample, "small_sample": sample is None or sample < 20,
         "summary": restrictions[0] if restrictions else (
             "Compare the model, history, and exact-line market evidence before reviewing the complete entry."
@@ -131,7 +145,8 @@ def score_input_digest(prop: dict) -> str:
         "direction", "line", "provider_offer_id", "provider_event_id", "model_version",
         "confidence", "data_quality", "hit_rate", "forecast_snapshot", "history_sample",
         "decision_receipt", "forecast_paid_eligible", "recommendation_eligibility",
-        "feature_as_of", "recommendation_freshness", "push_risk", "correlation_risk_score",
+        "feature_as_of", "provider_offer_verified_at", "provider_offer_observed_at", "stale",
+        "recommendation_freshness", "push_risk", "correlation_risk_score",
     )
     encoded = json.dumps({key: prop.get(key) for key in fields}, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode()).hexdigest()

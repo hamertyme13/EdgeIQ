@@ -11,7 +11,7 @@ router = APIRouter(tags=["providers"])
 
 @dataclass(frozen=True)
 class ProviderDependencies:
-    data_health: Callable[[], dict]
+    data_health: Callable[[bool], dict]
     sleeper_status: Callable[[], dict]
     verify_odds: Callable[[], dict]
 
@@ -36,9 +36,9 @@ DepsProvider = Annotated[ProviderDependencies, Depends(get_deps)]
 
 
 @router.get("/api/data-health")
-def data_health(deps: DepsProvider = None) -> dict:  # type: ignore[assignment]
+def data_health(compact: bool = False, deps: DepsProvider = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, ProviderDependencies) else get_deps()
-    return _deps.data_health()
+    return _deps.data_health(compact)
 
 
 @router.get("/api/providers/sleeper/status")

@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import time
+from datetime import datetime
 from statistics import median
 from typing import Any
 from urllib.parse import urlencode
@@ -12,6 +13,7 @@ from rich.table import Table
 from config import SPORT
 from data.providers.cache import get_json
 from services.betting import implied_probability
+from services.offer_snapshot import parsed_utc
 from utils.entity_normalization import canonical_person_key
 
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
@@ -334,7 +336,7 @@ def summarize_player_prop_market(
     target_line = float(line)
     sportsbook_rows: list[dict[str, Any]] = []
     dfs_offers: list[dict[str, Any]] = []
-    last_updates: list[str] = []
+    last_updates: list[datetime] = []
     for bookmaker in event.get("bookmakers") or []:
         book_key = str(bookmaker.get("key") or "")
         title = str(bookmaker.get("title") or book_key)
@@ -342,8 +344,6 @@ def summarize_player_prop_market(
         for market in bookmaker.get("markets") or []:
             if str(market.get("key") or "") != market_key:
                 continue
-            if market.get("last_update"):
-                last_updates.append(str(market["last_update"]))
             outcomes.extend(market.get("outcomes") or [])
         matched = [
             outcome for outcome in outcomes
@@ -371,6 +371,16 @@ def summarize_player_prop_market(
             continue
         if not over or not under:
             continue
+        contributing_markets = [
+            market for market in bookmaker.get("markets") or []
+            if str(market.get("key") or "") == market_key
+            and any(
+                canonical_person_key(_outcome_player(outcome)) == player_key
+                and _same_line(outcome.get("point"), target_line)
+                and str(outcome.get("name") or "").strip().lower() in {"over", "under", "higher", "lower"}
+                for outcome in market.get("outcomes") or []
+            )
+        ]
         try:
             over_odds = int(float(over["price"]))
             under_odds = int(float(under["price"]))
@@ -381,6 +391,9 @@ def summarize_player_prop_market(
         total = over_implied + under_implied
         if total <= 0:
             continue
+        quote_times = [parsed_utc(market.get("last_update")) for market in contributing_markets]
+        if quote_times and all(quote_time is not None for quote_time in quote_times):
+            last_updates.append(min(quote_time for quote_time in quote_times if quote_time is not None))
         sportsbook_rows.append({
             "bookmaker": title,
             "bookmaker_key": book_key,
@@ -410,6 +423,7 @@ def summarize_player_prop_market(
         "over_probability": round(float(fair_over), 2) if fair_over is not None else None,
         "under_probability": round(float(fair_under), 2) if fair_under is not None else None,
         "book_count": book_count,
+        "timestamped_book_count": len(last_updates),
         "quality": "strong" if book_count >= 3 else "limited" if book_count else "unavailable",
         "average_hold": (
             round(sum(row["hold"] for row in sportsbook_rows) / book_count, 2)
@@ -425,7 +439,8 @@ def summarize_player_prop_market(
             "home_team": event.get("home_team", ""),
             "commence_time": event.get("commence_time", ""),
         },
-        "last_update": max(last_updates, default=""),
+        "last_update": max(last_updates).isoformat() if last_updates else "",
+        "oldest_update": min(last_updates).isoformat() if last_updates else "",
         "stale": bool(stale),
         "age_seconds": int(age_seconds or 0),
         "reason": (

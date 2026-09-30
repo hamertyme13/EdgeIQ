@@ -34,13 +34,13 @@ def canonical_offer(row: dict) -> dict | None:
     if not isinstance(allowed, list):
         allowed = []
     directions = sorted({str(item).title() for item in allowed if str(item).title() in {"Over", "Under"}})
-    game_start = parsed_utc(row.get("game_time") or row.get("game_start"))
+    game_start = parsed_utc(row.get("game_time") or row.get("game_start") or row.get("scheduled_start"))
     return {
         "provider": str(row.get("platform") or row.get("provider") or "").strip(),
         "provider_offer_id": str(row.get("provider_offer_id") or row.get("projection_id") or row.get("offer_id") or ""),
         "provider_player_id": str(row.get("provider_player_id") or row.get("player_id") or ""),
         "provider_event_id": str(row.get("provider_event_id") or row.get("event_id") or row.get("game_id") or ""),
-        "player_key": canonical_person_key(row.get("player")),
+        "player_key": canonical_person_key(row.get("player") or row.get("player_name")),
         "sport": str(row.get("sport") or row.get("league") or "").upper(),
         "game": str(row.get("game") or ""),
         "game_start": game_start.isoformat() if game_start else "",

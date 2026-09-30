@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import Any
 
 from sqlalchemy import create_engine, event
@@ -42,9 +43,23 @@ SessionLocal = sessionmaker(
 )
 
 Base: Any = declarative_base()
+_initialization_lock = threading.Lock()
+_initialized_engine = None
 
 
 def initialize_database():
+    global _initialized_engine
+    if _initialized_engine is engine:
+        return
+    with _initialization_lock:
+        if _initialized_engine is engine:
+            return
+
+        _create_database_schema()
+        _initialized_engine = engine
+
+
+def _create_database_schema():
 
     from repository.entities import BetEntity
     from repository.models.background_job_model import BackgroundJobModel
@@ -58,6 +73,7 @@ def initialize_database():
     from repository.models.entry_prop_model import EntryPropModel
     from repository.models.final_player_stat_model import FinalPlayerStatModel
     from repository.models.game_prediction_model import GamePredictionModel
+    from repository.models.leg_recommendation_snapshot_model import LegRecommendationSnapshotModel
     from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
     from repository.models.player_feature_model import PlayerFeatureModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel

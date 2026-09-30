@@ -56,3 +56,22 @@ def attach_offer_snapshots(payload: dict, updated_sections: set[str], capture) -
         return
     for original, stamped in zip(candidates, capture(candidates), strict=True):
         original["offer_snapshot_id"] = stamped.get("offer_snapshot_id") or ""
+
+
+def attach_leg_recommendations(payload: dict, updated_sections: set[str], capture) -> None:
+    """Capture only newly supplied recommendations, never relabel retained feed rows."""
+    candidates: list[dict] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("offer_snapshot_id") and value.get("player") and value.get("stat"):
+                candidates.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for section in updated_sections:
+        visit(payload.get(section))
+    capture(candidates)

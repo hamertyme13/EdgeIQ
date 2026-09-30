@@ -12,6 +12,7 @@ class BoardOfferObservationModel(Base):
     observation_key = Column(String, nullable=False)
     market_key = Column(String, nullable=False, index=True)
     offer_key = Column(String, nullable=False, index=True)
+    offer_snapshot_id = Column(String(64), nullable=False, default="", index=True)
     provider = Column(String, nullable=False, index=True)
     provider_offer_id = Column(String, default="", index=True)
     provider_player_id = Column(String, default="", index=True)
@@ -46,6 +47,7 @@ class BoardOfferObservationModel(Base):
     actual = Column(Float)
     outcome = Column(String, default="", index=True)
     outcome_source = Column(String, default="")
+    final_game_date = Column(String(10), default="")
     settlement_attempts = Column(Integer, nullable=False, default=0)
     last_settlement_attempt_at = Column(DateTime)
     next_settlement_retry_at = Column(DateTime)
@@ -57,6 +59,7 @@ class BoardOfferObservationModel(Base):
     __table_args__ = (
         UniqueConstraint("observation_key", name="uq_board_offer_observation_key"),
         Index("ix_board_offer_outcome_captured", "outcome", "captured_at"),
+        Index("ix_board_offer_outcome_id", "outcome", "id"),
         Index("ix_board_offer_sport_captured", "sport", "captured_at"),
         Index("ix_board_offer_market_captured", "market_key", "captured_at"),
         Index("ix_board_offer_provider_sport_start", "provider", "sport", "scheduled_start"),

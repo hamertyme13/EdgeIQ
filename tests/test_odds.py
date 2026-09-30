@@ -169,11 +169,59 @@ def test_player_prop_consensus_uses_exact_paired_sportsbook_lines_only():
 
     assert body["available"] is True
     assert body["book_count"] == 2
+    assert body["timestamped_book_count"] == 1
     assert 50 < body["market_probability"] < 52
     assert body["best_over_odds"] == -110
     assert len(body["dfs_offers"]) == 1
     assert body["dfs_offers"][0]["over"]["multiplier"] == 0.85
     assert all(row["bookmaker"] != "PrizePicks" for row in body["books"])
+
+
+def test_invalid_priced_book_does_not_count_toward_timestamp_coverage():
+    event = {"id": "event-1", "bookmakers": []}
+    for key, over_price in (("draftkings", -110), ("fanduel", -105), ("betmgm", "bad")):
+        event["bookmakers"].append({
+            "key": key,
+            "markets": [{
+                "key": "player_points", "last_update": "2026-09-28T14:55:00Z",
+                "outcomes": [
+                    {"name": "Over", "description": "Player One", "price": over_price, "point": 20.5},
+                    {"name": "Under", "description": "Player One", "price": -110, "point": 20.5},
+                ],
+            }],
+        })
+
+    result = summarize_player_prop_market(event, player="Player One", stat="Points", line=20.5)
+
+    assert result["book_count"] == 2
+    assert result["timestamped_book_count"] == 2
+    assert {book["bookmaker_key"] for book in result["books"]} == {"draftkings", "fanduel"}
+
+
+def test_quote_times_use_utc_order_and_ignore_malformed_updates():
+    event = {"id": "event-1", "bookmakers": []}
+    for key, updated in (
+        ("draftkings", "2026-07-29T14:00:00-04:00"),
+        ("fanduel", "2026-07-29T17:58:00Z"),
+        ("betmgm", "not-a-timestamp"),
+    ):
+        event["bookmakers"].append({
+            "key": key,
+            "markets": [{
+                "key": "player_points", "last_update": updated,
+                "outcomes": [
+                    {"name": "Over", "description": "Player One", "price": -110, "point": 20.5},
+                    {"name": "Under", "description": "Player One", "price": -110, "point": 20.5},
+                ],
+            }],
+        })
+
+    result = summarize_player_prop_market(event, player="Player One", stat="Points", line=20.5)
+
+    assert result["book_count"] == 3
+    assert result["timestamped_book_count"] == 2
+    assert result["oldest_update"] == "2026-07-29T17:58:00+00:00"
+    assert result["last_update"] == "2026-07-29T18:00:00+00:00"
 
 
 def test_player_prop_request_is_event_scoped_and_redacts_api_key(monkeypatch):

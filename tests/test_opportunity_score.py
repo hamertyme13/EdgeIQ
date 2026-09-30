@@ -15,6 +15,7 @@ def supported_prop():
         "hit_rate": {"sample_size": 30}, "forecast_paid_eligible": True,
         "recommendation_eligibility": {"paid_ready": True, "paper_ready": True},
         "feature_as_of": NOW.isoformat(),
+        "provider_offer_verified_at": NOW.isoformat(),
         "decision_receipt": {"market_probability": 80},
     }
 
@@ -40,13 +41,13 @@ def test_score_formula_is_deterministic_and_does_not_mutate_forecast():
 
 
 @pytest.mark.parametrize("change", [
-    {"forecast_paid_eligible": False}, {"recommendation_eligibility": {}},
     {"hit_rate": {"sample_size": 19}}, {"hit_rate": {}},
     {"data_quality": {"score": 0}}, {"data_quality": {}},
-    {"feature_as_of": None},
-    {"feature_as_of": (NOW - timedelta(minutes=31)).isoformat()},
-    {"feature_as_of": (NOW + timedelta(minutes=1)).isoformat()},
+    {"provider_offer_verified_at": None},
+    {"provider_offer_verified_at": (NOW - timedelta(minutes=31)).isoformat()},
+    {"provider_offer_verified_at": (NOW + timedelta(minutes=1)).isoformat()},
     {"recommendation_freshness": {"status": "expired"}},
+    {"stale": True},
     {"decision_receipt": {"market_probability": 80, "market_consensus": {"stale": True}}},
     {"confidence": float("nan")}, {"confidence": float("inf")}, {"confidence": 101},
 ])
@@ -56,11 +57,43 @@ def test_unsupported_evidence_never_gets_high_score(change):
     assert result["restrictions"]
 
 
+@pytest.mark.parametrize("change", [
+    {"forecast_paid_eligible": False}, {"recommendation_eligibility": {}},
+])
+def test_paid_gate_does_not_make_supported_research_a_pass(change):
+    result = opportunity_score({**supported_prop(), **change}, now=NOW)
+    assert 60 <= result["score"] <= 79
+    assert result["restrictions"]
+    assert result["cap_reason"]
+    assert result["paid_ready"] is (change.get("recommendation_eligibility", {"paid_ready": True}).get("paid_ready") is True)
+
+
+def test_old_player_features_do_not_make_fresh_provider_offer_stale():
+    prop = {**supported_prop(), "feature_as_of": (NOW - timedelta(days=2)).isoformat()}
+    assert opportunity_score(prop, now=NOW)["score"] == 98
+
+
+def test_thin_history_explains_cap_even_with_high_confidence():
+    result = opportunity_score({**supported_prop(), "hit_rate": {"sample_size": 6}}, now=NOW)
+    assert result["score"] == 59
+    assert "fewer than 20" in result["cap_reason"]
+
+
 def test_missing_market_does_not_invent_edge():
     result = opportunity_score({**supported_prop(), "decision_receipt": {}}, now=NOW)
     assert result["components"]["market"] == 0
     assert result["score"] < 80
     assert result["missing_evidence"]
+
+
+def test_verified_season_count_preserves_history_component_with_recent_forecast_window():
+    prop = {**supported_prop(), "hit_rate": {}, "forecast_snapshot": {
+        "effective_sample_size": 13.7,
+        "features": {"verified_games": 25, "recent_game_window": 15},
+    }}
+    result = opportunity_score(prop, now=NOW)
+    assert result["sample_size"] == 25
+    assert result["components"]["history"] == 100
 
 
 def test_risk_penalties_are_bounded_and_reduce_score():

@@ -275,6 +275,8 @@ The browser app exposes the same EdgeIQ workflows through FastAPI endpoints and
 a Rogue Circuit themed web UI. Link to the deployed EdgeIQ URL from your website,
 or embed API calls from another frontend.
 
+For the existing Railway project, follow the [private-beta deployment checklist](docs/RAILWAY_DEPLOYMENT.md).
+
 Useful environment variables:
 
 ```bash

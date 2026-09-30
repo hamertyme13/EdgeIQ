@@ -887,6 +887,45 @@ async function startDailyBriefingScan() {
   pollDailyScanStatus(true);
 }
 
+async function loadBriefingSchedule() {
+  const status = $("briefing-schedule-status");
+  status.textContent = "Loading schedule...";
+  try {
+    const data = await api("/api/automation/refresh-schedule");
+    const rule = data.schedule?.daily_briefing || "";
+    $("briefing-schedule-enabled").checked = Boolean(rule);
+    $("briefing-schedule-time").value = rule || "09:00";
+    const run = data.jobs?.find((job) => job.key === "daily_briefing");
+    if (!rule) {
+      status.textContent = "Off · Morning provider refresh still updates the briefing.";
+    } else if (run?.last_status?.state === "failed") {
+      status.textContent = `Daily at ${rule} ET · Last attempt failed; retry scheduled.`;
+    } else {
+      status.textContent = `Daily at ${rule} ET${run?.last_run ? ` · Last run ${formatDateTime(run.last_run)}` : ""}`;
+    }
+  } catch (error) {
+    status.textContent = "Schedule unavailable. Please try again.";
+  }
+}
+
+async function saveBriefingSchedule() {
+  const status = $("briefing-schedule-status");
+  const enabled = $("briefing-schedule-enabled").checked;
+  const time = $("briefing-schedule-time").value;
+  if (enabled && !time) {
+    status.textContent = "Choose a time before enabling the daily refresh.";
+    return;
+  }
+  try {
+    await api("/api/automation/refresh-schedule", {
+      method: "POST", body: JSON.stringify({ daily_briefing: enabled ? time : "" }),
+    });
+    await loadBriefingSchedule();
+  } catch (error) {
+    status.textContent = "Could not save the schedule. Please try again.";
+  }
+}
+
 function maybeAutoStartDailyScan(briefing) {
   const cache = briefing?.cache || {};
   const needsScan = Boolean(cache.cached_only || cache.requires_refresh || cache.stale);
@@ -922,10 +961,9 @@ function pollDailyScanStatus(immediate = false) {
     if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
       const elapsed = Date.now() - Number(state.dailyScanPollStartedAt || Date.now());
       if (elapsed >= 180000) {
-        $("daily-briefing-status").textContent = "The scan is taking longer than expected. EdgeIQ stopped frequent polling; use Refresh to check it again.";
-        return;
+        $("daily-briefing-status").textContent = "The scan is still running. EdgeIQ will keep checking for the result.";
       }
-      state.dailyScanPoll = window.setTimeout(tick, 2500);
+      state.dailyScanPoll = window.setTimeout(tick, elapsed >= 180000 ? 10000 : 2500);
     } else if (status === "ready") {
       await loadDailyBriefing();
     }
@@ -1999,7 +2037,7 @@ async function loadDataHealth() {
           `).join("")}
         </details>
       ` : ""}
-      <p class="subtle">Last scheduler run ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Jobs ${escapeHtml(humanizeCopilotText((scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
+      <p class="subtle">Last scheduler check ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Queued ${escapeHtml(humanizeCopilotText((scheduler.jobs_queued || scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
       ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
       ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
     </div>
@@ -2043,6 +2081,14 @@ async function loadDataHealth() {
     </div>
   `;
   return data;
+}
+
+async function loadProviderStatus() {
+  const data = await api("/api/data-health?compact=true");
+  const providers = sortProviderHealth(data.providers || []);
+  state.providerHealth = { providers, summary: data.summary || {}, operations: data.operations || {} };
+  renderTodayProviderStatus(providers, data.summary || {});
+  renderGlobalHealthStrip(providers, data.summary || {}, data.operations || {});
 }
 
 function renderTodayProviderStatus(providers = [], summary = {}) {
@@ -3321,6 +3367,7 @@ function entryPropFromFeed(prop) {
     end_to_end_confirmed: Boolean(prop.end_to_end_confirmed),
     settlement_provider: prop.settlement_provider || "",
     recommendation_snapshot_id: prop.recommendation_snapshot_id || "",
+    leg_recommendation_snapshot_id: prop.leg_recommendation_snapshot_id || "",
     offer_snapshot_id: prop.offer_snapshot_id || "",
   };
 }
@@ -3532,6 +3579,7 @@ function renderEntryProps() {
           provider_offer_id: "",
           offer_snapshot_id: "",
           recommendation_snapshot_id: "",
+          leg_recommendation_snapshot_id: "",
           forecast_snapshot: {},
           feature_as_of: "",
           end_to_end_confirmed: false,
@@ -3956,6 +4004,7 @@ function renderAnalysis(data) {
           provider_offer_id: "",
           offer_snapshot_id: "",
           recommendation_snapshot_id: "",
+          leg_recommendation_snapshot_id: "",
           confidence: null,
           forecast_snapshot: {},
           feature_as_of: "",
@@ -4193,6 +4242,7 @@ function renderEntryPropsFromAnalyzed(props, invalidateReview = true, preserveOf
       ...prop,
       allowed_directions: original[index]?.allowed_directions ?? prop.allowed_directions,
       recommendation_snapshot_id: original[index]?.recommendation_snapshot_id || prop.recommendation_snapshot_id,
+      leg_recommendation_snapshot_id: original[index]?.leg_recommendation_snapshot_id || prop.leg_recommendation_snapshot_id,
       offer_snapshot_id: original[index]?.offer_snapshot_id || prop.offer_snapshot_id,
       end_to_end_confirmed: original[index]?.end_to_end_confirmed ?? prop.end_to_end_confirmed,
       settlement_provider: original[index]?.settlement_provider || prop.settlement_provider,
@@ -6433,6 +6483,10 @@ function bindEvents() {
     $("install-hint").hidden = true;
   });
   $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan));
+  $("briefing-schedule")?.addEventListener("toggle", (event) => {
+    if (event.target.open) loadBriefingSchedule();
+  });
+  $("save-briefing-schedule")?.addEventListener("click", () => withButtonBusy("save-briefing-schedule", "Saving...", saveBriefingSchedule));
   $("refresh-today-providers")?.addEventListener("click", () => withButtonBusy("refresh-today-providers", "Refreshing...", refreshTodayProviders));
   $("today-sport")?.addEventListener("change", () => {
     const sport = $("today-sport").value;
@@ -6733,10 +6787,7 @@ async function loadDeferredSignals() {
 
 async function loadAll(options = {}) {
   syncDefaultInputs();
-  const essentials = await Promise.allSettled([
-    loadDashboard(),
-    loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }),
-  ]);
+  const essentials = await Promise.allSettled([loadDashboard()]);
   const failure = essentials.find((result) => result.status === "rejected");
   if (failure) {
     handleLoadError(failure.reason);
@@ -6749,7 +6800,7 @@ async function loadAll(options = {}) {
     const backgroundTasks = options.refresh
       ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
-          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(),
+          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadProviderStatus(), loadNotifications(), loadProductAnalytics(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");
@@ -6770,7 +6821,7 @@ async function loadAll(options = {}) {
     state.ledgerLoadScheduled = true;
     deferWork(() => {
       Promise.allSettled([
-        loadEntryProgress({ autoCheck: true, refreshProviders: false, marketDetail: false }),
+        loadEntryProgress({ autoCheck: false, refreshProviders: false, marketDetail: false }),
       ]).then((results) => {
         const backgroundFailure = results.find((result) => result.status === "rejected");
         if (backgroundFailure) console.warn("Deferred EdgeIQ ledger refresh failed", backgroundFailure.reason);

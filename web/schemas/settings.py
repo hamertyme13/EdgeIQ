@@ -20,6 +20,7 @@ class UserPreferencePayload(BaseModel):
 
 class RefreshSchedulePayload(BaseModel):
     morning_scan: str = "08:00"
+    daily_briefing: str = Field(default="", pattern=r"^$|^([01]\d|2[0-3]):[0-5]\d$")
     injury_refresh: str = "11:00"
     line_snapshots: str = "*/30"
     result_check: str = "23:30"

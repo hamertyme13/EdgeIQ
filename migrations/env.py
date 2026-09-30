@@ -16,6 +16,7 @@ from repository.models.board_offer_observation_model import BoardOfferObservatio
 from repository.models.entry_model import EntryModel  # noqa: F401
 from repository.models.entry_prop_model import EntryPropModel  # noqa: F401
 from repository.models.final_player_stat_model import FinalPlayerStatModel  # noqa: F401
+from repository.models.leg_recommendation_snapshot_model import LegRecommendationSnapshotModel  # noqa: F401
 from repository.models.plausibility_rejection_model import PlausibilityRejectionModel  # noqa: F401
 from repository.models.player_feature_model import PlayerFeatureModel  # noqa: F401
 from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel  # noqa: F401

@@ -74,7 +74,7 @@ def suggest_entries(
         candidates.extend(_props_from_feed(eligible_props[0], platform, {}))
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
-    candidates = _top_markets_per_player(candidates, per_player=2, limit=48)
+    candidates = _top_markets_per_player(candidates, per_player=1, limit=48)
     adjusted_candidates: dict[int, Prop] = {}
     if apply_feedback:
         feedback_entries = settled_feedback_entries()
@@ -157,8 +157,8 @@ def _diversified_scored_entries(
             players = {canonical_person_key(prop.player.name) for prop in entry.props}
             return (
                 len(keys & avoid_prop_keys),
-                sum(used_prop_counts.get(key, 0) for key in keys),
                 sum(used_player_counts.get(player, 0) for player in players),
+                sum(used_prop_counts.get(key, 0) for key in keys),
                 -score,
             )
 

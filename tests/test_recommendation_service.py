@@ -1,6 +1,52 @@
 from web.application.recommendation_service import trending_props_payload
 
 
+def test_trending_props_selects_best_scored_line_per_market() -> None:
+    offers = [
+        {"player": "A'ja Wilson", "league": "WNBA", "stat": "Points", "game": "Aces@Storm",
+         "platform": "PrizePicks", "line": line, "line_offer_type": offer_type,
+         "trending_count": 100 - index}
+        for index, (line, offer_type) in enumerate(((20.5, "goblin"), (25.5, "standard")))
+    ]
+    offers.append({"player": "Breanna Stewart", "league": "WNBA", "stat": "Rebounds",
+                   "game": "Liberty@Fever", "platform": "PrizePicks", "line": 8.5})
+
+    payload = trending_props_payload(
+        "PrizePicks", "WNBA", 15, fetch_props=lambda *_: offers,
+        analyze_prop=lambda prop: {
+            "confidence": 82 if prop.get("line_offer_type") == "standard" else 60,
+            "data_quality": {"score": 85}, "hit_rate": {"sample_size": 10},
+            "forecast_paid_eligible": True,
+        },
+        end_to_end_eligibility=lambda _: {"eligible": True},
+    )
+
+    assert payload["evaluated_count"] == 3
+    assert payload["count"] == 2
+    assert next(row for row in payload["props"] if row["player"] == "A'ja Wilson")["line"] == 25.5
+
+
+def test_trending_props_keeps_only_best_stat_for_player() -> None:
+    offers = [
+        {"player": "Veronica Burton", "league": "WNBA", "stat": stat,
+         "game": "Aces@Storm", "platform": "PrizePicks", "line": line}
+        for stat, line in (("Points", 12.5), ("Assists", 5.5))
+    ]
+    offers.append({"player": "Paige Bueckers", "league": "WNBA", "stat": "Points",
+                   "game": "Wings@Lynx", "platform": "PrizePicks", "line": 19.5})
+    payload = trending_props_payload(
+        "PrizePicks", "WNBA", 15, fetch_props=lambda *_: offers,
+        analyze_prop=lambda prop: {
+            "confidence": 85 if prop["stat"] == "Assists" else 70,
+            "data_quality": {"score": 85}, "hit_rate": {"sample_size": 20},
+            "forecast_paid_eligible": True,
+        },
+        end_to_end_eligibility=lambda _: {"eligible": True},
+    )
+    assert payload["count"] == 2
+    assert next(row for row in payload["props"] if row["player"] == "Veronica Burton")["stat"] == "Assists"
+
+
 def test_trending_props_returns_top_15_by_full_grade() -> None:
     props = [
         {

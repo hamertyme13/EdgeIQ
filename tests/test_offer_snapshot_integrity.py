@@ -1,10 +1,14 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 import repository.database as database
 from repository.database import Base
+from repository.models.provider_offer_snapshot_model import ProviderOfferSnapshotModel
+from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from services.offer_snapshot import evidence_status, offer_fingerprint
 from web.application.entry_evidence_validation import validate_entry_evidence
@@ -37,6 +41,8 @@ def _isolated(tmp_path, monkeypatch):
 def test_fingerprint_normalizes_identity_but_changes_when_line_changes():
     first = _offer()
     assert offer_fingerprint(first) == offer_fingerprint({**first, "player": "Azura Stevens"})
+    assert offer_fingerprint(first) == offer_fingerprint({key: value for key, value in first.items() if key != "player"} | {"player_name": "Azura Stevens"})
+    assert offer_fingerprint(first) == offer_fingerprint({key: value for key, value in first.items() if key != "game_time"} | {"scheduled_start": first["game_time"]})
     assert offer_fingerprint(first) != offer_fingerprint({**first, "line": 19.5})
 
 
@@ -52,6 +58,74 @@ def test_snapshot_keeps_terms_immutable_and_refreshes_observation(tmp_path, monk
     original = ProviderOfferSnapshotRepository.get(snapshot_id)
     assert original["line"] == 18.5
     assert original["last_observed_at"] == later["provider_offer_verified_at"]
+
+
+def test_parallel_captures_keep_one_offer_and_monotonic_observations(tmp_path, monkeypatch):
+    _isolated(tmp_path, monkeypatch)
+    monkeypatch.setattr(database, "initialize_database", lambda: None)
+    base = _offer()
+    observed = [datetime.now(UTC) - timedelta(seconds=offset) for offset in (20, 5, 15, 10)]
+    barrier = Barrier(len(observed))
+
+    def capture(at: datetime) -> str:
+        barrier.wait(timeout=5)
+        return ProviderOfferSnapshotRepository.capture_many([{
+            **base, "provider_offer_verified_at": at.isoformat(),
+        }])[0]["offer_snapshot_id"]
+
+    with ThreadPoolExecutor(max_workers=len(observed)) as pool:
+        ids = list(pool.map(capture, observed))
+
+    assert len(set(ids)) == 1
+    with database.SessionLocal() as session:
+        assert session.query(ProviderOfferSnapshotModel).count() == 1
+    stored = ProviderOfferSnapshotRepository.get(ids[0])
+    assert stored["first_observed_at"] == min(observed).isoformat()
+    assert stored["last_observed_at"] == max(observed).isoformat()
+    assert stored["expires_at"] == (max(observed) + timedelta(minutes=5)).isoformat()
+
+
+def test_single_batch_preserves_first_and_last_observation(tmp_path, monkeypatch):
+    _isolated(tmp_path, monkeypatch)
+    base = _offer()
+    first = datetime.now(UTC) - timedelta(minutes=2)
+    last = first + timedelta(minutes=1)
+    rows = ProviderOfferSnapshotRepository.capture_many([
+        {**base, "provider_offer_verified_at": last.isoformat()},
+        {**base, "provider_offer_verified_at": first.isoformat()},
+    ])
+    assert rows[0]["offer_snapshot_id"] == rows[1]["offer_snapshot_id"]
+    stored = ProviderOfferSnapshotRepository.get(rows[0]["offer_snapshot_id"])
+    assert stored["first_observed_at"] == first.isoformat()
+    assert stored["last_observed_at"] == last.isoformat()
+
+
+def test_newer_collector_observation_cannot_extend_direct_verification(tmp_path, monkeypatch):
+    _isolated(tmp_path, monkeypatch)
+    base = _offer()
+    first = datetime.now(UTC) - timedelta(seconds=30)
+    later = first + timedelta(seconds=10)
+    direct = ProviderOfferSnapshotRepository.capture_many([{
+        **base, "provider_offer_verified_at": first.isoformat(),
+    }])[0]
+    snapshot_id = direct["offer_snapshot_id"]
+    collector = ProviderOfferSnapshotRepository.capture_many([{
+        **base, "offer_evidence_source": "collector",
+        "provider_offer_verified_at": later.isoformat(),
+    }])[0]
+    assert collector["offer_snapshot_id"] == snapshot_id
+    assert ProviderOfferSnapshotRepository.get(snapshot_id)["source"] == "third_party_collector"
+    payload = EntryPayload.model_validate({"props": [direct]})
+    assert validate_entry_evidence(payload)["verified_offer"] is False
+
+    latest = later + timedelta(seconds=10)
+    ProviderOfferSnapshotRepository.capture_many([{
+        **base, "provider_offer_verified_at": latest.isoformat(),
+    }])
+    restored = ProviderOfferSnapshotRepository.get(snapshot_id)
+    assert restored["source"] == "direct_verified"
+    assert restored["last_observed_at"] == latest.isoformat()
+    assert validate_entry_evidence(payload)["verified_offer"] is True
 
 
 def test_entry_validation_rejects_changed_terms_and_duplicate_market(tmp_path, monkeypatch):
@@ -92,3 +166,33 @@ def test_collector_timestamp_does_not_claim_direct_verification(tmp_path, monkey
     assert result["valid"] is True
     assert result["verified_offer"] is False
     assert "collector snapshot" in " ".join(result["warnings"])
+
+
+def test_leg_recommendation_is_immutable_and_validated_by_exact_feed(tmp_path, monkeypatch):
+    _isolated(tmp_path, monkeypatch)
+    row = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
+    row.update(projection=21.0, confidence=61.0, recommendation_snapshot_id="feed-1")
+    LegRecommendationSnapshotRepository.capture([row], feed_snapshot_id="feed-1", model_version="test-v1")
+    first_id = row["leg_recommendation_snapshot_id"]
+    assert LegRecommendationSnapshotRepository.get(first_id)["confidence"] == 61.0
+    repeated = dict(row)
+    LegRecommendationSnapshotRepository.capture([repeated, repeated], feed_snapshot_id="feed-1", model_version="test-v1")
+    assert repeated["leg_recommendation_snapshot_id"] == first_id
+    changed = {**row, "confidence": 64.0}
+    LegRecommendationSnapshotRepository.capture([changed], feed_snapshot_id="feed-1", model_version="test-v1")
+    assert changed["leg_recommendation_snapshot_id"] != first_id
+    assert LegRecommendationSnapshotRepository.get(first_id)["confidence"] == 61.0
+
+    payload = EntryPayload.model_validate({"props": [row]})
+    result = validate_entry_evidence(payload)
+    assert result["recommendation_verified"] is True
+    assert result["legs"][0]["authoritative_recommendation"]["confidence"] == 61.0
+    payload.props[0].recommendation_snapshot_id = "wrong-feed"
+    assert validate_entry_evidence(payload)["recommendation_verified"] is False
+
+
+def test_unscored_offer_does_not_become_model_recommendation(tmp_path, monkeypatch):
+    _isolated(tmp_path, monkeypatch)
+    row = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
+    LegRecommendationSnapshotRepository.capture([row], feed_snapshot_id="feed-1", model_version="test-v1")
+    assert "leg_recommendation_snapshot_id" not in row

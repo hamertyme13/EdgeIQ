@@ -50,7 +50,7 @@ def test_plausibility_rejection_schema_preserves_diagnostics() -> None:
 def test_entry_leg_schema_preserves_exact_provider_identity() -> None:
     columns = set(EntryPropModel.__table__.columns.keys())
 
-    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id"} <= columns
+    assert {"provider_event_id", "provider_offer_id", "offer_snapshot_id", "recommendation_snapshot_id", "leg_recommendation_snapshot_id"} <= columns
 
 
 def test_provider_offer_snapshot_schema_preserves_stable_terms_and_observation() -> None:

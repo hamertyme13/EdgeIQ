@@ -13,7 +13,7 @@ def test_suggest_entries_returns_ranked_sport_specific_entries():
 
     suggestions = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, limit=5)
 
-    assert [suggestion.rank for suggestion in suggestions] == [1, 2, 3, 4, 5]
+    assert [suggestion.rank for suggestion in suggestions] == [1, 2, 3]
     assert all(prop.player.sport == "WNBA" for suggestion in suggestions for prop in suggestion.entry.props)
     assert suggestions[0].score >= suggestions[-1].score
 
@@ -31,7 +31,7 @@ def test_suggest_entries_can_recommend_under_legs_without_explicit_projection():
     assert "Under" in directions
 
 
-def test_suggest_entries_keeps_multiple_markets_but_not_duplicate_players():
+def test_suggest_entries_keeps_one_best_market_per_player():
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Rebounds", "line": 9.5, "projection": 12.5, "trending_count": 90000},
@@ -52,7 +52,7 @@ def test_suggest_entries_keeps_multiple_markets_but_not_duplicate_players():
         for suggestion in suggestions
         for prop in suggestion.entry.props
         if prop.player.name == "A"
-    } >= {"Points", "Rebounds"}
+    } == {"Rebounds"}
 
 
 def test_suggest_entries_can_build_three_leg_parlays():

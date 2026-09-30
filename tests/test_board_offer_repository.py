@@ -10,6 +10,7 @@ from repository.database import Base
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
 from repository.repositories import board_offer_repository as board_module
 from repository.repositories.board_offer_repository import BoardOfferRepository
+from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 
 
 def _isolated_database(tmp_path, monkeypatch):
@@ -40,6 +41,93 @@ def _offer(line=20.5):
         "line_offer_type": "standard",
         "multiplier": 3.0,
     }
+
+
+def test_complete_board_settlement_links_both_directions_to_offer_snapshot(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    offer = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
+    snapshot_id = offer["offer_snapshot_id"]
+    assert BoardOfferRepository.record_many([offer], "PrizePicks") == 1
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda prop: {
+        "actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22",
+    })
+    result = BoardOfferRepository.settle_pending(now=datetime(2026, 8, 23, 12, tzinfo=UTC))
+    assert result["settled"] == 1
+    assert BoardOfferRepository.outcome_for_snapshot(snapshot_id, "Over")["result"] == "Win"
+    assert BoardOfferRepository.outcome_for_snapshot(snapshot_id, "Under")["result"] == "Loss"
+
+
+def test_bounded_settlement_cursor_reaches_older_and_newer_markets(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    for index in range(3):
+        BoardOfferRepository.record_many([{
+            **_offer(), "id": f"offer-{index}", "player": f"Player {index}",
+            "player_id": f"player-{index}", "game_id": f"game-{index}",
+        }], "PrizePicks")
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda _: {
+        "actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22",
+    })
+    now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    assert [BoardOfferRepository.settle_pending(limit=1, now=now)["settled"] for _ in range(3)] == [1, 1, 1]
+    with session_local() as session:
+        assert session.query(BoardOfferObservationModel).filter_by(outcome="Win").count() == 3
+
+
+def test_bounded_settlement_cursor_wraps_for_due_retry(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    BoardOfferRepository.record_many([_offer()], "PrizePicks")
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda _: None)
+    now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    first = BoardOfferRepository.settle_pending(limit=1, now=now)
+    assert first["unresolved"] == 1
+    assert BoardOfferRepository.settle_pending(limit=1, now=now)["attempted"] == 0
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda _: {
+        "actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22",
+    })
+    assert BoardOfferRepository.settle_pending(limit=1, now=now.replace(hour=14))["settled"] == 1
+
+
+def test_bounded_retrieval_cursor_rotates_through_older_markets(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    for index in range(3):
+        BoardOfferRepository.record_many([{
+            **_offer(), "id": f"offer-{index}", "player": f"Player {index}",
+            "player_id": f"player-{index}", "game_id": f"game-{index}",
+        }], "PrizePicks")
+    with session_local() as session:
+        for row in session.query(BoardOfferObservationModel).all():
+            row.eligibility_status = "trackable"
+        session.commit()
+    now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    players = [BoardOfferRepository.settlement_entries(limit=1, now=now)[0]["props"][0]["player"]
+               for _ in range(4)]
+    assert players == ["Player 0", "Player 1", "Player 2", "Player 0"]
+
+
+def test_linked_offer_does_not_settle_from_different_game_day(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    offer = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
+    BoardOfferRepository.record_many([offer], "PrizePicks")
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda prop: {
+        "actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-21",
+    })
+    result = BoardOfferRepository.settle_pending(now=datetime(2026, 8, 23, 12, tzinfo=UTC))
+    assert result["settled"] == 0
+    assert BoardOfferRepository.outcome_for_snapshot(offer["offer_snapshot_id"], "Over")["status"] == "pending"
+
+
+def test_linked_offer_rejects_unverified_or_nonfinite_final(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    offer = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
+    BoardOfferRepository.record_many([offer], "PrizePicks")
+    for offset, (actual, source) in enumerate(((24.0, "actual_provider"), (float("nan"), "ESPN"))):
+        monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda prop, actual=actual, source=source: {
+            "actual": actual, "status": "played", "source": source, "game_date": "2026-08-22",
+        })
+        result = BoardOfferRepository.settle_pending(now=datetime(2026, 8, 23, 12 + offset, tzinfo=UTC))
+        assert result["attempted"] == 1
+        assert result["settled"] == 0
+        assert BoardOfferRepository.outcome_for_snapshot(offer["offer_snapshot_id"], "Over")["status"] == "pending"
 
 
 def test_complete_board_capture_is_idempotent_within_minute(tmp_path, monkeypatch):

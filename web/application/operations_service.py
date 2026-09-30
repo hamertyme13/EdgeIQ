@@ -13,7 +13,7 @@ def deploy_readiness_payload(static_dir: Path, asset_version: str) -> dict:
         and (not database_url.startswith("sqlite") or bool(allowed_origins))
     )
     mode = "hosted" if hosted else "local"
-    auth_configured = bool(os.getenv("EDGEIQ_AUTH_SECRET") or os.getenv("EDGEIQ_AUTH_PROVIDER"))
+    private_access_configured = bool(os.getenv("EDGEIQ_HOSTED_ACCESS_PASSWORD"))
     billing_configured = bool(os.getenv("STRIPE_SECRET_KEY"))
     worker_configured = bool(os.getenv("EDGEIQ_WORKER_URL") or os.getenv("REDIS_URL"))
     backups_configured = bool(os.getenv("EDGEIQ_BACKUP_DESTINATION"))
@@ -44,11 +44,18 @@ def deploy_readiness_payload(static_dir: Path, asset_version: str) -> dict:
             status="local only" if not hosted else None,
         ),
         _readiness_check(
-            "User authentication",
-            auth_configured,
-            "Configure EDGEIQ_AUTH_SECRET or an external identity provider before accepting customer accounts.",
+            "Private beta access",
+            private_access_configured,
+            "Set EDGEIQ_HOSTED_ACCESS_PASSWORD before exposing the hosted app.",
             required=hosted,
             status="local profile" if not hosted else None,
+        ),
+        _readiness_check(
+            "Customer authentication",
+            False,
+            "Private beta access is shared. Add enforced per-user accounts and data isolation before selling subscriptions.",
+            required=hosted,
+            status="not required locally" if not hosted else None,
         ),
         _readiness_check(
             "Background worker",
@@ -262,10 +269,11 @@ def update_provider_weights_payload(
 def update_refresh_schedule_payload(
     payload: RefreshSchedulePayload,
     *,
+    current_schedule: Callable[[], dict],
     save_setting: Callable[[str, str], object],
     serialize: Callable[[object], str],
 ) -> dict:
-    schedule = payload.model_dump()
+    schedule = {**current_schedule(), **payload.model_dump(exclude_unset=True)}
     save_setting("refresh_schedule", serialize(schedule))
     return {"schedule": schedule}
 

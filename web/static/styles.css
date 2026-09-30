@@ -510,6 +510,14 @@ p { color: var(--muted); margin: 5px 0 0; }
 }
 .today-provider-status.is-fresh { color: var(--primary); }
 .today-provider-status.needs-refresh { color: var(--warning); }
+.briefing-schedule { width: min(100%, 360px); color: var(--muted); font-size: 12px; }
+.briefing-schedule summary { cursor: pointer; text-align: right; }
+.briefing-schedule-controls { display: flex; flex-wrap: wrap; align-items: end; justify-content: flex-end; gap: 8px; margin-top: 9px; }
+.briefing-schedule-controls label { display: grid; gap: 4px; }
+.briefing-schedule-controls label:first-child { display: flex; align-items: center; gap: 6px; }
+.briefing-schedule-controls input[type="time"] { min-height: 38px; max-width: 120px; }
+.briefing-schedule-controls button { min-height: 38px; }
+.briefing-schedule p { margin: 8px 0 0; text-align: right; }
 
 @media (max-width: 720px) {
   .today-refresh-actions {
@@ -519,10 +527,16 @@ p { color: var(--muted); margin: 5px 0 0; }
   }
   .today-refresh-actions .toolbar {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .today-sport-control { grid-column: 1 / -1; }
   .today-refresh-actions button,
   .today-sport-control select { width: 100%; }
+  .today-refresh-actions .toolbar button { min-width: 0; font-size: 12px; white-space: normal; }
+  .briefing-schedule { width: 100%; }
+  .briefing-schedule summary, .briefing-schedule p { text-align: left; }
+  .briefing-schedule-controls { justify-content: flex-start; }
+  .briefing-schedule-controls button { width: auto; }
 }
 .dashboard-support-drawer {
   border: 1px solid rgba(74, 91, 119, .42);

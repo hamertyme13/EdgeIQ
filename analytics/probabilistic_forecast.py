@@ -20,6 +20,7 @@ from utils.stat_normalization import canonical_stat_label
 MODEL_VERSION = PRODUCT_MODEL_VERSION
 MIN_HISTORY_FOR_FORECAST = 5
 MIN_HISTORY_FOR_PAID = 20
+RECENT_GAME_WINDOW = 15
 
 
 @dataclass(frozen=True)
@@ -58,11 +59,13 @@ def forecast_prop(
     rows = (
         list(history)
         if history is not None
-        else PlayerFeatureRepository.history(player, sport, stat, limit=100, team=team)
+        else PlayerFeatureRepository.history(player, sport, stat, limit=40, team=team)
     )
     trailing_rows = _eligible_history(rows, game_time)
-    rows = _current_season_history(trailing_rows, sport, game_time)
+    season_rows = _current_season_history(trailing_rows, sport, game_time)
+    rows = season_rows[:RECENT_GAME_WINDOW]
     actuals = [float(row["actual"]) for row in rows]
+    season_actuals = [float(row["actual"]) for row in season_rows]
     trailing_actuals = [float(row["actual"]) for row in trailing_rows]
     feature_as_of = datetime.now(UTC).isoformat()
 
@@ -82,7 +85,8 @@ def forecast_prop(
                 "player_key": canonical_person_key(player),
                 "sport": sport.upper(),
                 "stat": canonical_stat_label(stat),
-                "verified_games": len(actuals),
+                "verified_games": len(season_actuals),
+                "recent_game_window": len(actuals),
                 "market_line_used_as_prior": True,
                 "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
             },
@@ -111,9 +115,9 @@ def forecast_prop(
         stat,
     )
     market_prior_weight = policy["market_prior_weight"]
-    if len(actuals) >= 40:
+    if len(season_actuals) >= 40:
         market_prior_weight = max(0.20, market_prior_weight - 0.10)
-    elif len(actuals) < 20:
+    elif len(season_actuals) < 20:
         market_prior_weight = min(0.60, market_prior_weight + 0.10)
     regularized_center = (projection_center * (1.0 - market_prior_weight)) + (float(line) * market_prior_weight)
     side = _game_side(game, team)
@@ -183,7 +187,7 @@ def forecast_prop(
     role_verified = bool(workload["verified"])
     selected_model_paid_eligible = selection["model_version"] != OPPORTUNITY_CHALLENGER_VERSION
     paid_eligible = (
-        len(actuals) >= MIN_HISTORY_FOR_PAID
+        len(season_actuals) >= MIN_HISTORY_FOR_PAID
         and effective_n >= 8
         and (not role_required or role_verified)
         and selected_model_paid_eligible
@@ -244,7 +248,8 @@ def forecast_prop(
             "stat": canonical_stat_label(stat),
             "league_stat_policy": policy["name"],
             "opportunity_metric": policy["opportunity_metric"],
-            "verified_games": len(actuals),
+            "verified_games": len(season_actuals),
+            "recent_game_window": len(actuals),
             "effective_sample_size": round(effective_n, 2),
             "weighted_mean": round(weighted_mean, 3),
             "history_center": round(projection_center, 3),
@@ -289,7 +294,7 @@ def forecast_prop(
             "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
             "season_average": round(sum(actuals) / len(actuals), 3),
             "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
-            "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
+            "history_filter_comparison": _history_filter_comparison(season_actuals, trailing_actuals, float(line), direction, stat),
             "missingness": {
                 "home_away": not bool(side),
                 "opponent": not bool(opponent),
