@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20260930-score-explain"
+STATIC_ASSET_VERSION = "20261001-entry-builder-context"

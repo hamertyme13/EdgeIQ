@@ -192,6 +192,7 @@ function confidenceBucketLabel(value) {
 }
 
 function calibrationTarget(entry) {
+  if (entry.calibration_target) return String(entry.calibration_target);
   try {
     const audit = JSON.parse(entry.audit_snapshot || "{}");
     return audit.source === "auto_paper_calibration" && audit.target?.type === "Confidence"
@@ -202,6 +203,10 @@ function calibrationTarget(entry) {
 }
 
 function entryModelScore(entry) {
+  if (entry.model_score !== null && entry.model_score !== undefined && entry.model_score !== "") {
+    const score = Number(entry.model_score);
+    return Number.isFinite(score) ? score : null;
+  }
   try {
     const audit = JSON.parse(entry.audit_snapshot || "{}");
     const rawScore = audit.recommendation?.score ?? audit.analysis?.recommendation?.score;
@@ -2194,16 +2199,20 @@ async function loadRefreshSchedule() {
   }
 }
 
-async function waitForBackgroundJob(job, onProgress, { maxAttempts = 300 } = {}) {
+async function waitForBackgroundJob(job, onProgress, { maxAttempts = 145 } = {}) {
   let current = job;
-  for (let attempt = 0; attempt < maxAttempts && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
+  const deadline = Date.now() + 145000;
+  for (let attempt = 0; attempt < maxAttempts && Date.now() < deadline && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
     if (onProgress) onProgress(current);
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    current = await api(`/api/jobs/${encodeURIComponent(current.job_id)}`);
+    current = await api(`/api/jobs/${encodeURIComponent(current.job_id)}`, { timeoutMs: 5000 });
   }
   if (onProgress) onProgress(current);
   if (current.status === "failed") throw new Error(current.error || `${current.label || "Background job"} could not finish.`);
   if (current.status === "canceled") throw new Error(`${current.label || "Background job"} was canceled.`);
+  if (current.status !== "complete") {
+    throw new Error(`${current.label || "Background job"} is still running in the background. Check its status before starting it again.`);
+  }
   return current;
 }
 
@@ -3320,6 +3329,20 @@ function entryDirectionAllowed(prop, direction) {
   return entryPropFromFeed(prop).allowed_directions.includes(direction);
 }
 
+function gameStartInputValue(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function gameStartFromInput(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function entryPropFromFeed(prop) {
   const demonOnly = String(prop.platform || "").toLowerCase() === "prizepicks"
     && (String(prop.line_offer_type || "").toLowerCase() === "demon" || Boolean(prop.is_premium_line));
@@ -3519,11 +3542,15 @@ function renderEntryProps() {
         <td colspan="7">
           <div class="entry-leg-edit-grid">
             <label>Player<input data-edit-field="player" value="${escapeHtml(prop.player)}"></label>
+            <label>Team<input data-edit-field="team" value="${escapeHtml(prop.team || "")}"></label>
             <label>Stat<input data-edit-field="stat" value="${escapeHtml(prop.stat)}"></label>
+            <label>Game<input data-edit-field="game" value="${escapeHtml(prop.game || "")}" placeholder="Away vs Home"></label>
+            <label>Game Start<input data-edit-field="game_time" type="datetime-local" value="${gameStartInputValue(prop.game_time)}"></label>
             <label>Line<input data-edit-field="line" type="number" step="0.1" value="${Number(prop.line)}"></label>
             <label>Projection<input data-edit-field="projection" type="number" step="0.1" value="${prop.projection == null ? "" : Number(prop.projection)}"></label>
             <label>Pick<select data-edit-field="direction">${["Over", "Under"].map((direction) => `<option${prop.direction === direction ? " selected" : ""}${entryDirectionAllowed(prop, direction) ? "" : " disabled"}>${direction}</option>`).join("")}</select></label>
             <button class="secondary compact-button" data-save-prop="${index}">Apply</button>
+            <button class="secondary compact-button" data-cancel-prop="${index}">Cancel</button>
           </div>
         </td>
       </tr>
@@ -3550,24 +3577,47 @@ function renderEntryProps() {
         return;
       }
       const previous = state.entryProps[index];
+      const team = value("team").trim();
+      const game = value("game").trim();
+      const gameTimeEdited = value("game_time") !== gameStartInputValue(previous.game_time);
+      const gameTime = value("game_time") === gameStartInputValue(previous.game_time)
+        ? previous.game_time || ""
+        : gameStartFromInput(value("game_time"));
+      if (gameTime === null) {
+        $("entry-status").textContent = "Enter a valid game start time, or leave it blank for EdgeIQ to match the schedule.";
+        return;
+      }
       const playerChanged = value("player").trim() !== previous.player;
       const statChanged = value("stat").trim() !== previous.stat;
-      const marketChanged = playerChanged || statChanged
-        || Number(value("line")) !== Number(previous.line);
-      const offerChanged = marketChanged || value("direction") !== previous.direction;
+      const lineChanged = Number(value("line")) !== Number(previous.line);
+      const contextChanged = team !== (previous.team || "")
+        || game !== (previous.game || "")
+        || gameTime !== (previous.game_time || "");
+      const marketChanged = playerChanged || statChanged || lineChanged || contextChanged;
+      const directionChanged = value("direction") !== previous.direction;
       const editedProjection = value("projection") === "" ? null : Number(value("projection"));
       const projectionChanged = editedProjection !== previous.projection;
-      invalidateEntryReview();
-      state.recommendationOrigin = false;
-      state.entryProps[index] = {
+      const candidate = {
         ...previous,
         player: value("player").trim(),
         stat: value("stat").trim(),
         line: Number(value("line")),
+        game_time: playerChanged && !gameTimeEdited ? "" : gameTime,
+      };
+      if (state.entryProps.some((prop, propIndex) => propIndex !== index && sameEntryMarket(prop, candidate))) {
+        $("entry-status").textContent = "This edit repeats a player, stat, and line already on the entry.";
+        return;
+      }
+      invalidateEntryReview();
+      state.recommendationOrigin = false;
+      state.entryProps[index] = {
+        ...candidate,
+        team: playerChanged && team === (previous.team || "") ? "" : team,
+        game: playerChanged && game === (previous.game || "") ? "" : game,
         projection: (playerChanged || statChanged) && !projectionChanged ? null : editedProjection,
         direction: value("direction"),
         confidence: null,
-        ...((offerChanged || projectionChanged) ? {
+        ...((marketChanged || directionChanged || projectionChanged) ? {
           projection_source: editedProjection !== null && projectionChanged
             ? "user" : playerChanged || statChanged ? "" : previous.projection_source || "",
           auto_projected: editedProjection !== null && !projectionChanged && !playerChanged && !statChanged
@@ -3575,25 +3625,25 @@ function renderEntryProps() {
           model_version: "",
           data_quality: null,
         } : {}),
-        ...(offerChanged ? {
+        ...(marketChanged ? {
           provider_offer_id: "",
           offer_snapshot_id: "",
+          provider_event_id: playerChanged || contextChanged ? "" : previous.provider_event_id || "",
+          end_to_end_confirmed: false,
+        } : {}),
+        ...((marketChanged || directionChanged || projectionChanged) ? {
           recommendation_snapshot_id: "",
           leg_recommendation_snapshot_id: "",
           forecast_snapshot: {},
           feature_as_of: "",
-          end_to_end_confirmed: false,
           forecast_paid_eligible: false,
         } : {}),
         ...(playerChanged ? {
           player_identity_id: null,
           provider_player_id: "",
           provider_event_id: "",
-          team: "",
-          game: "",
-          game_time: "",
         } : {}),
-        ...((playerChanged || statChanged) ? {
+        ...((playerChanged || statChanged || lineChanged) ? {
           baseline_line: null,
           standard_line: null,
           line_offer_type: "standard",
@@ -3606,9 +3656,15 @@ function renderEntryProps() {
       renderEntryProps();
       $("entry-status").textContent = playerChanged
         ? "Player changed. Old team, game, and provider offer were cleared. Confirm the new matchup, then analyze again."
-        : offerChanged
+        : marketChanged
           ? "Market changed. The previous offer verification was cleared. Analyze again before saving."
           : "Leg updated. Analyze the entry again before saving.";
+    });
+  });
+  document.querySelectorAll("[data-cancel-prop]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const editor = document.querySelector(`[data-entry-editor="${button.dataset.cancelProp}"]`);
+      if (editor) editor.hidden = true;
     });
   });
   document.querySelectorAll("[data-remove-prop]").forEach((button) => {
@@ -3656,8 +3712,8 @@ function propFromForm() {
     projection: projectionValue === "" ? null : Number(projectionValue),
     direction: $("prop-direction").value,
     platform: $("entry-platform").value,
-    game: "",
-    game_time: "",
+    game: $("prop-game").value.trim(),
+    game_time: gameStartFromInput($("prop-game-time").value),
     season_type: "",
     trending_count: 0,
   };
@@ -4611,8 +4667,10 @@ async function loadPending() {
         ${isPaper ? `<span class="pill paper-pill">Paper</span>` : ""}
         <span class="subtle">${formatDateTime(entry.placed_at)}</span>
       </div>
-      <p>${propPickList(entry.props)}</p>
-      <p class="subtle">${confidenceLabel(entry.average_confidence)} average${entryModelScore(entry) !== null ? ` · EdgeIQ score ${entryModelScore(entry).toFixed(0)}` : ""}${isPaper ? ` · Avg leg bucket ${confidenceBucketLabel(entry.average_confidence)}` : ""} · ${entry.props.map((prop) => `${escapeHtml(prop.player)} ${confidenceLabel(prop.confidence)}`).join(" · ")}${calibrationTarget(entry) ? ` · Calibration target ${escapeHtml(calibrationTarget(entry))}` : ""}</p>
+      <div class="pending-entry-legs">${entry.props.map((prop) => `
+        <div class="pending-entry-leg">${propPickText(prop)}<span class="subtle">${confidenceLabel(prop.confidence)}</span></div>
+      `).join("")}</div>
+      <p class="subtle">${confidenceLabel(entry.average_confidence)} average${entryModelScore(entry) !== null ? ` · EdgeIQ score ${entryModelScore(entry).toFixed(0)}` : ""}${isPaper ? ` · Avg leg bucket ${confidenceBucketLabel(entry.average_confidence)}` : ""}${calibrationTarget(entry) ? ` · Calibration target ${escapeHtml(calibrationTarget(entry))}` : ""}</p>
       <p>${isPaper ? "Paper calibration entry · no bankroll impact" : `${money(entry.wager)} wagered · ${Number(entry.multiplier || 1).toFixed(1)}x · ${money(entry.potential_payout)} payout`}</p>
       <div class="form-grid compact-controls">
         <input id="dnp-legs-${entry.id}" type="number" min="0" max="${maxDnp}" step="1" value="0" placeholder="DNP legs" aria-label="DNP legs for entry ${entry.id}" />
@@ -5054,7 +5112,7 @@ async function loadGradingReport() {
           <strong>Pending #${entry.id}</strong>
           <span class="subtle">${escapeHtml(entry.timeline_label || entry.status || "")}</span>
         </div>
-        <p>${(entry.legs || []).map((leg) => `${leg.player}: ${leg.timeline_label || leg.status}`).join(" · ")}</p>
+        <p>${(entry.legs || []).map((leg) => `${escapeHtml(leg.player || "Player")}: ${escapeHtml(leg.timeline_label || leg.status || "Pending")}`).join(" · ")}</p>
       </div>
     `).join("")}
   `;
@@ -5099,6 +5157,9 @@ async function loadSettlementAudit() {
       </div>
     `).join("") || `<div class="suggestion">No settlement attempts have been recorded yet. Recheck final stats to populate the audit.</div>`}
   `;
+  $("settlement-audit-list").querySelectorAll(".recheck-final-stats").forEach((button) => {
+    button.addEventListener("click", () => withButtonBusy(button, "Checking...", recheckFinalStats));
+  });
 }
 
 async function loadLossProtection() {
@@ -5950,6 +6011,7 @@ function renderEntryPerformance(entries) {
 
 async function loadBacktest() {
   const data = await api("/api/analytics/backtest");
+  state.modelVersionEvaluation = data.model_version_evaluation || data.prediction_ledger?.model_version_evaluation || {};
   const scorecard = data.scorecard || {};
   const sources = data.calibration_sources || {};
   const holdout = data.holdout_validation || {};
@@ -5959,7 +6021,7 @@ async function loadBacktest() {
   const shadow = data.shadow_evaluation || {};
   const projectionAccuracy = ledger.projection_accuracy || {};
   const modelVersionEvaluation = data.model_version_evaluation || ledger.model_version_evaluation || {};
-  const completeBoardEvidence = data.complete_board_evidence || {};
+  const completeBoardEvidence = data.complete_board_evidence || null;
   const readiness = data.validation_readiness || {};
   $("backtest-summary").innerHTML = `
     <div class="suggestion ${readiness.status === "validated" ? "insight-positive" : "insight-warning"}">
@@ -6003,7 +6065,7 @@ async function loadBacktest() {
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
     </div>
-    ${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, completeBoardEvidence, { escapeHtml }) || ""}
+    <div id="model-version-evidence">${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, state.boardEvidence || completeBoardEvidence, { escapeHtml }) || ""}</div>
     <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
         <strong>v2.2 Shadow Evaluation</strong>
@@ -6146,6 +6208,22 @@ async function loadBacktest() {
   `;
   $("backtest-works").innerHTML = renderSegmentList(data.what_works, "No proven winning segments yet.");
   $("backtest-fails").innerHTML = renderSegmentList(data.what_fails, "No failing segments detected yet.");
+}
+
+async function loadCompleteBoardEvidence() {
+  const status = $("board-evidence-status");
+  status.textContent = "Scanning captured provider offers. The scorecard remains available while this runs.";
+  try {
+    const evidence = await api("/api/analytics/complete-board-evidence", { timeoutMs: 120000 });
+    state.boardEvidence = evidence;
+    const panel = $("model-version-evidence");
+    if (panel) panel.innerHTML = window.EdgeIQModelVersionEvaluation?.render(
+      state.modelVersionEvaluation || {}, evidence, { escapeHtml }
+    ) || "";
+    status.textContent = `Board comparison loaded: ${Number(evidence.coverage?.independent_offers || 0).toLocaleString()} independent offers.`;
+  } catch (error) {
+    status.textContent = `Board comparison could not finish: ${error.message}`;
+  }
 }
 
 async function refreshCalibrationData() {
@@ -6573,6 +6651,10 @@ function bindEvents() {
       playCircuitSound("warning");
       return;
     }
+    if (prop.game_time === null) {
+      $("entry-status").textContent = "Enter a valid game start time, or leave it blank for EdgeIQ to match the schedule.";
+      return;
+    }
     if (state.entryProps.some((existing) => sameEntryMarket(existing, prop))) {
       $("entry-status").textContent = "This player, stat, and line are already on the entry. Edit the existing leg instead.";
       playCircuitSound("warning");
@@ -6732,6 +6814,7 @@ function bindEvents() {
     button.addEventListener("click", () => withButtonBusy(button, "Checking...", recheckFinalStats));
   });
   $("refresh-backtest").addEventListener("click", () => withButtonBusy("refresh-backtest", "Refreshing...", loadBacktest));
+  $("load-board-evidence").addEventListener("click", () => withButtonBusy("load-board-evidence", "Loading...", loadCompleteBoardEvidence));
   $("refresh-calibration-data").addEventListener("click", () => withButtonBusy("refresh-calibration-data", "Refreshing...", refreshCalibrationData));
   $("repair-data-integrity").addEventListener("click", () => withButtonBusy("repair-data-integrity", "Scanning...", repairDataIntegrity));
   $("auto-paper-calibration").addEventListener("click", () => withButtonBusy("auto-paper-calibration", "Creating...", createAutoPaperCalibrationEntries));

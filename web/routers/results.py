@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 
 from analytics.linked_offer_evaluation import evaluate_linked_offers
+from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from web.application.model_track_record import model_track_record
 
@@ -21,6 +22,11 @@ def linked_offer_evaluation() -> dict:
         settled_board_offers=evidence["settled_board_offers"],
         truncated=evidence["truncated"],
     )
+
+
+@router.get("/api/analytics/complete-board-evidence")
+def complete_board_evidence() -> dict:
+    return BoardOfferRepository.evidence_report()
 
 
 @router.get("/api/analytics/model-track-record")

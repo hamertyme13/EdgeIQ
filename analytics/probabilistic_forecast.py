@@ -193,7 +193,7 @@ def forecast_prop(
         and selected_model_paid_eligible
     )
     uncertainty_drivers = _uncertainty_drivers(
-        len(actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
+        len(season_actuals), sigma, contextual_mean, side, opponent, expected_minutes, expected_opportunities,
     )
     if role_required and not role_verified:
         uncertainty_drivers.append("Verified workload coverage is below the paid-entry threshold")
@@ -290,9 +290,10 @@ def forecast_prop(
             "opponent_adjustment_weight": round(opponent_weight, 3),
             "opponent_projection_delta": round(contextual_mean - regularized_center, 3),
             "rest_days": _rest_days(game_time, rows),
-            "season_start": min((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
-            "season_end": max((str(row.get("game_date") or "")[:10] for row in rows if row.get("game_date")), default=""),
-            "season_average": round(sum(actuals) / len(actuals), 3),
+            "season_start": min((str(row.get("game_date") or "")[:10] for row in season_rows if row.get("game_date")), default=""),
+            "season_end": max((str(row.get("game_date") or "")[:10] for row in season_rows if row.get("game_date")), default=""),
+            "season_average": round(sum(season_actuals) / len(season_actuals), 3),
+            "recent_15_average": round(sum(actuals) / len(actuals), 3),
             "last_10_average": round(sum(actuals[:10]) / min(10, len(actuals)), 3),
             "history_filter_comparison": _history_filter_comparison(season_actuals, trailing_actuals, float(line), direction, stat),
             "missingness": {
@@ -320,7 +321,7 @@ def forecast_prop(
             "opportunity_evidence_games": opportunity_projection.get("games", 0),
             "game_aware_shadow_projection": round(game_aware_shadow_projection, 2),
             "game_context_shadow_only": True,
-            "uncertainty_level": _uncertainty_level(len(actuals), sigma, contextual_mean),
+            "uncertainty_level": _uncertainty_level(len(season_actuals), sigma, contextual_mean),
             "uncertainty_drivers": uncertainty_drivers,
         },
     )

@@ -41,6 +41,7 @@ namespaces = true
 [project.optional-dependencies]
 dev = [
     "alembic>=1.14",
+    "httpx2>=2.13,<3",
     "hypothesis>=6.120",
     "mypy>=1.14",
     "playwright>=1.49,<2",

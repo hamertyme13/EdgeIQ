@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20260929-briefing-schedule" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261001-entry-builder-context" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -693,6 +693,12 @@
                   </label>
                   <label class="field-label entry-advanced-field entry-prop-field">Team
                     <input id="prop-team" placeholder="Team" />
+                  </label>
+                  <label class="field-label entry-advanced-field entry-prop-field">Game
+                    <input id="prop-game" placeholder="Away vs Home" />
+                  </label>
+                  <label class="field-label entry-advanced-field entry-prop-field">Game Start
+                    <input id="prop-game-time" type="datetime-local" />
                   </label>
                   <label class="field-label entry-prop-field">Stat
                     <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
@@ -1854,6 +1860,7 @@
                       <button id="auto-paper-calibration" class="secondary">Create Today's Paper Samples</button>
                       <button id="refresh-calibration-data" class="secondary">Refresh Calibration Finals</button>
                       <button id="refresh-backtest" class="secondary">Refresh Scorecard</button>
+                      <button id="load-board-evidence" class="secondary">Load Board Comparison</button>
                       <button id="repair-data-integrity" class="secondary">Repair Invalid Markets</button>
                     </div>
                   </div>
@@ -1864,6 +1871,7 @@
                   <div class="skeleton-row"></div>
                 </section>
                 <div id="data-integrity-repair-status" class="subtle" aria-live="polite"></div>
+                <p id="board-evidence-status" class="subtle" aria-live="polite">The complete-board comparison loads separately because it scans historical provider offers.</p>
                 <div id="backtest-summary" class="suggestion-list"></div>
               </div>
               <div class="panel">
@@ -1949,13 +1957,13 @@
     <script src="/static/js/beta.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-hit-rankings.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/opportunity-score.js?v=20260930-score-explain"></script>
-    <script src="/static/js/model-version-evaluation.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/js/games.js?v=20260929-briefing-schedule"></script>
+    <script src="/static/js/model-version-evaluation.js?v=20261001-results-speed"></script>
+    <script src="/static/js/games.js?v=20260930-games-schedule"></script>
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/model-track-record.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20260930-score-explain"></script>
+    <script src="/static/app.js?v=20261001-entry-builder-context"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -91,11 +91,14 @@ def trending_props_payload(
     eligible.sort(key=_trending_prefilter_key, reverse=True)
     candidates: list[dict] = []
     variant_counts: dict[tuple, int] = {}
+    player_counts: dict[tuple[str, str], int] = {}
     for raw in eligible:
         market = _trending_market_key(raw, platform)
-        if variant_counts.get(market, 0) >= 2:
+        player = (str(raw.get("sport") or raw.get("league") or "").upper(), market[0])
+        if variant_counts.get(market, 0) >= 2 or player_counts.get(player, 0) >= 2:
             continue
         variant_counts[market] = variant_counts.get(market, 0) + 1
+        player_counts[player] = player_counts.get(player, 0) + 1
         candidates.append(raw)
         if len(candidates) >= candidate_limit:
             break

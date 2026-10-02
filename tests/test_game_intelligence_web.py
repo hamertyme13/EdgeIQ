@@ -1,5 +1,8 @@
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import web.application.game_intelligence_service as game_service
 from web.application.game_intelligence_service import game_detail_payload, prop_context_payload, slate_payload
 from web.schemas.games import GamePropContextPayload
 
@@ -13,6 +16,48 @@ def test_game_slate_and_detail_use_persisted_snapshots():
         detail = game_detail_payload(game_id)
         assert detail["game_id"] == game_id
         assert detail["predictions"]
+
+
+def test_game_slate_shows_schedule_without_inventing_predictions(monkeypatch):
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    monkeypatch.setattr(game_service, "latest_slate_predictions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(game_service, "fetch_game_times", lambda *_args: [
+        {"game": "Away @ Home", "game_time": f"{today.isoformat()}T19:00:00-04:00"},
+    ])
+
+    slate = slate_payload("MLB", refresh=False)
+
+    assert slate["games"] == []
+    assert slate["schedule_status"] == "available"
+    assert slate["schedule"][0]["game"] == "Away @ Home"
+
+
+def test_game_slate_reports_schedule_failure_without_claiming_no_games(monkeypatch):
+    monkeypatch.setattr(game_service, "latest_slate_predictions", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(game_service, "fetch_game_times", lambda *_args: (_ for _ in ()).throw(RuntimeError("upstream unavailable")))
+
+    slate = slate_payload("NFL", refresh=False)
+
+    assert slate["schedule_status"] == "unavailable"
+    assert slate["games"] == slate["schedule"] == []
+
+
+def test_game_slate_merges_other_scheduled_games_without_repeating_prediction(monkeypatch):
+    today = datetime.now(ZoneInfo("America/New_York")).date()
+    monkeypatch.setattr(game_service, "latest_slate_predictions", lambda *_args, **_kwargs: [
+        {"champion": {"game": "New York Yankees @ Boston Red Sox"}},
+    ])
+    monkeypatch.setattr(game_service, "fetch_game_times", lambda *_args: [
+        {"game": "NYY@BOS", "away_team": "New York Yankees", "home_team": "Boston Red Sox",
+         "game_time": f"{today.isoformat()}T19:00:00-04:00"},
+        {"game": "NYM@PHI", "away_team": "New York Mets", "home_team": "Philadelphia Phillies",
+         "game_time": f"{today.isoformat()}T20:00:00-04:00"},
+    ])
+
+    slate = slate_payload("MLB", refresh=False)
+
+    assert len(slate["games"]) == 1
+    assert [row["game"] for row in slate["schedule"]] == ["NYM@PHI"]
 
 
 def test_prop_context_api_payload_is_shadow_only():

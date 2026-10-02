@@ -47,6 +47,29 @@ def test_trending_props_keeps_only_best_stat_for_player() -> None:
     assert next(row for row in payload["props"] if row["player"] == "Veronica Burton")["stat"] == "Assists"
 
 
+def test_trending_prefilter_does_not_spend_analysis_budget_on_one_player() -> None:
+    offers = [
+        {"player": "Player A", "league": "WNBA", "stat": f"Stat {index}",
+         "game": "A@B", "platform": "PrizePicks", "line": 1.5,
+         "trending_count": 10_000 - index}
+        for index in range(30)
+    ] + [
+        {"player": f"Player {index}", "league": "WNBA", "stat": "Points",
+         "game": "A@B", "platform": "PrizePicks", "line": 10.5,
+         "trending_count": 100 - index}
+        for index in range(15)
+    ]
+    payload = trending_props_payload(
+        "PrizePicks", "WNBA", 15, fetch_props=lambda *_: offers,
+        analyze_prop=lambda _: {"confidence": 65, "data_quality": {"score": 80},
+                                "hit_rate": {"sample_size": 20}, "forecast_paid_eligible": True},
+        end_to_end_eligibility=lambda _: {"eligible": True},
+    )
+    assert payload["count"] == 15
+    assert payload["evaluated_count"] == 17
+    assert len({row["player"] for row in payload["props"]}) == 15
+
+
 def test_trending_props_returns_top_15_by_full_grade() -> None:
     props = [
         {

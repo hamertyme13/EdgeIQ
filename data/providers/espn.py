@@ -139,11 +139,17 @@ def fetch_game_times(sport: str, game_date: date) -> list[dict]:
         matchup = _event_matchup(event)
         if not matchup or not game_time:
             continue
+        teams = {
+            competitor.get("homeAway"): str((competitor.get("team") or {}).get("displayName") or "")
+            for competitor in competition.get("competitors", [])
+        }
         rows.append({
             "sport": sport_key,
             "game": matchup,
             "game_time": game_time,
             "game_date": game_date.isoformat(),
+            "home_team": teams.get("home", ""),
+            "away_team": teams.get("away", ""),
             "source": "espn",
         })
     return rows

@@ -160,6 +160,7 @@ const original = {player:'Old', stat:'Points', line:12.5, projection:14, directi
   platform:'PrizePicks', provider_player_id:'old-player', provider_event_id:'old-event',
   provider_offer_id:'old-offer', player_identity_id:8, game:'OLD @ OPP', game_time:'2026-09-27T20:00:00Z',
   team:'OLD', confidence:92, forecast_snapshot:{model:'old'}, recommendation_snapshot_id:'old-snapshot',
+  leg_recommendation_snapshot_id:'old-leg', offer_snapshot_id:'old-offer-snapshot',
   end_to_end_confirmed:true, projection_source:'provider', auto_projected:false};
 global.state = {entryProps:[original], lastAnalysis:null, recommendationOrigin:true};
 const elements = {};
@@ -171,7 +172,8 @@ global.entryDirectionAllowed = () => true;
 global.entrySourcePlatforms = () => ['PrizePicks'];
 global.syncMobileSlip = () => {};
 global.invalidateEntryReview = () => {};
-const fields = {player:'New', stat:'Points', line:'12.5', projection:'14', direction:'Over'};
+eval(source.slice(source.indexOf('function gameStartInputValue('), source.indexOf('function entryPropFromFeed(')));
+const fields = {player:'New', team:'OLD', game:'OLD @ OPP', game_time:'2026-09-27T16:00', stat:'Points', line:'12.5', projection:'14', direction:'Over'};
 const editor = {querySelector: selector => ({value:fields[selector.match(/data-edit-field="([^"]+)/)[1]]})};
 let saveHandler;
 global.document = {
@@ -191,6 +193,69 @@ assert.equal(updated.confidence,null);
 assert.deepEqual(updated.forecast_snapshot,{});
 assert.equal(updated.end_to_end_confirmed,false);
 assert.equal(state.recommendationOrigin,false);
+
+state.entryProps=[{...original}];
+Object.assign(fields,{player:'New',team:'NEW',game:'NEW @ OPP',game_time:'2026-09-28T16:00'});
+renderEntryProps(); saveHandler();
+assert.equal(state.entryProps[0].team,'NEW');
+assert.equal(state.entryProps[0].game,'NEW @ OPP');
+assert.equal(state.entryProps[0].game_time,new Date('2026-09-28T16:00').toISOString());
+
+state.entryProps=[{...original}];
+Object.assign(fields,{player:'Old',team:'OLD',game:'OLD @ OPP',game_time:gameStartInputValue(original.game_time),direction:'Under'});
+renderEntryProps(); saveHandler();
+assert.equal(state.entryProps[0].offer_snapshot_id,'old-offer-snapshot');
+assert.equal(state.entryProps[0].provider_offer_id,'old-offer');
+assert.equal(state.entryProps[0].leg_recommendation_snapshot_id,'');
+assert.equal(state.entryProps[0].confidence,null);
+
+state.entryProps=[{...original}];
+Object.assign(fields,{direction:'Over',line:'13.5'});
+renderEntryProps(); saveHandler();
+assert.equal(state.entryProps[0].offer_snapshot_id,'');
+assert.equal(state.entryProps[0].provider_offer_id,'');
+assert.equal(state.entryProps[0].provider_event_id,'old-event');
+assert.equal(state.entryProps[0].standard_line,null);
+
+state.entryProps=[{...original}];
+Object.assign(fields,{line:'12.5',projection:'15'});
+renderEntryProps(); saveHandler();
+assert.equal(state.entryProps[0].offer_snapshot_id,'old-offer-snapshot');
+assert.equal(state.entryProps[0].leg_recommendation_snapshot_id,'');
+assert.equal(state.entryProps[0].projection_source,'user');
+
+state.entryProps=[{...original},{...original,player:'Other'}];
+global.sameEntryMarket=(left,right) => left.player===right.player && left.stat===right.stat && left.line===right.line;
+Object.assign(fields,{player:'Other',projection:'14'});
+renderEntryProps(); saveHandler();
+assert.equal(state.entryProps[0].player,'Old');
+assert.match($('entry-status').textContent,/repeats/);
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_manual_builder_records_selected_sport_and_local_game_start():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const fields = {
+  'prop-player':'Avery Example','prop-team':'SEA','prop-sport':'WNBA',
+  'prop-stat':'Points','prop-line':'18.5','prop-projection':'',
+  'prop-direction':'Over','entry-platform':'Underdog',
+  'prop-game':'SEA vs LV','prop-game-time':'2026-10-01T19:30'
+};
+global.$ = id => ({value:fields[id]});
+global.state = {entrySelectedPlayerRecord:null,entrySelectedPlayerIdentityId:null};
+eval(source.slice(source.indexOf('function gameStartInputValue('), source.indexOf('function entryPropFromFeed(')));
+eval(source.slice(source.indexOf('function propFromForm()'), source.indexOf('let entryPlayerLookupTimer')));
+const prop = propFromForm();
+assert.equal(prop.sport,'WNBA');
+assert.equal(prop.platform,'Underdog');
+assert.equal(prop.game,'SEA vs LV');
+assert.equal(prop.game_time,new Date('2026-10-01T19:30').toISOString());
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
 

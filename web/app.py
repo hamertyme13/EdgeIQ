@@ -12534,10 +12534,26 @@ def _stamp_current_recommendation_lineage(payload: dict, *, groups: tuple[str, .
 
 
 def _serialize_pending(entry: dict) -> dict:
+    audit = _safe_json_loads(entry.get("audit_snapshot", ""))
+    if not isinstance(audit, dict):
+        audit = {}
+    recommendation = audit.get("recommendation") or {}
+    target = audit.get("target") or {}
+    if not isinstance(recommendation, dict):
+        recommendation = {}
+    if not isinstance(target, dict):
+        target = {}
     return {
         "id": entry.get("id"),
         "platform": entry.get("platform", ""),
         "entry_mode": entry.get("entry_mode", "real"),
+        "average_confidence": entry.get("average_confidence"),
+        "model_score": recommendation.get("score"),
+        "calibration_target": (
+            str(target.get("name") or "")
+            if audit.get("source") == "auto_paper_calibration" and target.get("type") == "Confidence"
+            else ""
+        ),
         "wager": entry.get("wager", 0.0),
         "multiplier": entry.get("multiplier", 1.0),
         "potential_payout": entry.get("potential_payout", 0.0),
@@ -12548,6 +12564,7 @@ def _serialize_pending(entry: dict) -> dict:
                 "direction": prop.get("direction", "Over"),
                 "stat": prop.get("stat", ""),
                 "line": prop.get("line"),
+                "confidence": prop.get("confidence"),
             }
             for prop in entry.get("props", [])
         ],

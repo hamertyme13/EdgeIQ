@@ -16,14 +16,16 @@
 
   async function waitForJob(job) {
     let current = job;
-    for (let attempt = 0; attempt < 300 && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
+    const deadline = Date.now() + 145000;
+    for (let attempt = 0; attempt < 145 && Date.now() < deadline && ["queued", "running", "canceling"].includes(current.status); attempt += 1) {
       const status = byId("game-intelligence-status");
       if (status) status.textContent = `${current.phase || "Refreshing games..."} ${Number(current.progress || 0)}%`;
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      current = await request(`/api/jobs/${encodeURIComponent(current.job_id)}`);
+      current = await request(`/api/jobs/${encodeURIComponent(current.job_id)}`, { timeoutMs: 5000 });
     }
     if (current.status === "failed") throw new Error(current.error || "Game predictions could not be refreshed.");
     if (current.status === "canceled") throw new Error("The game refresh was canceled.");
+    if (current.status !== "complete") throw new Error("Game predictions are still refreshing in the background. Check Games again shortly.");
     return current;
   }
 
@@ -59,6 +61,18 @@
     return models.map((model) => `<div class="suggestion"><div class="suggestion-top"><strong>${escape(model.version)}</strong><span class="pill">${escape(model.role)}</span></div><p>${escape(model.reason || (model.paid_eligible ? "Production baseline." : "Not eligible for paid recommendations."))}</p></div>`).join("");
   }
 
+  function scheduleCard(row) {
+    const start = row.game_time ? new Date(row.game_time) : null;
+    const time = start && !Number.isNaN(start.getTime())
+      ? start.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" })
+      : "Start time unavailable";
+    return `<article class="game-intelligence-card">
+      <div class="suggestion-top"><h3>${escape(row.away_team && row.home_team ? `${row.away_team} vs ${row.home_team}` : row.game || "Matchup unavailable")}</h3><span class="data-badge">Schedule only</span></div>
+      <p class="subtle">${escape(time)} · ESPN schedule</p>
+      <p class="subtle">No verified market line is available for a game prediction yet.</p>
+    </article>`;
+  }
+
   function propContextMarkup(context, championProjection, shadowProjection) {
     if (!context) return "";
     const adjustments = context.adjustments || [];
@@ -90,10 +104,20 @@
         await waitForJob(job);
       }
       const data = await request(`/api/game-intelligence/slate?sport=${encodeURIComponent(sport)}`);
-      list.innerHTML = (data.games || []).map(predictionCard).join("") || '<div class="empty-state"><strong>No games for this sport today.</strong><p>Refresh Games when today\'s provider lines become available.</p></div>';
+      const predictions = data.games || [];
+      const schedule = data.schedule || [];
+      list.innerHTML = predictions.map(predictionCard).join("") + schedule.map(scheduleCard).join("") || (
+        data.schedule_status === "unavailable"
+          ? '<div class="empty-state"><strong>Today\'s schedule is unavailable.</strong><p>EdgeIQ could not confirm games or market lines for this sport. Try again shortly.</p></div>'
+          : '<div class="empty-state"><strong>No games confirmed for this sport today.</strong><p>Choose another sport or check again when schedules update.</p></div>'
+      );
       byId("game-intelligence-governance").innerHTML = governance(data);
-      status.textContent = `${(data.games || []).length} ${sport} games on ${data.game_day || "today"} · challenger remains shadow-only.`;
-      window.trackProductEvent?.("game_prediction_viewed", "game_prediction", sport, { count: (data.games || []).length });
+      status.textContent = predictions.length
+        ? `${predictions.length} ${sport} predictions${schedule.length ? ` · ${schedule.length} schedule-only games` : ""} on ${data.game_day || "today"} · challenger remains shadow-only.`
+        : schedule.length
+          ? `${schedule.length} ${sport} games scheduled today · predictions await verified market lines.`
+          : `${sport} schedule checked for ${data.game_day || "today"}.`;
+      window.trackProductEvent?.("game_prediction_viewed", "game_prediction", sport, { count: predictions.length });
     } catch (error) {
       list.innerHTML = `<div class="empty-state"><strong>Game predictions are temporarily unavailable.</strong><p>${escape(error.message)}</p></div>`;
       status.textContent = "Game Intelligence needs attention.";

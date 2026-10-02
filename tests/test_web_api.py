@@ -391,25 +391,47 @@ def test_pending_serializer_excludes_heavy_audit_fields():
         "wager": 0.0,
         "multiplier": 3.0,
         "potential_payout": 0.0,
+        "average_confidence": 86.5,
         "placed_at": datetime(2026, 7, 28, tzinfo=UTC),
-        "audit_snapshot": "large internal snapshot",
+        "audit_snapshot": json.dumps({
+            "source": "auto_paper_calibration",
+            "target": {"type": "Confidence", "name": "80-90%"},
+            "recommendation": {"score": 91, "detail": "large internal snapshot"},
+        }),
         "props": [{
             "player": "A",
             "direction": "Over",
             "stat": "Points",
             "line": 10.5,
             "projection": 12.0,
+            "confidence": 86.5,
             "data_quality": {"large": "payload"},
         }],
     })
 
     assert "audit_snapshot" not in serialized
+    assert serialized["average_confidence"] == 86.5
+    assert serialized["model_score"] == 91
+    assert serialized["calibration_target"] == "80-90%"
     assert serialized["props"] == [{
         "player": "A",
         "direction": "Over",
         "stat": "Points",
         "line": 10.5,
+        "confidence": 86.5,
     }]
+
+
+def test_pending_serializer_keeps_unknown_confidence_unavailable():
+    serialized = web_app._serialize_pending({
+        "id": 5,
+        "audit_snapshot": "not json",
+        "props": [{"player": "B", "stat": "Assists", "line": 5.5, "confidence": None}],
+    })
+
+    assert serialized["average_confidence"] is None
+    assert serialized["model_score"] is None
+    assert serialized["props"][0]["confidence"] is None
 
 
 def test_nba_summer_league_game_finder_parses_unique_game_ids(monkeypatch):

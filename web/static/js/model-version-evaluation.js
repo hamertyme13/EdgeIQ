@@ -13,16 +13,16 @@
     return `
       <div class="suggestion evidence-dashboard ${comparison.ready && Number(comparison.brier_improvement) > 0 ? "insight-positive" : "insight-warning"}">
         <div class="suggestion-top"><strong>Model Evidence Dashboard</strong><span class="status-pill ${comparison.ready ? "status-connected" : "status-degraded"}">${comparison.ready ? "Version comparison ready" : "Collecting evidence"}</span></div>
-        <div class="metric-strip evidence-coverage-strip">
+        ${boardEvidence ? `<div class="metric-strip evidence-coverage-strip">
           <span><strong>${Number(coverage.independent_offers || 0)}</strong><small>Board Offers</small></span>
           <span><strong>${Number(coverage.settled_offers || 0)}</strong><small>Verified Finals</small></span>
           <span><strong>${metric(coverage.settlement_rate)}%</strong><small>Settlement Coverage</small></span>
           <span><strong>${Number(coverage.rejected_or_unselected || 0)}</strong><small>Comparison Offers</small></span>
-        </div>
-        <div class="evidence-comparison-grid">
+        </div>` : '<p class="subtle">Complete-board comparison has not been loaded. Use Load Board Comparison to scan captured offers.</p>'}
+        ${boardEvidence ? `<div class="evidence-comparison-grid">
           <div><strong>EdgeIQ-analyzed</strong><span>${Number(model.samples || 0)} outcomes</span><span>${metric(model.hit_rate)}% hit rate</span><span>${metric(model.brier_score, 3)} Brier</span><span>${metric(model.average_clv, 2)} avg CLV</span></div>
           <div><strong>Unselected baseline</strong><span>${Number(baseline.samples || 0)} outcomes</span><span>${metric(baseline.hit_rate)}% hit rate</span><span>${boardEvidence?.selection_lift == null ? "Lift collecting" : `${metric(boardEvidence.selection_lift)} pt selection lift`}</span><span>Selection-bias check</span></div>
-        </div>
+        </div>` : ""}
         <div class="metric-strip">
           ${versions.slice(-3).map((row) => `<span><strong>${Number(row.brier_score).toFixed(3)}</strong><small>${escapeHtml(row.model_version.replace("edgeiq-", ""))} · ${Number(row.settled_predictions)} finals</small></span>`).join("")}
         </div>

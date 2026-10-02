@@ -6055,7 +6055,7 @@ td,
 }
 .entry-leg-edit-grid {
   display: grid;
-  grid-template-columns: minmax(150px, 2fr) minmax(140px, 2fr) repeat(3, minmax(90px, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-items: end;
 }
@@ -6929,4 +6929,23 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
   .game-intelligence-metrics,
   .game-win-bars { grid-template-columns: 1fr; }
   .game-intelligence-controls { width: 100%; }
+}
+.pending-entry-legs {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.pending-entry-leg {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.pending-entry-leg .prop-pick-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

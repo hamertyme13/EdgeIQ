@@ -12,15 +12,38 @@ from analytics.game_model_registry import (
     game_model_registry,
     promotion_decision,
 )
+from data.providers.espn import fetch_game_times
 from repository.repositories.game_prediction_repository import GamePredictionRepository
-from services.game_intelligence import latest_slate_predictions, predict_slate, settle_recent_predictions
+from services.game_intelligence import _game_on_day, latest_slate_predictions, predict_slate, settle_recent_predictions
+from utils.entity_normalization import canonical_matchup_key
 from web.schemas.games import GamePropContextPayload
 
 
 def slate_payload(sport: str, refresh: bool) -> dict:
     game_day = datetime.now(ZoneInfo("America/New_York")).date()
     rows = predict_slate(sport, persist=True, game_day=game_day) if refresh else latest_slate_predictions(sport, 100, game_day=game_day)
-    return {"sport": sport.upper(), "game_day": game_day.isoformat(), "games": rows, "registry": game_model_registry(), "guaranteed": False}
+    schedule: list[dict] = []
+    schedule_status = "available"
+    predicted_matchups = {
+        canonical_matchup_key((row.get("champion") or row.get("challenger") or row).get("game"))
+        for row in rows
+    }
+    try:
+        schedule = [
+            row for row in fetch_game_times(sport, game_day)
+            if _game_on_day(row.get("game_time"), game_day)
+            and canonical_matchup_key(
+                f"{row.get('away_team')} @ {row.get('home_team')}"
+                if row.get("away_team") and row.get("home_team") else row.get("game")
+            ) not in predicted_matchups
+        ]
+    except (RuntimeError, ValueError, OSError):
+        schedule_status = "unavailable"
+    return {
+        "sport": sport.upper(), "game_day": game_day.isoformat(), "games": rows,
+        "schedule": schedule, "schedule_status": schedule_status,
+        "registry": game_model_registry(), "guaranteed": False,
+    }
 
 
 def prop_context_payload(payload: GamePropContextPayload) -> dict:

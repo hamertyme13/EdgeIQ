@@ -51,6 +51,10 @@ def test_recent_fifteen_games_set_projection_without_older_season_outliers() -> 
     assert first.sample_size == second.sample_size == 15
     assert first.features["verified_games"] == 20
     assert second.features["verified_games"] == 25
+    assert first.features["recent_15_average"] == second.features["recent_15_average"] == 22
+    assert first.features["season_average"] != second.features["season_average"]
+    assert "Limited verified history" not in second.distribution["uncertainty_drivers"]
+    assert second.distribution["uncertainty_level"] != "High"
 
 
 def test_forecast_routes_thin_history_to_market_prior_and_paper() -> None:
