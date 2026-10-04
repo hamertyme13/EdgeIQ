@@ -128,6 +128,10 @@ def main() -> int:
                     results.append(capture_market_model_timeline(page, viewport_name))
                     page.close()
                     continue
+                if os.environ.get("EDGEIQ_VISUAL_FOCUS") == "evidence-lab":
+                    results.append(capture_evidence_lab(page, viewport_name))
+                    page.close()
+                    continue
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
                 results.extend(capture_research_details(page, viewport_name))
@@ -137,6 +141,7 @@ def main() -> int:
                 results.append(capture_recommendation_compare(page, viewport_name))
                 results.append(capture_market_disagreement(page, viewport_name))
                 results.append(capture_market_model_timeline(page, viewport_name))
+                results.append(capture_evidence_lab(page, viewport_name))
                 page.close()
             browser.close()
     finally:
@@ -183,6 +188,34 @@ def capture_market_model_timeline(page: Page, viewport_name: str) -> dict:
     page.evaluate("document.querySelector('#recommendation-drawer').hidden = true")
     fixture.evaluate('(element) => element.remove()')
     return {'viewport': viewport_name, 'view': 'Market model timeline', 'screenshot': str(screenshot), **issues}
+
+
+def capture_evidence_lab(page: Page, viewport_name: str) -> dict:
+    page.route("**/api/analytics/evidence-lab?*", lambda route: route.fulfill(json={
+        "independent_outcomes": 203, "records_examined": 251, "truncated": False,
+        "categories": [{
+            "key": "recent_form", "label": "Recent Form",
+            "included": {"samples": 112, "wins": 63, "hit_rate": 56.3, "brier": 0.241},
+            "not_included": {"samples": 91, "wins": 48, "hit_rate": 52.7, "brier": 0.255},
+            "small_sample": True,
+        }],
+        "ablation": {"available": False, "reason": "Historical feature-removal forecasts have not been recomputed."},
+        "note": "Descriptive associations only. Evidence presence is not a causal effect.",
+    }))
+    page.evaluate("setView('performance')")
+    page.locator('.consumer-evidence-lab').evaluate('(element) => { element.open = true; }')
+    page.locator('#evidence-lab-load').click()
+    page.locator('.evidence-lab-row').wait_for()
+    output = page.locator('#evidence-lab-output')
+    assert '112 outcomes' in output.inner_text()
+    assert 'Descriptive associations only' in output.inner_text()
+    issues = visual_issues(page)
+    assert not issues['horizontal_overflow'], issues
+    assert not issues['clipped_buttons'], issues
+    screenshot = OUTPUT / f'{viewport_name}-evidence-lab.png'
+    page.locator('.consumer-evidence-lab').screenshot(path=screenshot)
+    page.unroute("**/api/analytics/evidence-lab?*")
+    return {'viewport': viewport_name, 'view': 'Evidence Lab', 'screenshot': str(screenshot), **issues}
 
 
 def capture_model_track_record(page: Page, viewport_name: str) -> dict:

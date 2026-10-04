@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from analytics.linked_offer_evaluation import evaluate_linked_offers
 from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
+from web.application.evidence_lab import evidence_lab
 from web.application.model_track_record import model_track_record
 
 router = APIRouter(tags=["results"])
@@ -34,6 +35,11 @@ def get_model_track_record(sport: str = "", provider: str = "", stat: str = "", 
     if direction not in {"", "Over", "Under"}:
         raise HTTPException(status_code=400, detail="Choose Over, Under, or both directions.")
     return model_track_record(sport, provider, stat, direction, model_version)
+
+
+@router.get("/api/analytics/evidence-lab")
+def get_evidence_lab(sport: str = "", provider: str = "", stat: str = "", model_version: str = "") -> dict:
+    return evidence_lab(sport, provider, stat, model_version)
 
 
 @dataclass(frozen=True)

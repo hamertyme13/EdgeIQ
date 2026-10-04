@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261004-market-model-timeline" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261004-evidence-lab" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -1758,6 +1758,12 @@
             <p id="model-score-unavailable" class="subtle">Score-bucket results require verified stored-score linkage.</p>
             <div id="model-track-output" aria-live="polite"><p>No model record loaded.</p></div>
           </details>
+          <details class="consumer-evidence-lab">
+            <summary>Evidence Lab</summary>
+            <p class="subtle">Compare verified pregame prop outcomes with and without each recorded evidence type. Descriptive only; this does not establish causation.</p>
+            <button id="evidence-lab-load" class="secondary" type="button">Review evidence</button>
+            <div id="evidence-lab-output" aria-live="polite"><p>No evidence comparison loaded.</p></div>
+          </details>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
               <button class="workspace-tab" type="button" data-workspace-tab="model" data-advanced-only>Model Validation</button>
@@ -1982,13 +1988,14 @@
     <script src="/static/js/games.js?v=20260930-games-schedule"></script>
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/model-track-record.js?v=20261003-model-context"></script>
+    <script src="/static/js/evidence-lab.js?v=20261004-evidence-lab"></script>
     <script src="/static/js/personal-edge.js?v=20261004-personal-edge"></script>
     <script src="/static/js/recommendation-compare.js?v=20261004-recommendation-compare"></script>
     <script src="/static/js/market-disagreement.js?v=20261004-market-model-timeline"></script>
     <script src="/static/js/market-model-timeline.js?v=20261004-market-model-timeline"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261004-market-model-timeline"></script>
+    <script src="/static/app.js?v=20261004-evidence-lab"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');
