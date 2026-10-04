@@ -5,6 +5,16 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 SCHEDULED_RETRY_MINUTES = 15
+HEAVY_JOB_RETRY_MINUTES = 60
+
+
+def retry_minutes(job_name: str) -> int:
+    if job_name in {
+        "morning_scan", "daily_briefing", "nightly_calibration", "auto_paper_samples",
+        "player_features", "season_history", "injury_refresh",
+    }:
+        return HEAVY_JOB_RETRY_MINUTES
+    return SCHEDULED_RETRY_MINUTES
 
 
 def execute_scheduled_job(

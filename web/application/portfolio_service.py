@@ -107,6 +107,27 @@ def portfolio_intelligence_payload(
         max(0, int(row["entries"]) - 1) for row in counts["game"].values()
     ) * 8)
     concentration_score = max(0, 100 - sum(item["penalty"] for item in concentrations))
+    all_sport_exposure = list(counts["sport"].values())
+    sport_allocations = _allocated_sport_stake(real_entries)
+    for row in all_sport_exposure:
+        row["allocated_stake"] = round(sport_allocations.get(row["key"], 0.0), 2)
+    largest_sport_share = max((float(row["allocated_stake"]) / wager * 100 for row in all_sport_exposure), default=0.0) if wager else 0.0
+    sport_exposure = sorted(all_sport_exposure, key=lambda row: float(row["allocated_stake"]), reverse=True)[:8]
+    risk_reasons = []
+    watch_reasons = []
+    if any(item["severity"] == "danger" for item in concentrations):
+        risk_reasons.append("A shared market or player bankroll limit is exceeded.")
+    if bankroll > 0 and exposure_pct > limits["max_open_exposure_pct"]:
+        risk_reasons.append("Open paid wagers exceed the configured bankroll exposure limit.")
+    if largest_sport_share >= 70 and len(real_entries) >= 2:
+        risk_reasons.append(f"{largest_sport_share:.1f}% of open paid stake depends on one sport.")
+    if shared_markets:
+        watch_reasons.append(f"{len(shared_markets)} exact market{'s are' if len(shared_markets) != 1 else ' is'} repeated across cards.")
+    if largest_sport_share >= 50 and len(real_entries) >= 2 and largest_sport_share < 70:
+        watch_reasons.append(f"{largest_sport_share:.1f}% of open paid stake depends on one sport.")
+    if concentrations and not risk_reasons:
+        watch_reasons.append("A configured player or game entry limit is exceeded.")
+    concentration_risk = "HIGH" if risk_reasons else "MODERATE" if watch_reasons else "LOW"
     if any(item["severity"] == "danger" for item in concentrations):
         status = "Concentrated"
     elif concentrations:
@@ -127,6 +148,11 @@ def portfolio_intelligence_payload(
         "limits": limits,
         "concentrations": concentrations,
         "correlation_score": correlation_score,
+        "overlap_index": correlation_score,
+        "concentration_risk": concentration_risk,
+        "risk_reasons": risk_reasons + watch_reasons,
+        "largest_sport_stake_pct": round(largest_sport_share, 1),
+        "risk_method": "HIGH: breached exact-market/player bankroll/open-wager limit, or at least 70% of stake in one sport across 2+ cards. MODERATE: repeated exact markets, another concentration limit breach, or at least 50% of stake in one sport across 2+ cards. Otherwise LOW. The overlap index is a heuristic, not a measured correlation or loss probability.",
         "shared_leg_failure_risk": {
             "repeated_props": len(shared_markets),
             "exposed_wager": round(sum(float(row["wager"]) for row in shared_markets), 2),
@@ -140,8 +166,11 @@ def portfolio_intelligence_payload(
         "top_teams": _top_exposures(counts["team"], 6),
         "top_markets": _top_exposures(counts["market"], 6),
         "top_stats": _top_exposures(counts["stat"], 5),
+        "sports": sport_exposure,
         "directions": _top_exposures(counts["direction"], 2),
         "providers": _top_exposures(counts["provider"], 5),
+        "shared_markets": _top_exposures({row["key"]: row for row in shared_markets}, 8),
+        "top_risk_entries": _top_risk_entries(real_entries, counts),
     }
 
 
@@ -493,11 +522,41 @@ def _portfolio_replacements(
 
 def _portfolio_counts(entries: list[dict]) -> dict[str, dict[str, dict]]:
     counts: dict[str, dict[str, dict]] = {
-        dimension: {} for dimension in ("player", "game", "team", "market", "stat", "direction", "provider")
+        dimension: {} for dimension in ("player", "game", "team", "market", "stat", "direction", "provider", "sport")
     }
     for entry in entries:
         _add_props_to_counts(counts, entry.get("props") or [], float(entry.get("wager") or 0.0))
     return counts
+
+
+def _allocated_sport_stake(entries: list[dict]) -> dict[str, float]:
+    allocations: dict[str, float] = {}
+    for entry in entries:
+        sports = {str(prop.get("sport") or "").strip().casefold() for prop in entry.get("props") or []}
+        sports.discard("")
+        if not sports:
+            continue
+        share = float(entry.get("wager") or 0.0) / len(sports)
+        for sport in sports:
+            allocations[sport] = allocations.get(sport, 0.0) + share
+    return allocations
+
+
+def _top_risk_entries(entries: list[dict], counts: dict) -> list[dict]:
+    ranked = []
+    for entry in entries:
+        props = entry.get("props") or []
+        markets = {_prop_portfolio_keys(prop)["market"][0] for prop in props}
+        games = {_prop_portfolio_keys(prop)["game"][0] for prop in props}
+        repeated = sum(int(counts["market"].get(key, {}).get("entries") or 0) > 1 for key in markets if key)
+        shared_games = sum(int(counts["game"].get(key, {}).get("entries") or 0) > 1 for key in games if key)
+        if repeated or shared_games:
+            ranked.append({
+                "id": entry.get("id"), "platform": entry.get("platform") or (props[0].get("platform") if props else ""),
+                "wager": float(entry.get("wager") or 0.0),
+                "repeated_markets": repeated, "shared_games": shared_games,
+            })
+    return sorted(ranked, key=lambda row: (row["repeated_markets"], row["shared_games"], row["wager"]), reverse=True)[:5]
 
 
 def _add_props_to_counts(counts: dict, props: list[dict], wager: float) -> None:
@@ -519,10 +578,15 @@ def _prop_portfolio_keys(prop: dict) -> dict[str, tuple[str, str]]:
     direction = str(prop.get("direction") or "Over").title()
     line = float(prop.get("line") or 0.0)
     game_key = canonical_matchup_key(prop.get("game"))
+    game_identity = str(prop.get("provider_event_id") or "").strip()
+    game_time = str(prop.get("game_time") or "").strip()
+    if game_key and (game_time or game_identity):
+        game_key = f"{game_key}|{game_time or game_identity}"
     game = str(prop.get("game") or "Unknown matchup")
     provider = str(prop.get("platform") or "Unknown provider")
     team = str(prop.get("team") or "Unknown team")
-    market_key = f"{player_key}|{stat.casefold()}|{direction.casefold()}|{line:.2f}"
+    sport = str(prop.get("sport") or "").strip().upper()
+    market_key = f"{sport}|{game_key}|{player_key}|{stat.casefold()}|{direction.casefold()}|{line:.2f}" if player_key else ""
     return {
         "player": (player_key, player),
         "game": (game_key, game),
@@ -531,6 +595,7 @@ def _prop_portfolio_keys(prop: dict) -> dict[str, tuple[str, str]]:
         "stat": (stat.casefold(), stat),
         "direction": (direction.casefold(), direction),
         "provider": (provider.casefold(), provider),
+        "sport": (sport.casefold(), sport or "Unknown sport"),
     }
 
 

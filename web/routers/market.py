@@ -188,6 +188,8 @@ def ev_scanner(
     odds: int = -110,
     deps: DepsMark = None,  # type: ignore[assignment]
 ) -> dict:
+    if -100 < odds < 100:
+        raise HTTPException(status_code=422, detail="Enter American odds of -100 or lower, or +100 or higher.")
     _deps = deps if isinstance(deps, MarketDependencies) else get_deps()
     sport_filter = None if sport == "All Sports" else sport.upper()
     rows = _deps.ev_scanner(platform, sport_filter, min_ev, limit, odds)
@@ -197,6 +199,8 @@ def ev_scanner(
         "sport": sport,
         "min_ev": min_ev,
         "odds": odds,
+        "ev_basis": "assumed_american_odds",
+        "ev_verified": False,
         "count": len(rows),
     }
 

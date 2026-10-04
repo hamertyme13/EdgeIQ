@@ -2,6 +2,26 @@ from web.application import copilot_service
 from web.schemas import CopilotQueryPayload, RecommendationExplainPayload
 
 
+def test_structured_command_bypasses_ollama(monkeypatch):
+    def unexpected_model(*_args, **_kwargs):
+        raise AssertionError("a structured command must not call Ollama")
+
+    monkeypatch.setattr(copilot_service, "ollama_structured", unexpected_model)
+    result = copilot_service.copilot_query_payload(
+        CopilotQueryPayload(question="Which recommendations are based on stale evidence?"),
+        player_research=lambda *_args: {}, loss_review=lambda: {},
+        briefing=lambda *_args: {"top_opportunities": [
+            {"player": "Test Player", "sport": "WNBA", "stat": "Points", "line": 19.5,
+             "confidence": 60, "recommendation_freshness": {"status": "expired"}},
+        ]},
+        portfolio=lambda: {},
+    )
+    assert result["intent"] == "evidence_review"
+    assert result["provider"] == "EdgeIQ Local"
+    assert "Test Player" in result["response"]["answer"]
+    assert result["response"]["citations"] == ["briefing-snapshot"]
+
+
 def _answer(citations, answer="The verified line is 19.5."):
     return {
         "answer": answer,

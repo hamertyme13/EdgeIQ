@@ -7,14 +7,22 @@ from web.routers.results import complete_board_evidence
 
 def test_core_backtest_does_not_scan_complete_board(monkeypatch):
     monkeypatch.setattr(results_service.EntryRepository, "all", lambda: [])
-    monkeypatch.setattr(results_service.PredictionLedgerRepository, "backfill_legacy_quarantine", lambda: 0)
+    monkeypatch.setattr(
+        results_service.PredictionLedgerRepository,
+        "backfill_legacy_quarantine",
+        lambda: (_ for _ in ()).throw(AssertionError("Results read must not write legacy rows")),
+    )
     monkeypatch.setattr(results_service.PredictionLedgerRepository, "evidence_rows", lambda **kwargs: [])
     monkeypatch.setattr(results_service.PredictionLedgerRepository, "summary", lambda: {})
     monkeypatch.setattr(results_service.BetRepository, "get_all", lambda self: [])
     monkeypatch.setattr(results_service, "backtest_summary", lambda *args, **kwargs: {"validation_readiness": {}})
     monkeypatch.setattr(results_service, "grouped_rolling_validation", lambda rows: {})
     monkeypatch.setattr(results_service, "validation_readiness", lambda *args, **kwargs: {})
-    monkeypatch.setattr(results_service.ModelRehabilitationRepository, "shadow_status", lambda *args, **kwargs: {})
+    def shadow_status(*args, **kwargs):
+        assert not args
+        return {}
+
+    monkeypatch.setattr(results_service.ModelRehabilitationRepository, "shadow_status", shadow_status)
     monkeypatch.setattr(BoardOfferRepository, "evidence_report", lambda: (_ for _ in ()).throw(AssertionError("board scan")))
 
     assert results_service.backtest_payload({})["shadow_evaluation"] == {}

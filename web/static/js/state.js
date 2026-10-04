@@ -8,6 +8,8 @@
     commandCards: [],
     dailyBriefing: null,
     opportunitySelections: new Set(),
+    compareSelections: new Set(),
+    compareTrackRecords: new Map(),
     trendingProps: [],
     trendingSelections: new Set(),
     dailyScanPoll: null,

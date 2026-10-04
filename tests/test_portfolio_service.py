@@ -52,6 +52,35 @@ def test_portfolio_intelligence_reports_player_game_and_market_concentration():
     assert payload["directions"][0]["label"] == "Over"
     assert payload["correlation_score"] > 0
     assert payload["shared_leg_failure_risk"]["repeated_props"] == 1
+    assert payload["concentration_risk"] == "HIGH"
+    assert payload["sports"][0]["label"] == "WNBA"
+    assert payload["sports"][0]["allocated_stake"] == 25
+    assert payload["shared_markets"][0]["entries"] == 2
+    assert {row["id"] for row in payload["top_risk_entries"]} == {1, 2}
+
+
+def test_sport_concentration_allocates_cross_sport_stake_once():
+    nfl = _prop("A", "AAA @ BBB") | {"sport": "NFL"}
+    wnba = _prop("B", "CCC @ DDD")
+    pending = [
+        {"entry_mode": "real", "wager": 20, "props": [nfl, wnba]},
+        {"entry_mode": "real", "wager": 10, "props": [_prop("C", "EEE @ FFF")]},
+    ]
+    payload = portfolio_intelligence_payload(pending_entries=pending, bankroll=1000, strategy={})
+    allocated = {row["label"]: row["allocated_stake"] for row in payload["sports"]}
+    assert allocated == {"WNBA": 20, "NFL": 10}
+    assert payload["largest_sport_stake_pct"] == 66.7
+    assert payload["concentration_risk"] == "MODERATE"
+
+
+def test_same_player_market_on_different_games_is_not_shared_leg():
+    pending = [
+        {"entry_mode": "real", "wager": 5, "props": [_prop("A", "AAA @ BBB") | {"game_time": "2026-10-04T18:00:00Z"}]},
+        {"entry_mode": "real", "wager": 5, "props": [_prop("A", "AAA @ BBB") | {"game_time": "2026-10-11T18:00:00Z"}]},
+    ]
+    payload = portfolio_intelligence_payload(pending_entries=pending, bankroll=1000, strategy={"max_player_entries": 3})
+    assert payload["shared_leg_failure_risk"]["repeated_props"] == 0
+    assert payload["top_markets"][0]["entries"] == 1
 
 
 def test_portfolio_ranking_prefers_lower_exposure_and_offers_replacement():

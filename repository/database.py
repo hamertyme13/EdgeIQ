@@ -29,7 +29,6 @@ if DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         try:
             cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
         except Exception:
             pass
@@ -55,6 +54,10 @@ def initialize_database():
         if _initialized_engine is engine:
             return
 
+        if getattr(getattr(engine, "url", None), "get_backend_name", lambda: "")() == "sqlite":
+            with engine.connect() as connection:
+                if str(connection.exec_driver_sql("PRAGMA journal_mode").scalar() or "").lower() != "wal":
+                    connection.exec_driver_sql("PRAGMA journal_mode=WAL")
         _create_database_schema()
         _initialized_engine = engine
 

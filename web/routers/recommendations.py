@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from services.recommendation_timeline import recommendation_timeline
 from web.application.recommendation_service import RecommendationRequestError
 from web.schemas import AutoPaperCalibrationPayload
 
@@ -46,6 +47,13 @@ def get_deps() -> RecommendationDependencies:
 
 
 DepsRec = Annotated[RecommendationDependencies, Depends(get_deps)]
+
+
+@router.get("/api/recommendations/timeline")
+def timeline(player: str, sport: str = "", stat: str = "", game: str = "", platform: str = "", limit: int = 100) -> dict:
+    return recommendation_timeline(
+        player=player, sport=sport, stat=stat, game=game, platform=platform, limit=limit,
+    )
 
 
 def _request(call: Callable[[], dict]) -> dict:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 
 from analytics.prediction_evidence import deduplicate_outcomes
 
@@ -18,18 +19,28 @@ def grouped_rolling_validation(
         and not row.get("legacy_quarantined")
     ]
     eligible.sort(key=_time_key)
+    settled = sorted((row for row in eligible if _truth_time(row)), key=_truth_time)
     predictions: list[dict] = []
+    sport_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    segment_counts: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0])
+    settled_index = 0
 
     for target in eligible:
         target_time = _time_key(target)
-        train = [
-            row for row in eligible
-            if _truth_time(row) and _truth_time(row) < target_time
-        ]
-        if len(train) < minimum_train:
+        while settled_index < len(settled) and _truth_time(settled[settled_index]) < target_time:
+            prior = settled[settled_index]
+            sport = str(prior.get("sport") or "").upper()
+            segment = (sport, str(prior.get("stat") or "").lower(), str(prior.get("direction") or "").lower())
+            win = int(prior.get("result") == "Win")
+            sport_counts[sport][0] += 1
+            sport_counts[sport][1] += win
+            segment_counts[segment][0] += 1
+            segment_counts[segment][1] += win
+            settled_index += 1
+        if settled_index < minimum_train:
             continue
         raw = _probability(target)
-        calibrated, peers = _fit_prior_only_calibration(raw, target, train)
+        calibrated, peers = _fit_prior_only_calibration(raw, target, sport_counts, segment_counts)
         actual = 1.0 if target["result"] == "Win" else 0.0
         predictions.append({
             "market_key": target.get("independent_market_key", ""),
@@ -92,22 +103,20 @@ def grouped_rolling_validation(
     }
 
 
-def _fit_prior_only_calibration(raw: float, target: dict, train: list[dict]) -> tuple[float, int]:
-    peers = [
-        row for row in train
-        if str(row.get("sport") or "").upper() == str(target.get("sport") or "").upper()
-        and str(row.get("stat") or "").lower() == str(target.get("stat") or "").lower()
-        and str(row.get("direction") or "").lower() == str(target.get("direction") or "").lower()
-    ]
-    if len(peers) < 20:
-        peers = [
-            row for row in train
-            if str(row.get("sport") or "").upper() == str(target.get("sport") or "").upper()
-        ]
-    wins = sum(1 for row in peers if row.get("result") == "Win")
+def _fit_prior_only_calibration(
+    raw: float,
+    target: dict,
+    sport_counts: dict[str, list[int]],
+    segment_counts: dict[tuple[str, str, str], list[int]],
+) -> tuple[float, int]:
+    sport = str(target.get("sport") or "").upper()
+    segment = (sport, str(target.get("stat") or "").lower(), str(target.get("direction") or "").lower())
+    count, wins = segment_counts.get(segment, [0, 0])
+    if count < 20:
+        count, wins = sport_counts.get(sport, [0, 0])
     prior_strength = 30.0
-    posterior = ((raw * prior_strength) + wins) / (prior_strength + len(peers))
-    return max(0.02, min(0.98, posterior)), len(peers)
+    posterior = ((raw * prior_strength) + wins) / (prior_strength + count)
+    return max(0.02, min(0.98, posterior)), count
 
 
 def _expected_calibration_error(rows: list[dict]) -> float:

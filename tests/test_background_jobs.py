@@ -42,6 +42,24 @@ class MemoryJobRepository:
         return recovered
 
 
+def test_background_job_history_can_load_without_blocking_startup():
+    entered = Event()
+    release = Event()
+
+    class SlowRepository(MemoryJobRepository):
+        def recover_interrupted(self, completed_at):
+            entered.set()
+            assert release.wait(timeout=2)
+            return super().recover_interrupted(completed_at)
+
+    manager = BackgroundJobManager(repository=SlowRepository(), load_history_async=True)
+    assert entered.wait(timeout=1)
+    assert manager.list() == []
+    release.set()
+    manager._history_thread.join(timeout=2)
+    assert not manager._history_thread.is_alive()
+
+
 def test_background_jobs_reuse_active_dedupe_key_and_report_progress():
     manager = BackgroundJobManager(max_workers=1)
     started = Event()

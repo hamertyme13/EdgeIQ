@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261001-entry-builder-context" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261004-market-model-timeline" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -242,7 +242,8 @@
             <div class="section-heading-row">
               <div>
                 <p class="eyebrow">Performance At A Glance</p>
-                <h2 id="today-performance-title">Bankroll + Recent Form</h2>
+                <h2 id="today-performance-title">Bankroll + Monthly Form</h2>
+                <p id="today-performance-period" class="subtle">Monthly results · live bankroll and exposure</p>
               </div>
               <button class="secondary compact-button" type="button" data-view-shortcut="performance">View Results</button>
             </div>
@@ -478,9 +479,10 @@
                   <input id="copilot-line" type="number" step="0.5" placeholder="Line (optional)" aria-label="Copilot line" />
                 </div>
                 <div class="quick-prompts">
-                  <button class="micro-button" data-copilot-prompt="Compare verified winning and losing entries">Wins vs losses</button>
-                  <button class="micro-button" data-copilot-prompt="Review my portfolio exposure and shared-leg risk">Portfolio risk</button>
-                  <button class="micro-button" data-copilot-prompt="Narrate today's briefing and identify missing evidence">Daily briefing</button>
+                  <button class="micro-button" data-copilot-prompt="Show me my strongest historical segments">Personal Edge</button>
+                  <button class="micro-button" data-copilot-prompt="Which open entries have the most correlated risk?">Open risk</button>
+                  <button class="micro-button" data-copilot-prompt="Show me WNBA props above 60% model probability with at least 100 calibrated samples">Filter props</button>
+                  <button class="micro-button" data-copilot-prompt="Which recommendations are based on stale evidence?">Stale evidence</button>
                 </div>
                 <div class="model-evaluation-row">
                   <select id="copilot-model" aria-label="Local Ollama model">
@@ -840,11 +842,11 @@
                   <button type="submit" class="add-prop-submit entry-prop-field">Add Prop</button>
                 </form>
                 <details class="entry-payout-details entry-advanced-field">
-                  <summary>Exact provider payout</summary>
-                  <label class="field-label">Flex payout table
+                  <summary>Displayed card payout</summary>
+                  <label class="field-label">Power or Flex payout table
                     <input id="entry-payout-schedule" type="text" placeholder="Example: 3:3, 2:1" />
                   </label>
-                  <p class="subtle">For Flex entries, enter wins:multiplier pairs exactly as shown in the provider app.</p>
+                  <p class="subtle">Enter wins:multiplier pairs exactly as shown in the provider app. EdgeIQ estimates EV from this payout and its calibrated probabilities; it does not verify the displayed payout automatically.</p>
                 </details>
                 <div class="table-wrap compact">
                   <table>
@@ -1115,6 +1117,7 @@
                     <button id="save-dnp-handling" class="secondary">Save DNP Setting</button>
                   </div>
                   <div id="auto-check-status" class="subtle"></div>
+                  <div id="manual-settlement-status" class="subtle" role="status" aria-live="polite"></div>
                   <div id="pending-list" class="suggestion-list"></div>
                 </div>
               </details>
@@ -1415,7 +1418,7 @@
                   <div id="line-shop-result" class="analysis-card muted-card">No line shop loaded.</div>
                 </div>
                 <div class="mini-tool">
-                  <h2>+EV Scanner</h2>
+                  <h2>EV Scenario Scanner</h2>
                   <form id="ev-scanner-form" class="form-grid">
                     <select id="scan-platform">
                       <option>Both</option>
@@ -1443,7 +1446,7 @@
                       <option>NASCAR</option>
                     </select>
                     <input id="scan-min-ev" type="number" value="0" step="0.1" placeholder="Min EV %" />
-                    <input id="scan-odds" type="number" value="-110" placeholder="Odds" />
+                    <input id="scan-odds" type="number" value="-110" placeholder="Assumed American odds" aria-label="Assumed American odds" />
                     <button type="submit">Scan</button>
                   </form>
                   <div id="ev-scanner-result" class="analysis-card muted-card">No EV scan yet.</div>
@@ -1781,6 +1784,7 @@
                 <h2>Monthly Profit</h2>
                 <p>Current performance and historical monthly results in one ledger.</p>
               </div>
+              <button id="refresh-performance" class="secondary" type="button">Refresh</button>
             </div>
             <div class="two-col monthly-profit-layout">
               <div>
@@ -1795,6 +1799,23 @@
             <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
             <button id="toggle-performance-details" class="secondary performance-detail-toggle" type="button" aria-expanded="false">Show Detailed Performance</button>
           </div>
+          <details id="personal-edge" class="inline-disclosure personal-edge-section" data-workspace-pane="performance" data-auto-open="false">
+            <summary><span>Personal Edge</span><small>Historical results from your tracked entries</small></summary>
+            <div class="toolbar">
+              <label>Entry type
+                <select id="personal-edge-mode"><option value="real">Paid</option><option value="paper">Paper</option></select>
+              </label>
+              <label>Compare by
+                <select id="personal-edge-dimension">
+                  <option value="sport">Sport</option><option value="stat">Stat</option><option value="provider">Provider</option>
+                  <option value="direction">Direction</option><option value="confidence_bucket">Confidence bucket</option>
+                  <option value="card_size">Card size</option><option value="grade">Card grade</option>
+                </select>
+              </label>
+              <button id="refresh-personal-edge" class="secondary" type="button">Refresh</button>
+            </div>
+            <div id="personal-edge-output" class="suggestion-list" aria-live="polite">Open to review your settled history.</div>
+          </details>
           <div class="two-col" data-workspace-pane="performance" data-performance-detail>
             <div class="panel">
               <div class="panel-header">
@@ -1942,7 +1963,7 @@
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20260929-briefing-schedule"></script>
+    <script src="/static/js/state.js?v=20261004-recommendation-compare"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
@@ -1960,10 +1981,14 @@
     <script src="/static/js/model-version-evaluation.js?v=20261001-results-speed"></script>
     <script src="/static/js/games.js?v=20260930-games-schedule"></script>
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/js/model-track-record.js?v=20260929-briefing-schedule"></script>
+    <script src="/static/js/model-track-record.js?v=20261003-model-context"></script>
+    <script src="/static/js/personal-edge.js?v=20261004-personal-edge"></script>
+    <script src="/static/js/recommendation-compare.js?v=20261004-recommendation-compare"></script>
+    <script src="/static/js/market-disagreement.js?v=20261004-market-model-timeline"></script>
+    <script src="/static/js/market-model-timeline.js?v=20261004-market-model-timeline"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261001-entry-builder-context"></script>
+    <script src="/static/app.js?v=20261004-market-model-timeline"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

@@ -19,6 +19,24 @@ def test_prizepicks_flex_expected_value_includes_partial_payouts():
     assert result["expected_value"] == 8.0
 
 
+def test_prizepicks_two_pick_flex_uses_published_partial_payout():
+    result = payout_analysis([0.6, 0.6], "PrizePicks", "flex")
+
+    assert result["payouts"] == {"2": 2.0, "1": 0.5}
+    assert result["expected_value"] == -4.0
+
+
+def test_user_entered_payout_is_not_labeled_provider_snapshot():
+    result = payout_analysis(
+        [0.6, 0.6], "PrizePicks", "flex",
+        exact_schedule={"2": 2.0, "1": 0.5},
+        exact_schedule_source="user_entered_payout",
+    )
+
+    assert result["source"] == "user_entered_payout"
+    assert result["requires_app_confirmation"] is True
+
+
 def test_underdog_standard_uses_current_base_multiplier():
     assert payout_schedule("Underdog", "standard", 3) == {3: 6.5}
 
@@ -60,6 +78,32 @@ def test_complete_winning_leg_set_overrides_contradictory_entry_loss():
     result, profit = EntryRepository._settlement_profit("Loss", 10, 5, 3, leg_results=[{"result": "Win"}] * 3)
     assert result == "Win"
     assert profit == 40
+
+
+def test_zero_wager_flex_uses_return_multiplier_for_result(monkeypatch) -> None:
+    from repository.repositories import entry_repository
+
+    monkeypatch.setattr(entry_repository, "settlement_return_multiplier", lambda *args, **kwargs: 0.0)
+    result, profit = entry_repository.EntryRepository._settlement_profit(
+        "Loss", 0, 8.1, 6, platform="DraftKings Pick6", payout_type="flex",
+        leg_results=[{"result": "Win"}] * 2 + [{"result": "Loss"}] * 4,
+    )
+    assert (result, profit) == ("Loss", 0.0)
+
+
+def test_standard_three_leg_card_with_exact_tie_reduces_to_winning_two_leg_card() -> None:
+    from repository.repositories.entry_repository import EntryRepository
+
+    result, profit = EntryRepository._settlement_profit(
+        "Push", 0, 1, 3, platform="PrizePicks", payout_type="standard",
+        leg_results=[{"result": "Win"}, {"result": "Win"}, {"result": "Push"}],
+    )
+    assert (result, profit) == ("Win", 0.0)
+    result_with_refund_setting, _ = EntryRepository._settlement_profit(
+        "Push", 0, 1, 3, dnp_mode="refund", platform="PrizePicks",
+        leg_results=[{"result": "Win"}, {"result": "Win"}, {"result": "Push"}],
+    )
+    assert result_with_refund_setting == "Win"
 
 
 def test_exact_offer_and_correlation_are_used_for_ev() -> None:

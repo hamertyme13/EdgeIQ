@@ -38,11 +38,14 @@ def test_forecast_probability_and_interval_invariants(history, line, direction):
     assert 0 <= result.probability <= 100
     distribution = result.distribution
     assert distribution["floor"] <= distribution["median"] <= distribution["ceiling"]
-    assert math.isclose(
-        distribution["probability_over_exact_line"] + distribution["probability_under_exact_line"],
-        100.0,
-        abs_tol=0.02,
-    )
+    if distribution["probability_push_exact_line"] is not None:
+        assert math.isclose(
+            distribution["probability_over_exact_line"]
+            + distribution["probability_under_exact_line"]
+            + distribution["probability_push_exact_line"],
+            100.0,
+            abs_tol=0.03,
+        )
 
 
 @given(

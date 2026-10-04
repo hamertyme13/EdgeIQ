@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from web import app as web_app
 from web.application.operations_service import update_refresh_schedule_payload
+from web.application.schedule_service import retry_minutes
 from web.schemas.settings import RefreshSchedulePayload
 
 
@@ -97,3 +98,63 @@ def test_scheduled_briefing_does_not_overlap_another_process(monkeypatch):
 
     assert observed == []
     assert "daily_scheduler_run:daily_briefing" not in settings
+
+
+def test_injury_refresh_does_not_repeat_full_provider_sync(monkeypatch):
+    settings = {}
+    refreshed = []
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {
+        "schedule": {"enabled": True, "injury_refresh": "00:00"},
+    })
+    monkeypatch.setattr(web_app, "_odds_provider_recovery_due", lambda _now: False)
+    monkeypatch.setattr(web_app, "_run_daily_refresh_now", lambda: (_ for _ in ()).throw(AssertionError("full sync")))
+    monkeypatch.setattr(web_app, "fetch_injuries", lambda sport: refreshed.append(sport) or [])
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": settings.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: settings.update({key: value}))
+
+    class Context:
+        def update(self, *_args):
+            pass
+
+    def submit(_kind, callback, **_kwargs):
+        callback(Context())
+        return {"job_id": "injury-refresh", "reused": False}
+
+    monkeypatch.setattr(web_app.background_jobs, "submit", submit)
+    result = web_app._run_due_daily_operations_locked()
+
+    assert result["jobs_run"] == ["injury_refresh"]
+    assert set(refreshed) == {"NBA", "WNBA", "NFL", "NCAAF", "NHL", "MLB"}
+
+
+def test_morning_scan_builds_briefing_without_settlement_sync(monkeypatch):
+    settings = {}
+    calls = []
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {
+        "schedule": {"enabled": True, "morning_scan": "00:00"},
+    })
+    monkeypatch.setattr(web_app, "_odds_provider_recovery_due", lambda _now: False)
+    monkeypatch.setattr(web_app, "_run_daily_refresh_now", lambda: (_ for _ in ()).throw(AssertionError("full sync")))
+    monkeypatch.setattr(web_app, "_run_scheduled_briefing", lambda: calls.append("briefing") or {"status": "ready"})
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": settings.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: settings.update({key: value}))
+
+    class Context:
+        def update(self, *_args):
+            pass
+
+    def submit(_kind, callback, **_kwargs):
+        callback(Context())
+        return {"job_id": "morning-scan", "reused": False}
+
+    monkeypatch.setattr(web_app.background_jobs, "submit", submit)
+    result = web_app._run_due_daily_operations_locked()
+
+    assert result["jobs_run"] == ["morning_scan"]
+    assert calls == ["briefing"]
+
+
+def test_heavy_maintenance_retries_less_often_than_result_checks():
+    assert retry_minutes("daily_briefing") == 60
+    assert retry_minutes("morning_scan") == 60
+    assert retry_minutes("result_check") == 15

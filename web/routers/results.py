@@ -38,7 +38,7 @@ def get_model_track_record(sport: str = "", provider: str = "", stat: str = "", 
 
 @dataclass(frozen=True)
 class ResultsDependencies:
-    performance: Callable[[], dict]
+    performance: Callable[[bool], dict]
     create_backup: Callable[[], dict]
     create_export: Callable[[], dict]
     compact_board_history: Callable[[bool], dict]
@@ -69,9 +69,9 @@ DepsResults = Annotated[ResultsDependencies, Depends(get_deps)]
 
 
 @router.get("/api/performance")
-def performance(deps: DepsResults = None) -> dict:  # type: ignore[assignment]
+def performance(refresh: bool = False, deps: DepsResults = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, ResultsDependencies) else get_deps()
-    return _deps.performance()
+    return _deps.performance(refresh)
 
 
 @router.post("/api/data/backup")

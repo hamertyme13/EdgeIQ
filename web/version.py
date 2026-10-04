@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261001-entry-builder-context"
+STATIC_ASSET_VERSION = "20261004-market-model-timeline"

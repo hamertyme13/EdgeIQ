@@ -44,7 +44,7 @@ JobCallable = Callable[[JobContext], dict]
 class BackgroundJobManager:
     """Bounded in-process worker pool with deduplication and observable jobs."""
 
-    def __init__(self, *, max_workers: int = 3, history_limit: int = 100, repository=None) -> None:
+    def __init__(self, *, max_workers: int = 3, history_limit: int = 100, repository=None, load_history_async: bool = False) -> None:
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="edgeiq-job")
         self._scheduled_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-scheduled")
         self._history_limit = max(20, history_limit)
@@ -57,7 +57,11 @@ class BackgroundJobManager:
         self._order: deque[str] = deque()
         self._active_keys: dict[str, str] = {}
         self._persisted_progress: dict[str, int] = {}
-        self._load_persisted()
+        if load_history_async:
+            self._history_thread = threading.Thread(target=self._load_persisted, name="edgeiq-job-history", daemon=True)
+            self._history_thread.start()
+        else:
+            self._load_persisted()
 
     def submit(self, kind: str, task: JobCallable, *, dedupe_key: str = "", label: str = "") -> dict:
         key = dedupe_key or kind
@@ -232,9 +236,12 @@ class BackgroundJobManager:
             self._repository.recover_interrupted(_now())
             for job in self._repository.recent(self._history_limit):
                 job_id = job["job_id"]
-                self._jobs[job_id] = job
-                self._order.append(job_id)
-                self._persisted_progress[job_id] = int(job.get("progress") or 0)
+                with self._lock:
+                    if job_id in self._jobs:
+                        continue
+                    self._jobs[job_id] = job
+                    self._order.append(job_id)
+                    self._persisted_progress[job_id] = int(job.get("progress") or 0)
         except Exception:
             _log.exception("Background-job history could not be loaded")
 
@@ -263,4 +270,4 @@ class BackgroundJobManager:
         return {key: copy.deepcopy(value) for key, value in job.items() if not key.startswith("_")}
 
 
-background_jobs = BackgroundJobManager(repository=BackgroundJobRepository)
+background_jobs = BackgroundJobManager(repository=BackgroundJobRepository, load_history_async=True)

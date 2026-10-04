@@ -30,3 +30,16 @@ def test_chronological_first_prediction_and_versions_are_preserved():
     assert result["locked_predictions"] == 2
     assert all(item["predicted_hit_rate"] == 60 for item in result["versions"])
     assert all(item["small_sample"] for item in result["versions"])
+
+
+def test_track_record_keeps_losses_in_visible_metrics():
+    result = summarize_track_record([
+        row(independent_market_key="win", result="Win", actual=22, probability=60),
+        row(independent_market_key="loss", result="Loss", actual=18, probability=80),
+    ])
+    version = result["versions"][0]
+    assert version["settled_predictions"] == 2
+    assert version["wins"] == 1 and version["losses"] == 1
+    assert version["actual_hit_rate"] == 50.0
+    assert version["predicted_hit_rate"] == 70.0
+    assert version["calibration_gap"] == -20.0

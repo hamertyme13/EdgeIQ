@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from playwright.sync_api import Page, sync_playwright
@@ -123,12 +124,19 @@ def main() -> int:
                 page.wait_for_timeout(1500)
                 if page.locator("#onboarding-skip").is_visible():
                     page.locator("#onboarding-skip").click()
+                if os.environ.get("EDGEIQ_VISUAL_FOCUS") == "timeline":
+                    results.append(capture_market_model_timeline(page, viewport_name))
+                    page.close()
+                    continue
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
                 results.extend(capture_research_details(page, viewport_name))
                 results.append(capture_entry_summary(page, viewport_name))
                 results.append(capture_model_track_record(page, viewport_name))
                 results.append(capture_best_lines(page, viewport_name))
+                results.append(capture_recommendation_compare(page, viewport_name))
+                results.append(capture_market_disagreement(page, viewport_name))
+                results.append(capture_market_model_timeline(page, viewport_name))
                 page.close()
             browser.close()
     finally:
@@ -142,6 +150,39 @@ def main() -> int:
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")
     return 0
+
+
+def capture_market_model_timeline(page: Page, viewport_name: str) -> dict:
+    page.evaluate("""() => {
+      const drawer = document.createElement('section');
+      drawer.id = 'timeline-visual-fixture';
+      drawer.className = 'analysis-card';
+      drawer.style.maxWidth = '600px';
+      drawer.innerHTML = renderMarketModelTimeline({
+        summary: 'Two saved recommendation states.', clv: null,
+        events: [
+          {created_at: '2026-10-03T12:00:00Z', platform: 'PrizePicks', model_version: 'v2.4',
+           changes: ['recommendation_created'], line: 23.5, projection: 26.1,
+           model_probability: 67, calibrated_probability: 64},
+          {created_at: '2026-10-03T13:00:00Z', platform: 'PrizePicks', model_version: 'v2.4',
+           changes: ['provider_line_change', 'model_projection_change'], line: 24.5,
+           projection: 27, model_probability: 69, calibrated_probability: 65},
+        ],
+      });
+      document.querySelector('#drawer-content').prepend(drawer);
+      document.querySelector('#recommendation-drawer').hidden = false;
+    }""")
+    fixture = page.locator('#timeline-visual-fixture')
+    assert fixture.locator('polyline').count() == 2
+    assert 'No exact closing line' in fixture.inner_text()
+    issues = visual_issues(page)
+    assert not issues['horizontal_overflow'], issues
+    assert not issues['clipped_buttons'], issues
+    screenshot = OUTPUT / f'{viewport_name}-market-model-timeline.png'
+    page.locator('#recommendation-drawer .drawer-panel').screenshot(path=screenshot)
+    page.evaluate("document.querySelector('#recommendation-drawer').hidden = true")
+    fixture.evaluate('(element) => element.remove()')
+    return {'viewport': viewport_name, 'view': 'Market model timeline', 'screenshot': str(screenshot), **issues}
 
 
 def capture_model_track_record(page: Page, viewport_name: str) -> dict:
@@ -166,6 +207,78 @@ def capture_model_track_record(page: Page, viewport_name: str) -> dict:
     page.screenshot(path=screenshot, full_page=True)
     page.unroute("**/api/analytics/model-track-record?*")
     return {"viewport": viewport_name, "view": "Model track record", "screenshot": str(screenshot), **issues}
+
+
+def capture_recommendation_compare(page: Page, viewport_name: str) -> dict:
+    page.route("**/api/analytics/model-track-record?*", lambda route: route.fulfill(json={
+        "truncated": False,
+        "versions": [{"model_version": "v2.4", "platform": "PrizePicks", "direction": "Over",
+                      "settled_predictions": 30, "actual_hit_rate": 56.7}],
+    }))
+    page.evaluate("""() => {
+      setView('dashboard');
+      const rows = [
+        {player:'Example One',sport:'WNBA',platform:'PrizePicks',stat:'Points',direction:'Over',line:19.5,
+         projection:22,confidence:64,score:70,model_version:'v2.4',risk_profile:{key:'balanced',label:'Balanced'},
+         edgeiq_score:{score:72},calibration_presentation:{model_probability:68,calibrated_probability:63,
+         segment_sample_size:120,label:'Calibrated'},counterargument:{fragility_label:'Low',fragility_score:20},
+         recommendation_freshness:{status:'fresh'},recommendation_eligibility:{paper_ready:true}},
+        {player:'Example Two',sport:'WNBA',platform:'Underdog',stat:'Rebounds',direction:'Under',line:8.5,
+         projection:7,confidence:61,score:66,model_version:'v2.4',risk_profile:{key:'balanced',label:'Balanced'},
+         edgeiq_score:{score:79},calibration_presentation:{model_probability:65,calibrated_probability:60,
+         segment_sample_size:105,label:'Calibrated'},counterargument:{fragility_label:'Moderate',fragility_score:35},
+         recommendation_freshness:{status:'fresh'},recommendation_eligibility:{paper_ready:true}}
+      ];
+      const data = {sport:'WNBA',platform:'Both',top_opportunities:rows,summary:{confirmed_props:2},
+        sections:{bet:[],paper:[],watch:[],avoid:[]},games_today:[],cache:{hit:true},user:{greeting:'Good morning.'}};
+      state.dailyBriefing = data;
+      renderDailyBriefing(data);
+      document.querySelector('.briefing-explore-drawer').open = true;
+    }""")
+    buttons = page.locator("[data-compare-opportunity]")
+    assert buttons.count() == 2
+    buttons.nth(0).click()
+    buttons.nth(1).click()
+    page.locator("#compare-selected-opportunities").click()
+    page.locator(".recommendation-compare-table").wait_for()
+    output_text = page.locator("#recommendation-compare-output").inner_text()
+    assert "example one" in output_text.lower(), output_text
+    assert "example two" in output_text.lower(), output_text
+    page.locator("#recommendation-compare-metric").select_option("score")
+    assert "Highest EdgeIQ Score" in page.locator("#recommendation-compare-output").inner_text()
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-recommendation-compare.png"
+    page.screenshot(path=screenshot, full_page=True)
+    page.unroute("**/api/analytics/model-track-record?*")
+    return {"viewport": viewport_name, "view": "Recommendation comparison", "screenshot": str(screenshot), **issues}
+
+
+def capture_market_disagreement(page: Page, viewport_name: str) -> dict:
+    page.route("**/api/analytics/market-disagreement?*", lambda route: route.fulfill(json={
+        "message": "1 exact-line no-vig comparison from the cached briefing.",
+        "note": "A difference is not expected value or a profit estimate.",
+        "rows": [{"player": "Example One", "direction": "Over", "line": 19.5, "stat": "Points",
+                  "platform": "PrizePicks", "sport": "WNBA", "model_probability": 61,
+                  "market_probability": 54, "raw_difference": 7, "calibrated_probability": 58,
+                  "effective_difference": 4, "calibration_samples": 120,
+                  "calibration_uncertainty_points": 3, "within_calibration_uncertainty": False,
+                  "market_book_count": 2,
+                  "market_timestamp_coverage": 2, "context": "Multi-book comparison; model uncertainty still applies"}],
+    }))
+    page.locator("#market-disagreement-panel summary").click()
+    page.locator(".market-disagreement-row").wait_for()
+    content = page.locator("#market-disagreement-output").inner_text()
+    assert "+7.0 pts" in content
+    assert "+4.0 pts" in content
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-market-disagreement.png"
+    page.screenshot(path=screenshot, full_page=True)
+    page.unroute("**/api/analytics/market-disagreement?*")
+    return {"viewport": viewport_name, "view": "Market disagreement", "screenshot": str(screenshot), **issues}
 
 
 def capture_entry_summary(page: Page, viewport_name: str) -> dict:
@@ -245,8 +358,9 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
         sys.path.insert(0, str(ROOT))
     from web.application.best_lines_service import best_lines_payload
 
+    game_time = (datetime.now(UTC) + timedelta(days=1)).replace(hour=20, minute=0, second=0, microsecond=0)
     offer = {"sport": "WNBA", "stat": "Points", "game": "Example A @ Example B",
-             "game_time": "2026-09-12T20:00:00Z", "line_offer_type": "standard"}
+             "game_time": game_time.isoformat().replace("+00:00", "Z"), "line_offer_type": "standard"}
     payload = best_lines_payload({"player": "Example Player", "stat": "Points", "sport": "WNBA",
                                  "lines": [{**offer, "platform": "PrizePicks", "line": 20.5},
                                            {**offer, "platform": "Underdog", "line": 21.5}]})
@@ -291,7 +405,11 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     ]:
         page.locator('.consumer-more > summary').click()
         page.locator(selector).click()
-        assert page.locator(target).first.is_visible()
+        target_locator = page.locator(target).first
+        visible = target_locator.is_visible()
+        if target == '#data-health-list' and not visible:
+            visible = target_locator.locator('..').is_visible()
+        assert visible, f"{selector} did not reveal {target}"
         assert not page.locator('.consumer-more').evaluate('(element) => element.open')
     page.locator('.consumer-more > summary').click()
     page.keyboard.press("Escape")

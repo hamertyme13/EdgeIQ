@@ -441,12 +441,20 @@ class EntryRepository:
         return next((entry for entry in entries if entry["id"] == entry_id), None)
 
     @staticmethod
+    def get_by_id(entry_id: int) -> dict | None:
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            entry = session.get(EntryModel, entry_id)
+            return EntryRepository._entry_dict(session, entry) if entry is not None else None
+
+    @staticmethod
     def settle(
         entry_id: int,
         result: str,
         dnp_legs: int = 0,
         dnp_mode: str = "reduce",
         leg_results: list[dict] | None = None,
+        correction_reason: str = "",
     ) -> dict:
         EntryRepository._ensure_schema()
         if result not in {"Win", "Loss", "Push", "DNP"}:
@@ -475,6 +483,21 @@ class EntryRepository:
             )
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
+
+            if was_settled and entry.result != result:
+                try:
+                    audit = json.loads(entry.audit_snapshot or "{}")
+                except (TypeError, ValueError):
+                    audit = {"original_audit": entry.audit_snapshot or ""}
+                if not isinstance(audit, dict):
+                    audit = {"original_audit": audit}
+                audit.setdefault("settlement_reconciliations", []).append({
+                    "previous_result": entry.result,
+                    "new_result": result,
+                    "reason": correction_reason or "Rechecked settled entry against final leg results.",
+                    "reconciled_at": utc_now().isoformat(),
+                })
+                entry.audit_snapshot = json.dumps(audit)
 
             entry.status = "Settled"
             entry.result = result
@@ -1052,16 +1075,24 @@ class EntryRepository:
                 displayed_multiplier=multiplier,
             )
             profit = round(wager * (returned - 1.0), 2)
-            settled_result = "Win" if profit > 0 else "Push" if profit == 0 else "Loss"
+            settled_result = "Win" if returned > 1.0 else "Push" if returned == 1.0 else "Loss"
             return settled_result, profit
+        push_legs = 0
+        if leg_results and len(leg_results) == leg_count:
+            push_legs = sum(leg.get("result") == "Push" for leg in leg_results)
+            active = [leg for leg in leg_results if leg.get("result") not in {"DNP", "Push"}]
+            if len(active) < 2:
+                return "Push", 0.0
+            if all(leg.get("result") in {"Win", "Loss"} for leg in active):
+                result = "Loss" if any(leg.get("result") == "Loss" for leg in active) else "Win"
         dnp_legs = max(0, min(int(dnp_legs or 0), int(leg_count or 0)))
         if result == "DNP":
             return "Push", 0.0
-        if dnp_legs <= 0 or dnp_mode == "ignore":
+        if (dnp_legs <= 0 or dnp_mode == "ignore") and push_legs <= 0:
             return result, EntryRepository._profit_for_result(result, wager, multiplier)
-        if dnp_mode == "refund":
+        if dnp_mode == "refund" and dnp_legs:
             return "Push", 0.0
-        remaining_legs = max(0, int(leg_count or 0) - dnp_legs)
+        remaining_legs = max(0, int(leg_count or 0) - (0 if dnp_mode == "ignore" else dnp_legs) - push_legs)
         if remaining_legs <= 1:
             return "Push", 0.0
         adjusted_multiplier = EntryRepository._default_multiplier_for_legs(remaining_legs, platform)

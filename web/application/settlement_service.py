@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settings_repository import SettingsRepository
+
+logger = logging.getLogger(__name__)
 
 
 def pending_entries_payload(serialize_pending: Callable[[dict], dict]) -> dict:
@@ -108,14 +111,21 @@ def settle_entry_payload(
     dnp_mode: str,
     dashboard: Callable[[], dict],
 ) -> dict:
-    EntryRepository.settle(entry_id, result, dnp_legs, dnp_mode)
-    settled_entry = next((entry for entry in EntryRepository.all() if entry.get("id") == entry_id), None)
-    evidence_updated = ResearchEvidenceRepository.record_outcome(settled_entry or {})
+    settled = EntryRepository.settle(entry_id, result, dnp_legs, dnp_mode)
+    settled_entry = EntryRepository.get_by_id(entry_id)
+    try:
+        evidence_updated = ResearchEvidenceRepository.record_outcome(settled_entry or {})
+        evidence_warning = ""
+    except Exception:
+        logger.exception("Research evidence attribution failed for settled entry %s", entry_id)
+        evidence_updated = 0
+        evidence_warning = "Entry settled, but research evidence could not be updated."
     return {
         "id": entry_id,
-        "result": result,
+        "result": settled["result"],
         "status": "Settled",
         "research_evidence_updated": evidence_updated,
+        "research_evidence_warning": evidence_warning,
         "dashboard": dashboard(),
     }
 

@@ -6,6 +6,7 @@ from statistics import NormalDist
 
 _PRIZEPICKS_STANDARD = {2: 3.0, 3: 6.0, 4: 10.0, 5: 20.0, 6: 37.5}
 _PRIZEPICKS_FLEX = {
+    2: {2: 2.0, 1: 0.5},
     3: {3: 3.0, 2: 1.0},
     4: {4: 6.0, 3: 1.5},
     5: {5: 10.0, 4: 2.0, 3: 0.4},
@@ -47,6 +48,7 @@ def payout_analysis(
     *,
     correlation_matrix: list[list[float]] | None = None,
     exact_schedule: dict[str, float] | dict[int, float] | None = None,
+    exact_schedule_source: str = "exact_offer_snapshot",
 ) -> dict:
     probs = [max(0.01, min(0.99, float(value))) for value in probabilities]
     schedule = (
@@ -93,8 +95,8 @@ def payout_analysis(
         "independent_all_hit_probability": round(independent_distribution.get(len(probs), 0.0) * 100.0, 2),
         "correlation_adjusted": distribution is not independent_distribution,
         "displayed_multiplier": round(displayed_payout, 2),
-        "source": "exact_offer_snapshot" if exact_schedule else "user_entered_multiplier" if manual_multiplier else "official_base_schedule",
-        "requires_app_confirmation": not bool(exact_schedule),
+        "source": exact_schedule_source if exact_schedule else "user_entered_multiplier" if manual_multiplier else "official_base_schedule",
+        "requires_app_confirmation": not bool(exact_schedule) or exact_schedule_source == "user_entered_payout",
         "message": "Confirm the final multiplier in the provider app because promotions, adjusted lines, and correlations can change it.",
     }
 

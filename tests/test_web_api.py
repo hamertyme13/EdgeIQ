@@ -585,6 +585,8 @@ def test_dashboard_command_center_reuses_recent_analyzed_slate(monkeypatch):
 
 
 def test_daily_briefing_returns_bet_paper_watch_avoid_sections(monkeypatch):
+    board_fetches = []
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: board_fetches.append((platform, sport)) or [])
     monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": default)
     monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: None)
     command_card = {
@@ -661,6 +663,7 @@ def test_daily_briefing_returns_bet_paper_watch_avoid_sections(monkeypatch):
 
     body = daily_briefing("PrizePicks", "WNBA")
 
+    assert board_fetches == [("PrizePicks", "WNBA")]
     assert body["headline"].startswith("1 playable")
     assert body["summary"]["confirmed_props"] == 12
     assert body["summary"]["analyzed_props"] == 15
@@ -803,7 +806,11 @@ def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof
                     "game": "AAA@BBB",
                     "game_time": "2026-07-30T00:00:00Z",
                     "platform": "PrizePicks",
-                    "forecast_snapshot": {"source": "verified_history_distribution"},
+                    "forecast_snapshot": {"source": "verified_history_distribution", "calibration": {
+                        "tier": "sport_stat", "sample_size": 80, "segment_sample_size": 80,
+                        "raw_probability": 68.0, "probability": 64.0, "uncertainty_points": 8.0,
+                    }},
+                    "sensitivity": {"status": "model_only", "current_line": 20.5},
                     "forecast_paid_eligible": True,
                     "end_to_end_confirmed": True,
                 },
@@ -820,6 +827,11 @@ def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof
     assert premium["confidence"] <= 2
     assert standard["confidence"] <= 64
     assert standard["team"] == "AAA"
+    assert standard["sensitivity"]["current_line"] == 20.5
+    assert standard["calibration_presentation"]["status"] == "PARTIAL"
+    assert standard["calibration_presentation"]["model_probability"] == 68.0
+    assert premium["sensitivity"]["status"] == "unavailable"
+    assert standard["counterargument"]["scoring_version"] == "edgeiq-fragility-v1"
     assert standard["game_time"] == "2026-07-30T00:00:00Z"
     assert standard["projection"] == 22.0
     assert standard["forecast_paid_eligible"] is True
@@ -1217,6 +1229,27 @@ def test_daily_briefing_hides_real_money_card_when_threshold_misses(monkeypatch)
     cards = web_app._daily_bet_cards([card])
 
     assert cards == []
+
+
+def test_daily_briefing_shows_best_uncleared_card_as_paper_first_candidate():
+    def card(name, confidences):
+        return {
+            "type": "entry", "title": name, "score": 70, "grade": "C", "action": "Review",
+            "props": [{"player": f"{name}-{index}", "confidence": confidence, "platform": "PrizePicks"}
+                      for index, confidence in enumerate(confidences)],
+            "release_status": {"ok": False, "blocks": ["Payout not confirmed."], "warnings": []},
+            "trust": {"score": 50, "label": "Paper First"},
+        }
+
+    result = web_app._daily_best_available_cards([
+        card("Uneven", [90, 45]), card("Balanced", [65, 64]),
+    ])
+
+    assert len(result) == 1
+    assert result[0]["title"] == "Balanced"
+    assert result[0]["type"] == "candidate"
+    assert result[0]["entry_mode"] == "paper"
+    assert result[0]["release_status"]["ok"] is False
 
 
 def test_daily_briefing_uses_cached_payload_until_refresh(monkeypatch):
@@ -1689,6 +1722,24 @@ def test_daily_scan_status_marks_stale_worker_as_timed_out(monkeypatch):
     assert status["current"]["status"] == "failed"
     assert status["current"]["status_label"] == "Refresh Timed Out"
     assert "Restart EdgeIQ" in status["current"]["message"]
+
+
+def test_daily_scan_status_keeps_slow_worker_active(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 10, 2, 18, tzinfo=UTC)
+    scan = web_app._new_daily_scan("PrizePicks", "WNBA", trigger="manual")
+    scan["updated_at"] = (now - timedelta(minutes=6)).isoformat()
+    monkeypatch.setattr(
+        web_app.SettingsRepository,
+        "get",
+        lambda key, default="": json.dumps(scan) if key == web_app.DAILY_SCAN_STATUS_KEY else default,
+    )
+    monkeypatch.setattr("web.application.briefing_service.utc_now", lambda: now)
+
+    current = web_app._daily_scan_status_payload("PrizePicks", "WNBA")["current"]
+    assert current["status"] == "scanning_props"
+    assert current["status_label"] == "Taking Longer"
 
 
 def test_entry_suggestions_limit_both_to_entry_platforms(monkeypatch):
@@ -3351,6 +3402,14 @@ def test_ai_entry_review_falls_back_without_key(monkeypatch):
 
 def test_place_entry_saves_wager_and_multiplier(monkeypatch):
     saved = {}
+    entry_from_payload = web_app._entry_from_payload
+    hydrate_calls = []
+
+    def tracked_entry_from_payload(payload, *, hydrate_provider=True):
+        hydrate_calls.append(hydrate_provider)
+        return entry_from_payload(payload, hydrate_provider=hydrate_provider)
+
+    monkeypatch.setattr(web_app, "_entry_from_payload", tracked_entry_from_payload)
     def _fake_save(entry, status="Draft", result="", wager=0.0, multiplier=1.0,
                    recommended_by_app=False, audit_snapshot="", entry_mode="real",
                    payout_type="standard", **kwargs):
@@ -3399,6 +3458,7 @@ def test_place_entry_saves_wager_and_multiplier(monkeypatch):
     assert saved["payload"]["recommended_by_app"] is False
     assert "recommendation" in saved["payload"]["audit_snapshot"]
     assert '"schema_version": 2' in saved["payload"]["audit_snapshot"]
+    assert hydrate_calls == [False]
 
 
 def test_place_entry_enriches_missing_game_context_from_provider(monkeypatch):
@@ -4944,6 +5004,26 @@ def test_ev_scanner_ranks_positive_ev_props(monkeypatch):
     body = ev_scanner(platform="PrizePicks", sport="WNBA", min_ev=0, limit=5, odds=-110)
 
     assert body["count"] == 0
+    assert body["ev_verified"] is False
+    assert body["ev_basis"] == "assumed_american_odds"
+
+
+def test_ev_scanner_rejects_invalid_american_odds():
+    from fastapi.testclient import TestClient
+
+    response = TestClient(web_app.app).get("/api/market/ev-scanner?odds=0")
+    assert response.status_code == 422
+    assert "American odds" in response.json()["detail"]
+
+
+def test_ev_scanner_does_not_promote_one_game_hit_rate():
+    probability = web_app._scanner_probability({
+        "hit_rate": {"estimated_hit_rate": 100, "sample_size": 1},
+        "confidence": 90,
+        "edge": 2,
+        "stat": "Points",
+    })
+    assert probability <= 50
 
 
 def test_prizepicks_adjusted_lines_use_standard_baseline(monkeypatch):

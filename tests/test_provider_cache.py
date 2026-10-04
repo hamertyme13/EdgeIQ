@@ -5,6 +5,9 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+import requests
+
 from data.providers import cache
 
 
@@ -25,6 +28,7 @@ def _reset_cache_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(cache, "_CACHE_DIR", tmp_path)
     cache._CACHE_LOCKS.clear()
     cache._METRICS.clear()
+    cache._CIRCUITS.clear()
 
 
 def test_get_json_reuses_fresh_response_and_reports_avoided_call(tmp_path, monkeypatch) -> None:
@@ -97,3 +101,35 @@ def test_get_json_revalidates_stale_cache_with_etag(tmp_path, monkeypatch) -> No
     assert response.stale is False
     assert observed_headers["If-None-Match"] == '"abc"'
     assert cache.cache_metrics()["totals"]["not_modified"] == 1
+
+
+def test_access_denial_opens_circuit_without_retries(tmp_path, monkeypatch) -> None:
+    _reset_cache_state(tmp_path, monkeypatch)
+    calls = []
+
+    def denied_get(url, **_kwargs):
+        calls.append(url)
+        response = requests.Response()
+        response.status_code = 403
+        raise requests.HTTPError("Forbidden", response=response)
+
+    monkeypatch.setattr(cache.requests, "get", denied_get)
+    url = "https://api.example.com/denied"
+    with pytest.raises(RuntimeError, match="Provider fetch failed"):
+        cache.get_json(url, retries=2)
+    with pytest.raises(RuntimeError, match="temporarily paused"):
+        cache.get_json(url, retries=2)
+    assert calls == [url]
+
+
+def test_fresh_cache_remains_fresh_when_circuit_is_open(tmp_path, monkeypatch) -> None:
+    _reset_cache_state(tmp_path, monkeypatch)
+    url = "https://api.example.com/props"
+    cache._write_cache(cache._cache_path(url), {"rows": [1]})
+    cache._record_failure("api.example.com", immediate=True)
+    monkeypatch.setattr(cache.requests, "get", lambda *_args, **_kwargs: pytest.fail("network called"))
+
+    result = cache.get_json(url, ttl_seconds=60)
+
+    assert result.stale is False
+    assert result.data == {"rows": [1]}

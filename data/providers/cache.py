@@ -55,15 +55,15 @@ def get_json(
     cached = _read_cache(cache_path)
     host = urlparse(url).netloc.lower() or "unknown"
 
+    if cached and cached.age_seconds <= ttl_seconds:
+        _record_metric(host, "cache_hits")
+        return cached
+
     if _circuit_open(host):
         _record_metric(host, "circuit_rejections")
         if cached:
             return CachedResponse(cached.data, True, cached.age_seconds, cached.etag, cached.last_modified)
         raise RuntimeError("Provider is temporarily paused after repeated failures; EdgeIQ will retry automatically.")
-
-    if cached and cached.age_seconds <= ttl_seconds:
-        _record_metric(host, "cache_hits")
-        return cached
 
     lock = _cache_lock(cache_path)
     with lock:
@@ -119,9 +119,13 @@ def get_json(
             except (requests.RequestException, ValueError) as exc:
                 last_error = exc
                 _record_metric(host, "network_failures")
-                _record_failure(host)
+                response = getattr(exc, "response", None)
+                denied = getattr(response, "status_code", None) in {401, 403, 426}
+                _record_failure(host, immediate=denied)
+                if denied:
+                    break
                 if attempt < retries:
-                    time.sleep(_retry_delay(attempt, getattr(exc, "response", None)))
+                    time.sleep(_retry_delay(attempt, response))
 
         if cached:
             _record_metric(host, "stale_fallbacks")
@@ -194,11 +198,11 @@ def _record_success(host: str) -> None:
         _CIRCUITS.pop(host, None)
 
 
-def _record_failure(host: str) -> None:
+def _record_failure(host: str, *, immediate: bool = False) -> None:
     with _CIRCUITS_LOCK:
         state = _CIRCUITS.setdefault(host, {"failures": 0, "open_until": 0.0})
         state["failures"] = int(state.get("failures") or 0) + 1
-        if int(state["failures"]) >= _FAILURE_THRESHOLD:
+        if immediate or int(state["failures"]) >= _FAILURE_THRESHOLD:
             state["open_until"] = time.monotonic() + _COOLDOWN_SECONDS
 
 

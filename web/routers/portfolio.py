@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from web.application.personal_edge_service import personal_edge_payload
 from web.schemas import BetPayload
 
 router = APIRouter(tags=["portfolio"])
@@ -50,6 +51,13 @@ def dashboard(deps: DepsPortfolio = None) -> dict:  # type: ignore[assignment]
 def personal_profile(deps: DepsPortfolio = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, PortfolioDependencies) else get_deps()
     return _deps.personal_profile()
+
+
+@router.get("/api/analytics/personal-edge")
+def personal_edge(mode: str = "real") -> dict:
+    if mode not in {"real", "paper"}:
+        raise HTTPException(status_code=400, detail="Choose Paid or Paper entries.")
+    return personal_edge_payload(mode)
 
 
 @router.get("/api/bets")

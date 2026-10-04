@@ -34,19 +34,21 @@ health_ok() {
 
 current_app_ok() {
   local port="$1"
-  /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null | /usr/bin/grep -q "\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""
+  local version
+  version="$(/usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null)" || return 1
+  [[ "$version" == *"\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""* && "$version" == *'"desktop_instance":true'* ]]
 }
 
-edgeiq_server() {
+desktop_edgeiq_server() {
   local port="$1"
   /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null |
-    /usr/bin/grep -q '"app":"EdgeIQ Web"'
+    /usr/bin/grep -q '"desktop_instance":true'
 }
 
 stop_stale_edgeiq_servers() {
   local port pid
   for port in "${PORTS[@]}"; do
-    if edgeiq_server "$port" && ! current_app_ok "$port"; then
+    if desktop_edgeiq_server "$port" && ! current_app_ok "$port"; then
       pid="$(/usr/sbin/lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)"
       if [[ -n "$pid" ]]; then
         echo "Stopping outdated EdgeIQ server on ${HOST}:${port} (PID ${pid})"
@@ -58,7 +60,7 @@ stop_stale_edgeiq_servers() {
   for _ in {1..20}; do
     local stale_running=0
     for port in "${PORTS[@]}"; do
-      if edgeiq_server "$port" && ! current_app_ok "$port"; then
+      if desktop_edgeiq_server "$port" && ! current_app_ok "$port"; then
         stale_running=1
         break
       fi
@@ -130,4 +132,4 @@ echo "Keep this Terminal window open while using the app."
   done
 ) &
 
-exec "$PYTHON_BIN" -m uvicorn web.app:app --host "$HOST" --port "$PORT"
+exec env EDGEIQ_DESKTOP_INSTANCE=1 "$PYTHON_BIN" -m uvicorn web.app:app --host "$HOST" --port "$PORT"

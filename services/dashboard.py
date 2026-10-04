@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from config import STARTING_BANKROLL
 from repository.bet_repository import BetRepository
@@ -67,6 +68,7 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     timeline_stats = _combined_timeline_stats(bets, entries)
     stats.update(timeline_stats)
     stats["monthly_profit"] = monthly_profit_log(bets, entries)
+    stats["monthly_performance"] = monthly_dashboard_performance(bets, entries)
     stats["bankroll_transactions"] = bankroll_transactions
     stats["performance_insights"] = _performance_insights(stats)
 
@@ -84,6 +86,56 @@ def get_dashboard(starting_bankroll: float | None = None) -> dict:
     stats["starting_bankroll"] = starting_bankroll
 
     return stats
+
+
+def monthly_dashboard_performance(bets: list, entries: list[dict], month: str | None = None) -> dict:
+    period = month or _current_month_key()
+    settled_bets = [
+        bet for bet in bets
+        if bet.result in {"Win", "Loss", "Push"}
+        and str(getattr(bet, "entry_mode", "real") or "real").lower() != "paper"
+        and _month_key(getattr(bet, "created_at", None)) == period
+    ]
+    month_entries = [
+        entry for entry in entries
+        if entry.get("status") in {"Pending", "Settled"}
+        and _month_key(
+            (entry.get("settled_at") if entry.get("status") == "Settled" else entry.get("placed_at"))
+            or entry.get("placed_at") or entry.get("created_at")
+        ) == period
+    ]
+    settled_entries = [
+        entry for entry in month_entries
+        if entry.get("status") == "Settled"
+        and str(entry.get("entry_mode") or "real").lower() != "paper"
+        and entry.get("result") in {"Win", "Loss", "Push"}
+    ]
+    entry_stats = EntryRepository.financial_stats(month_entries)
+    wins = sum(bet.result == "Win" for bet in settled_bets) + entry_stats["wins"]
+    losses = sum(bet.result == "Loss" for bet in settled_bets) + entry_stats["losses"]
+    pushes = sum(bet.result == "Push" for bet in settled_bets) + entry_stats["pushes"]
+    profit = sum(float(bet.profit or 0) for bet in settled_bets) + sum(
+        float(entry.get("profit") or 0) for entry in settled_entries
+    )
+    wagered = sum(float(bet.wager or 0) for bet in settled_bets) + sum(
+        float(entry.get("wager") or 0) for entry in settled_entries
+    )
+    timeline = _combined_timeline_stats(settled_bets, month_entries)
+    return {
+        "month": period,
+        "label": _month_label(period),
+        "record": f"{wins}-{losses}",
+        "wins": wins,
+        "losses": losses,
+        "pushes": pushes,
+        "profit": round(profit, 2),
+        "wagered": round(wagered, 2),
+        "roi": round(profit / wagered * 100, 2) if wagered else 0.0,
+        "paper": entry_stats.get("paper", {}),
+        "recommendation_accuracy": entry_stats.get("recommendation_accuracy", {}),
+        "current_streak": timeline["current_streak"],
+        "max_drawdown": timeline["max_drawdown"],
+    }
 
 
 def _combined_timeline_stats(bets: list, entries: list[dict]) -> dict:
@@ -179,7 +231,12 @@ def monthly_profit_log(bets: list | None = None, entries: list[dict] | None = No
     for bet in bets:
         if bet.result not in {"Win", "Loss", "Push"}:
             continue
-        row = _month_row(months, _month_key(getattr(bet, "created_at", None)))
+        if str(getattr(bet, "entry_mode", "real") or "real").lower() == "paper":
+            continue
+        month_key = _month_key(getattr(bet, "created_at", None))
+        if not month_key:
+            continue
+        row = _month_row(months, month_key)
         row["profit"] += float(bet.profit or 0.0)
         row["wagered"] += float(bet.wager or 0.0)
         row["bets"] += 1
@@ -190,7 +247,10 @@ def monthly_profit_log(bets: list | None = None, entries: list[dict] | None = No
             continue
         if entry.get("status") != "Settled" or entry.get("result") not in {"Win", "Loss", "Push"}:
             continue
-        row = _month_row(months, _month_key(entry.get("settled_at") or entry.get("placed_at") or entry.get("created_at")))
+        month_key = _month_key(entry.get("settled_at") or entry.get("placed_at") or entry.get("created_at"))
+        if not month_key:
+            continue
+        row = _month_row(months, month_key)
         row["profit"] += float(entry.get("profit") or 0.0)
         row["wagered"] += float(entry.get("wager") or 0.0)
         row["entries"] += 1
@@ -256,24 +316,16 @@ def _count_result(row: dict, result: str) -> None:
 
 
 def _month_key(value) -> str:
-    from datetime import datetime, timezone
-
     if value is None:
-        return _current_month_key()
-    if isinstance(value, datetime):
-        return value.strftime("%Y-%m")
-    if hasattr(value, "strftime"):
-        return value.strftime("%Y-%m")
-    text = str(value or "").strip()
-    if len(text) >= 7:
-        return text[:7]
-    return _current_month_key()
+        return ""
+    parsed = _dashboard_datetime(value)
+    if parsed.year == 1:
+        return ""
+    return parsed.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m")
 
 
 def _current_month_key() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(UTC).strftime("%Y-%m")
+    return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m")
 
 
 def _month_label(key: str) -> str:

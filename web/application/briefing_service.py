@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from threading import RLock
 
 from utils.time import iso_utc, utc_now
 
 GetSetting = Callable[[str, str], str]
 SetSetting = Callable[[str, str], object]
+_log = logging.getLogger(__name__)
+_scan_fallback_lock = RLock()
+_scan_fallback: dict[str, dict] = {}
 
 
 def daily_scan_steps(active: str) -> list[dict]:
@@ -69,8 +74,32 @@ def new_daily_scan(platform: str, sport_filter: str | None, trigger: str = "manu
 
 def save_daily_scan_status(scan: dict, set_setting: SetSetting, status_key: str) -> dict:
     updated = {**scan, "updated_at": iso_utc(utc_now())}
-    set_setting(status_key, json.dumps(updated))
+    try:
+        set_setting(status_key, json.dumps(updated))
+    except Exception:
+        _log.warning("Daily Briefing status could not be persisted; keeping live progress in memory", exc_info=True)
+        with _scan_fallback_lock:
+            _scan_fallback[status_key] = updated
+    else:
+        with _scan_fallback_lock:
+            _scan_fallback.pop(status_key, None)
     return updated
+
+
+def _live_scan_status(get_setting: GetSetting, status_key: str) -> dict:
+    try:
+        raw = get_setting(status_key, "")
+    except Exception:
+        raw = ""
+    try:
+        persisted = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        persisted = {}
+    with _scan_fallback_lock:
+        fallback = _scan_fallback.get(status_key)
+    if fallback and str(fallback.get("updated_at") or "") >= str(persisted.get("updated_at") or ""):
+        return fallback
+    return persisted if isinstance(persisted, dict) else {}
 
 
 def recover_interrupted_daily_scan(
@@ -79,8 +108,7 @@ def recover_interrupted_daily_scan(
     safe_json_loads: Callable[[str], object],
     status_key: str,
 ) -> None:
-    raw_current = safe_json_loads(get_setting(status_key, ""))
-    current = raw_current if isinstance(raw_current, dict) else {}
+    current = _live_scan_status(get_setting, status_key)
     if not isinstance(current, dict) or current.get("status") not in {
         "scanning_props",
         "analyzing_games",
@@ -199,6 +227,7 @@ def run_daily_briefing_scan(
             errors=[],
         )
     except Exception:
+        _log.exception("Daily Briefing scan failed for %s %s", platform, sport_filter or "All Sports")
         scan = update_scan(
             scan,
             "failed",
@@ -209,7 +238,10 @@ def run_daily_briefing_scan(
                 "Daily Briefing could not finish. Refresh the scan and check provider connections if it happens again."
             ],
         )
-    append_log(scan)
+    try:
+        append_log(scan)
+    except Exception:
+        _log.warning("Daily Briefing scan log could not be persisted", exc_info=True)
     return scan
 
 
@@ -221,10 +253,15 @@ def daily_scan_status_payload(
     status_key: str,
     log_key: str,
 ) -> dict:
-    raw_current = safe_json_loads(get_setting(status_key, ""))
-    current = raw_current if isinstance(raw_current, dict) else {}
+    current = _live_scan_status(get_setting, status_key)
     log = safe_json_loads(get_setting(log_key, ""))
     runs = log.get("runs", []) if isinstance(log, dict) else []
+    if platform:
+        selected_sport = sport_filter or "All Sports"
+        matches = lambda row: row.get("platform") == platform and row.get("sport") == selected_sport
+        runs = [row for row in runs if matches(row)]
+        if current and not matches(current):
+            current = runs[0] if runs else {}
     now = utc_now()
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
@@ -261,6 +298,12 @@ def daily_scan_status_payload(
                     "steps": daily_scan_steps(""),
                     "completed_at": iso_utc(now),
                     "errors": ["The briefing worker exceeded the 20-minute progress window."],
+                }
+            elif now - updated > timedelta(minutes=5):
+                current = {
+                    **current,
+                    "status_label": "Taking Longer",
+                    "message": "The briefing is still processing. You can leave Today and check back later.",
                 }
         except ValueError:
             pass

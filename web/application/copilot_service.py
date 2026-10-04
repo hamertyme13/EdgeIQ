@@ -5,6 +5,9 @@ import re
 from collections.abc import Callable
 
 from services.ollama_client import ollama_model, ollama_structured
+from services.recommendation_timeline import recommendation_timeline
+from web.application.copilot_commands import plan_command, run_command
+from web.application.personal_edge_service import personal_edge_payload
 from web.schemas import CopilotQueryPayload, ModelEvaluationPayload, RecommendationExplainPayload
 
 ANSWER_SCHEMA = {
@@ -33,6 +36,12 @@ def copilot_query_payload(
     briefing: Callable[[str, str | None], dict],
     portfolio: Callable[[], dict],
 ) -> dict:
+    command = plan_command(payload)
+    if command:
+        return run_command(
+            command, platform=payload.platform, briefing=briefing, portfolio=portfolio,
+            personal_edge=personal_edge_payload, timeline=recommendation_timeline,
+        )
     intent = _intent(payload)
     if intent == "player_research":
         evidence = player_research(

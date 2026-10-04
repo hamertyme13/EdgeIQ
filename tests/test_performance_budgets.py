@@ -177,6 +177,25 @@ def test_results_payload_reuses_a_short_lived_dashboard_snapshot(monkeypatch):
     assert second["cache"]["hit"] is True
 
 
+def test_results_payload_manual_refresh_bypasses_cached_snapshot(monkeypatch):
+    results_service.invalidate_performance_payload()
+    calls = 0
+
+    def dashboard() -> dict:
+        nonlocal calls
+        calls += 1
+        return {"bankroll_curve": [], "by_sport": {}, "by_stat": {}, "by_platform": {},
+                "entries": {}, "monthly_profit": {}, "record": f"{calls}-0"}
+
+    monkeypatch.setattr(results_service, "get_dashboard", dashboard)
+    first = results_service.performance_payload()
+    refreshed = results_service.performance_payload(refresh=True)
+
+    assert first["summary"]["record"] == "1-0"
+    assert refreshed["summary"]["record"] == "2-0"
+    assert refreshed["cache"]["hit"] is False
+
+
 @pytest.mark.performance
 def test_provider_cache_and_health_api_latency_stay_within_budget(monkeypatch):
     web_app._PROP_FETCH_CACHE.clear()

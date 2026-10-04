@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
+from web.application.market_disagreement import market_disagreement_payload
 from web.application.opportunity_presentation import scored_opportunities
 
 router = APIRouter(tags=["briefing"])
@@ -57,6 +58,12 @@ def daily_briefing(
     )
 
 
+@router.get("/api/analytics/market-disagreement")
+def market_disagreement(platform: str = "Both", sport: str = "All Sports", deps: DepsBriefing = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, BriefingDependencies) else get_deps()
+    return market_disagreement_payload(_deps.briefing(platform, _sport_filter(sport), False, True))
+
+
 @router.post("/api/daily-briefing/scan")
 def start_daily_briefing_scan(
     background_tasks: BackgroundTasks,
@@ -66,9 +73,11 @@ def start_daily_briefing_scan(
 ) -> dict:
     _deps = deps if isinstance(deps, BriefingDependencies) else get_deps()
     sport_filter = _sport_filter(sport)
-    current = (_deps.scan_status(platform, sport_filter) or {}).get("current") or {}
+    current = (_deps.scan_status("", None) or {}).get("current") or {}
     if current.get("status") in {"scanning_props", "analyzing_games", "building_entries"}:
-        return current
+        if current.get("platform") == platform and current.get("sport") == (sport_filter or "All Sports"):
+            return current
+        raise HTTPException(status_code=409, detail="Another briefing scan is running. Try again when it finishes.")
     scan = _deps.new_scan(platform, sport_filter, "manual")
     _deps.save_scan(scan)
     background_tasks.add_task(_deps.run_scan, platform, sport_filter, scan["id"], "manual", None)

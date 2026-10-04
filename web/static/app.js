@@ -450,11 +450,16 @@ function activateWorkspace(root, paneName, options = {}) {
   if (options.load !== false) loadWorkspacePaneData(root, paneName);
 }
 
+const workspaceLoadedAt = new Map();
+const workspaceLoading = new Set();
+
 function loadWorkspacePaneData(root, paneName) {
   const workspaceId = root?.dataset.workspace;
   if (!workspaceId) return;
   const key = `${workspaceId}:${paneName}`;
-  if (state.loadedWorkspacePanes.has(key)) return;
+  if (workspaceLoading.has(key)) return;
+  const refreshAfterMs = key.startsWith("results-workspace:") ? 60000 : Infinity;
+  if (state.loadedWorkspacePanes.has(key) && Date.now() - (workspaceLoadedAt.get(key) || 0) < refreshAfterMs) return;
   const loaders = {
     "decision-desk:value": [loadSportsbookSync, loadTrendingProps],
     "decision-desk:alerts": [loadTimingAlerts, loadNotifications],
@@ -467,12 +472,16 @@ function loadWorkspacePaneData(root, paneName) {
   }[key] || [];
   if (!loaders.length) return;
   state.loadedWorkspacePanes.add(key);
+  workspaceLoading.add(key);
+  workspaceLoadedAt.set(key, Date.now());
   Promise.allSettled(loaders.map((loader) => loader())).then((results) => {
     const failure = results.find((result) => result.status === "rejected");
     if (failure) {
       state.loadedWorkspacePanes.delete(key);
+      workspaceLoadedAt.delete(key);
       console.warn(`${key} refresh failed`, failure.reason);
     }
+    workspaceLoading.delete(key);
   });
 }
 
@@ -813,21 +822,25 @@ function loadViewData(viewId) {
 }
 
 function renderStats(stats) {
-  const accuracy = stats.recommendation_accuracy || {};
-  const paper = stats.paper || {};
+  const monthly = stats.monthly_performance || stats;
+  const accuracy = monthly.recommendation_accuracy || {};
+  const paper = monthly.paper || {};
+  if ($("today-performance-period")) {
+    $("today-performance-period").textContent = `${monthly.label || "This month"} results · live bankroll and exposure`;
+  }
   const items = [
-    { label: "Record", value: stats.record, icon: "▥", tone: "neutral" },
-    { label: "Win %", value: stats.wins + stats.losses ? pct((stats.wins / (stats.wins + stats.losses)) * 100) : "0.0%", icon: "◎", tone: "positive" },
-    { label: "Net Profit", value: money(stats.profit), icon: "$", tone: Number(stats.profit || 0) >= 0 ? "positive" : "negative" },
-    { label: "ROI", value: pct(stats.roi), icon: "↗", tone: Number(stats.roi || 0) >= 0 ? "positive" : "negative" },
+    { label: "Record", value: monthly.record, icon: "▥", tone: "neutral" },
+    { label: "Win %", value: monthly.wins + monthly.losses ? pct((monthly.wins / (monthly.wins + monthly.losses)) * 100) : "0.0%", icon: "◎", tone: "positive" },
+    { label: "Net Profit", value: money(monthly.profit), icon: "$", tone: Number(monthly.profit || 0) >= 0 ? "positive" : "negative" },
+    { label: "ROI", value: pct(monthly.roi), icon: "↗", tone: Number(monthly.roi || 0) >= 0 ? "positive" : "negative" },
     { label: "Bankroll", value: money(stats.bankroll), icon: "◈", tone: "blue" },
-    { label: "Deposits", value: money(stats.bankroll_transactions?.deposits), icon: "+", tone: "positive" },
-    { label: "Withdrawals", value: money(stats.bankroll_transactions?.withdrawals), icon: "-", tone: "warning" },
-    { label: "Wagered", value: money(stats.wagered), icon: "◆", tone: "purple" },
+    { label: "Deposits (All Time)", value: money(stats.bankroll_transactions?.deposits), icon: "+", tone: "positive" },
+    { label: "Withdrawals (All Time)", value: money(stats.bankroll_transactions?.withdrawals), icon: "-", tone: "warning" },
+    { label: "Wagered", value: money(monthly.wagered), icon: "◆", tone: "purple" },
     { label: "Pending Entry Exposure", value: money(stats.pending_entry_exposure), icon: "⌁", tone: "warning" },
     { label: "Paper Calibration", value: `${paper.decisions || 0} decisions`, icon: "◇", tone: "purple" },
-    { label: "Current Streak", value: stats.current_streak > 0 ? `W${stats.current_streak}` : stats.current_streak < 0 ? `L${Math.abs(stats.current_streak)}` : "-", icon: "↕", tone: stats.current_streak >= 0 ? "positive" : "negative" },
-    { label: "Max Drawdown", value: money(stats.max_drawdown), icon: "↓", tone: Number(stats.max_drawdown || 0) > 0 ? "negative" : "neutral" },
+    { label: "Current Streak", value: monthly.current_streak > 0 ? `W${monthly.current_streak}` : monthly.current_streak < 0 ? `L${Math.abs(monthly.current_streak)}` : "-", icon: "↕", tone: monthly.current_streak >= 0 ? "positive" : "negative" },
+    { label: "Max Drawdown", value: money(monthly.max_drawdown), icon: "↓", tone: Number(monthly.max_drawdown || 0) > 0 ? "negative" : "neutral" },
   ];
   const primaryLabels = new Set(["Bankroll", "Pending Entry Exposure", "Record", "Current Streak"]);
   const renderItem = (item) => `
@@ -847,7 +860,7 @@ function renderStats(stats) {
     <div class="recommendation-accuracy-header">
       <div>
         <h2>EdgeIQ Recommendation Accuracy</h2>
-        <p>Entries placed from EdgeIQ recommendations</p>
+        <p>${escapeHtml(monthly.label || "This month")} · Entries placed from EdgeIQ recommendations</p>
       </div>
       <div class="grade">${pct(accuracy.accuracy || 0)}</div>
     </div>
@@ -879,17 +892,23 @@ async function loadDailyBriefing(options = {}) {
   const data = await api(`/api/daily-briefing?${params.toString()}`);
   state.dailyBriefing = data;
   renderDailyBriefing(data);
-  maybeAutoStartDailyScan(data);
+  await maybeAutoStartDailyScan(data);
 }
 
 async function startDailyBriefingScan() {
+  $("daily-briefing-status").textContent = "Refreshing today's briefing in the background...";
   const platform = $("props-platform").value;
   const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
-  const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
-  state.dailyScanPollStartedAt = Date.now();
-  renderDailyScanStatus({ current: scan, runs: [] });
-  pollDailyScanStatus(true);
+  try {
+    const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
+    state.dailyScanPollStartedAt = Date.now();
+    renderDailyScanStatus({ current: scan, runs: [] });
+    pollDailyScanStatus(true);
+  } catch (error) {
+    $("daily-briefing-status").textContent = error.message || "The briefing could not start. Try again shortly.";
+    throw error;
+  }
 }
 
 async function loadBriefingSchedule() {
@@ -931,13 +950,21 @@ async function saveBriefingSchedule() {
   }
 }
 
-function maybeAutoStartDailyScan(briefing) {
+async function maybeAutoStartDailyScan(briefing) {
   const cache = briefing?.cache || {};
   const needsScan = Boolean(cache.cached_only || cache.requires_refresh || cache.stale);
-  const scanKey = `${$("props-platform")?.value || "PrizePicks"}:${$("props-sport")?.value || "All Sports"}`;
+  const scanKey = `${$("props-platform")?.value || "PrizePicks"}:${$("today-sport")?.value || $("props-sport")?.value || "All Sports"}`;
   if (!needsScan || state.dailyScanAutoStartedFor === scanKey) return;
+  try {
+    await loadDailyScanStatus();
+  } catch (error) {
+    console.warn("Daily briefing scan status could not be checked", error);
+    return;
+  }
   const status = document.querySelector("[data-daily-scan-status]")?.dataset.dailyScanStatus;
   if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) return;
+  const failedAt = Date.parse(state.dailyScanCurrent?.completed_at || state.dailyScanCurrent?.updated_at || "");
+  if (status === "failed" && Number.isFinite(failedAt) && Date.now() - failedAt < 3600000) return;
   state.dailyScanAutoStartedFor = scanKey;
   startDailyBriefingScan().catch((error) => {
     state.dailyScanAutoStartedFor = "";
@@ -945,32 +972,52 @@ function maybeAutoStartDailyScan(briefing) {
   });
 }
 
-async function loadDailyScanStatus() {
+async function loadDailyScanStatus({ startPolling = true } = {}) {
   const platform = $("props-platform").value;
   const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
   const data = await api(`/api/daily-briefing/scan-status?${params.toString()}`);
   renderDailyScanStatus(data);
   const status = data.current?.status;
-  if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
+  if (startPolling && ["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
     pollDailyScanStatus();
   }
 }
 
 function pollDailyScanStatus(immediate = false) {
   if (state.dailyScanPoll) window.clearTimeout(state.dailyScanPoll);
+  const generation = (state.dailyScanPollGeneration || 0) + 1;
+  state.dailyScanPollGeneration = generation;
   if (!state.dailyScanPollStartedAt) state.dailyScanPollStartedAt = Date.now();
   const tick = async () => {
-    await loadDailyScanStatus();
+    if (generation !== state.dailyScanPollGeneration) return;
+    try {
+      await loadDailyScanStatus({ startPolling: false });
+    } catch (error) {
+      if (generation !== state.dailyScanPollGeneration) return;
+      $("daily-briefing-status").textContent = `Could not check the briefing scan: ${error.message}`;
+      if (Date.now() - Number(state.dailyScanPollStartedAt || Date.now()) < 300000) {
+        state.dailyScanPoll = window.setTimeout(tick, 10000);
+      }
+      return;
+    }
+    if (generation !== state.dailyScanPollGeneration) return;
     const status = document.querySelector("[data-daily-scan-status]")?.dataset.dailyScanStatus;
     if (["scanning_props", "analyzing_games", "building_entries"].includes(status)) {
       const elapsed = Date.now() - Number(state.dailyScanPollStartedAt || Date.now());
-      if (elapsed >= 180000) {
-        $("daily-briefing-status").textContent = "The scan is still running. EdgeIQ will keep checking for the result.";
+      if (elapsed >= 300000) {
+        $("daily-briefing-status").textContent = "The briefing is still working in the background. You can return to Today later.";
+        return;
       }
       state.dailyScanPoll = window.setTimeout(tick, elapsed >= 180000 ? 10000 : 2500);
     } else if (status === "ready") {
-      await loadDailyBriefing();
+      try {
+        await loadDailyBriefing();
+      } catch (error) {
+        $("daily-briefing-status").textContent = `The scan finished, but the briefing could not load: ${error.message}`;
+      }
+    } else if (status === "failed") {
+      $("daily-briefing-status").textContent = "The briefing could not finish. Check Provider Health, then try again.";
     }
   };
   state.dailyScanPoll = window.setTimeout(tick, immediate ? 400 : 2500);
@@ -978,8 +1025,12 @@ function pollDailyScanStatus(immediate = false) {
 
 function renderDailyScanStatus(data) {
   const current = data.current || {};
+  state.dailyScanCurrent = current;
   const runs = data.runs || [];
   const status = current.status || "not_run_today";
+  if (status === "failed") {
+    $("daily-briefing-status").textContent = current.message || "The briefing could not finish. Please try again.";
+  }
   const summary = current.summary || {};
   const steps = current.steps || [];
   $("daily-scan-status").classList.remove("muted-card");
@@ -1137,7 +1188,9 @@ function renderDailyBriefing(data) {
         <h2>Today's Decision Plan</h2>
         <p>${escapeHtml(betCount
           ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared the current evidence and bankroll rules.`
-          : "No paid entry meets today's requirements. EdgeIQ is keeping weaker ideas in paper and watch modes.")}</p>
+          : (data.sections?.candidate || []).length
+            ? "Today's strongest card is ready to review, but it has not cleared paid-entry checks."
+            : "No paid entry meets today's requirements. EdgeIQ is keeping weaker ideas in paper and watch modes.")}</p>
       </div>
       <div class="command-mode ${protection.active ? "mode-protect" : "mode-ready"}">
         <span>${escapeHtml(friendlyModeLabel(mode))}</span>
@@ -1145,7 +1198,7 @@ function renderDailyBriefing(data) {
       </div>
     </div>
     <div class="command-next-grid advanced-briefing-detail">
-      ${renderNextActionCard("Review Today's Best Card", betCount ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared` : "No paid card cleared. That can be the right call.", "dashboard", "daily-bet-list")}
+      ${renderNextActionCard("Review Today's Best Card", betCount ? `${betCount} paid candidate${betCount === 1 ? "" : "s"} cleared` : (data.sections?.candidate || []).length ? "Strongest available card · not cleared for paid release" : "No current card available.", "dashboard", "daily-bet-list")}
       ${renderNextActionCard("Recheck Final Stats", "Clear unknowns before trusting calibration.", "performance", "entry-history-list")}
       ${renderNextActionCard("Create Paper Calibration", `${paperCount} paper idea${paperCount === 1 ? "" : "s"} available`, "dashboard", "daily-paper-list")}
       ${renderNextActionCard("View Loss Review", "See what EdgeIQ will avoid next.", "performance", "loss-review-list")}
@@ -1289,6 +1342,7 @@ function renderDailyBriefing(data) {
         <div class="button-row compact-button-row">
           <span class="status-pill status-connected">${opportunities.length} ranked</span>
           <button id="send-selected-opportunities" class="secondary" type="button" disabled>Send selected (0)</button>
+          <button id="compare-selected-opportunities" class="secondary" type="button" disabled>Compare (0)</button>
         </div>
       </div>
       <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
@@ -1309,6 +1363,7 @@ function renderDailyBriefing(data) {
           const expired = prop.recommendation_freshness?.status === "expired"
             || (prop.edgeiq_score_freshness && prop.edgeiq_score_freshness.status !== "fresh");
           const eligibility = prop.recommendation_eligibility || {};
+          const calibration = prop.calibration_presentation || {};
           const actionable = prop.actionable ?? Boolean(
             prop.market_supported !== false
             && Number(prop.trust?.score || 0) >= 50
@@ -1333,10 +1388,12 @@ function renderDailyBriefing(data) {
               <small>
                 ${escapeHtml(prop.platform || data.platform || "Provider")} · ${escapeHtml(prop.sport || data.sport || "All Sports")}
                 ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : (String(prop.line_offer_type || "").toLowerCase() === "demon" ? "Demon · Over only" : "Adjusted payout")}` : " · Standard line"}
+                · Fragility ${escapeHtml(prop.counterargument?.fragility_label || "Unavailable")}
               </small>
             </strong>
             <div class="opportunity-proof">
-              <span>Model ${Number(receipt.probability || prop.confidence || 0).toFixed(0)}%</span>
+              <span>Model ${calibration.model_probability == null ? "unavailable" : `${Number(calibration.model_probability).toFixed(0)}%`}</span>
+              <span>Confidence ${Number(prop.confidence || 0).toFixed(0)}% · ${escapeHtml(calibration.label || "Calibration unavailable")} · n=${Number(calibration.sample_size || 0)}</span>
               <span>${marketProbability == null ? "No comparison odds" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
               <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
               <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
@@ -1353,11 +1410,32 @@ function renderDailyBriefing(data) {
             </div>
             <div class="opportunity-actions">
               <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${prop._sourceIndex}">Proof</button>
+              <button class="icon-text-button secondary" type="button" data-timeline-opportunity="${prop._sourceIndex}">Timeline</button>
+              <button class="icon-text-button secondary" type="button" data-compare-opportunity="${prop._sourceIndex}" aria-pressed="false">Compare</button>
             </div>
           </div>
         `;
         }).join("") || `<div class="suggestion compact-suggestion">No props cleared the current recommendation and data-quality filters.</div>`}
       </div>
+      <details id="recommendation-compare-panel" class="recommendation-compare-panel" hidden>
+        <summary>Compare recommendations</summary>
+        <div class="toolbar compact-controls">
+          <label>Sort by
+            <select id="recommendation-compare-metric">
+              <option value="calibrated">Highest calibrated probability</option>
+              <option value="fragility">Lowest fragility</option>
+              <option value="score">Highest EdgeIQ Score</option>
+            </select>
+          </label>
+          <button id="clear-recommendation-compare" class="secondary" type="button">Clear</button>
+        </div>
+        <div id="recommendation-compare-output" aria-live="polite"></div>
+      </details>
+      <details id="market-disagreement-panel" class="market-disagreement-panel">
+        <summary>Market Disagreement <small>Exact-line sportsbook odds only</small></summary>
+        <button id="refresh-market-disagreement" class="secondary compact-action" type="button">Refresh view</button>
+        <div id="market-disagreement-output" aria-live="polite">Open to compare saved model and no-vig market probabilities.</div>
+      </details>
     </section>
     <div class="briefing-metric-row">
       <span>Bankroll ${money(data.summary?.bankroll)}</span>
@@ -1376,7 +1454,7 @@ function renderDailyBriefing(data) {
       </div>
     </details>
   `;
-  renderBriefingSection("daily-bet-list", data.sections?.bet || [], data.empty_states?.bet || "No real-money slip cleared this filter yet.");
+  renderBriefingSection("daily-bet-list", (data.sections?.bet || []).length ? data.sections.bet : data.sections?.candidate || [], data.empty_states?.bet || "No current card is available for this filter yet.");
   renderBriefingSection("daily-paper-list", data.sections?.paper || [], data.empty_states?.paper || "No paper calibration card is needed right now.");
   renderBriefingSection("daily-watch-list", data.sections?.watch || [], data.empty_states?.watch || "No watchlist alerts right now.");
   renderBriefingSection("daily-avoid-list", data.sections?.avoid || [], data.empty_states?.avoid || "No avoid flags on the visible board.");
@@ -1452,7 +1530,7 @@ function renderBriefingSection(elementId, cards, emptyMessage) {
     return `
       <div class="briefing-card ${isHero ? "daily-best-card" : ""} ${card.grade ? gradeClass(card.grade) : ""}" data-briefing-card="${elementId}:${index}">
         <div class="suggestion-top">
-          <span class="pill">${escapeHtml(isHero ? "Daily Best Card" : card.title || "Card")}</span>
+          <span class="pill">${escapeHtml(card.type === "candidate" ? "Top Candidate · Not Cleared" : isHero ? "Daily Best Card" : card.title || "Card")}</span>
           <strong>${escapeHtml(card.grade || friendlyCardType(card.type))}${card.score ? ` · ${Number(card.score || 0).toFixed(1)}` : ""}</strong>
         </div>
         <div class="recommendation-meta-row">
@@ -1549,6 +1627,9 @@ function dailyCardFromKey(key) {
   };
   const section = sectionMap[elementId];
   if (!section || !state.dailyBriefing) return null;
+  if (section === "bet" && !(state.dailyBriefing.sections?.bet || []).length) {
+    return (state.dailyBriefing.sections?.candidate || [])[Number(indexText)];
+  }
   return (state.dailyBriefing.sections?.[section] || [])[Number(indexText)];
 }
 
@@ -1623,7 +1704,105 @@ function bindDailyBriefingActions() {
 
 function bindDailyBriefingSummaryActions() {
   state.opportunitySelections.clear();
+  state.compareSelections.clear();
   const selectionButton = $("send-selected-opportunities");
+  const compareButton = $("compare-selected-opportunities");
+  const comparePanel = $("recommendation-compare-panel");
+  const compareOutput = $("recommendation-compare-output");
+  const compareMetric = $("recommendation-compare-metric");
+  const marketPanel = $("market-disagreement-panel");
+  const marketOutput = $("market-disagreement-output");
+  const marketRefresh = $("refresh-market-disagreement");
+  let marketCache = null;
+  const loadMarketDisagreement = async (force = false) => {
+    if (!marketPanel?.open || !marketOutput) return;
+    if (!force && marketCache && Date.now() - marketCache.at < 60000) {
+      marketOutput.innerHTML = window.EdgeIQMarketDisagreement.render(marketCache.data);
+      return;
+    }
+    marketOutput.textContent = "Checking exact-line sportsbook evidence...";
+    marketOutput.setAttribute("aria-busy", "true");
+    if (marketRefresh) marketRefresh.disabled = true;
+    const params = new URLSearchParams({
+      platform: state.dailyBriefing?.requested_platform || state.dailyBriefing?.platform || "Both",
+      sport: state.dailyBriefing?.sport || "All Sports",
+    });
+    try {
+      const result = await api(`/api/analytics/market-disagreement?${params}`, { timeoutMs: 20000 });
+      marketCache = { data: result, at: Date.now() };
+      if (marketOutput.isConnected) marketOutput.innerHTML = window.EdgeIQMarketDisagreement.render(result);
+    } catch {
+      if (marketOutput.isConnected) marketOutput.textContent = "Market comparison could not load. Refresh the briefing and try again.";
+    } finally {
+      if (marketOutput.isConnected) marketOutput.setAttribute("aria-busy", "false");
+      if (marketRefresh?.isConnected) marketRefresh.disabled = false;
+    }
+  };
+  marketPanel?.addEventListener("toggle", () => { if (marketPanel.open) loadMarketDisagreement(); });
+  marketRefresh?.addEventListener("click", () => loadMarketDisagreement(true));
+  const selectedForComparison = () => [...state.compareSelections].sort((a, b) => a - b)
+    .map(index => state.dailyBriefing?.top_opportunities?.[index]).filter(Boolean);
+  const updateCompareButton = () => {
+    if (!compareButton) return;
+    compareButton.disabled = state.compareSelections.size < 2;
+    compareButton.textContent = `Compare (${state.compareSelections.size})`;
+  };
+  const renderComparison = () => {
+    if (!compareOutput || !comparePanel?.open) return;
+    compareOutput.innerHTML = window.EdgeIQRecommendationCompare.render(
+      selectedForComparison(), compareMetric.value,
+      Object.fromEntries(state.compareTrackRecords),
+    );
+  };
+  const loadComparisonRecords = async () => {
+    const props = selectedForComparison();
+    renderComparison();
+    await Promise.all(props.map(async (prop) => {
+      if (!prop.model_version) return;
+      const key = window.EdgeIQRecommendationCompare.trackKey(prop);
+      if (state.compareTrackRecords.has(key)) return;
+      const params = new URLSearchParams({
+        sport: prop.sport || "", stat: prop.stat || "", provider: prop.platform || "",
+        direction: prop.direction || "", model_version: prop.model_version,
+      });
+      try {
+        const record = await api(`/api/analytics/model-track-record?${params}`, { timeoutMs: 15000 });
+        state.compareTrackRecords.set(key, record);
+      } catch {
+        state.compareTrackRecords.set(key, { error: true });
+      }
+      if (compareOutput.isConnected) renderComparison();
+    }));
+  };
+  document.querySelectorAll("[data-compare-opportunity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.compareOpportunity);
+      if (state.compareSelections.has(index)) state.compareSelections.delete(index);
+      else if (state.compareSelections.size < 5) state.compareSelections.add(index);
+      else {
+        $("daily-briefing-status").textContent = "Compare up to five props. Remove one before adding another.";
+        return;
+      }
+      button.setAttribute("aria-pressed", String(state.compareSelections.has(index)));
+      updateCompareButton();
+      if (comparePanel?.open) loadComparisonRecords();
+    });
+  });
+  compareButton?.addEventListener("click", () => {
+    if (state.compareSelections.size < 2) return;
+    comparePanel.hidden = false;
+    comparePanel.open = true;
+    loadComparisonRecords();
+    comparePanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+  compareMetric?.addEventListener("change", renderComparison);
+  $("clear-recommendation-compare")?.addEventListener("click", () => {
+    state.compareSelections.clear();
+    document.querySelectorAll("[data-compare-opportunity]").forEach((button) => button.setAttribute("aria-pressed", "false"));
+    comparePanel.open = false;
+    comparePanel.hidden = true;
+    updateCompareButton();
+  });
   const updateOpportunitySelection = () => {
     if (!selectionButton) return;
     selectionButton.disabled = state.opportunitySelections.size === 0;
@@ -1687,6 +1866,32 @@ function bindDailyBriefingSummaryActions() {
       if (opportunity) openExplanationDrawer(opportunityExplanation(opportunity));
     });
   });
+  document.querySelectorAll("[data-timeline-opportunity]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.timelineOpportunity)];
+      if (!opportunity) return;
+      button.disabled = true;
+      try {
+        const params = new URLSearchParams({
+          player: opportunity.player || "",
+          sport: opportunity.sport || "",
+          stat: opportunity.stat || "",
+          game: opportunity.game || "",
+          platform: opportunity.platform || "",
+        });
+        const timeline = await api(`/api/recommendations/timeline?${params}`);
+        openExplanationDrawer(opportunityExplanation(opportunity));
+        const section = document.createElement("section");
+        section.className = "analysis-card";
+        section.innerHTML = renderMarketModelTimeline(timeline);
+        $("drawer-content").prepend(section);
+      } catch (error) {
+        $("entry-status").textContent = `Timeline unavailable: ${humanizeErrorText(error.message)}`;
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
   document.querySelectorAll(".suggested-entry-button[data-ai-prompt]").forEach((button) => {
     button.addEventListener("click", () => {
       $("ai-parlay-input").value = button.dataset.aiPrompt;
@@ -1725,6 +1930,7 @@ function bindDailyBriefingSummaryActions() {
 
 function opportunityExplanation(opportunity) {
   const receipt = opportunity.decision_receipt || {};
+  const counterargument = opportunity.counterargument || {};
   const movement = receipt.movement || {};
   const exposure = receipt.portfolio_exposure || {};
   const market = receipt.market_consensus || {};
@@ -1752,8 +1958,9 @@ function opportunityExplanation(opportunity) {
     average_edge: receipt.edge || opportunity.edge || 0,
     source_count: (opportunity.data_strength || []).length,
     trust: opportunity.trust || { score: 0, label: "Not scored" },
-    why: `${receipt.probability_source || "EdgeIQ model"} estimates this leg at ${Number(receipt.probability || 0).toFixed(1)}%.`,
+    why: `Displayed confidence is ${Number(opportunity.confidence || 0).toFixed(1)}%. ${opportunity.calibration_presentation?.model_probability == null ? "The original model estimate is unavailable for this snapshot." : `The model estimate before calibration is ${Number(opportunity.calibration_presentation.model_probability).toFixed(1)}%.`} ${opportunity.calibration_presentation?.label || "Calibration unavailable"}.`,
     evidence: [
+      ...(counterargument.supporting_factors || []),
       ...(opportunity.edgeiq_score ? [`EdgeIQ Score ${opportunity.edgeiq_score.score}/100 (${opportunity.edgeiq_score.label}). ${opportunity.edgeiq_score.summary} ${opportunity.edgeiq_score.meaning}`] : []),
       `Projection ${receipt.projection ?? "unavailable"} versus line ${opportunity.line}.`,
       marketAvailable
@@ -1768,7 +1975,8 @@ function opportunityExplanation(opportunity) {
         : receipt.provider_payout_note || "No live DFS payout evidence matched this exact line.",
     ],
     freshness: receipt.freshness,
-    breakers: [
+    breakers: [...new Set([
+      ...(counterargument.risk_factors || []),
       ...(eligibility.paid_blocks || []),
       ...(!marketAvailable ? [receipt.market_probability_note || "Market-derived probability is unavailable."] : []),
       ...(marketAvailable && Number(receipt.market_book_count || 0) < 2
@@ -1777,7 +1985,18 @@ function opportunityExplanation(opportunity) {
       ...(market.stale ? ["The market snapshot is stale; refresh it before paid use."] : []),
       receipt.provider_payout_note || "Confirm the complete card payout in the provider app.",
       ...(receipt.invalidation_rules || []),
-    ],
+      ...(counterargument.invalidating_conditions || []),
+    ])],
+    fragility: counterargument,
+    calibration: opportunity.calibration_presentation || { status: "UNAVAILABLE", label: "Calibration unavailable" },
+    track_record_context: {
+      model_version: opportunity.model_version || "",
+      sport: opportunity.sport || "",
+      stat: opportunity.stat || "",
+      platform: opportunity.platform || "",
+      direction: opportunity.direction || "",
+    },
+    sensitivity: opportunity.sensitivity || { status: "unavailable" },
     no_bet_rule: "A ranked prop is research, not a cleared paid card. Paid use requires a complete entry with positive provider-specific EV.",
     legs: [{
       player: opportunity.player,
@@ -1821,9 +2040,11 @@ function handleDailyBriefingAction(card) {
   if (card.suggestion?.entry?.props?.length) {
     renderEntryPropsFromAnalyzed(card.suggestion.entry.props);
     state.recommendationOrigin = true;
-    if ($("entry-mode")) $("entry-mode").value = card.entry_mode === "paper" || card.type === "paper" ? "paper" : "real";
+    if ($("entry-mode")) $("entry-mode").value = card.entry_mode === "paper" || card.type === "paper" || card.type === "candidate" ? "paper" : "real";
     setView("entries");
-    $("entry-status").textContent = card.type === "paper"
+    $("entry-status").textContent = card.type === "candidate"
+      ? "This is the strongest available card, not a cleared paid recommendation. Review the blockers; it is loaded as paper by default."
+      : card.type === "paper"
       ? "Loaded paper calibration slip. Analyze, then save as paper."
       : "Loaded Today's Card slip. Analyze/place when ready.";
     return;
@@ -1831,7 +2052,7 @@ function handleDailyBriefingAction(card) {
   if ((card.props || []).length) {
     renderEntryPropsFromAnalyzed(card.props);
     state.recommendationOrigin = true;
-    if ($("entry-mode")) $("entry-mode").value = card.type === "paper" ? "paper" : "real";
+    if ($("entry-mode")) $("entry-mode").value = card.type === "paper" || card.type === "candidate" ? "paper" : "real";
     setView("entries");
     $("entry-status").textContent = card.type === "paper"
       ? "Loaded paper calibration prop. Add another prop before saving as paper."
@@ -2537,7 +2758,7 @@ async function loadPortfolioIntelligence(payload = null) {
   target.classList.remove("muted-card");
   target.innerHTML = `
     <div class="suggestion-top">
-      <div><p class="eyebrow">Pending Portfolio</p><h3>${escapeHtml(data.status || "Balanced")}</h3></div>
+      <div><p class="eyebrow">Pending Portfolio</p><h3>${escapeHtml(data.status || "Balanced")} · ${escapeHtml(data.concentration_risk || "LOW")} Risk</h3></div>
       <span class="status-pill ${concentrations.length ? "status-warning" : "status-positive"}">${Number(data.score || 0)}/100</span>
     </div>
     <div class="metric-strip portfolio-metrics">
@@ -2545,14 +2766,27 @@ async function loadPortfolioIntelligence(payload = null) {
       <span><strong>${money(data.open_wager || 0)}</strong><small>Open Wager</small></span>
       <span><strong>${Number(data.bankroll_exposure_pct || 0).toFixed(1)}%</strong><small>Bankroll Exposure</small></span>
       <span><strong>${Number(concentrations.length)}</strong><small>Limit Breaches</small></span>
-      <span><strong>${Number(data.correlation_score || 0)}</strong><small>Correlation Risk</small></span>
+      <span><strong>${Number(data.overlap_index || 0)}</strong><small>Overlap Index</small></span>
     </div>
     ${exposureRows ? `<div class="metric-strip portfolio-exposure-strip">${exposureRows}</div>` : `<p class="subtle">No paid entries are currently pending.</p>`}
     <p class="subtle">${escapeHtml(sharedRisk.message || "No shared-leg risk detected.")}</p>
     ${(data.top_teams || []).slice(0, 3).length ? `<p class="subtle">Team exposure: ${(data.top_teams || []).slice(0, 3).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" · ")}</p>` : ""}
     ${(data.top_stats || []).length ? `<p class="subtle">Stat exposure: ${(data.top_stats || []).slice(0, 3).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" · ")} · Direction ${(data.directions || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)}`).join(" / ")}</p>` : ""}
+    ${(data.risk_reasons || []).map((reason) => `<p class="${data.concentration_risk === "HIGH" ? "danger-text" : "warning"}">${escapeHtml(reason)}</p>`).join("")}
+    <details class="inline-disclosure"><summary>Exposure by sport, game, and market</summary>
+      <p class="subtle">Sport: ${(data.sports || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)} cards · ${money(row.allocated_stake)} allocated stake`).join(" · ") || "No paid exposure"}</p>
+      <p class="subtle">Game: ${(data.top_games || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)} cards · ${money(row.wager)}`).join(" · ") || "No identified games"}</p>
+      <p class="subtle">Shared markets: ${(data.shared_markets || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)} cards · ${money(row.wager)}`).join(" · ") || "None"}</p>
+      <p class="subtle">Provider: ${(data.providers || []).map((row) => `${escapeHtml(row.label)} ${Number(row.entries)} cards · ${money(row.wager)}`).join(" · ") || "No paid exposure"}</p>
+      <p class="subtle">${escapeHtml(data.risk_method || "Exposure is descriptive; it does not predict losses.")}</p>
+      <button class="secondary" type="button" data-view-shortcut="performance">Review Personal Edge</button>
+    </details>
     ${concentrations.slice(0, 4).map((row) => `<p class="${row.severity === "danger" ? "danger-text" : "warning"}">${escapeHtml(row.message)}</p>`).join("")}
   `;
+  target.querySelector("[data-view-shortcut='performance']")?.addEventListener("click", () => {
+    document.querySelector(".nav-item[data-view='performance']")?.click();
+    document.getElementById("personal-edge")?.setAttribute("open", "");
+  });
   renderActivePortfolioMonitor(data.monitor || {});
 }
 
@@ -2754,9 +2988,24 @@ function openExplanationDrawer(explanation) {
       ${explanation.freshness ? `<p><strong>Freshness:</strong> ${escapeHtml(explanation.freshness.label || "Unknown")}</p>` : ""}
     </div>
     <div class="analysis-card" style="margin-top:14px">
-      <h3>What Could Break It</h3>
-      ${(explanation.breakers || []).map((item) => `<p>${item}</p>`).join("")}
+      <h3>Probability Evidence</h3>
+      <p>Model estimate: ${explanation.calibration?.model_probability == null ? "unavailable" : `${Number(explanation.calibration.model_probability).toFixed(1)}%`} · Displayed confidence: ${explanation.calibration?.display_probability == null ? "unavailable" : `${Number(explanation.calibration.display_probability).toFixed(1)}%`}</p>
+      <p>${escapeHtml(explanation.calibration?.label || "Calibration unavailable")} · ${Number(explanation.calibration?.sample_size || 0)} comparable settled predictions · ${Number(explanation.calibration?.segment_sample_size || 0)} in this sport/stat/provider segment</p>
+      <p class="subtle">Basis: ${escapeHtml(explanation.calibration?.basis || "No versioned calibration snapshot")}. Calibration error and Brier score are shown in Results when measured, not estimated from this one recommendation.</p>
+    </div>
+    ${explanation.track_record_context ? `<div class="analysis-card" style="margin-top:14px"><h3>Model Track Record</h3><div data-model-track-record class="subtle">Checking verified settled forecasts...</div></div>` : ""}
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Why This Can Lose</h3>
+      ${explanation.fragility?.fragility_label ? `<p><strong>Fragility:</strong> ${escapeHtml(explanation.fragility.fragility_label)} · ${Number(explanation.fragility.fragility_score || 0).toFixed(0)}/100 <span class="subtle">(evidence sensitivity, not loss probability)</span></p>` : ""}
+      ${(explanation.breakers || []).map((item) => `<p>${escapeHtml(item)}</p>`).join("")}
       <p class="warning">${explanation.no_bet_rule || ""}</p>
+    </div>
+    <div class="analysis-card" style="margin-top:14px">
+      <h3>Line Sensitivity</h3>
+      ${explanation.sensitivity?.status === "model_only"
+        ? `<p>A ${Number(explanation.sensitivity.line_step).toFixed(1)} move against this pick changes the model estimate from ${Number(explanation.sensitivity.current_model_probability).toFixed(1)}% to ${Number(explanation.sensitivity.adverse_half_point_probability).toFixed(1)}%. ${explanation.sensitivity.survives_adverse_half_point ? "It remains above" : "It falls below"} the ${Number(explanation.sensitivity.research_threshold).toFixed(0)}% research threshold.</p>
+           <p class="subtle">${escapeHtml(explanation.sensitivity.note)}</p>`
+        : `<p class="subtle">${escapeHtml(explanation.sensitivity?.reason || "Verified forecast history is insufficient for line sensitivity.")}</p>`}
     </div>
     <h3>Leg Breakdown</h3>
     <div class="suggestion-list">
@@ -2784,6 +3033,12 @@ function openExplanationDrawer(explanation) {
     ${(explanation.warnings || []).length ? `<p class="warning">${explanation.warnings.join(" · ")}</p>` : ""}
   `;
   $("recommendation-drawer").hidden = false;
+  if (explanation.track_record_context) {
+    window.EdgeIQModelTrackRecord?.loadRecommendation(
+      explanation.track_record_context,
+      $("drawer-content").querySelector("[data-model-track-record]")
+    );
+  }
 }
 
 function closeExplanationDrawer() {
@@ -3169,7 +3424,7 @@ function renderCopilotResponse(data) {
   $("copilot-response").innerHTML = `
     <div class="ai-answer-header">
       <span class="status-pill status-connected">${escapeHtml(data.provider || "EdgeIQ Local")}</span>
-      <span class="status-pill status-available">Grounded</span>
+      <span class="status-pill ${data.grounded ? "status-available" : "status-warning"}">${data.grounded ? "Grounded" : "Needs details"}</span>
       <span class="subtle">${escapeHtml(data.model || "")}</span>
     </div>
     <section class="copilot-decision-brief">
@@ -4687,16 +4942,26 @@ async function loadPending() {
   document.querySelectorAll("[data-settle]").forEach((button) => {
     button.addEventListener("click", async () => {
       const [id, result] = button.dataset.settle.split(":");
-      await api(`/api/entries/${id}/settle`, {
-        method: "POST",
-        body: JSON.stringify({
-          result,
-          dnp_legs: Number($(`dnp-legs-${id}`)?.value || 0),
-        }),
-      });
-      await loadPending();
-      await loadDashboard();
-      await loadPerformance();
+      const status = $("manual-settlement-status");
+      if (status) status.textContent = `Settling entry #${id}...`;
+      try {
+        await withButtonBusy(button, "Settling...", async () => {
+          const settled = await api(`/api/entries/${id}/settle`, {
+            method: "POST",
+            body: JSON.stringify({
+              result,
+              dnp_legs: Number($(`dnp-legs-${id}`)?.value || 0),
+            }),
+          });
+          if (status) status.textContent = `Entry #${id} settled as ${settled.result}.${settled.research_evidence_warning ? ` ${settled.research_evidence_warning}` : ""}`;
+          const updates = await Promise.allSettled([loadPending(), loadDashboard(), loadPerformance()]);
+          if (updates.some((update) => update.status === "rejected") && status) {
+            status.textContent += " Some panels could not refresh; use Refresh to update them.";
+          }
+        });
+      } catch (error) {
+        if (status) status.textContent = humanErrorMessage(error, "Entry could not be settled. Please try again.");
+      }
     });
   });
 }
@@ -5046,20 +5311,20 @@ async function runEvScanner(event) {
   });
   const data = await api(`/api/market/ev-scanner?${params.toString()}`);
   $("ev-scanner-result").classList.remove("muted-card");
-  $("ev-scanner-result").innerHTML = data.props.map((prop, index) => `
+  $("ev-scanner-result").innerHTML = `<p class="subtle">Scenario only: calculated at assumed ${escapeHtml(String(data.odds))} American odds. PrizePicks and Underdog card payouts are not verified by this scan.</p>` + data.props.map((prop, index) => `
     <div class="suggestion compact-suggestion">
       <div class="suggestion-top">
-        <span class="pill">#${index + 1} · ${prop.expected_value > 0 ? "+" : ""}${pct(prop.expected_value)} EV</span>
-        <strong>${prop.player}</strong>
-        <span class="subtle">${prop.platform}</span>
+        <span class="pill">#${index + 1} · ${prop.expected_value > 0 ? "+" : ""}${pct(prop.expected_value)} scenario EV</span>
+        <strong>${escapeHtml(prop.player)}</strong>
+        <span class="subtle">${escapeHtml(prop.platform)}</span>
       </div>
-      <p>${prop.sport} · ${directionBadge(prop.direction || "Over")} ${prop.stat} ${prop.line} · Projection ${prop.projection} · Adjusted hit ${pct(prop.estimated_probability)}</p>
+      <p>${escapeHtml(prop.sport)} · ${directionBadge(prop.direction || "Over")} ${escapeHtml(prop.stat)} ${escapeHtml(String(prop.line))} · Projection ${escapeHtml(String(prop.projection))} · Adjusted hit ${pct(prop.estimated_probability)}</p>
       ${prop.probability_adjustment ? `<p class="subtle">${escapeHtml(prop.probability_adjustment)}</p>` : ""}
       ${dataStrengthBadges([prop])}
-      <p class="subtle">Best over ${prop.best_over?.platform || "-"} ${prop.best_over?.line ?? "-"} · Consensus ${prop.consensus_line ?? "-"}</p>
+      <p class="subtle">Best over ${escapeHtml(prop.best_over?.platform || "-")} ${escapeHtml(String(prop.best_over?.line ?? "-"))} · Consensus ${escapeHtml(String(prop.consensus_line ?? "-"))}</p>
       <button class="secondary" data-load-scan-prop="${index}">Add Prop</button>
     </div>
-  `).join("") || `<div class="suggestion">No props met the EV filter.</div>`;
+  `).join("") + (data.props.length ? "" : `<div class="suggestion">No props met this scenario EV filter. Try another sport or assumed price.</div>`);
   document.querySelectorAll("[data-load-scan-prop]").forEach((button) => {
     button.addEventListener("click", () => addFeedProp({
       ...data.props[Number(button.dataset.loadScanProp)],
@@ -5904,8 +6169,8 @@ async function mobilePlaceEntry() {
   if (placed) $("mobile-slip-panel").hidden = true;
 }
 
-async function loadPerformance() {
-  const data = await api("/api/performance");
+async function loadPerformance(options = {}) {
+  const data = await api(options.refresh ? "/api/performance?refresh=true" : "/api/performance");
   const summaryItems = [
     ["Record", data.summary.record],
     ["All-time net profit", money(data.summary.profit)],
@@ -6560,7 +6825,7 @@ function bindEvents() {
     window.localStorage.setItem("edgeiq-install-dismissed", "1");
     $("install-hint").hidden = true;
   });
-  $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan));
+  $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan).catch(() => {}));
   $("briefing-schedule")?.addEventListener("toggle", (event) => {
     if (event.target.open) loadBriefingSchedule();
   });
@@ -6814,6 +7079,7 @@ function bindEvents() {
     button.addEventListener("click", () => withButtonBusy(button, "Checking...", recheckFinalStats));
   });
   $("refresh-backtest").addEventListener("click", () => withButtonBusy("refresh-backtest", "Refreshing...", loadBacktest));
+  $("refresh-performance").addEventListener("click", () => withButtonBusy("refresh-performance", "Refreshing...", () => loadPerformance({ refresh: true })));
   $("load-board-evidence").addEventListener("click", () => withButtonBusy("load-board-evidence", "Loading...", loadCompleteBoardEvidence));
   $("refresh-calibration-data").addEventListener("click", () => withButtonBusy("refresh-calibration-data", "Refreshing...", refreshCalibrationData));
   $("repair-data-integrity").addEventListener("click", () => withButtonBusy("repair-data-integrity", "Scanning...", repairDataIntegrity));

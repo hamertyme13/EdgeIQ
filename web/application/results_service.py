@@ -26,9 +26,9 @@ def invalidate_performance_payload() -> None:
         _performance_cache.clear()
 
 
-def performance_payload() -> dict:
+def performance_payload(*, refresh: bool = False) -> dict:
     with _performance_cache_lock:
-        cached = _performance_cache.get_or_none()
+        cached = None if refresh else _performance_cache.get_or_none()
         if cached is not None:
             cached_dependency, cached_payload = cached
             if cached_dependency is get_dashboard:
@@ -51,7 +51,6 @@ def performance_payload() -> dict:
 
 def backtest_payload(clv: dict) -> dict:
     entries = EntryRepository.all()
-    PredictionLedgerRepository.backfill_legacy_quarantine()
     prediction_rows = PredictionLedgerRepository.evidence_rows(include_legacy=False)
     entry_ids = {int(entry.get("id") or 0) for entry in entries}
     prediction_rows = [
@@ -90,7 +89,6 @@ def backtest_payload(clv: dict) -> dict:
     )
     payload["prediction_ledger"] = prediction_summary
     payload["shadow_evaluation"] = ModelRehabilitationRepository.shadow_status(
-        prediction_rows,
         validation={
             "closing_line_value": clv,
             "holdout": payload.get("holdout_validation") or {},

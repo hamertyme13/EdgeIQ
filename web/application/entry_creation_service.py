@@ -53,7 +53,7 @@ def prepare_entry_analysis(entry: Any, *, payout_type: str, multiplier: float, a
     audited_payout = audit_payload.get("payout_analysis") or {}
     exact_schedule = (
         audited_payout.get("payouts")
-        if audited_payout.get("source") == "exact_offer_snapshot"
+        if audited_payout.get("source") in {"exact_offer_snapshot", "user_entered_payout"}
         else None
     )
     payout = payout_analysis(
@@ -63,6 +63,7 @@ def prepare_entry_analysis(entry: Any, *, payout_type: str, multiplier: float, a
         displayed_multiplier=multiplier,
         correlation_matrix=estimate_correlation_matrix(entry.props),
         exact_schedule=exact_schedule,
+        exact_schedule_source=str(audited_payout.get("source") or "exact_offer_snapshot"),
     )
     analysis = entry_recommendation(entry, payout)
     return payout, analysis

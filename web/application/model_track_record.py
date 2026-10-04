@@ -4,6 +4,7 @@ from math import isfinite
 
 from repository.database import SessionLocal
 from repository.models.prediction_record_model import PredictionRecordModel
+from utils.stat_normalization import canonical_stat_label
 from web.application.player_performance import _time, performance_summary
 
 
@@ -55,10 +56,12 @@ def model_track_record(sport: str = "", provider: str = "", stat: str = "", dire
     with SessionLocal() as session:
         query = session.query(*(getattr(PredictionRecordModel, field) for field in fields)).filter(
             PredictionRecordModel.legacy_quarantined.is_(False))
-        for field, value in (("sport", sport.upper()), ("platform", provider), ("stat", stat),
+        for field, value in (("sport", sport.upper()), ("platform", provider),
                              ("direction", direction), ("model_version", model_version)):
             if value:
                 query = query.filter(getattr(PredictionRecordModel, field) == value)
+        if stat:
+            query = query.filter(PredictionRecordModel.stat.in_({stat, canonical_stat_label(stat)}))
         records = query.order_by(PredictionRecordModel.predicted_at.asc(), PredictionRecordModel.id.asc()).limit(5001).all()
     rows = [dict(zip(fields, row, strict=True)) for row in records[:5000]]
     for row in rows:

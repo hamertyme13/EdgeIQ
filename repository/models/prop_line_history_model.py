@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String, func
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, func
 
 from repository.database import Base
 
@@ -7,6 +7,7 @@ class PropLineHistoryModel(Base):
     """Stores a snapshot of a prop line at a point in time."""
 
     __tablename__ = "prop_line_history"
+    __table_args__ = (Index("ix_prop_line_history_market", "player", "stat", "platform"),)
 
     id         = Column(Integer, primary_key=True)
     player     = Column(String,  nullable=False, index=True)

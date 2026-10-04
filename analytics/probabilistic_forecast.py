@@ -42,6 +42,16 @@ class PropForecast:
         return asdict(self)
 
 
+def forecast_probability_at_line(forecast: PropForecast, line: float, direction: str, stat: str) -> float | None:
+    """Reprice the fixed forecast distribution at an offered line without refitting it."""
+    if forecast.source != "verified_history_distribution" or forecast.standard_deviation <= 0:
+        return None
+    raw = _side_probability(forecast.projection, forecast.standard_deviation, line, direction, stat)
+    strength = float(forecast.features.get("evidence_strength") or 0.0)
+    probability = 0.5 + (raw - 0.5) * strength
+    return round(100.0 * min(0.85, max(0.15, probability)), 2)
+
+
 def forecast_prop(
     player: str,
     sport: str,
@@ -99,6 +109,7 @@ def forecast_prop(
                 "ceiling": round(_quantile(actuals, 0.90), 2) if actuals else None,
                 "probability_over_exact_line": 50.0,
                 "probability_under_exact_line": 50.0,
+                "probability_push_exact_line": None,
                 "expected_minutes": None,
                 "expected_opportunities": None,
                 "uncertainty_level": "High",
@@ -156,6 +167,7 @@ def forecast_prop(
     raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     recent = actuals[:5]
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    under_probability = _side_probability(contextual_mean, sigma, float(line), "Under", stat)
     expected_minutes = _recent_weighted_history_value(rows, ("minutes", "min"))
     expected_opportunities = _recent_weighted_history_value(rows, policy["opportunity_keys"])
     workload = _workload_adjustment(rows, policy)
@@ -167,6 +179,7 @@ def forecast_prop(
         contextual_mean = max(min(lower, upper), min(max(lower, upper), blended))
         raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
         over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+        under_probability = _side_probability(contextual_mean, sigma, float(line), "Under", stat)
     opportunity_validation = _opportunity_walk_forward_validation(rows, policy)
     opportunity_projection_value = opportunity_projection.get("projection")
     challenger_center = (
@@ -183,6 +196,7 @@ def forecast_prop(
     contextual_mean = float(selection["projection"])
     raw_probability = _side_probability(contextual_mean, sigma, float(line), direction, stat)
     over_probability = _side_probability(contextual_mean, sigma, float(line), "Over", stat)
+    under_probability = _side_probability(contextual_mean, sigma, float(line), "Under", stat)
     role_required = bool(policy["requires_role_evidence"])
     role_verified = bool(workload["verified"])
     selected_model_paid_eligible = selection["model_version"] != OPPORTUNITY_CHALLENGER_VERSION
@@ -312,7 +326,8 @@ def forecast_prop(
             "floor": round(_quantile(actuals, 0.10), 2),
             "ceiling": round(_quantile(actuals, 0.90), 2),
             "probability_over_exact_line": round(over_probability * 100.0, 2),
-            "probability_under_exact_line": round((1.0 - over_probability) * 100.0, 2),
+            "probability_under_exact_line": round(under_probability * 100.0, 2),
+            "probability_push_exact_line": round(max(0.0, 1.0 - over_probability - under_probability) * 100.0, 2),
             "expected_minutes": expected_minutes,
             "expected_opportunities": expected_opportunities,
             "workload_adjustment_pct": workload["adjustment_pct"],
@@ -670,9 +685,13 @@ def _unreliable_context_row(row: dict, stat: str) -> bool:
 
 def _side_probability(mean: float, sigma: float, line: float, direction: str, stat: str) -> float:
     discrete = _is_discrete_stat(stat)
-    threshold = line + (0.5 if discrete and float(line).is_integer() else 0.0)
-    over_probability = 1.0 - _normal_cdf((threshold - mean) / sigma)
-    selected = 1.0 - over_probability if str(direction).lower() == "under" else over_probability
+    whole_line = discrete and float(line).is_integer()
+    if str(direction).lower() == "under":
+        threshold = line - 0.5 if whole_line else line
+        selected = _normal_cdf((threshold - mean) / sigma)
+    else:
+        threshold = line + 0.5 if whole_line else line
+        selected = 1.0 - _normal_cdf((threshold - mean) / sigma)
     return max(0.02, min(0.98, selected))
 
 
