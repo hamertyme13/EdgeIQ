@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261004-evidence-lab"
+STATIC_ASSET_VERSION = "20261007-source-health"

@@ -132,6 +132,10 @@ def main() -> int:
                     results.append(capture_evidence_lab(page, viewport_name))
                     page.close()
                     continue
+                if os.environ.get("EDGEIQ_VISUAL_FOCUS") == "source-health":
+                    results.append(capture_source_health(page, viewport_name))
+                    page.close()
+                    continue
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
                 results.extend(capture_research_details(page, viewport_name))
@@ -216,6 +220,44 @@ def capture_evidence_lab(page: Page, viewport_name: str) -> dict:
     page.locator('.consumer-evidence-lab').screenshot(path=screenshot)
     page.unroute("**/api/analytics/evidence-lab?*")
     return {'viewport': viewport_name, 'view': 'Evidence Lab', 'screenshot': str(screenshot), **issues}
+
+
+def capture_source_health(page: Page, viewport_name: str) -> dict:
+    page.route("**/api/providers/source-health", lambda route: route.fulfill(json={
+        "sources": [{
+            "name": "PrizePicks", "status": "fresh", "last_success_at": "2026-10-07T12:00:00Z",
+            "age_minutes": 3, "source_type": "provider offer feed", "data_role": "Offers",
+            "settlement_suitability": "Not for settlement", "officially_documented": False,
+            "network_attempts_this_session": 2, "availability_percent_this_session": 50.0,
+            "error_percent_this_session": 50.0,
+            "settlement_coverage": {"eligible": 20, "verified": 12, "percent": 60.0,
+                                    "scope": "Tracked pregame prop markets, last 30 days"},
+            "research_evidence": {"facts": 4, "uses": 7, "linked_outcomes": 2},
+        }, {
+            "name": "ESPN public", "status": "unknown", "last_success_at": "",
+            "age_minutes": None, "source_type": "public feed", "data_role": "Final stats",
+            "settlement_suitability": "Final stats when verified", "officially_documented": False,
+            "network_attempts_this_session": 0, "availability_percent_this_session": None,
+            "error_percent_this_session": None,
+            "settlement_coverage": {"eligible": 0, "verified": 0, "percent": None,
+                                    "scope": "Distinct ledger legs attempted, last 30 days"},
+            "research_evidence": {"facts": 0, "uses": 0, "linked_outcomes": 0},
+        }], "truncated": False,
+        "note": "Source measurements are scoped to tracked activity and do not establish predictive accuracy.",
+    }))
+    page.evaluate("setView('systems')")
+    page.locator('.source-health-disclosure').evaluate('(element) => { element.open = true; }')
+    page.locator('#source-health-load').click()
+    page.locator('.source-health-row').first.wait_for()
+    output = page.locator('#source-health-output')
+    assert '60.0%' in output.inner_text()
+    assert 'Unavailable' in output.inner_text()
+    issues = visual_issues(page)
+    assert not issues['horizontal_overflow'], issues
+    assert not issues['clipped_buttons'], issues
+    screenshot = OUTPUT / f'{viewport_name}-source-health.png'
+    page.locator('.source-health-disclosure').screenshot(path=screenshot)
+    return {'viewport': viewport_name, 'view': 'Source Health', 'screenshot': str(screenshot), **issues}
 
 
 def capture_model_track_record(page: Page, viewport_name: str) -> dict:

@@ -6,6 +6,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from web.application.source_health_service import source_health_payload
+
 router = APIRouter(tags=["providers"])
 
 
@@ -39,6 +41,12 @@ DepsProvider = Annotated[ProviderDependencies, Depends(get_deps)]
 def data_health(compact: bool = False, deps: DepsProvider = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, ProviderDependencies) else get_deps()
     return _deps.data_health(compact)
+
+
+@router.get("/api/providers/source-health")
+def source_health(deps: DepsProvider = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, ProviderDependencies) else get_deps()
+    return source_health_payload(_deps.data_health(True))
 
 
 @router.get("/api/providers/sleeper/status")
