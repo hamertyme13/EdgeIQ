@@ -12,6 +12,7 @@ from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
 from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from services.final_stat_candidates import recent_canonical_player_ids
 from services.opportunity_enrichment import attach_opportunity_context
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.stat_normalization import canonical_stat_label, stat_alias_labels
@@ -236,7 +237,6 @@ class FinalStatsRepository:
                 if identity:
                     query = query.filter(FinalPlayerStatModel.player_identity_id == identity["id"])
                 else:
-                    player_key = canonical_person_key(player)
                     candidate_ids = [
                         row.id
                         for row in session.query(FinalPlayerStatModel.id)
@@ -244,18 +244,9 @@ class FinalStatsRepository:
                         .all()
                     ]
                     if not candidate_ids:
-                        candidate_ids = [
-                            row.id
-                            for row in session.query(FinalPlayerStatModel.id).filter(
-                                func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
-                            ).all()
-                        ]
-                    if not candidate_ids:
-                        candidate_ids = [
-                            row.id
-                            for row in session.query(FinalPlayerStatModel.id, FinalPlayerStatModel.player).all()
-                            if canonical_person_key(row.player) == player_key
-                        ]
+                        candidate_ids = recent_canonical_player_ids(
+                            session, player, sport=sport, stats=stat_alias_labels(stat),
+                        )
                     if not candidate_ids:
                         return []
                     query = query.filter(FinalPlayerStatModel.id.in_(candidate_ids))

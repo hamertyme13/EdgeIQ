@@ -17,7 +17,7 @@
             <div><dt>Availability</dt><dd>${network ? `${percent(row.availability_percent_this_session)} of ${network} network attempts this session` : "Unavailable; no network attempts measured this session"}</dd></div>
             <div><dt>Error rate</dt><dd>${network ? `${percent(row.error_percent_this_session)} this session` : "Unavailable"}</dd></div>
             <div><dt>Settlement coverage</dt><dd>${coverage.percent == null ? "Unavailable" : `${percent(coverage.percent)} · ${Number(coverage.verified || 0)}/${Number(coverage.eligible || 0)}`}<small>${escape(coverage.scope || "Scope unavailable")}</small></dd></div>
-            <div><dt>Evidence use</dt><dd>${Number(research.facts || 0)} facts · ${Number(research.uses || 0)} uses · ${Number(research.linked_outcomes || 0)} outcome links</dd></div>
+            <div><dt>Research attribution</dt><dd>${Number(research.facts || 0)} facts · ${Number(research.linked_outcomes || 0)} settlement links</dd></div>
           </dl>
           <p class="subtle">${escape(String(row.source_type || "unknown").replaceAll("_", " "))} · ${row.officially_documented ? "Documented source" : "Undocumented or unverified contract"}</p>
         </section>`;

@@ -30,6 +30,12 @@ def recommendation_sensitivity(
         })
     current = next((point for point in points if point["offered"]), None)
     adverse = next((point for point in points if point["line"] == round(line + adverse_sign * step, 2)), None)
+    adverse_points = sorted(
+        (point for point in points if (point["line"] - line) * adverse_sign >= 0),
+        key=lambda point: abs(point["line"] - line),
+    )
+    qualifying = [point for point in adverse_points if point["qualifies_research_threshold"]]
+    first_failure = next((point for point in adverse_points if not point["qualifies_research_threshold"]), None)
     return {
         "status": "model_only",
         "current_line": line,
@@ -39,6 +45,9 @@ def recommendation_sensitivity(
         "current_model_probability": current["model_probability"] if current else None,
         "adverse_half_point_probability": adverse["model_probability"] if adverse else None,
         "survives_adverse_half_point": bool(adverse and adverse["qualifies_research_threshold"]),
+        "last_tested_qualifying_line": qualifying[-1]["line"] if qualifying else None,
+        "first_tested_failing_line": first_failure["line"] if first_failure else None,
+        "tested_adverse_range_end": adverse_points[-1]["line"] if adverse_points else None,
         "points": points,
-        "note": "Hypothetical model sensitivity only. Shifted lines are not confirmed offers; calibration and payout must be rechecked.",
+        "note": "Hypothetical model sensitivity within the tested range only. Shifted lines are not confirmed offers; calibration and payout must be rechecked.",
     }

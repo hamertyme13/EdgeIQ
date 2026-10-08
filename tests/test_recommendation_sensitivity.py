@@ -31,6 +31,17 @@ def test_adverse_line_move_reduces_probability_for_both_directions():
     assert under["adverse_half_point_probability"] < under["current_model_probability"]
     assert sum(point["offered"] for point in over["points"]) == 1
     assert all(0 <= point["model_probability"] <= 100 for point in over["points"])
+    assert over["last_tested_qualifying_line"] is None or over["last_tested_qualifying_line"] >= 22.5
+    assert under["last_tested_qualifying_line"] is None or under["last_tested_qualifying_line"] <= 22.5
+    assert over["tested_adverse_range_end"] == 23.5
+    assert under["tested_adverse_range_end"] == 21.5
+
+
+def test_sensitivity_reports_first_failing_tested_line_without_extrapolation():
+    forecast = _forecast()
+    result = recommendation_sensitivity(forecast, line=22.5, direction="Over", stat="Points", threshold=99)
+    assert result["last_tested_qualifying_line"] is None
+    assert result["first_tested_failing_line"] == 22.5
 
 
 def test_thin_history_does_not_invent_line_sensitivity():

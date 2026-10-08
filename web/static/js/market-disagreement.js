@@ -10,7 +10,7 @@
         <div><span>Model</span><strong>${number(row.model_probability)}</strong></div>
         <div><span>Market no-vig</span><strong>${number(row.market_probability)}</strong></div>
         <div><span>Raw difference</span><strong>${points(row.raw_difference)}</strong></div>
-        <div><span>Calibrated</span><strong>${number(row.calibrated_probability)}</strong><small>${escape(row.calibration_samples)} matching samples</small></div>
+        <div><span>Calibrated</span><strong>${number(row.calibrated_probability)}</strong><small>${row.calibrated_probability == null ? "Unsupported calibration" : `${escape(row.calibration_samples)} matching samples · ${escape(row.calibration_status || "status unavailable")}`}</small></div>
         <div><span>Effective difference</span><strong>${points(row.effective_difference)}</strong></div>
         <p class="subtle">${escape(row.context)}${row.calibration_uncertainty_points == null ? " · Calibration uncertainty unavailable" : ` · Calibration uncertainty ±${escape(row.calibration_uncertainty_points)} pts`}${row.within_calibration_uncertainty === true ? " · Effective difference is within calibration uncertainty" : ""}${row.market_timestamp_coverage < row.market_book_count ? " · Some book timestamps unavailable" : ""}</p>
       </div>`).join("") || `<p>No validated exact-line comparison is available for the current top opportunities.</p>`}

@@ -38,6 +38,9 @@ def alert_delivery_settings(
         "webhook_url": os.getenv("EDGEIQ_ALERT_WEBHOOK_URL", ""),
         "min_priority": 65.0,
         "channels": ["browser"],
+        "smart_alerts_enabled": False,
+        "smart_alert_types": [],
+        "smart_alert_line_move": 1.0,
     }
     stored = load_json(load_setting("alert_delivery_settings", ""))
     settings = {**defaults, **stored}

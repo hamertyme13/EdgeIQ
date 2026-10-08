@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import timedelta
 from math import isfinite
 from statistics import median
 
 from services.betting import implied_probability
+from services.offer_snapshot import parsed_utc
 from utils.entity_normalization import canonical_person_key
 
 MAX_MARKET_AGE_SECONDS = 1800
@@ -42,6 +44,13 @@ def _valid_market(prop: dict) -> tuple[dict | None, str]:
     prop_line, market_line = _number(prop.get("line")), _number(market.get("line"))
     if prop_line is None or market_line is None or abs(prop_line - market_line) > 0.001:
         return None, "line_mismatch"
+    event = market.get("event") or {}
+    offer_start = parsed_utc(prop.get("game_time") or prop.get("game_start"))
+    market_start = parsed_utc(event.get("commence_time")) if isinstance(event, dict) else None
+    if not isinstance(event, dict) or not event.get("event_id") or not offer_start or not market_start:
+        return None, "game_identity_unavailable"
+    if abs(offer_start - market_start) > timedelta(minutes=30):
+        return None, "game_time_mismatch"
     books = market.get("books") or []
     book_count = _number(market.get("book_count"))
     if not isinstance(books, list) or not books or book_count is None or book_count != len(books):
@@ -82,7 +91,11 @@ def market_disagreement_payload(briefing: dict) -> dict:
             continue
         calibration = prop.get("calibration_presentation") or {}
         raw = _probability(calibration.get("model_probability"))
-        calibrated = _probability(calibration.get("calibrated_probability"))
+        calibrated = (
+            _probability(calibration.get("calibrated_probability"))
+            if calibration.get("status") in {"CALIBRATED", "PARTIAL", "DEGRADED"}
+            and int(_number(calibration.get("sample_size")) or 0) > 0 else None
+        )
         if raw is None and calibrated is None:
             excluded["model_probability_unavailable"] += 1
             continue
@@ -98,6 +111,7 @@ def market_disagreement_payload(briefing: dict) -> dict:
             "market_probability": probability, "raw_difference": raw_difference,
             "effective_difference": effective_difference,
             "calibration_samples": sample,
+            "calibration_status": calibration.get("status") or "UNAVAILABLE",
             "calibration_uncertainty_points": uncertainty,
             "within_calibration_uncertainty": (
                 abs(effective_difference) <= uncertainty
@@ -108,7 +122,12 @@ def market_disagreement_payload(briefing: dict) -> dict:
             "market_last_update": market.get("last_update") or "",
             "market_timestamp_coverage": int(_number(market.get("timestamped_book_count")) or 0),
             "snapshot_id": prop.get("leg_recommendation_snapshot_id") or prop.get("recommendation_snapshot_id") or "",
-            "context": "One-book or thin-calibration evidence" if len(market["books"]) < 2 or sample < 100 else "Multi-book comparison; model uncertainty still applies",
+            "context": (
+                "Calibration unsupported; raw model difference only"
+                if calibrated is None else
+                "One-book or thin-calibration evidence" if len(market["books"]) < 2 or sample < 100 else
+                "Multi-book comparison; model uncertainty still applies"
+            ),
         })
     rows.sort(key=lambda row: abs(row["effective_difference"] if row["effective_difference"] is not None
                                   else row["raw_difference"] or 0), reverse=True)

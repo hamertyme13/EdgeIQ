@@ -7,9 +7,10 @@ from web.routers.briefing import BriefingDependencies, market_disagreement
 def _prop():
     return {
         "player": "Example Player", "sport": "WNBA", "stat": "Points", "direction": "Over",
-        "line": 19.5, "platform": "PrizePicks",
+        "line": 19.5, "platform": "PrizePicks", "game_time": "2026-10-07T23:00:00Z",
         "calibration_presentation": {
             "model_probability": 61, "calibrated_probability": 58,
+            "status": "CALIBRATED", "sample_size": 120,
             "segment_sample_size": 120, "uncertainty_points": 4,
         },
         "decision_receipt": {"market_consensus": {
@@ -17,6 +18,7 @@ def _prop():
             "player": "Example Player", "stat": "Points", "direction": "Over", "line": 19.5,
             "market_probability": 54.55, "book_count": 2, "timestamped_book_count": 2,
             "stale": False, "age_seconds": 80,
+            "event": {"event_id": "game-1", "commence_time": "2026-10-07T23:00:00Z"},
             "books": [
                 {"over_odds": -150, "under_odds": 100},
                 {"over_odds": -150, "under_odds": 100},
@@ -58,6 +60,18 @@ def test_stale_briefing_never_presents_current_disagreement():
     result = market_disagreement_payload({"top_opportunities": [_prop()], "cache": {"stale": True}})
     assert result["rows"] == []
     assert result["excluded"] == {"stale_briefing": 1}
+
+
+def test_wrong_game_and_unsupported_calibration_do_not_create_effective_edge():
+    wrong_game = deepcopy(_prop())
+    wrong_game["decision_receipt"]["market_consensus"]["event"]["commence_time"] = "2026-10-08T23:00:00Z"
+    assert market_disagreement_payload({"top_opportunities": [wrong_game]})["excluded"]["game_time_mismatch"] == 1
+    unsupported = deepcopy(_prop())
+    unsupported["calibration_presentation"]["status"] = "UNAVAILABLE"
+    row = market_disagreement_payload({"top_opportunities": [unsupported]})["rows"][0]
+    assert row["raw_difference"] == 6.5
+    assert row["effective_difference"] is None
+    assert row["context"] == "Calibration unsupported; raw model difference only"
 
 
 def test_endpoint_reads_cached_briefing_without_refresh():

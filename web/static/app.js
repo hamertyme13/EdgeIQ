@@ -1134,6 +1134,12 @@ function renderRecoveryProgress(protection) {
 }
 
 function renderDailyBriefing(data) {
+  const changeOutput = $("slate-change-output");
+  if (changeOutput) changeOutput.innerHTML = window.EdgeIQSlateChanges?.render(data.slate_changes) || "Change details are unavailable. Refresh Today to try again.";
+  const changeSummary = $("slate-change-panel")?.querySelector("summary");
+  if (changeSummary) changeSummary.textContent = data.slate_changes?.available
+    ? `Since your last refresh · ${Number(data.slate_changes.event_count || 0)} changes`
+    : "Since your last refresh · waiting for comparison";
   const trackedSnapshot = data.snapshot_id || data.generated_at || "daily";
   if (state.lastTrackedBriefingSnapshot !== trackedSnapshot) {
     state.lastTrackedBriefingSnapshot = trackedSnapshot;
@@ -1354,21 +1360,8 @@ function renderDailyBriefing(data) {
       ${opportunities.length && !opportunityLaneCounts.conservative && !opportunityLaneCounts.balanced ? `<div class="research-only-board-notice"><strong>Research-only board</strong><span>Every visible prop carries aggressive uncertainty. Prefer paper tracking until stronger evidence appears.</span></div>` : ""}
       <div class="opportunity-list opportunity-board-list">
         ${opportunities.map((prop, index) => {
-          const receipt = prop.decision_receipt || {};
-          const movement = receipt.movement || {};
-          const exposure = receipt.portfolio_exposure || {};
-          const marketProbability = receipt.market_probability;
           const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
           const currentProfile = prop.risk_profile?.key || "aggressive";
-          const expired = prop.recommendation_freshness?.status === "expired"
-            || (prop.edgeiq_score_freshness && prop.edgeiq_score_freshness.status !== "fresh");
-          const eligibility = prop.recommendation_eligibility || {};
-          const calibration = prop.calibration_presentation || {};
-          const actionable = prop.actionable ?? Boolean(
-            prop.market_supported !== false
-            && Number(prop.trust?.score || 0) >= 50
-            && Number(prop.confidence || 0) >= 52
-          );
           const profileHeader = currentProfile !== previousProfile ? `
             <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}" data-risk-lane="${escapeHtml(currentProfile)}">
               <strong>${escapeHtml(prop.risk_profile?.label || "Aggressive")}</strong>
@@ -1376,44 +1369,7 @@ function renderDailyBriefing(data) {
             </div>` : "";
           return `
           ${profileHeader}
-          <div class="opportunity-row ${expired ? "opportunity-expired" : ""} ${!expired && (Number(prop.confidence) >= 90 || Number(prop.edgeiq_score?.score) >= 90) ? "high-confidence-card" : ""}" data-risk-lane="${escapeHtml(currentProfile)}">
-            ${!expired && (Number(prop.confidence) >= 90 || Number(prop.edgeiq_score?.score) >= 90) ? `<span class="high-confidence-banner">${Number(prop.confidence) >= 90 ? "High model confidence" : "High EdgeIQ score"}</span>` : ""}
-            <label aria-label="Select ${escapeHtml(prop.player || `opportunity ${index + 1}`)}">
-              <input class="opportunity-select" type="checkbox" data-select-opportunity="${prop._sourceIndex}" ${expired || !actionable ? "disabled" : ""} />
-            </label>
-            ${window.EdgeIQOpportunityScore?.render(prop.edgeiq_score, escapeHtml, true) || `<span class="subtle">Not scored</span>`}
-            <strong>
-              <span class="risk-profile-label risk-${escapeHtml(prop.risk_profile?.key || "aggressive")}">${escapeHtml(prop.risk_profile?.label || "Aggressive")}</span>
-              ${escapeHtml(prop.player)} ${escapeHtml(prop.direction || "Over")} ${escapeHtml(prop.line ?? "")} ${escapeHtml(prop.stat || "")} <span class="opportunity-confidence">${confidenceLabel(prop.confidence)}</span>
-              <small>
-                ${escapeHtml(prop.platform || data.platform || "Provider")} · ${escapeHtml(prop.sport || data.sport || "All Sports")}
-                ${prop.adjusted_line ? ` · ${prop.is_discounted_line ? "Discounted line" : (String(prop.line_offer_type || "").toLowerCase() === "demon" ? "Demon · Over only" : "Adjusted payout")}` : " · Standard line"}
-                · Fragility ${escapeHtml(prop.counterargument?.fragility_label || "Unavailable")}
-              </small>
-            </strong>
-            <div class="opportunity-proof">
-              <span>Model ${calibration.model_probability == null ? "unavailable" : `${Number(calibration.model_probability).toFixed(0)}%`}</span>
-              <span>Confidence ${Number(prop.confidence || 0).toFixed(0)}% · ${escapeHtml(calibration.label || "Calibration unavailable")} · n=${Number(calibration.sample_size || 0)}</span>
-              <span>${marketProbability == null ? "No comparison odds" : `Market ${Number(marketProbability).toFixed(0)}% · ${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"}`}</span>
-              <span>Move ${Number(movement.change || 0) > 0 ? "+" : ""}${Number(movement.change || 0).toFixed(1)}</span>
-              <span>${escapeHtml(exposure.label || "No pending exposure")}</span>
-              <span>Updated ${formatDateTime(prop.feature_as_of || data.as_of)}</span>
-              <span class="${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escapeHtml(
-                expired
-                  ? prop.edgeiq_score_freshness?.label || "Expired · refresh required"
-                  : eligibility.label
-                    ? `${eligibility.label}${eligibility.paper_ready && !eligibility.paid_ready ? " · calibration tracking" : ""}`
-                    : !actionable
-                      ? "Research only · cannot add"
-                      : "Fresh recommendation"
-              )}</span>
-            </div>
-            <div class="opportunity-actions">
-              <button class="icon-text-button secondary" type="button" data-inspect-opportunity="${prop._sourceIndex}">Proof</button>
-              <button class="icon-text-button secondary" type="button" data-timeline-opportunity="${prop._sourceIndex}">Timeline</button>
-              <button class="icon-text-button secondary" type="button" data-compare-opportunity="${prop._sourceIndex}" aria-pressed="false">Compare</button>
-            </div>
-          </div>
+          ${window.EdgeIQRecommendationCard?.render(prop, {platform: data.platform, sport: data.sport}) || `<p role="alert">Recommendation cards could not display. Reload Today to try again.</p>`}
         `;
         }).join("") || `<div class="suggestion compact-suggestion">No props cleared the current recommendation and data-quality filters.</div>`}
       </div>
@@ -1852,6 +1808,27 @@ function bindDailyBriefingSummaryActions() {
     $("entry-status").textContent = paperOnly
       ? `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as a paper entry because at least one leg has not cleared paid-use evidence policy.`
       : `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
+  });
+  document.querySelectorAll("[data-add-opportunity]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.addOpportunity)];
+      if (!opportunity) return;
+      const existingPlatforms = entrySourcePlatforms();
+      if (existingPlatforms.length && !existingPlatforms.includes(opportunity.platform)) {
+        $("daily-briefing-status").textContent = `The current entry is for ${existingPlatforms.join(" and ")}. Build a separate ${opportunity.platform} entry to keep the sportsbook correct.`;
+        return;
+      }
+      invalidateEntryReview();
+      state.entryProps = uniqueUploadedProps([...state.entryProps, entryPropFromFeed(opportunity)]).map(entryPropFromFeed);
+      syncEntryPlatformFromProps();
+      if (!opportunity.recommendation_eligibility?.paid_ready && $("entry-mode")) $("entry-mode").value = "paper";
+      state.recommendationOrigin = true;
+      renderEntryProps();
+      setView("entries");
+      $("entry-status").textContent = opportunity.recommendation_eligibility?.paid_ready
+        ? `${opportunity.player} added. Review all legs and analyze before saving.`
+        : `${opportunity.player} added as paper-first. Review all legs and analyze before saving.`;
+    });
   });
   document.querySelectorAll("[data-next-action-view]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -3004,6 +2981,11 @@ function openExplanationDrawer(explanation) {
       <h3>Line Sensitivity</h3>
       ${explanation.sensitivity?.status === "model_only"
         ? `<p>A ${Number(explanation.sensitivity.line_step).toFixed(1)} move against this pick changes the model estimate from ${Number(explanation.sensitivity.current_model_probability).toFixed(1)}% to ${Number(explanation.sensitivity.adverse_half_point_probability).toFixed(1)}%. ${explanation.sensitivity.survives_adverse_half_point ? "It remains above" : "It falls below"} the ${Number(explanation.sensitivity.research_threshold).toFixed(0)}% research threshold.</p>
+           <p>${explanation.sensitivity.first_tested_failing_line != null
+             ? `First tested line below threshold: ${Number(explanation.sensitivity.first_tested_failing_line).toFixed(1)}.`
+             : explanation.sensitivity.tested_adverse_range_end != null
+               ? `Still above threshold through the tested ${Number(explanation.sensitivity.tested_adverse_range_end).toFixed(1)} line.`
+               : "Refresh to see the tested line boundary."}</p>
            <p class="subtle">${escapeHtml(explanation.sensitivity.note)}</p>`
         : `<p class="subtle">${escapeHtml(explanation.sensitivity?.reason || "Verified forecast history is insufficient for line sensitivity.")}</p>`}
     </div>
@@ -5579,6 +5561,11 @@ async function loadAlertDeliverySettings() {
   $("alert-webhook-enabled").checked = Boolean(settings.webhook_enabled);
   $("alert-webhook-url").value = settings.webhook_url || "";
   $("alert-min-priority").value = settings.min_priority ?? 65;
+  $("smart-alerts-enabled").checked = Boolean(settings.smart_alerts_enabled);
+  for (const kind of ["upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"]) {
+    $(`smart-${kind.replaceAll("_", "-")}`).checked = (settings.smart_alert_types || []).includes(kind);
+  }
+  $("smart-alert-line-move").value = settings.smart_alert_line_move ?? 1;
   renderAlertDeliveryStatus(data);
 }
 
@@ -5593,6 +5580,9 @@ async function saveAlertDeliverySettings(event) {
     webhook_enabled: $("alert-webhook-enabled").checked,
     webhook_url: $("alert-webhook-url").value.trim(),
     min_priority: Number($("alert-min-priority").value || 65),
+    smart_alerts_enabled: $("smart-alerts-enabled").checked,
+    smart_alert_types: ["upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"].filter((kind) => $(`smart-${kind.replaceAll("_", "-")}`).checked),
+    smart_alert_line_move: Number($("smart-alert-line-move").value || 1),
   };
   const data = await api("/api/settings/alert-delivery", { method: "POST", body: JSON.stringify(payload) });
   renderAlertDeliveryStatus(data);
@@ -7136,6 +7126,9 @@ async function loadDeferredSignals() {
 
 async function loadAll(options = {}) {
   syncDefaultInputs();
+  loadDailyBriefing().catch((error) => {
+    $("daily-briefing-status").textContent = `Today's briefing could not load: ${error.message}`;
+  });
   const essentials = await Promise.allSettled([loadDashboard()]);
   const failure = essentials.find((result) => result.status === "rejected");
   if (failure) {
@@ -7147,9 +7140,9 @@ async function loadAll(options = {}) {
   const runBackgroundLoads = () => {
     if (state.backgroundLoadPromise) return;
     const backgroundTasks = options.refresh
-      ? [loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
+      ? [loadDailyScanStatus(), loadRuntimeStatus(), loadDataHealth(), loadNotifications(), loadProductAnalytics(), loadPerformance(), loadSettlementAudit()]
       : [
-          loadModelHealth(), loadDailyBriefing(), loadDailyScanStatus(), loadRuntimeStatus(), loadProviderStatus(), loadNotifications(), loadProductAnalytics(),
+          loadModelHealth(), loadDailyScanStatus(), loadRuntimeStatus(), loadProviderStatus(), loadNotifications(), loadProductAnalytics(),
         ];
     state.backgroundLoadPromise = Promise.allSettled(backgroundTasks).then((results) => {
       const backgroundFailure = results.find((result) => result.status === "rejected");

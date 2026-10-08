@@ -180,6 +180,7 @@ from web.application.briefing_service import recover_interrupted_daily_scan as r
 from web.application.briefing_service import run_daily_briefing_scan as run_briefing_scan
 from web.application.briefing_service import save_daily_scan_status as persist_daily_scan_status
 from web.application.briefing_service import update_daily_scan as update_briefing_scan
+from web.application.briefing_timing import BriefingTiming
 from web.application.copilot_service import copilot_query_payload as build_copilot_query_payload
 from web.application.copilot_service import explain_recommendation_payload as build_explain_recommendation_payload
 from web.application.copilot_service import model_evaluation_payload as build_model_evaluation_payload
@@ -1776,11 +1777,15 @@ def _fetch_platform_props_uncached(
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     attempted_at = iso_utc(utc_now())
+    fetch_started = time.perf_counter()
     try:
         props = fetcher()
     except Exception as exc:
-        _record_provider_fetch_status(canonical, attempted_at, error=str(exc))
+        _record_provider_fetch_status(canonical, attempted_at, error=str(exc), diagnostics={
+            "provider_fetch_ms": round((time.perf_counter() - fetch_started) * 1000, 1),
+        })
         return []
+    provider_fetch_ms = round((time.perf_counter() - fetch_started) * 1000, 1)
     if progress:
         progress(45, f"{canonical} returned {len(props):,} offers; checking today's markets.")
     # Capture the provider's complete board before recommendation and
@@ -1836,6 +1841,8 @@ def _fetch_platform_props_uncached(
         attempted_at,
         row_count=len(eligible),
         diagnostics={
+            "provider_fetch_ms": provider_fetch_ms,
+            "offer_filter_ms": round((time.perf_counter() - fetch_started) * 1000 - provider_fetch_ms, 1),
             "source_count": len(props),
             "today_count": len(current_props),
             "actionable_count": len(actionable),
@@ -4904,21 +4911,27 @@ def _daily_verified_provider_fallback(
 
 
 def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
-    dashboard_stats = get_dashboard()
-    prefs = _user_preferences()
+    timing = BriefingTiming()
+    with timing.stage("dashboard_db"):
+        dashboard_stats = get_dashboard()
+    with timing.stage("preferences_db"):
+        prefs = _user_preferences()
     requested = _canonical_platform(platform)
     boards: dict[str, list[dict]] = {}
 
     def board_for(name: str) -> list[dict]:
         canonical = _canonical_platform(name)
         if canonical not in boards:
-            boards[canonical] = _fetch_props(name, sport_filter)
+            with timing.stage("provider_fetch_and_board_snapshot"):
+                boards[canonical] = _fetch_props(name, sport_filter)
         return boards[canonical]
 
     def confirmed_for(name: str) -> dict:
-        return _confirmed_props_payload(
-            name, sport_filter, limit=40, analysis_limit=80, board_props=board_for(name),
-        )
+        board = board_for(name)
+        with timing.stage("confirmed_prop_analysis"):
+            return _confirmed_props_payload(
+                name, sport_filter, limit=40, analysis_limit=80, board_props=board,
+            )
 
     confirmed = (
         {"count": 0, "props": [], "rejected_count": 0, "analyzed_count": 0, "slate": []}
@@ -4931,19 +4944,22 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         confirmed,
         confirmed_for=confirmed_for,
     )
-    command = _command_center_payload(
-        active_platform, sport_filter, fast=True,
-        board_props=board_for(active_platform), dashboard_stats=dashboard_stats,
-    )
+    board = board_for(active_platform)
+    with timing.stage("command_cards"):
+        command = _command_center_payload(
+            active_platform, sport_filter, fast=True,
+            board_props=board, dashboard_stats=dashboard_stats,
+        )
     loss_protection = _loss_protection_payload()
     candidate_bet_cards = _daily_bet_cards(command["cards"])
     candidate_cards = _daily_best_available_cards(command["cards"]) if not candidate_bet_cards else []
-    paper_cards = _daily_paper_cards(
-        active_platform,
-        sport_filter,
-        dashboard_stats,
-        command.get("model_health"),
-    )
+    with timing.stage("paper_cards"):
+        paper_cards = _daily_paper_cards(
+            active_platform,
+            sport_filter,
+            dashboard_stats,
+            command.get("model_health"),
+        )
     watch_cards = _daily_watch_cards(active_platform, sport_filter, command, confirmed)
     avoid_cards = _daily_avoid_cards(command, confirmed)
     if loss_protection["active"]:
@@ -5011,20 +5027,25 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
             "Recheck injuries, game time, and line movement before placing.",
         ],
     }
-    snapshot = ModelRehabilitationRepository.save_feed(
-        {
-            "feed": {
-                "id": "edgeiq-daily-briefing-v2.2.1",
-                "canonical": True,
-                "purpose": "Actionable recommendations for Today and Entry Builder.",
-                "platform": platform,
-                "sport": sport_filter or "All Sports",
+    payload["build_timings_ms"] = timing.snapshot()
+    with timing.stage("snapshot_persist_db"):
+        snapshot = ModelRehabilitationRepository.save_feed(
+            {
+                "feed": {
+                    "id": "edgeiq-daily-briefing-v2.2.1",
+                    "canonical": True,
+                    "purpose": "Actionable recommendations for Today and Entry Builder.",
+                    "platform": platform,
+                    "sport": sport_filter or "All Sports",
+                },
+                "daily_briefing": payload,
             },
-            "daily_briefing": payload,
-        },
-        model_version=PRODUCT_MODEL_VERSION,
-    )
-    return snapshot["daily_briefing"]
+            model_version=PRODUCT_MODEL_VERSION,
+        )
+    result = snapshot["daily_briefing"]
+    result["build_timings_ms"] = timing.snapshot()
+    _log.info("Daily briefing build stages: %s", result["build_timings_ms"])
+    return result
 
 
 def _daily_bet_cards(cards: list[dict]) -> list[dict]:
@@ -12239,8 +12260,8 @@ def _run_due_daily_operations_locked() -> dict:
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
     due: list[tuple[str, object]] = []
     timed_jobs = {
-        "morning_scan": _run_scheduled_briefing,
         "daily_briefing": _run_scheduled_briefing,
+        "morning_scan": _run_scheduled_briefing,
         "injury_refresh": _refresh_injury_context,
         "result_check": lambda: {
             "entries": _auto_check_pending_entries(False, True),
@@ -12255,6 +12276,8 @@ def _run_due_daily_operations_locked() -> dict:
         "season_history": run_daily_season_updates,
     }
     for name, callback in timed_jobs.items():
+        if name == "morning_scan" and schedule.get("daily_briefing"):
+            continue
         scheduled_time = str(schedule.get(name) or "")
         run_key = f"daily_scheduler_run:{name}"
         last_run = SettingsRepository.get(run_key, "")
@@ -12339,6 +12362,15 @@ def _queue_daily_shadow_cohort() -> dict:
 
 def _notification_payload() -> dict:
     notices = []
+    try:
+        from web.application.smart_alerts import briefing_smart_alerts
+
+        briefing = _cached_daily_briefing_payload("PrizePicks", None, cached_only=True)
+        notices.extend(briefing_smart_alerts(
+            briefing.get("slate_changes"), _alert_delivery_settings().get("settings") or {},
+        ))
+    except Exception:
+        _log.warning("Could not load saved smart alerts", exc_info=True)
     health = _data_health_payload(compact=True)
     for provider in health["providers"]:
         if provider["status"] in {"missing_key", "not_configured"} and provider["name"] in {"OpenAI", "SportsDataIO", "NewsAPI", "OpenWeather"}:

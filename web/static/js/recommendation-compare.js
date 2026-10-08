@@ -4,8 +4,13 @@
   const value = (number, suffix = "") => finite(number) === null ? "Unavailable" : `${finite(number).toFixed(1)}${suffix}`;
   const labels = {calibrated: "Highest calibrated probability", fragility: "Lowest fragility", score: "Highest EdgeIQ Score"};
   const trackKey = prop => [prop.model_version, prop.sport, prop.stat, prop.platform, prop.direction].join("|");
+  const calibrated = prop => {
+    const evidence = prop.calibration_presentation || {};
+    return ["CALIBRATED", "PARTIAL", "DEGRADED"].includes(evidence.status) && Number(evidence.sample_size) > 0
+      ? finite(evidence.calibrated_probability) : null;
+  };
   function metric(prop, selected) {
-    if (selected === "calibrated") return finite(prop.calibration_presentation?.calibrated_probability);
+    if (selected === "calibrated") return calibrated(prop);
     if (selected === "fragility") return finite(prop.counterargument?.fragility_score);
     return finite(prop.edgeiq_score?.score);
   }
@@ -45,10 +50,10 @@
           ${line("Line", prop => value(prop.line))}
           ${line("Projection", prop => value(prop.projection))}
           ${line("Model probability", prop => value(prop.calibration_presentation?.model_probability, "%"))}
-          ${line("Calibrated probability", prop => value(prop.calibration_presentation?.calibrated_probability, "%"))}
+          ${line("Calibrated probability", prop => calibrated(prop) === null ? "Unavailable: calibration not supported" : `${value(calibrated(prop), "%")} · ${prop.calibration_presentation.status}`)}
           ${line("Matching calibration samples", prop => prop.calibration_presentation?.segment_sample_size ?? "Unavailable")}
           ${line("Data quality score", prop => value(prop.data_quality?.score, "/100"))}
-          ${line("Forecast standard deviation", prop => value(prop.forecast_snapshot?.distribution?.standard_deviation))}
+          ${line("Forecast standard deviation", prop => value(prop.forecast_snapshot?.standard_deviation))}
           ${line("Fragility", prop => prop.counterargument?.fragility_label ? `${prop.counterargument.fragility_label} · ${value(prop.counterargument.fragility_score, "/100")}` : "Unavailable")}
           ${line("Line movement", prop => value(prop.decision_receipt?.movement?.change ?? prop.line_movement?.change))}
           ${line("Model track record", record)}

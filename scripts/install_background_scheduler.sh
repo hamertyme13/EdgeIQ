@@ -24,9 +24,6 @@ if [[ -z "$PYTHON_BIN" ]]; then
   echo "No Python runtime with EdgeIQ dependencies was found." >&2
   exit 1
 fi
-MAINTENANCE_COMMAND="cd '$APP_DIR' && '$PYTHON_BIN' '$APP_DIR/scripts/run_scheduled_maintenance.py' >> '$LOG_DIR/scheduler.log' 2>> '$LOG_DIR/scheduler-error.log'; exit"
-MAINTENANCE_XML="${MAINTENANCE_COMMAND//&/&amp;}"
-
 /bin/mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
 /bin/cat >"$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,16 +31,25 @@ MAINTENANCE_XML="${MAINTENANCE_COMMAND//&/&amp;}"
 <plist version="1.0"><dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key><array>
-    <string>/usr/bin/osascript</string><string>-e</string>
-    <string>tell application "Terminal" to do script "${MAINTENANCE_XML}"</string>
+    <string>${PYTHON_BIN}</string>
+    <string>${APP_DIR}/scripts/run_scheduled_maintenance.py</string>
   </array>
+  <key>WorkingDirectory</key><string>${APP_DIR}</string>
   <key>StartInterval</key><integer>900</integer>
-  <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>${LOG_DIR}/scheduler.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/scheduler-error.log</string>
 </dict></plist>
 PLIST
 /usr/bin/plutil -lint "$PLIST" >/dev/null
 /bin/launchctl bootout "gui/$(id -u)/${LABEL}" >/dev/null 2>&1 || true
-/bin/launchctl bootstrap "gui/$(id -u)" "$PLIST"
+for attempt in 1 2 3; do
+  if /bin/launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
+    break
+  fi
+  if [[ "$attempt" -eq 3 ]]; then
+    echo "EdgeIQ scheduler could not be registered with launchd." >&2
+    exit 1
+  fi
+  /bin/sleep 2
+done
 echo "Installed EdgeIQ background scheduler at $PLIST"

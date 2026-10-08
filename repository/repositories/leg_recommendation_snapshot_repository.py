@@ -34,6 +34,14 @@ def _evidence(row: dict, feed_snapshot_id: str, model_version: str, captured_at:
     if projection is None and confidence is None:
         return None
     market_baseline, market_baseline_exclusion = capture_market_baseline(row, captured_at)
+    calibration = row.get("calibration_presentation")
+    calibration_context = (
+        {key: calibration.get(key) for key in ("status", "label", "sample_size", "segment_sample_size", "basis")}
+        if isinstance(calibration, dict) else {}
+    )
+    calibrated_confidence = _number(row.get("calibrated_confidence"))
+    if calibrated_confidence is None and isinstance(calibration, dict):
+        calibrated_confidence = _number(calibration.get("calibrated_probability"))
     return {
         "feed_snapshot_id": feed_snapshot_id,
         "offer_snapshot_id": str(row["offer_snapshot_id"]),
@@ -47,7 +55,8 @@ def _evidence(row: dict, feed_snapshot_id: str, model_version: str, captured_at:
         "line": line,
         "projection": projection,
         "confidence": confidence,
-        "calibrated_confidence": _number(row.get("calibrated_confidence")),
+        "calibrated_confidence": calibrated_confidence,
+        "calibration_context": calibration_context,
         "edgeiq_score": _number(row.get("edgeiq_score")),
         "feature_as_of": str(row.get("feature_as_of") or ""),
         "projection_source": str(row.get("projection_source") or ""),

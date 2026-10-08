@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261007-source-health" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261008-smart-alerts" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -194,6 +194,7 @@
               </div>
             </div>
             <div id="daily-briefing-summary" class="daily-briefing-summary muted-card">Building the morning betting plan...</div>
+            <details id="slate-change-panel" class="slate-change-panel"><summary>Since your last refresh</summary><div id="slate-change-output">Refresh the briefing again to compare this slate.</div></details>
             <div id="daily-scan-status" class="daily-scan-status muted-card">No Daily Briefing scan has run yet today.</div>
             <div class="phone-briefing-actions">
               <button class="secondary" type="button" data-phone-scan>Scan Now</button>
@@ -1560,6 +1561,13 @@
                     <label class="check-row"><input id="alert-webhook-enabled" type="checkbox" /> Webhook</label>
                     <input id="alert-webhook-url" placeholder="Webhook URL" />
                     <input id="alert-min-priority" type="number" min="0" max="100" step="1" value="65" placeholder="Min priority" />
+                    <label class="check-row"><input id="smart-alerts-enabled" type="checkbox" /> Briefing change alerts (in-app)</label>
+                    <label class="check-row"><input id="smart-upgrades" type="checkbox" /> Recommendation upgrades</label>
+                    <label class="check-row"><input id="smart-downgrades" type="checkbox" /> Recommendation downgrades</label>
+                    <label class="check-row"><input id="smart-line-changes" type="checkbox" /> Line moves</label>
+                    <label class="check-row"><input id="smart-invalidated" type="checkbox" /> Invalidated picks</label>
+                    <label class="check-row"><input id="smart-injury-context-changes" type="checkbox" /> Injury context changes</label>
+                    <label>Minimum line move <input id="smart-alert-line-move" type="number" min="0.1" max="100" step="0.1" value="1" /></label>
                     <button type="submit">Save Alerts</button>
                   </form>
                   <button id="test-alert-delivery" class="secondary">Send Test Alert</button>
@@ -1818,7 +1826,7 @@
               </label>
               <label>Compare by
                 <select id="personal-edge-dimension">
-                  <option value="sport">Sport</option><option value="stat">Stat</option><option value="provider">Provider</option>
+                  <option value="sport">Sport</option><option value="stat">Stat</option><option value="sport_stat">Sport and stat</option><option value="provider">Provider</option>
                   <option value="direction">Direction</option><option value="confidence_bucket">Confidence bucket</option>
                   <option value="card_size">Card size</option><option value="grade">Card grade</option>
                 </select>
@@ -1992,16 +2000,19 @@
     <script src="/static/js/model-version-evaluation.js?v=20261001-results-speed"></script>
     <script src="/static/js/games.js?v=20260930-games-schedule"></script>
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/js/model-track-record.js?v=20261003-model-context"></script>
+    <script src="/static/js/model-track-record.js?v=20261007-model-record"></script>
     <script src="/static/js/evidence-lab.js?v=20261004-evidence-lab"></script>
-    <script src="/static/js/source-health.js?v=20261007-source-health"></script>
-    <script src="/static/js/personal-edge.js?v=20261004-personal-edge"></script>
-    <script src="/static/js/recommendation-compare.js?v=20261004-recommendation-compare"></script>
-    <script src="/static/js/market-disagreement.js?v=20261004-market-model-timeline"></script>
-    <script src="/static/js/market-model-timeline.js?v=20261004-market-model-timeline"></script>
+    <script src="/static/js/source-health.js?v=20261007-source-audits"></script>
+    <script src="/static/js/personal-edge.js?v=20261007-personal-edge"></script>
+    <script src="/static/js/recommendation-compare.js?v=20261007-recommendation-compare"></script>
+    <script src="/static/js/recommendation-disclosure.js?v=20261007-progressive-disclosure"></script>
+    <script src="/static/js/recommendation-card.js?v=20261007-recommendation-card"></script>
+    <script src="/static/js/slate-changes.js?v=20261008-smart-alerts"></script>
+    <script src="/static/js/market-disagreement.js?v=20261007-market-disagreement"></script>
+    <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261007-source-health"></script>
+    <script src="/static/app.js?v=20261008-smart-alerts"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

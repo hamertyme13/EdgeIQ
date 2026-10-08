@@ -105,7 +105,15 @@ fi
 
 if ! health_ok "$PORT"; then
   if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
-    "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1
+    if ! "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1; then
+      # This index-only migration may be retried when the database is quiet.
+      current_revision="$($PYTHON_BIN -c 'import sqlite3; from repository.database import DATABASE_URL; path=DATABASE_URL.removeprefix("sqlite:///"); assert DATABASE_URL.startswith("sqlite:///"); db=sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5); print(db.execute("SELECT version_num FROM alembic_version").fetchone()[0])' 2>>"$LOG_FILE" || true)"
+      if [[ "$current_revision" != "q10a6b9d3e75" ]]; then
+        echo "Database migration failed; refusing to start against an unknown schema revision." >>"$LOG_FILE"
+        exit 1
+      fi
+      echo "Optional final-stat indexes are pending; starting EdgeIQ without them." >>"$LOG_FILE"
+    fi
   fi
   echo "Starting EdgeIQ on ${HOST}:${PORT} at $(date) with ${PYTHON_BIN}" >>"$LOG_FILE"
   EDGEIQ_DESKTOP_INSTANCE=1 /usr/bin/nohup "$PYTHON_BIN" -m uvicorn web.app:app --host "$HOST" --port "$PORT" >>"$LOG_FILE" 2>&1 &

@@ -20,6 +20,7 @@ def _prop(player: str, game: str, confidence: float = 70.0) -> dict:
         "edge": 1.5,
         "platform": "PrizePicks",
         "game": game,
+        "game_time": "2026-10-07T19:00:00Z",
     }
 
 
@@ -81,6 +82,17 @@ def test_same_player_market_on_different_games_is_not_shared_leg():
     payload = portfolio_intelligence_payload(pending_entries=pending, bankroll=1000, strategy={"max_player_entries": 3})
     assert payload["shared_leg_failure_risk"]["repeated_props"] == 0
     assert payload["top_markets"][0]["entries"] == 1
+
+
+def test_undated_matchup_does_not_claim_exact_shared_market():
+    pending = [
+        {"entry_mode": "real", "wager": 5, "props": [_prop("A", "AAA @ BBB") | {"game_time": "Time unavailable", "sport": "NFL"}]},
+        {"entry_mode": "real", "wager": 5, "props": [_prop("A", "AAA @ BBB") | {"game_time": ""}]},
+    ]
+    payload = portfolio_intelligence_payload(pending_entries=pending, bankroll=1000, strategy={})
+    assert payload["shared_leg_failure_risk"]["repeated_props"] == 0
+    assert payload["shared_leg_failure_risk"]["unidentified_game_legs"] == 2
+    assert payload["concentration_risk"] == "MODERATE"
 
 
 def test_portfolio_ranking_prefers_lower_exposure_and_offers_replacement():

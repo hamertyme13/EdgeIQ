@@ -43,5 +43,16 @@ def test_rankings_require_30_decisions_and_complete_history():
     result = summarize_personal_edge(rows, mode="real")
     assert result["strongest"]["decisions"] == 30
     assert result["segments"]["sport"][0]["small_sample"] is False
+    assert result["segments"]["sport_stat"][0]["name"] == "WNBA Points"
+    assert result["strongest"]["name"] == "WNBA Points"
     assert summarize_personal_edge(rows[:29], mode="real")["strongest"] is None
     assert summarize_personal_edge(rows, mode="real", truncated=True)["strongest"] is None
+
+
+def test_sport_stat_insights_keep_winning_and_losing_segments_visible():
+    points = [_row(i, stat="Points", entry_result="Win") for i in range(1, 31)]
+    rebounds = [_row(i, stat="Rebounds", final_result="Loss", actual=12) for i in range(31, 61)]
+    result = summarize_personal_edge(points + rebounds, mode="real")
+    assert result["strongest"]["name"] == "WNBA Points"
+    assert result["weakest"]["name"] == "WNBA Rebounds"
+    assert result["weakest"]["hit_rate"] == 0.0

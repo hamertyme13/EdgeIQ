@@ -1,7 +1,7 @@
 (() => {
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
   const cache = new Map();
-  const dimensions = {sport: "Sport", stat: "Stat", provider: "Provider", direction: "Direction", confidence_bucket: "Confidence bucket", card_size: "Card size", grade: "Card grade"};
+  const dimensions = {sport: "Sport", stat: "Stat", sport_stat: "Sport and stat", provider: "Provider", direction: "Direction", confidence_bucket: "Confidence bucket", card_size: "Card size", grade: "Card grade"};
   const rate = value => typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(1)}%` : "Unavailable";
   function render(data, dimension = "sport") {
     const summary = data.summary || {};

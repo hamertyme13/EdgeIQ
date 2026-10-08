@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from threading import RLock
 
 from utils.time import iso_utc, utc_now
+from web.application.slate_changes import compare_briefings
 
 GetSetting = Callable[[str, str], str]
 SetSetting = Callable[[str, str], object]
@@ -383,9 +384,9 @@ def cached_daily_briefing_payload(
     build_placeholder: Callable[[str, str | None, str], dict],
 ) -> dict:
     key = daily_briefing_cache_key(platform, sport_filter)
+    raw_cached = safe_json_loads(get_setting(key, ""))
+    cached = raw_cached if isinstance(raw_cached, dict) else {}
     if not refresh:
-        raw_cached = safe_json_loads(get_setting(key, ""))
-        cached = raw_cached if isinstance(raw_cached, dict) else {}
         payload = cached.get("payload") if cached.get("version") == cache_version else None
         if isinstance(payload, dict):
             fresh = daily_briefing_cache_is_fresh(cached, ttl_hours)
@@ -412,6 +413,10 @@ def cached_daily_briefing_payload(
     payload = build_payload(platform, sport_filter)
     created_at = iso_utc(utc_now())
     expires_at = iso_utc(utc_now() + timedelta(hours=ttl_hours))
+    payload["slate_changes"] = compare_briefings(
+        cached.get("payload"), payload,
+        previous_at=str(cached.get("created_at") or ""), current_at=created_at,
+    )
     set_setting(
         key,
         json.dumps(

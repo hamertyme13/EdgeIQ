@@ -43,6 +43,9 @@ class AlertDeliveryPayload(BaseModel):
     webhook_url: str = ""
     min_priority: float = Field(default=65.0, ge=0, le=100)
     channels: list[str] = Field(default_factory=list)
+    smart_alerts_enabled: bool = False
+    smart_alert_types: list[Literal["upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"]] = Field(default_factory=list)
+    smart_alert_line_move: float = Field(default=1.0, ge=0.1, le=100)
 
 
 class AlertDeliveryTestPayload(BaseModel):

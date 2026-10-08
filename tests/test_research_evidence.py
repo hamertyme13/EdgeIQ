@@ -45,6 +45,8 @@ def test_settled_outcome_updates_research_usefulness():
 
     entry = {
         "id": 91827,
+        "placed_at": evidence_module.utc_now(),
+        "platform": "Underdog",
         "props": [{
             "player": "Outcome Player", "sport": "NFL", "stat": "Receiving Yards",
             "game": "AAA @ BBB", "result": "Win",
@@ -58,6 +60,34 @@ def test_settled_outcome_updates_research_usefulness():
     assert repeated == 0
     assert rows[0]["outcomes"]["wins"] == 1
     assert rows[0]["outcomes"]["usefulness_score"] > 50
+
+
+def test_outcome_only_credits_fresh_preplace_matching_evidence(monkeypatch):
+    start = datetime(2026, 8, 20, 12, 0)
+    monkeypatch.setattr(evidence_module, "utc_now", lambda: start)
+    base = {
+        "player": "Cutoff Player", "sport": "NFL", "stat": "Receiving Yards",
+        "game": "AAA @ BBB", "evidence_type": "provider_market",
+    }
+    ResearchEvidenceRepository.record_many([
+        {**base, "platform": "Underdog", "source_name": "Before", "payload": {"line": 55.5}, "ttl_minutes": 60},
+        {**base, "platform": "PrizePicks", "source_name": "Other book", "payload": {"line": 55.5}, "ttl_minutes": 60},
+        {**base, "platform": "Underdog", "source_name": "Expired", "payload": {"line": 54.5}, "ttl_minutes": 1},
+    ])
+    monkeypatch.setattr(evidence_module, "utc_now", lambda: start + timedelta(minutes=5))
+    ResearchEvidenceRepository.record_many([
+        {**base, "platform": "Underdog", "source_name": "After", "payload": {"line": 56.5}, "ttl_minutes": 60},
+    ])
+    entry = {
+        "id": 91828, "platform": "Underdog", "placed_at": start + timedelta(minutes=2),
+        "props": [{**base, "result": "Win"}],
+    }
+    assert ResearchEvidenceRepository.record_outcome(entry) == 1
+    rows = ResearchEvidenceRepository.relevant(
+        "Cutoff Player", "Receiving Yards", sport="NFL", include_expired=True,
+    )
+    assert {row["source"] for row in rows if row["outcomes"]["wins"]} == {"Before"}
+    assert ResearchEvidenceRepository.record_outcome({**entry, "placed_at": None}) == 0
 
 
 def test_expired_evidence_is_hidden_unless_explicitly_requested(monkeypatch):

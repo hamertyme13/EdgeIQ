@@ -32,12 +32,25 @@ def test_source_health_reports_only_measured_rates_and_distinct_coverage():
     assert rows["PrizePicks"]["settlement_coverage"]["percent"] == 50.0
     assert rows["PrizePicks"]["research_evidence"] == {"facts": 2, "uses": 4, "linked_outcomes": 3}
     assert rows["ESPN public"]["settlement_coverage"] == {
-        "eligible": 3, "verified": 2, "scope": "Distinct ledger legs attempted with this final-stat source, last 30 days", "percent": 66.7,
+        "eligible": 3, "verified": 2, "scope": "Latest recorded attempt per ledger leg and final-stat source, last 30 days", "percent": 66.7,
     }
     assert rows["ESPN public"]["availability_percent_this_session"] is None
     assert rows["NewsAPI"]["settlement_coverage"]["percent"] is None
     assert rows["NewsAPI"]["research_evidence"]["facts"] == 0
     assert "do not establish predictive accuracy" in result["note"]
+
+
+def test_source_health_uses_latest_audit_status_per_leg_and_source():
+    now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+    result = summarize_source_health(
+        [{"name": "ESPN public", "settlement_capable": True}], [],
+        [("espn", "verified", 10), ("ESPN official box score", "blocked", 10),
+         ("espn", "blocked", 11), ("espn", "verified", 11)],
+        [], now=now,
+    )
+    assert result["sources"][0]["settlement_coverage"]["eligible"] == 2
+    assert result["sources"][0]["settlement_coverage"]["verified"] == 1
+    assert result["sources"][0]["settlement_coverage"]["percent"] == 50.0
 
 
 def test_source_health_endpoint_reuses_compact_provider_health(monkeypatch):

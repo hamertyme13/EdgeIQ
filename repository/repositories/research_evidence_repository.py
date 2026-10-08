@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.exc import IntegrityError
 
@@ -103,7 +103,9 @@ class ResearchEvidenceRepository:
         """Attribute a settled leg outcome to evidence available for that exact market."""
         initialize_database()
         updated = 0
-        now = utc_now().replace(tzinfo=None)
+        decision_time = _decision_time(entry)
+        if decision_time is None:
+            return 0
         with SessionLocal() as session:
             for prop in entry.get("props") or []:
                 outcome = str(prop.get("final_result") or prop.get("result") or "").title()
@@ -114,13 +116,19 @@ class ResearchEvidenceRepository:
                     stat=str(prop.get("stat") or ""),
                     sport=str(prop.get("sport") or "").upper(),
                 )
+                platform = str(prop.get("platform") or entry.get("platform") or "")
+                if platform:
+                    query = query.filter(ResearchEvidenceModel.platform.in_([platform, "", "Both"]))
                 game_key = canonical_matchup_key(prop.get("game"))
                 if game_key:
                     query = query.filter(
                         ResearchEvidenceModel.game_key.in_([game_key, ""])
                     )
                 outcome_key = _outcome_key(entry, prop, outcome)
-                for row in query.filter(ResearchEvidenceModel.captured_at <= now).all():
+                for row in query.filter(
+                    ResearchEvidenceModel.captured_at <= decision_time,
+                    ResearchEvidenceModel.expires_at >= decision_time,
+                ).all():
                     seen = _json_list(row.outcome_keys)
                     if outcome_key in seen:
                         continue
@@ -142,6 +150,7 @@ class ResearchEvidenceRepository:
             session.commit()
         return updated
 
+
     @staticmethod
     def summary() -> dict:
         initialize_database()
@@ -155,6 +164,20 @@ class ResearchEvidenceRepository:
                 "outcome_linked": sum(row.use_count > 0 for row in rows),
                 "sources": sorted({row.source_name for row in rows}),
             }
+
+
+def _decision_time(entry: dict) -> datetime | None:
+    value = entry.get("placed_at") or entry.get("created_at")
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _fingerprint(fact: dict, payload: dict) -> str:

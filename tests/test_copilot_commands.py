@@ -22,13 +22,16 @@ def test_market_filter_requires_matching_segment_samples():
     assert plan.min_samples == 100
     rows = [
         {"player": "A", "sport": "WNBA", "stat": "Points", "line": 20.5, "confidence": 75,
-         "calibration_presentation": {"sample_size": 400, "segment_sample_size": 10}},
+         "calibration_presentation": {"status": "CALIBRATED", "sample_size": 400, "segment_sample_size": 10}},
         {"player": "B", "sport": "WNBA", "stat": "Rebounds", "line": 8.5, "confidence": 64,
-         "calibration_presentation": {"sample_size": 300, "segment_sample_size": 120}},
+         "calibration_presentation": {"status": "CALIBRATED", "sample_size": 300, "segment_sample_size": 120}},
+        {"player": "C", "sport": "WNBA", "stat": "Assists", "line": 5.5, "confidence": 80,
+         "calibration_presentation": {"status": "UNAVAILABLE", "sample_size": 300, "segment_sample_size": 120}},
     ]
     result = run_command(plan, **_services(briefing=lambda *_args: {"top_opportunities": rows}))
     assert "B" in result["response"]["answer"]
     assert "Points" not in result["response"]["answer"]
+    assert "Assists" not in result["response"]["answer"]
     assert result["response"]["citations"] == ["briefing-snapshot"]
     assert result["provider"] == "EdgeIQ Local"
 
@@ -54,6 +57,34 @@ def test_timeline_needs_player_instead_of_querying_every_market():
     assert result["grounded"] is False
     assert "Choose a player" in result["response"]["answer"]
     assert result["citations"] == []
+
+
+def test_slate_change_command_reads_cached_comparison_without_timeline():
+    plan = plan_command(CopilotQueryPayload(question="What changed since noon?"))
+    assert plan and plan.intent == "slate_changes"
+    result = run_command(plan, **_services(
+        briefing=lambda *_args: {"slate_changes": {
+            "available": True, "event_count": 2,
+            "counts": {"new_recommendations": 1, "upgrades": 1},
+            "events": [{"label": "A · Points", "detail": "Line: 18.5 to 19.5"}],
+        }},
+        timeline=lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not query timeline")),
+    ))
+    assert "2 observed changes" in result["response"]["answer"]
+    assert "Line: 18.5 to 19.5" in result["response"]["supporting_evidence"][-1]
+    assert result["response"]["citations"] == ["briefing-slate-comparison"]
+
+
+def test_timeline_command_reports_observed_change_without_inventing_cause():
+    plan = plan_command(CopilotQueryPayload(question="Why did this pick fall from A to C?", player="A"))
+    result = run_command(plan, **_services(timeline=lambda **_kwargs: {
+        "events": [{"player": "A", "stat": "Points", "changes": ["recommendation_grade_change"],
+                    "change_reasons": ["Grade: A to C.", "The saved snapshots do not identify the cause."]}],
+        "summary": "Two saved states.",
+    }))
+    text = " ".join([result["response"]["answer"], *result["response"]["supporting_evidence"]])
+    assert "because" not in text
+    assert "Grade: A to C." in text
 
 
 def test_personal_edge_uses_verified_ledger_summary():

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String, func
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, func
 
 from repository.database import Base
 
@@ -22,3 +22,8 @@ class FinalPlayerStatModel(Base):
     status = Column(String, default="played")
     source = Column(String, default="import")
     imported_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        Index("ix_final_stat_sport_stat_date", "sport", "stat", "game_date"),
+        Index("ix_final_stat_identity_stat_date", "player_identity_id", "stat", "game_date"),
+    )

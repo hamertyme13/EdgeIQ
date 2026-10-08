@@ -36,6 +36,34 @@ def _probability(evidence: dict | None) -> float | None:
     return calibrated if calibrated is not None else evidence.get("confidence")
 
 
+def _change_reasons(previous: dict | None, current: dict, changes: list[str]) -> list[str]:
+    if previous is None:
+        return ["First saved recommendation for this market and offer type."]
+    labels = {
+        "provider_line_change": ("Provider line", "line"),
+        "model_projection_change": ("EdgeIQ projection", "projection"),
+        "confidence_change": ("Model confidence", "confidence"),
+        "calibration_change": ("Calibrated confidence", "calibrated_confidence"),
+        "recommendation_grade_change": ("Grade", "grade"),
+        "model_version_change": ("Model version", "model_version"),
+    }
+    reasons = []
+    for change in changes:
+        label, field = labels[change]
+        reasons.append(f"{label}: {previous.get(field)} to {current.get(field)}.")
+    if changes:
+        reasons.append("The saved snapshots do not identify the cause of these changes.")
+    return reasons
+
+
+def _market_identity(offer: ProviderOfferSnapshotModel, direction: str) -> tuple[str, ...]:
+    return (
+        offer.provider, offer.sport,
+        getattr(offer, "provider_event_id", "") or getattr(offer, "game_start", "") or offer.game,
+        offer.stat, direction, getattr(offer, "offer_type", "") or "standard",
+    )
+
+
 def recommendation_timeline(
     *, player: str, sport: str = "", stat: str = "", game: str = "", platform: str = "", limit: int = 100,
 ) -> dict:
@@ -65,10 +93,10 @@ def recommendation_timeline(
             LegRecommendationSnapshotModel.id.desc(),
         ).limit(bound * 5).all()
     events = []
-    previous_by_market: dict[tuple[str, str, str, str, str], dict] = {}
+    previous_by_market: dict[tuple[str, ...], dict] = {}
     for snapshot, offer in reversed(records):
         evidence = json.loads(str(snapshot.evidence))
-        market = (offer.provider, offer.sport, offer.game, offer.stat, snapshot.direction)
+        market = _market_identity(offer, snapshot.direction)
         previous = previous_by_market.get(market)
         changes = _changes(previous, evidence)
         previous_by_market[market] = evidence
@@ -87,6 +115,13 @@ def recommendation_timeline(
             "direction": snapshot.direction,
             "created_at": recorded.replace(tzinfo=UTC).isoformat() if recorded and recorded.tzinfo is None else recorded.isoformat() if recorded else "",
             "changes": changes,
+            "change_reasons": _change_reasons(previous, evidence, changes),
+            "change_category": (
+                "market" if "provider_line_change" in changes else
+                "model" if any(change != "recommendation_created" for change in changes) else "initial"
+            ),
+            "offer_type": getattr(offer, "offer_type", "") or "standard",
+            "market_series_key": json.dumps(market, separators=(",", ":")),
             "previous_line": previous.get("line") if previous else None,
             "line": evidence.get("line"),
             "previous_projection": previous.get("projection") if previous else None,
@@ -95,6 +130,7 @@ def recommendation_timeline(
             "probability": _probability(evidence),
             "model_probability": evidence.get("confidence"),
             "calibrated_probability": evidence.get("calibrated_confidence"),
+            "calibration_context": evidence.get("calibration_context") or {},
             "model_version": evidence.get("model_version") or getattr(snapshot, "model_version", ""),
             "previous_grade": previous.get("grade") if previous else None,
             "grade": evidence.get("grade"),

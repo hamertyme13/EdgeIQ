@@ -1,6 +1,7 @@
 (() => {
   const escape = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const metric = value => typeof value === "number" && Number.isFinite(value) ? value.toFixed(1) : "Unavailable";
+  const outcomeCount = (value, singular, plural) => `${Number(value || 0)} ${Number(value || 0) === 1 ? singular : plural}`;
   const recommendationCache = new Map();
   function renderRecommendation(data, context) {
     const segment = `${context.sport} ${context.stat} · ${context.platform} ${context.direction}`;
@@ -8,7 +9,7 @@
     const row = (data.versions || []).find(item => item.model_version === context.model_version && item.platform === context.platform && item.direction === context.direction);
     if (!row) return `<p class="subtle">${escape(context.model_version)} · ${escape(segment)}: no qualifying verified settled decisions yet. Historical reliability is unavailable.</p>`;
     return `<p><strong>${escape(context.model_version)}</strong> · ${escape(segment)}</p>
-      <p>${Number(row.settled_predictions || 0)} deduplicated settled forecasts within this provider and direction${row.small_sample ? " · Small sample, not proof of a reliable edge" : ""}</p>
+      <p>${Number(row.settled_predictions || 0)} deduplicated settled forecasts within this provider and direction · ${outcomeCount(row.wins, "win", "wins")}, ${outcomeCount(row.losses, "loss", "losses")}${row.small_sample ? " · Fewer than 100 settled: descriptive only" : ""}</p>
       <p>Hit rate ${metric(row.actual_hit_rate)}% · Mean prediction ${metric(row.predicted_hit_rate)}% · Calibration gap ${metric(row.calibration_gap)} pts · Brier ${escape(row.brier_score)}</p>
       <p class="subtle">Historical description only. It does not establish profitable or paid-ready performance.</p>`;
   }
@@ -40,7 +41,7 @@
       <p class="subtle">${escape(data.counting_note)}</p>
       ${data.truncated ? `<p role="status">This view is limited to the first 5,000 matching records. Narrow the filters to review a smaller segment.</p>` : ""}
       ${(data.versions || []).map(row => `<article class="model-track-segment"><h4>${escape(row.model_version)} · ${escape(row.platform)} · ${escape(row.direction)}</h4>
-        <p>${row.settled_predictions} independent decisions${row.small_sample ? " · Small sample: not proof of a reliable edge" : ""}</p>
+        <p>${row.settled_predictions} deduplicated decisions · ${outcomeCount(row.wins, "win", "wins")}, ${outcomeCount(row.losses, "loss", "losses")}${row.small_sample ? " · Fewer than 100 settled: descriptive only" : ""}</p>
         <dl><div><dt>Win rate</dt><dd>${metric(row.actual_hit_rate)}%</dd></div><div><dt>Average forecast</dt><dd>${metric(row.predicted_hit_rate)}%</dd></div><div><dt>Calibration gap</dt><dd>${metric(row.calibration_gap)} percentage points</dd></div><div><dt>Brier score</dt><dd>${escape(row.brier_score)}</dd></div></dl></article>`).join("") || "<p>No qualifying settled decisions match these filters. Locked or legacy records alone are not proof of model accuracy.</p>"}
       <p class="subtle">Verified ROI, CLV, and stored-score bucket linkage are unavailable in this view. No profitability or paid-use approval is implied.</p>`;
   }

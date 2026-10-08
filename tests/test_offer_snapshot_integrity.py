@@ -171,10 +171,15 @@ def test_collector_timestamp_does_not_claim_direct_verification(tmp_path, monkey
 def test_leg_recommendation_is_immutable_and_validated_by_exact_feed(tmp_path, monkeypatch):
     _isolated(tmp_path, monkeypatch)
     row = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]
-    row.update(projection=21.0, confidence=61.0, recommendation_snapshot_id="feed-1")
+    row.update(projection=21.0, confidence=61.0, recommendation_snapshot_id="feed-1",
+               calibration_presentation={"status": "PARTIAL", "label": "Partial calibration evidence",
+                                         "sample_size": 34, "segment_sample_size": 8, "basis": "sport-wide fallback",
+                                         "calibrated_probability": 58.0})
     LegRecommendationSnapshotRepository.capture([row], feed_snapshot_id="feed-1", model_version="test-v1")
     first_id = row["leg_recommendation_snapshot_id"]
     assert LegRecommendationSnapshotRepository.get(first_id)["confidence"] == 61.0
+    assert LegRecommendationSnapshotRepository.get(first_id)["calibration_context"]["status"] == "PARTIAL"
+    assert LegRecommendationSnapshotRepository.get(first_id)["calibrated_confidence"] == 58.0
     repeated = dict(row)
     LegRecommendationSnapshotRepository.capture([repeated, repeated], feed_snapshot_id="feed-1", model_version="test-v1")
     assert repeated["leg_recommendation_snapshot_id"] == first_id

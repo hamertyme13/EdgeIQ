@@ -54,14 +54,18 @@ def summarize_source_health(
             research[name]["uses"] += int(uses or 0)
             research[name]["linked_outcomes"] += int(links or 0)
 
-    attempted: dict[str, set[int]] = defaultdict(set)
-    verified: dict[str, set[int]] = defaultdict(set)
-    for source, status, prop_id in audits:
+    latest_audit: dict[tuple[str, int], str] = {}
+    for audit in audits:
+        source, status, prop_id = audit[:3]
         name = _FINAL_AUDIT_ALIASES.get(str(source or "").lower())
         if name and prop_id is not None:
-            attempted[name].add(int(prop_id))
-            if str(status or "").lower() == "verified":
-                verified[name].add(int(prop_id))
+            latest_audit[name, int(prop_id)] = str(status or "").lower()
+    attempted: dict[str, int] = defaultdict(int)
+    verified: dict[str, int] = defaultdict(int)
+    for (name, _), status in latest_audit.items():
+        attempted[name] += 1
+        if status == "verified":
+            verified[name] += 1
 
     tracked: dict[str, set[str]] = defaultdict(set)
     settled: dict[str, set[str]] = defaultdict(set)
@@ -89,10 +93,10 @@ def summarize_source_health(
                 "scope": "Tracked pregame prop markets past the 24-hour final-stat window, last 30 days",
             }
         elif provider.get("settlement_capable"):
-            eligible, verified_count = len(attempted[name]), len(verified[name])
+            eligible, verified_count = attempted[name], verified[name]
             coverage = {
                 "eligible": eligible, "verified": verified_count,
-                "scope": "Distinct ledger legs attempted with this final-stat source, last 30 days",
+                "scope": "Latest recorded attempt per ledger leg and final-stat source, last 30 days",
             }
         else:
             eligible, verified_count = 0, 0
@@ -115,7 +119,7 @@ def summarize_source_health(
         })
     return {
         "sources": rows, "truncated": truncated,
-        "note": "Network rates cover only requests observed by this app process. Settlement coverage is scoped to tracked markets or attempted ledger legs, not every provider event. Research links may repeat across entries and do not establish predictive accuracy.",
+        "note": "Network rates cover only requests observed by this app process. Settlement coverage is scoped to tracked markets or latest recorded attempts for ledger legs, not every provider event. Research outcome links may repeat across entries and do not establish predictive accuracy.",
     }
 
 
@@ -133,7 +137,9 @@ def source_health_payload(health: dict) -> dict:
         ).filter(ResearchEvidenceModel.captured_at >= since).group_by(ResearchEvidenceModel.source_name).all()
         audits = session.query(
             SettlementAuditModel.provider, SettlementAuditModel.status, SettlementAuditModel.entry_prop_id,
-        ).filter(SettlementAuditModel.attempted_at >= since).all()
+        ).filter(SettlementAuditModel.attempted_at >= since).order_by(
+            SettlementAuditModel.attempted_at, SettlementAuditModel.id,
+        ).all()
         prediction_rows = session.query(
             PredictionRecordModel.platform, PredictionRecordModel.independent_market_key,
             PredictionRecordModel.game_time, PredictionRecordModel.outcome,

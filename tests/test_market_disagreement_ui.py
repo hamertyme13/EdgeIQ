@@ -22,6 +22,10 @@ assert.match(html, /within calibration uncertainty/);
 assert.match(html, /Some book timestamps unavailable/);
 assert.match(html, /&lt;script&gt;/);
 assert.doesNotMatch(html, /<script>/);
+const unsupported = render({rows:[{player:'A',direction:'Over',line:19.5,stat:'Points',
+  calibrated_probability:null,effective_difference:null,context:'Calibration unsupported; raw model difference only'}]});
+assert.match(unsupported, /Unsupported calibration/);
+assert.match(unsupported, /raw model difference only/);
 assert.match(render({message:'No current market',rows:[]}), /No validated exact-line comparison/);
 """
     subprocess.run(["node", "-e", script], check=True)

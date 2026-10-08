@@ -120,17 +120,18 @@ def summarize_personal_edge(rows: list[dict], *, mode: str, truncated: bool = Fa
         for dimension, name in (
             ("sport", str(row.get("sport") or "Unknown").upper()),
             ("stat", canonical_stat_label(row.get("stat") or "Unknown")),
+            ("sport_stat", f"{str(row.get('sport') or 'Unknown').upper()} {canonical_stat_label(row.get('stat') or 'Unknown')}"),
             ("provider", str(row.get("platform") or "Unknown")),
             ("direction", str(row.get("direction") or "Unknown").title()),
             ("confidence_bucket", _confidence_bucket(row.get("confidence"))),
         ):
             groups[dimension].append((name, result))
     segments = {dimension: _segments(groups[dimension]) for dimension in
-                ("sport", "stat", "provider", "direction", "confidence_bucket")}
+                ("sport", "stat", "sport_stat", "provider", "direction", "confidence_bucket")}
     card_size, grade = _card_segments(entries, mode=mode)
     eligible = [
         {"dimension": dimension, **segment}
-        for dimension in ("sport", "stat", "provider")
+        for dimension in ("sport_stat", "provider")
         for segment in segments[dimension]
         if not segment["small_sample"]
     ]

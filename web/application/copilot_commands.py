@@ -38,7 +38,7 @@ def plan_command(payload: CopilotQueryPayload) -> QueryPlan | None:
     elif any(term in question for term in ("most correlated risk", "concentration risk", "which open entries", "shared-leg risk")):
         intent = "portfolio_risk"
     elif any(term in question for term in ("changed the most", "since noon", "pick fall from", "recommendation timeline")):
-        intent = "timeline"
+        intent = "timeline" if payload.player.strip() or "pick fall from" in question else "slate_changes"
     elif any(term in question for term in ("stale evidence", "low fragility", "strongest counterargument")):
         intent = "evidence_review"
     elif any(term in question for term in ("props above", "recommendations above", "model probability with", "calibrated samples")):
@@ -114,7 +114,9 @@ def run_command(
             return _result(plan.intent, [str(data.get("summary") or "No saved changes match this player and market.")], "timeline-snapshot", "Saved recommendation timeline")
         latest = events[-1]
         lines = [str(data.get("summary") or "Saved recommendation changes are available.")]
-        lines.append(f"Latest: {latest.get('player', plan.player)} {latest.get('stat', '')} changed because {', '.join(latest.get('changes') or []).replace('_', ' ')}.")
+        changes = ", ".join(latest.get("changes") or []).replace("_", " ") or "initial saved state"
+        lines.append(f"Latest saved difference for {latest.get('player', plan.player)} {latest.get('stat', '')}: {changes}.")
+        lines.extend(str(reason) for reason in (latest.get("change_reasons") or [])[:2])
         return _result(plan.intent, lines, "timeline-snapshot", "Saved recommendation timeline", missing=["This view is limited to the latest 30 saved changes; it is not a full-slate change ranking."])
     if plan.intent == "model_track_record":
         if not plan.sport:
@@ -138,12 +140,19 @@ def run_command(
         return _result(plan.intent, lines, "briefing-market-snapshot", "Cached exact-line sportsbook comparison", missing=[
             "A probability difference is not expected value; payout and offer availability must be checked separately.",
         ])
-    if plan.intent in {"recommendation_compare", "slate_changes"}:
-        advice = {
-            "recommendation_compare": "Select the specific props to compare; the question alone does not identify four offers.",
-            "slate_changes": "Choose a player to review saved recommendation changes. A verified full-slate change index is not available yet.",
-        }
-        return _result(plan.intent, [advice[plan.intent]], missing=["No matching verified comparison snapshot was supplied."])
+    if plan.intent == "slate_changes":
+        changes = (briefing(platform, plan.sport).get("slate_changes") or {})
+        if not changes.get("available"):
+            return _result(plan.intent, [str(changes.get("message") or "Refresh Today's briefing twice to compare the same day's displayed slate.")], missing=["No same-day saved comparison is available yet."])
+        counts = changes.get("counts") or {}
+        lines = [f"Since the previous refresh: {int(changes.get('event_count') or 0)} observed changes in displayed games and ranked props."]
+        lines.append(f"{int(counts.get('new_recommendations') or 0)} newly ranked, {int(counts.get('upgrades') or 0)} upgrades, {int(counts.get('downgrades') or 0)} downgrades, {int(counts.get('invalidated') or 0)} invalidated.")
+        lines.extend(f"{event.get('label', 'Recommendation')}: {event.get('detail', 'Changed')}" for event in (changes.get("events") or [])[:4])
+        return _result(plan.intent, lines, "briefing-slate-comparison", "Saved same-day briefing comparison", missing=[
+            "Only displayed games and ranked props were compared; this is not the full provider board.",
+        ])
+    if plan.intent == "recommendation_compare":
+        return _result(plan.intent, ["Select the specific props to compare; the question alone does not identify four offers."], missing=["No matching verified comparison snapshot was supplied."])
     data = briefing(platform, plan.sport)
     rows = list(data.get("top_opportunities") or [])[:9]
     if plan.sport:
@@ -152,7 +161,7 @@ def run_command(
         if plan.min_probability is not None:
             rows = [row for row in rows if _meets_probability(row, plan.min_probability)]
         if plan.min_samples is not None:
-            rows = [row for row in rows if _sample_count(row) >= plan.min_samples]
+            rows = [row for row in rows if _has_calibration_samples(row, plan.min_samples)]
     elif plan.intent == "evidence_review":
         # The same cached snapshot supplies the fragility and freshness fields shown on Today.
         rows = [row for row in rows if _matches_evidence_request(row, plan)]
@@ -196,10 +205,18 @@ def _sample_count(row: dict) -> int:
         return 0
 
 
+def _has_calibration_samples(row: dict, minimum: int) -> bool:
+    calibration = row.get("calibration_presentation") or {}
+    return calibration.get("status") in {"CALIBRATED", "PARTIAL", "DEGRADED"} and _sample_count(row) >= minimum
+
+
 def _prop_line(row: dict) -> str:
     calibration = row.get("calibration_presentation") or {}
     samples = calibration.get("segment_sample_size")
-    sample_label = f", {_sample_count(row)} matching calibration samples" if samples is not None else ", calibration samples unavailable"
+    sample_label = (
+        f", {_sample_count(row)} matching calibration samples ({calibration.get('label') or calibration.get('status') or 'status unavailable'})"
+        if samples is not None else ", calibration samples unavailable"
+    )
     risk = row.get("counterargument") or {}
     freshness = row.get("recommendation_freshness") or {}
     context = f" Fragility: {risk.get('fragility_label')}." if risk.get("fragility_label") else ""

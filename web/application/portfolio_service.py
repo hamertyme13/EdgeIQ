@@ -98,6 +98,10 @@ def portfolio_intelligence_payload(
         if str(entry.get("entry_mode") or "real").lower() == "real"
     ]
     counts = _portfolio_counts(real_entries)
+    unidentified_game_legs = sum(
+        1 for entry in real_entries for prop in entry.get("props") or []
+        if not _prop_portfolio_keys(prop)["game"][0]
+    )
     limits = _portfolio_limits(strategy)
     wager = round(sum(float(entry.get("wager") or 0.0) for entry in real_entries), 2)
     exposure_pct = round(wager / bankroll * 100.0, 1) if bankroll > 0 else 0.0
@@ -127,6 +131,10 @@ def portfolio_intelligence_payload(
         watch_reasons.append(f"{largest_sport_share:.1f}% of open paid stake depends on one sport.")
     if concentrations and not risk_reasons:
         watch_reasons.append("A configured player or game entry limit is exceeded.")
+    if unidentified_game_legs:
+        watch_reasons.append(
+            f"{unidentified_game_legs} pending leg{' has' if unidentified_game_legs == 1 else 's have'} no dated game identity; exact shared-game and market overlap cannot be confirmed."
+        )
     concentration_risk = "HIGH" if risk_reasons else "MODERATE" if watch_reasons else "LOW"
     if any(item["severity"] == "danger" for item in concentrations):
         status = "Concentrated"
@@ -155,6 +163,7 @@ def portfolio_intelligence_payload(
         "risk_method": "HIGH: breached exact-market/player bankroll/open-wager limit, or at least 70% of stake in one sport across 2+ cards. MODERATE: repeated exact markets, another concentration limit breach, or at least 50% of stake in one sport across 2+ cards. Otherwise LOW. The overlap index is a heuristic, not a measured correlation or loss probability.",
         "shared_leg_failure_risk": {
             "repeated_props": len(shared_markets),
+            "unidentified_game_legs": unidentified_game_legs,
             "exposed_wager": round(sum(float(row["wager"]) for row in shared_markets), 2),
             "message": (
                 f"{len(shared_markets)} exact prop{'s appear' if len(shared_markets) != 1 else ' appears'} on multiple pending entries."
@@ -580,13 +589,16 @@ def _prop_portfolio_keys(prop: dict) -> dict[str, tuple[str, str]]:
     game_key = canonical_matchup_key(prop.get("game"))
     game_identity = str(prop.get("provider_event_id") or "").strip()
     game_time = str(prop.get("game_time") or "").strip()
-    if game_key and (game_time or game_identity):
-        game_key = f"{game_key}|{game_time or game_identity}"
+    try:
+        dated_game = datetime.fromisoformat(game_time.replace("Z", "+00:00")) if game_time else None
+    except ValueError:
+        dated_game = None
+    game_key = f"{game_key}|{game_identity or dated_game.isoformat()}" if game_key and (game_identity or dated_game) else ""
     game = str(prop.get("game") or "Unknown matchup")
     provider = str(prop.get("platform") or "Unknown provider")
     team = str(prop.get("team") or "Unknown team")
     sport = str(prop.get("sport") or "").strip().upper()
-    market_key = f"{sport}|{game_key}|{player_key}|{stat.casefold()}|{direction.casefold()}|{line:.2f}" if player_key else ""
+    market_key = f"{sport}|{game_key}|{player_key}|{stat.casefold()}|{direction.casefold()}|{line:.2f}" if player_key and game_key else ""
     return {
         "player": (player_key, player),
         "game": (game_key, game),

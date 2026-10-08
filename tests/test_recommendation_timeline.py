@@ -21,6 +21,16 @@ def test_timeline_change_detection_distinguishes_market_and_model():
     assert timeline._probability({"calibrated_confidence": 0, "confidence": 90}) == 0
 
 
+def test_timeline_keeps_adjusted_offers_and_games_separate():
+    base = dict(provider="PrizePicks", sport="WNBA", game="A vs B", game_start="2026-10-07T19:00:00Z",
+                provider_event_id="game-1", stat="Points", offer_type="standard")
+    standard = SimpleNamespace(**base)
+    discount = SimpleNamespace(**{**base, "offer_type": "discounted"})
+    next_game = SimpleNamespace(**{**base, "provider_event_id": "game-2"})
+    assert timeline._market_identity(standard, "Over") != timeline._market_identity(discount, "Over")
+    assert timeline._market_identity(standard, "Over") != timeline._market_identity(next_game, "Over")
+
+
 def test_timeline_reads_immutable_snapshot_sequence(monkeypatch):
     def record(index, line):
         evidence = {"line": line, "projection": 26.1, "confidence": 67, "calibrated_confidence": 64, "grade": "B", "model_version": "v2.4"}
@@ -28,7 +38,7 @@ def test_timeline_reads_immutable_snapshot_sequence(monkeypatch):
             id=index, snapshot_id=f"snapshot-{index}", player="Test Player", direction="Over",
             evidence=json.dumps(evidence), created_at=datetime(2026, 10, 3, 12, index, tzinfo=UTC),
         )
-        offer = SimpleNamespace(snapshot_id=f"offer-{index}", provider="PrizePicks", sport="WNBA", game="A vs B", stat="Points")
+        offer = SimpleNamespace(snapshot_id=f"offer-{index}", provider="PrizePicks", sport="WNBA", game="A vs B", stat="Points", offer_type="standard")
         return snapshot, offer
 
     class Query:
@@ -68,6 +78,9 @@ def test_timeline_reads_immutable_snapshot_sequence(monkeypatch):
     assert result["events"][1]["model_probability"] == 67
     assert result["events"][1]["calibrated_probability"] == 64
     assert result["events"][1]["model_version"] == "v2.4"
+    assert result["events"][0]["market_series_key"] == result["events"][1]["market_series_key"]
+    assert result["events"][1]["change_reasons"][0] == "Provider line: 23.5 to 24.5."
+    assert result["events"][1]["change_category"] == "market"
     assert result["clv"] is None
 
 
