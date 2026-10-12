@@ -101,6 +101,23 @@ def test_legacy_and_attributed_product_events_remain_supported():
     assert ProductExperienceRepository.analytics()["funnel"][0]["count"] == 1
 
 
+def test_research_telemetry_drops_freeform_text_and_unexpected_metadata():
+    import json
+
+    from repository.database import SessionLocal
+
+    event = ProductExperienceRepository.record_event(
+        "ask_edgeiq_result",
+        "copilot",
+        "private question text",
+        {"sport": "WNBA", "grounded": True, "question": "private question text", "api_key": "secret"},
+    )
+    with SessionLocal() as session:
+        row = session.get(ProductEventModel, event["id"])
+        assert row.entity_id == ""
+        assert json.loads(row.metadata_json) == {"sport": "WNBA", "grounded": True}
+
+
 def test_settlement_event_inherits_saved_entry_owner():
     user = create_user()
     authenticated = BetaUserRepository.authenticate(user["email"], PASSWORD)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
@@ -176,7 +176,7 @@ def _decision_time(entry: dict) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     if value.tzinfo is not None:
-        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        value = value.astimezone(UTC).replace(tzinfo=None)
     return value
 
 

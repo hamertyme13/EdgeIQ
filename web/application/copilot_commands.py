@@ -141,13 +141,13 @@ def run_command(
             "A probability difference is not expected value; payout and offer availability must be checked separately.",
         ])
     if plan.intent == "slate_changes":
-        changes = (briefing(platform, plan.sport).get("slate_changes") or {})
-        if not changes.get("available"):
-            return _result(plan.intent, [str(changes.get("message") or "Refresh Today's briefing twice to compare the same day's displayed slate.")], missing=["No same-day saved comparison is available yet."])
-        counts = changes.get("counts") or {}
-        lines = [f"Since the previous refresh: {int(changes.get('event_count') or 0)} observed changes in displayed games and ranked props."]
+        slate_changes = (briefing(platform, plan.sport).get("slate_changes") or {})
+        if not slate_changes.get("available"):
+            return _result(plan.intent, [str(slate_changes.get("message") or "Refresh Today's briefing twice to compare the same day's displayed slate.")], missing=["No same-day saved comparison is available yet."])
+        counts = slate_changes.get("counts") or {}
+        lines = [f"Since the previous refresh: {int(slate_changes.get('event_count') or 0)} observed changes in displayed games and ranked props."]
         lines.append(f"{int(counts.get('new_recommendations') or 0)} newly ranked, {int(counts.get('upgrades') or 0)} upgrades, {int(counts.get('downgrades') or 0)} downgrades, {int(counts.get('invalidated') or 0)} invalidated.")
-        lines.extend(f"{event.get('label', 'Recommendation')}: {event.get('detail', 'Changed')}" for event in (changes.get("events") or [])[:4])
+        lines.extend(f"{event.get('label', 'Recommendation')}: {event.get('detail', 'Changed')}" for event in (slate_changes.get("events") or [])[:4])
         return _result(plan.intent, lines, "briefing-slate-comparison", "Saved same-day briefing comparison", missing=[
             "Only displayed games and ranked props were compared; this is not the full provider board.",
         ])

@@ -1,8 +1,8 @@
 """In-app notices from saved briefing comparisons; never refresh providers here."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 import re
+from datetime import UTC, datetime, timedelta
 
 SUPPORTED = {"upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"}
 _LINE_MOVE = re.compile(r"^Line: (-?\d+(?:\.\d+)?) to (-?\d+(?:\.\d+)?)$")

@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import create_engine
@@ -6,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import repository.database as database
 from analytics.hierarchical_calibration import calibrate_probability
 from repository.database import Base
+from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.repositories import board_offer_repository as board_module
 from repository.repositories import model_rehabilitation_repository as rehabilitation_module
 from repository.repositories import settings_repository as settings_module
@@ -57,6 +59,25 @@ def test_shadow_queue_deduplicates_repeated_provider_markets(tmp_path, monkeypat
     assert second["queued"] == 1
 
 
+def test_shadow_queue_respects_full_cohort_target(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    props = [
+        {"player": f"Player {index}", "sport": "WNBA", "stat": "Points", "line": 20.5,
+         "direction": "Over", "platform": "PrizePicks", "game": "A @ B",
+         "game_time": "2026-08-09T20:00:00Z", "confidence": 62}
+        for index in range(3)
+    ]
+    first = ModelRehabilitationRepository.queue_shadow(
+        props, model_version="shadow-test", target=2, cohort_date="2026-08-09"
+    )
+    second = ModelRehabilitationRepository.queue_shadow(
+        props, model_version="shadow-test", target=2, cohort_date="2026-08-09"
+    )
+    assert first["created"] == 2
+    assert second["created"] == 0
+    assert second["queued"] == 2
+
+
 def test_recommendation_snapshots_are_immutable(tmp_path, monkeypatch):
     _isolated_database(tmp_path, monkeypatch)
     first = ModelRehabilitationRepository.save_feed({"feed": {"platform": "PrizePicks"}, "props": [{"line": 10.5}]})
@@ -64,6 +85,29 @@ def test_recommendation_snapshots_are_immutable(tmp_path, monkeypatch):
     history = ModelRehabilitationRepository.snapshot_history()
     assert first["snapshot_id"] != second["snapshot_id"]
     assert len(history) == 2
+
+
+def test_new_snapshots_are_compressed_and_legacy_json_remains_readable(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    saved = ModelRehabilitationRepository.save_feed({"feed": {"platform": "PrizePicks"}})
+    with sessions() as session:
+        row = session.query(RecommendationSnapshotModel).filter_by(snapshot_id=saved["snapshot_id"]).one()
+        assert row.payload.startswith("zlib64:")
+        row.payload = json.dumps(saved)
+        session.commit()
+    assert ModelRehabilitationRepository.get_snapshot(saved["snapshot_id"])["snapshot_id"] == saved["snapshot_id"]
+
+
+def test_feed_settings_store_only_snapshot_pointer_and_load_legacy_payload(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    saved = ModelRehabilitationRepository.save_feed({"feed": {"platform": "PrizePicks"}})
+    assert settings_module.SettingsRepository.get(ModelRehabilitationRepository.FEED_KEY) == saved["snapshot_id"]
+    assert ModelRehabilitationRepository.load_feed()["snapshot_id"] == saved["snapshot_id"]
+
+    settings_module.SettingsRepository.set(
+        ModelRehabilitationRepository.FEED_KEY, '{"snapshot_id":"legacy","feed":{"platform":"Underdog"}}',
+    )
+    assert ModelRehabilitationRepository.load_feed()["feed"]["platform"] == "Underdog"
 
 
 def test_daily_snapshot_pointers_survive_switching_provider_and_sport(tmp_path, monkeypatch):

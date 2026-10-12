@@ -16,6 +16,7 @@ def _entry(result, when, *, mode="real", recommended=False, status="Settled"):
         "placed_at": when,
         "platform": "PrizePicks",
         "props": [],
+        "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 65.0}},
     }
 
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20261008-smart-alerts";
+const CACHE_NAME = "edgeiq-shell-20261012-mission-control-7";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -21,6 +21,8 @@ const SHELL_ASSETS = [
   "/static/js/recommendation-disclosure.js",
   "/static/js/recommendation-card.js",
   "/static/js/slate-changes.js",
+  "/static/js/alerts.js",
+  "/static/js/provider-health.js",
   "/static/js/personal-edge.js",
   "/static/js/recommendation-compare.js",
   "/static/js/market-disagreement.js",

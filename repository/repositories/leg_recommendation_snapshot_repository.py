@@ -7,7 +7,8 @@ import math
 from datetime import UTC, datetime
 
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from repository import database
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
@@ -78,33 +79,34 @@ class LegRecommendationSnapshotRepository:
         database.initialize_database()
         recorded_at = captured_at or datetime.now(UTC)
         seen: set[str] = set()
+        records: list[dict] = []
+        for row in rows:
+            evidence = _evidence(row, feed_snapshot_id, model_version, recorded_at)
+            if evidence is None:
+                continue
+            serialized = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
+            snapshot_id = hashlib.sha256(serialized.encode()).hexdigest()
+            row["leg_recommendation_snapshot_id"] = snapshot_id
+            if snapshot_id in seen:
+                continue
+            seen.add(snapshot_id)
+            records.append({
+                "snapshot_id": snapshot_id,
+                "feed_snapshot_id": feed_snapshot_id,
+                "offer_snapshot_id": evidence["offer_snapshot_id"],
+                "model_version": model_version,
+                "player": evidence["player"], "sport": evidence["sport"], "stat": evidence["stat"],
+                "direction": evidence["direction"], "line": evidence["line"],
+                "projection": evidence["projection"], "confidence": evidence["confidence"],
+                "feature_as_of": evidence["feature_as_of"], "evidence": serialized,
+            })
+        if not records:
+            return
         with database.SessionLocal() as session:
-            for row in rows:
-                evidence = _evidence(row, feed_snapshot_id, model_version, recorded_at)
-                if evidence is None:
-                    continue
-                serialized = json.dumps(evidence, sort_keys=True, separators=(",", ":"), default=str)
-                snapshot_id = hashlib.sha256(serialized.encode()).hexdigest()
-                row["leg_recommendation_snapshot_id"] = snapshot_id
-                if snapshot_id in seen:
-                    continue
-                seen.add(snapshot_id)
-                record = LegRecommendationSnapshotModel(
-                    snapshot_id=snapshot_id,
-                    feed_snapshot_id=feed_snapshot_id,
-                    offer_snapshot_id=evidence["offer_snapshot_id"],
-                    model_version=model_version,
-                    player=evidence["player"], sport=evidence["sport"], stat=evidence["stat"],
-                    direction=evidence["direction"], line=evidence["line"],
-                    projection=evidence["projection"], confidence=evidence["confidence"],
-                    feature_as_of=evidence["feature_as_of"], evidence=serialized,
-                )
-                try:
-                    with session.begin_nested():
-                        session.add(record)
-                        session.flush()
-                except IntegrityError:
-                    pass
+            insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+            for offset in range(0, len(records), 100):
+                statement = insert_factory(LegRecommendationSnapshotModel).values(records[offset:offset + 100])
+                session.execute(statement.on_conflict_do_nothing(index_elements=["snapshot_id"]))
             session.commit()
 
     @staticmethod

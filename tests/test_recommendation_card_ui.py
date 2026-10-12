@@ -21,14 +21,23 @@ const base = {_sourceIndex: 3, player: '<Test Player>', sport: 'WNBA', platform:
   counterargument: {fragility_label: 'Moderate'},
   decision_receipt: {market_probability: null}};
 const html = render(base);
-assert.match(html, /EdgeIQ probability<\/dt><dd>62%/);
-assert.match(html, /Calibrated probability<\/dt><dd>Unavailable/);
+assert.match(html, /Model probability<\/dt><dd>62%/);
+assert.doesNotMatch(html, /Calibrated probability<\/dt><dd>99%/);
 assert.match(html, /EdgeIQ Score · Strong/);
-assert.match(html, /Market status<\/dt><dd>No exact-line odds/);
+assert.match(html, /No exact-line odds/);
+assert.match(html, /Why EdgeIQ likes it · Why this can lose/);
+assert.doesNotMatch(html, /recommendation-probability-track/);
 assert.match(html, /data-add-opportunity="3"/);
 assert.match(html, /data-select-opportunity="3"/);
 assert.match(html, /&lt;Test Player&gt;/);
 assert.doesNotMatch(html, /<Test Player>/);
+const calibrated = render({...base,
+  calibration_presentation: {status: 'CALIBRATED', calibrated_probability: 59, sample_size: 150},
+  decision_receipt: {market_probability: 54, market_book_count: 2}});
+assert.match(calibrated, /Calibrated probability<\/dt><dd>59%/);
+assert.match(calibrated, /Market 54%/);
+assert.match(calibrated, /EdgeIQ 59%/);
+assert.match(calibrated, /recommendation-probability-track/);
 const expired = render({...base, recommendation_freshness: {status: 'expired'}});
 assert.match(expired, /data-add-opportunity="3" disabled/);
 assert.match(expired, /data-select-opportunity="3" disabled/);

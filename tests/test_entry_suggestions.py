@@ -250,6 +250,29 @@ def test_generators_reuse_forecasts_across_leg_counts(monkeypatch):
     assert calls["count"] == 3
 
 
+def test_daily_card_generation_reuses_converted_candidates(monkeypatch):
+    import analytics.entry_suggestions as module
+
+    calls = {"count": 0}
+    original = module._props_from_feed
+
+    def tracked(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_props_from_feed", tracked)
+    props = [
+        {"player": name, "team": name, "league": "WNBA", "stat": "Points", "line": 20.5, "game": "A @ B"}
+        for name in ("A", "B", "C")
+    ]
+    cache = {}
+
+    suggest_entries(props, "WNBA", Platform.PRIZEPICKS, limit=1, leg_count=2, candidate_cache=cache)
+    suggest_entries(props, "WNBA", Platform.PRIZEPICKS, limit=1, leg_count=3, candidate_cache=cache)
+
+    assert calls["count"] == 3
+
+
 def test_feedback_is_calculated_once_per_candidate_not_per_combination(monkeypatch):
     calls = {"history": 0, "adjustments": 0}
     history = [{"status": "Settled", "result": "Win"} for _ in range(5)]

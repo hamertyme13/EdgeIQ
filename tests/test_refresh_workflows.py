@@ -1,3 +1,5 @@
+import asyncio
+from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -59,6 +61,22 @@ def test_startup_does_not_eagerly_scan_runtime_status() -> None:
     lifespan = source[source.index("async def lifespan"):source.index("async def _settlement_refresh_loop")]
 
     assert "_runtime_status_payload" not in lifespan
+
+
+def test_secondary_web_process_does_not_start_background_loops(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(web_app, "initialize_database", lambda: calls.append("initialize"))
+    monkeypatch.setattr(web_app, "named_operation_lock", lambda name: nullcontext(False))
+    monkeypatch.setattr(web_app, "_recover_interrupted_daily_scan", lambda: calls.append("recover"))
+    monkeypatch.setattr(web_app.asyncio, "create_task", lambda coroutine: calls.append("task"))
+
+    async def run() -> None:
+        async with web_app.lifespan(web_app.app):
+            calls.append("serve")
+
+    asyncio.run(run())
+
+    assert calls == ["initialize", "serve"]
 
 
 def test_sync_payload_records_refresh_result() -> None:

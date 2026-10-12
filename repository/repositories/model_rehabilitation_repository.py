@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
+import logging
+import time
 import uuid
+import zlib
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
 from analytics.grouped_validation import grouped_rolling_validation
@@ -22,6 +29,8 @@ from services.recommendation_snapshot import attach_leg_recommendations, attach_
 from utils.time import utc_now
 
 VERIFIED_SOURCES_EXCLUDED = {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
+SNAPSHOT_COMPRESSION_PREFIX = "zlib64:"
+_log = logging.getLogger(__name__)
 
 
 class ModelRehabilitationRepository:
@@ -49,6 +58,16 @@ class ModelRehabilitationRepository:
     @staticmethod
     def save_feed(payload: dict, *, model_version: str = PRODUCT_MODEL_VERSION) -> dict:
         """Append an immutable snapshot and update the compatibility pointer."""
+        started = time.monotonic()
+        stage_started = started
+
+        def record_stage(name: str) -> None:
+            nonlocal stage_started
+            elapsed_ms = (time.monotonic() - stage_started) * 1000
+            if elapsed_ms >= 1000:
+                _log.warning("Recommendation snapshot %s took %.1f ms", name, elapsed_ms)
+            stage_started = time.monotonic()
+
         initialize_database()
         current = ModelRehabilitationRepository.load_feed()
         merged = deepcopy({**current, **payload})
@@ -61,7 +80,9 @@ class ModelRehabilitationRepository:
         purpose = str(feed.get("purpose") or "recommendation_feed")
         snapshot_id = f"{captured_at.strftime('%Y%m%dT%H%M%S%f')}-{uuid.uuid4().hex[:8]}"
         stamp_snapshot_payload(merged, snapshot_id, model_version, captured_at, updated_sections=set(payload))
+        record_stage("prepare")
         attach_offer_snapshots(merged, set(payload), ProviderOfferSnapshotRepository.capture_many)
+        record_stage("offer_capture")
         attach_leg_recommendations(
             merged, set(payload),
             lambda rows: LegRecommendationSnapshotRepository.capture(
@@ -69,6 +90,7 @@ class ModelRehabilitationRepository:
                 captured_at=captured_at.replace(tzinfo=UTC),
             ),
         )
+        record_stage("leg_capture")
         with SessionLocal() as session:
             session.add(RecommendationSnapshotModel(
                 snapshot_id=snapshot_id,
@@ -77,9 +99,10 @@ class ModelRehabilitationRepository:
                 sport=sport,
                 purpose=purpose,
                 captured_at=captured_at,
-                payload=json.dumps(merged, default=str, sort_keys=True),
+                payload=_encode_snapshot_payload(merged),
             ))
             session.commit()
+        record_stage("immutable_insert")
         snapshot_props = _snapshot_props({key: merged[key] for key in payload})
         evidence_capture = ModelRehabilitationRepository.queue_shadow(
             snapshot_props,
@@ -87,6 +110,7 @@ class ModelRehabilitationRepository:
             target=None,
             cohort_date=captured_at.date().isoformat(),
         ) if snapshot_props else {"created": 0, "queued": 0}
+        record_stage("shadow_queue")
         merged["evidence_capture"] = {
             "eligible_props": len(snapshot_props),
             "created": int(evidence_capture.get("created") or 0),
@@ -94,16 +118,23 @@ class ModelRehabilitationRepository:
         }
         merged["snapshot_id"] = snapshot_id
         merged["model_version"] = model_version
-        SettingsRepository.set(ModelRehabilitationRepository.FEED_KEY, json.dumps(merged, default=str))
+        SettingsRepository.set(ModelRehabilitationRepository.FEED_KEY, snapshot_id)
+        record_stage("pointer_write")
         if "daily_briefing" in payload:
             briefing = merged.get("daily_briefing") or {}
             for provider in {briefing.get("platform"), briefing.get("requested_platform")} - {None, ""}:
                 SettingsRepository.set(_daily_feed_key(str(provider), briefing.get("sport")), snapshot_id)
+        record_stage("daily_pointer_write")
         return merged
 
     @staticmethod
     def load_feed() -> dict:
-        return _json(SettingsRepository.get(ModelRehabilitationRepository.FEED_KEY, ""), {})
+        pointer = SettingsRepository.get(ModelRehabilitationRepository.FEED_KEY, "")
+        if not pointer:
+            return {}
+        if pointer.startswith("{"):
+            return _json(pointer, {})
+        return ModelRehabilitationRepository.get_snapshot(pointer) or {}
 
     @staticmethod
     def load_daily_feed(platform: str, sport: str | None) -> dict:
@@ -113,7 +144,7 @@ class ModelRehabilitationRepository:
             return ModelRehabilitationRepository.load_feed()
         with SessionLocal() as session:
             row = session.query(RecommendationSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
-            return _json(row.payload, {}) if row else {}
+            return _decode_snapshot_payload(row.payload) if row else {}
 
     @staticmethod
     def snapshot_history(limit: int = 20) -> list[dict]:
@@ -129,7 +160,7 @@ class ModelRehabilitationRepository:
                 "sport": row.sport,
                 "purpose": row.purpose,
                 "captured_at": row.captured_at.isoformat() if row.captured_at else "",
-                "payload": _json(row.payload, {}),
+                "payload": _decode_snapshot_payload(row.payload),
             } for row in rows]
 
     @staticmethod
@@ -138,7 +169,7 @@ class ModelRehabilitationRepository:
             return None
         with SessionLocal() as session:
             row = session.query(RecommendationSnapshotModel).filter_by(snapshot_id=snapshot_id).first()
-            return _json(row.payload, {}) if row else None
+            return _decode_snapshot_payload(row.payload) if row else None
 
     @staticmethod
     def queue_shadow(
@@ -158,38 +189,48 @@ class ModelRehabilitationRepository:
                 ).all()
             }
             needed = len(rows) if target is None else max(0, target - len(existing))
-            for row in rows:
+            candidates = []
+            for row in rows if needed else []:
                 key = independent_market_key(row)
                 if not key or key in existing or row.get("line") is None:
                     continue
-                candidate = ShadowPredictionModel(
-                    cohort_date=cohort,
-                    model_version=model_version,
-                    independent_market_key=key,
-                    player=str(row.get("player") or ""),
-                    team=str(row.get("team") or ""),
-                    sport=str(row.get("sport") or row.get("league") or "").upper(),
-                    stat=str(row.get("stat") or ""),
-                    direction=str(row.get("direction") or "Over"),
-                    platform=str(row.get("platform") or ""),
-                    game=str(row.get("game") or ""),
-                    game_time=str(row.get("game_time") or ""),
-                    line=float(str(row["line"])),
-                    projection=_float_or_none(row.get("projection")),
-                    probability=float(row.get("confidence") or row.get("probability") or 50.0),
-                    feature_snapshot=json.dumps(row, default=str, sort_keys=True),
-                )
-                try:
-                    with session.begin_nested():
-                        session.add(candidate)
-                        session.flush()
-                except IntegrityError:
-                    existing.add(key)
-                    continue
+                candidates.append({
+                    "cohort_date": cohort, "model_version": model_version,
+                    "independent_market_key": key,
+                    "player": str(row.get("player") or ""),
+                    "team": str(row.get("team") or ""),
+                    "sport": str(row.get("sport") or row.get("league") or "").upper(),
+                    "stat": str(row.get("stat") or ""),
+                    "direction": str(row.get("direction") or "Over"),
+                    "platform": str(row.get("platform") or ""),
+                    "game": str(row.get("game") or ""),
+                    "game_time": str(row.get("game_time") or ""),
+                    "line": float(str(row["line"])),
+                    "projection": _float_or_none(row.get("projection")),
+                    "probability": float(row.get("confidence") or row.get("probability") or 50.0),
+                    "feature_snapshot": json.dumps(row, default=str, sort_keys=True),
+                })
                 existing.add(key)
-                created += 1
-                if target is not None and created >= needed:
+                if len(candidates) >= needed:
                     break
+            dialect = session.bind.dialect.name
+            if candidates and dialect in {"sqlite", "postgresql"}:
+                insert = sqlite_insert if dialect == "sqlite" else postgres_insert
+                for offset in range(0, len(candidates), 100):
+                    statement = insert(ShadowPredictionModel).values(candidates[offset:offset + 100])
+                    result = session.execute(statement.on_conflict_do_nothing(
+                        index_elements=["cohort_date", "model_version", "independent_market_key"]
+                    ))
+                    created += max(0, result.rowcount)
+            else:
+                for candidate in candidates:
+                    try:
+                        with session.begin_nested():
+                            session.add(ShadowPredictionModel(**candidate))
+                            session.flush()
+                        created += 1
+                    except IntegrityError:
+                        continue
             session.commit()
             queued = session.query(ShadowPredictionModel).filter_by(
                 cohort_date=cohort, model_version=model_version
@@ -399,3 +440,19 @@ def _json(value: str, default):
         return parsed if isinstance(parsed, type(default)) else default
     except (TypeError, ValueError):
         return default
+
+
+def _encode_snapshot_payload(payload: dict) -> str:
+    serialized = json.dumps(payload, default=str, sort_keys=True).encode("utf-8")
+    return SNAPSHOT_COMPRESSION_PREFIX + base64.b64encode(zlib.compress(serialized, level=6)).decode("ascii")
+
+
+def _decode_snapshot_payload(value: str) -> dict:
+    if not value.startswith(SNAPSHOT_COMPRESSION_PREFIX):
+        return _json(value, {})
+    try:
+        compressed = base64.b64decode(value[len(SNAPSHOT_COMPRESSION_PREFIX):], validate=True)
+        return _json(zlib.decompress(compressed).decode("utf-8"), {})
+    except (ValueError, UnicodeError, binascii.Error, zlib.error) as exc:
+        _log.warning("A stored recommendation snapshot could not be decoded: %s", exc)
+        return {}

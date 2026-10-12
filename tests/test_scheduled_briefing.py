@@ -82,6 +82,53 @@ def test_configured_briefing_replaces_duplicate_morning_scan(monkeypatch):
     assert observed == ["scheduled_daily_briefing"]
 
 
+def test_maintenance_defers_while_briefing_is_active(monkeypatch):
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": (
+        json.dumps({"status": "building_entries"})
+        if key == web_app.DAILY_SCAN_STATUS_KEY else default
+    ))
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: (
+        (_ for _ in ()).throw(AssertionError("schedule must not load during a scan"))
+    ))
+
+    result = web_app._run_due_daily_operations_locked()
+
+    assert result["skipped"] is True
+    assert result["jobs_run"] == []
+
+
+def test_settlement_refresh_defers_while_briefing_is_active(monkeypatch):
+    @contextmanager
+    def unavailable_lock(_name):
+        yield False
+
+    monkeypatch.setattr(web_app, "named_operation_lock", unavailable_lock)
+    monkeypatch.setattr(web_app, "_auto_check_pending_entries", lambda *_args: (
+        (_ for _ in ()).throw(AssertionError("settlement must not run during briefing"))
+    ))
+
+    assert web_app._settlement_refresh_when_idle() == {"skipped": True}
+
+
+def test_maintenance_queues_only_one_due_job_per_tick(monkeypatch):
+    settings = {}
+    queued = []
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": settings.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: settings.update({key: value}))
+    monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {
+        "schedule": {"enabled": True, "daily_briefing": "00:00", "injury_refresh": "00:00"},
+    })
+    monkeypatch.setattr(web_app, "_odds_provider_recovery_due", lambda _now: False)
+    monkeypatch.setattr(web_app.background_jobs, "submit", lambda kind, _callback, **_kwargs: (
+        queued.append(kind) or {"job_id": kind, "reused": False}
+    ))
+
+    result = web_app._run_due_daily_operations_locked()
+
+    assert result["jobs_run"] == ["daily_briefing"]
+    assert queued == ["scheduled_daily_briefing"]
+
+
 @pytest.mark.parametrize("scan_status,marked", [("ready", True), ("failed", False)])
 def test_scheduled_briefing_uses_preferences_and_retries_failure(monkeypatch, scan_status, marked):
     settings = {}

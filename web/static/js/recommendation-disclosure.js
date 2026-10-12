@@ -25,12 +25,12 @@
       features.opponent_sample == null ? null : `Opponent sample: ${escape(features.opponent_sample)}`,
     ].filter(Boolean);
     return `<details class="opportunity-disclosure">
-      <summary>Why this pick?</summary>
+      <summary>Why EdgeIQ likes it · Why this can lose</summary>
       <div class="opportunity-disclosure-body">
         <p><strong>Projection</strong> ${number(receipt.projection ?? prop.projection)} against ${escape(prop.direction || "Over")} ${number(prop.line)}. ${escape(market)}.</p>
         <div class="opportunity-disclosure-columns">
-          <div><strong>Supporting factors</strong>${list(supports, "No supporting factors recorded for this snapshot.")}</div>
-          <div><strong>What could go wrong</strong>${list(risks, "No counterarguments recorded. This does not mean the pick is risk-free.")}</div>
+          <div><strong>Why EdgeIQ likes it</strong>${list(supports, "No supporting factors recorded for this snapshot.")}</div>
+          <div><strong>Why this can lose</strong>${list(risks, "No counterarguments recorded. This does not mean the pick is risk-free.")}</div>
         </div>
         <details><summary>Evidence</summary>
           <p>${escape(calibration.label || "Calibration unavailable")} · ${Number(calibration.sample_size || 0)} matching settled forecasts.</p>

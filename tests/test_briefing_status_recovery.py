@@ -61,3 +61,9 @@ def test_scan_status_write_restores_sqlite_busy_timeout():
     SettingsRepository.set("daily_briefing_scan_status", "{}")
     with SessionLocal() as session:
         assert session.connection().exec_driver_sql("PRAGMA busy_timeout").scalar() == 30000
+
+
+def test_settings_upsert_preserves_latest_value():
+    SettingsRepository.set("briefing_upsert_test", "first")
+    SettingsRepository.set("briefing_upsert_test", "second")
+    assert SettingsRepository.get("briefing_upsert_test") == "second"

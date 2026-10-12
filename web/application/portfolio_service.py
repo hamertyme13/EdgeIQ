@@ -593,7 +593,8 @@ def _prop_portfolio_keys(prop: dict) -> dict[str, tuple[str, str]]:
         dated_game = datetime.fromisoformat(game_time.replace("Z", "+00:00")) if game_time else None
     except ValueError:
         dated_game = None
-    game_key = f"{game_key}|{game_identity or dated_game.isoformat()}" if game_key and (game_identity or dated_game) else ""
+    dated_identity = dated_game.isoformat() if dated_game else ""
+    game_key = f"{game_key}|{game_identity or dated_identity}" if game_key and (game_identity or dated_identity) else ""
     game = str(prop.get("game") or "Unknown matchup")
     provider = str(prop.get("platform") or "Unknown provider")
     team = str(prop.get("team") or "Unknown team")

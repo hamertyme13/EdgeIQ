@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -257,6 +257,8 @@ from web.application.provider_health_service import (
 from web.application.provider_health_service import (
     provider_status_key as _provider_status_key,
 )
+from web.application.recommendation_feed_capture import FeedCaptureGate
+from web.application.recommendation_feed_capture import cache_generation as feed_cache_generation
 from web.application.recommendation_policy import recommendation_eligibility
 from web.application.schedule_service import (
     elapsed_job_due,
@@ -583,6 +585,7 @@ _PROVIDER_BOARD_CONTEXT_CACHE: dict[str, list[dict]] = {}
 _PROP_FETCH_LOCK = threading.RLock()
 _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
+_FEED_CAPTURE_GATE = FeedCaptureGate()
 _PROVIDER_ARCHIVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-provider-archive")
 _SETTLEMENT_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-settlement")
 _SETTLEMENT_JOB_GUARD = threading.Lock()
@@ -614,18 +617,22 @@ ENDPOINT_SLOW_THRESHOLD_MS = 1000.0
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
-    _recover_interrupted_daily_scan()
-    settlement_task = asyncio.create_task(_settlement_refresh_loop())
-    scheduler_task = asyncio.create_task(_daily_operations_scheduler_loop())
-    try:
-        yield
-    finally:
-        settlement_task.cancel()
-        scheduler_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await settlement_task
-        with suppress(asyncio.CancelledError):
-            await scheduler_task
+    with named_operation_lock("web-background-leader") as leader:
+        tasks: list[asyncio.Task] = []
+        if leader:
+            _recover_interrupted_daily_scan()
+            tasks = [
+                asyncio.create_task(_settlement_refresh_loop()),
+                asyncio.create_task(_daily_operations_scheduler_loop()),
+            ]
+        try:
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 async def _settlement_refresh_loop() -> None:
@@ -634,11 +641,10 @@ async def _settlement_refresh_loop() -> None:
     while True:
         started_at = utc_now()
         try:
-            result = await asyncio.to_thread(
-                _auto_check_pending_entries,
-                False,
-                True,
-            )
+            result = await asyncio.to_thread(_settlement_refresh_when_idle)
+            if result.get("skipped"):
+                await asyncio.sleep(min(60, SETTLEMENT_REFRESH_SECONDS))
+                continue
             status = {
                 "ok": True,
                 "ran_at": iso_utc(started_at),
@@ -666,9 +672,16 @@ async def _settlement_refresh_loop() -> None:
         await asyncio.sleep(SETTLEMENT_REFRESH_SECONDS)
 
 
+def _settlement_refresh_when_idle() -> dict:
+    with named_operation_lock("briefing-and-calibration") as acquired:
+        if not acquired:
+            return {"skipped": True}
+        return _auto_check_pending_entries(False, True)
+
+
 async def _daily_operations_scheduler_loop() -> None:
     """Run configured maintenance jobs once per local schedule window."""
-    await asyncio.sleep(20)
+    await asyncio.sleep(90)
     while True:
         try:
             await asyncio.to_thread(_run_due_daily_operations)
@@ -1548,6 +1561,7 @@ def _import_betting_history_payload(payload: str, source: str) -> dict:
 
 
 def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
+    fetch_started = time.perf_counter()
     selected = _selected_platforms(platform)
     if sport_filter in ESPORT_SPORTS:
         # Gaming markets are captured for research, but remain outside the
@@ -1579,18 +1593,29 @@ def _fetch_props(platform: str, sport_filter: str | None) -> list[dict]:
         key=lambda row: int(row.get("trending_count") or 0),
         reverse=True,
     )[:500]
-    ModelRehabilitationRepository.save_feed({
-        "feed": {
-            "id": "edgeiq-recommendation-snapshot-v2.2",
-            "canonical": True,
-            "platform": platform,
-            "sport": sport_filter or "All Sports",
-            "captured_at": iso_utc(utc_now()),
-            "available_count": len(rows),
-            "stored_count": len(snapshot_rows),
-        },
-        "props": snapshot_rows,
-    })
+    with _PROP_FETCH_LOCK:
+        generation = feed_cache_generation(
+            selected, sport_filter, _PROP_FETCH_CACHE,
+            canonical=_canonical_platform,
+            fetcher_token=_platform_fetcher_cache_token,
+            model_version=PRODUCT_MODEL_VERSION,
+        ) if sport_filter not in ESPORT_SPORTS else None
+    _FEED_CAPTURE_GATE.capture(
+        generation,
+        lambda: ModelRehabilitationRepository.save_feed({
+            "feed": {
+                "id": "edgeiq-recommendation-snapshot-v2.2",
+                "canonical": True,
+                "platform": platform,
+                "sport": sport_filter or "All Sports",
+                "captured_at": iso_utc(utc_now()),
+                "available_count": len(rows),
+                "stored_count": len(snapshot_rows),
+            },
+            "props": snapshot_rows,
+        }),
+        fetch_ms=(time.perf_counter() - fetch_started) * 1000.0,
+    )
     return rows
 
 
@@ -1643,6 +1668,7 @@ def _cached_best_lines_props(platform: str, sport_filter: str | None) -> list[di
 def _fetch_platform_props(
     platform: str, *, force_refresh: bool = False, sport_filter: str | None = None,
     progress: Callable[[int, str], None] | None = None,
+    on_cache_reused: Callable[[], None] | None = None,
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     fetcher = _platform_prop_fetcher(canonical)
@@ -1658,6 +1684,7 @@ def _fetch_platform_props(
     now = time.monotonic()
     with _PROP_FETCH_LOCK:
         cached = _PROP_FETCH_CACHE.get(cache_key)
+        initial_cached = cached
         if not force_refresh and cached and cached[0] > now:
             _increment_prop_fetch_metric(canonical, "memory_cache_hits")
             return [dict(prop) for prop in cached[1]]
@@ -1680,6 +1707,11 @@ def _fetch_platform_props(
         now = time.monotonic()
         with _PROP_FETCH_LOCK:
             cached = _PROP_FETCH_CACHE.get(cache_key)
+            if force_refresh and cached and cached is not initial_cached and cached[0] > now:
+                _increment_prop_fetch_metric(canonical, "coalesced_hits")
+                if on_cache_reused:
+                    on_cache_reused()
+                return [dict(prop) for prop in cached[1]]
             if not force_refresh and cached and cached[0] > now:
                 _increment_prop_fetch_metric(canonical, "coalesced_hits")
                 return [dict(prop) for prop in cached[1]]
@@ -1687,15 +1719,18 @@ def _fetch_platform_props(
             fetcher = lambda: draftkings_pick6.fetch_projections(refresh=force_refresh)
         if force_refresh:
             props = _fetch_platform_props_uncached(
-                canonical, fetcher, archive_full_board=True, progress=progress,
+                canonical, fetcher, archive_full_board=True, progress=progress, raise_on_error=True,
             ) if progress else _fetch_platform_props_uncached(
-                canonical, fetcher, archive_full_board=True,
+                canonical, fetcher, archive_full_board=True, raise_on_error=True,
             )
         else:
             props = _fetch_platform_props_uncached(canonical, fetcher)
         with _PROP_FETCH_LOCK:
             _increment_prop_fetch_metric(canonical, "provider_fetches")
-            _PROP_FETCH_CACHE[cache_key] = (now + PROP_FETCH_CACHE_SECONDS, [dict(prop) for prop in props])
+            _PROP_FETCH_CACHE[cache_key] = (
+                time.monotonic() + PROP_FETCH_CACHE_SECONDS,
+                [dict(prop) for prop in props],
+            )
         _PROVIDER_ARCHIVE_EXECUTOR.submit(
             _record_line_snapshots,
             [dict(prop) for prop in props],
@@ -1774,6 +1809,7 @@ def _fetch_platform_props_uncached(
     *,
     archive_full_board: bool = False,
     progress: Callable[[int, str], None] | None = None,
+    raise_on_error: bool = False,
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     attempted_at = iso_utc(utc_now())
@@ -1784,6 +1820,10 @@ def _fetch_platform_props_uncached(
         _record_provider_fetch_status(canonical, attempted_at, error=str(exc), diagnostics={
             "provider_fetch_ms": round((time.perf_counter() - fetch_started) * 1000, 1),
         })
+        if raise_on_error:
+            raise RuntimeError(
+                f"{canonical} offers could not be refreshed. Check provider status and try again."
+            ) from exc
         return []
     provider_fetch_ms = round((time.perf_counter() - fetch_started) * 1000, 1)
     if progress:
@@ -2373,6 +2413,13 @@ def _parse_parlay_request(message: str, selected_sport: str = "All Sports") -> d
 
 
 def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
+    with named_operation_lock("briefing-and-calibration") as acquired:
+        if not acquired:
+            raise RuntimeError("Another data refresh is running. Try paper samples again when it finishes.")
+        return _auto_paper_calibration_unlocked(payload)
+
+
+def _auto_paper_calibration_unlocked(payload: AutoPaperCalibrationPayload) -> dict:
     if payload.standard_batch and str(payload.sport or "").strip().lower() in {"", "all sports"}:
         return _balanced_all_sports_paper_calibration(payload)
     entries = EntryRepository.all()
@@ -2380,7 +2427,7 @@ def _auto_paper_calibration(payload: AutoPaperCalibrationPayload) -> dict:
     targets = _calibration_learning_targets(
         backtest_data,
         payload.sport,
-        PredictionLedgerRepository.evidence_rows(include_legacy=False),
+        PredictionLedgerRepository.calibration_rows(payload.sport),
     )
     existing_signatures = {
         _entry_signature(entry)
@@ -2530,7 +2577,7 @@ def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload)
             provider_plan = [legs for legs, assigned in zip(plan, assignments, strict=True) if assigned == provider]
             if not provider_plan:
                 continue
-            provider_result = _auto_paper_calibration(payload.model_copy(update={
+            provider_result = _auto_paper_calibration_unlocked(payload.model_copy(update={
                 "platform": provider,
                 "sport": sport,
                 "max_entries": len(provider_plan),
@@ -2823,13 +2870,14 @@ def _append_calibration_entry(
     audit = _paper_calibration_audit(serialized, target, backtest_data, payload)
     entry_id = None
     if not payload.dry_run:
-        audit_json = json.dumps(audit)
         payout, analysis = prepare_entry_analysis(
             suggestion.entry,
             payout_type="standard",
             multiplier=1.0,
-            audit_snapshot=audit_json,
+            audit_snapshot=json.dumps(audit),
         )
+        audit["model_payout_analysis"] = payout
+        audit_json = json.dumps(audit)
         entry_id = EntryRepository.save(
             suggestion.entry,
             status="Pending",
@@ -4343,6 +4391,7 @@ def _command_center_payload(
     fast: bool = False,
     board_props: list[dict] | None = None,
     dashboard_stats: dict | None = None,
+    ranked_props_override: list[dict] | None = None,
 ) -> dict:
     dashboard_stats = dashboard_stats if dashboard_stats is not None else _cached_dashboard_stats()
     prefs = _user_preferences()
@@ -4352,7 +4401,12 @@ def _command_center_payload(
     recommendation_props = _prefer_standard_provider_offers(props)
     optimization_props = _top_props_by_sport(recommendation_props, 8, sport_filter) if fast else recommendation_props
     platform_props = _props_by_platform_from_props(platform, optimization_props)
-    ranked_props = [_analyzed_feed_prop(prop) for prop in _top_props_by_sport(recommendation_props, 5, sport_filter)]
+    candidate_cache = {} if fast else None
+    ranked_props = (
+        list(ranked_props_override)
+        if ranked_props_override is not None
+        else [_analyzed_feed_prop(prop) for prop in _top_props_by_sport(recommendation_props, 5, sport_filter)]
+    )
     ranked_props.sort(key=lambda prop: (prop["confidence"], prop["edge"], prop["trending_count"]), reverse=True)
 
     safe_slips = _optimized_entries(
@@ -4367,6 +4421,7 @@ def _command_center_payload(
         exclude_correlated=True,
         apply_feedback=True,
         platform_props=platform_props,
+        candidate_cache=candidate_cache,
     )
     balanced_slips = _optimized_entries(
         platform,
@@ -4380,6 +4435,7 @@ def _command_center_payload(
         exclude_correlated=True,
         apply_feedback=True,
         platform_props=platform_props,
+        candidate_cache=candidate_cache,
     )
     high_risk_slips = [] if fast else _optimized_entries(
         platform,
@@ -4466,6 +4522,39 @@ def _run_daily_briefing_scan(
     scan_id: str | None = None,
     trigger: str = "manual",
     sync_result: dict | None = None,
+) -> dict:
+    with named_operation_lock("briefing-and-calibration") as acquired:
+        if not acquired:
+            active = (_daily_scan_status_payload(platform, sport_filter).get("current") or {})
+            if (
+                active.get("status") in {"scanning_props", "analyzing_games", "building_entries"}
+                and active.get("platform") == platform
+                and active.get("sport") == (sport_filter or "All Sports")
+            ):
+                return active
+            scan = _new_daily_scan(platform, sport_filter, trigger)
+            if scan_id:
+                scan["id"] = scan_id
+            scan = _save_daily_scan_status({
+                **scan,
+                "status": "failed",
+                "status_label": "Refresh Deferred",
+                "message": "Another data refresh is running. Try Refresh Briefing again when it finishes.",
+                "progress": 100,
+                "completed_at": iso_utc(utc_now()),
+                "errors": ["Another data refresh is running."],
+            })
+            _append_daily_scan_log(scan)
+            return scan
+        return _run_daily_briefing_scan_unlocked(platform, sport_filter, scan_id, trigger, sync_result)
+
+
+def _run_daily_briefing_scan_unlocked(
+    platform: str,
+    sport_filter: str | None,
+    scan_id: str | None,
+    trigger: str,
+    sync_result: dict | None,
 ) -> dict:
     with named_operation_lock("daily-briefing-scan") as acquired:
         if not acquired:
@@ -4931,6 +5020,7 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         with timing.stage("confirmed_prop_analysis"):
             return _confirmed_props_payload(
                 name, sport_filter, limit=40, analysis_limit=80, board_props=board,
+                persist_evidence=False,
             )
 
     confirmed = (
@@ -4945,12 +5035,19 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         confirmed_for=confirmed_for,
     )
     board = board_for(active_platform)
-    with timing.stage("command_cards"):
-        command = _command_center_payload(
-            active_platform, sport_filter, fast=True,
-            board_props=board, dashboard_stats=dashboard_stats,
-        )
-    loss_protection = _loss_protection_payload()
+    has_verified_props = int(confirmed.get("count") or 0) > 0
+    if has_verified_props:
+        with timing.stage("command_cards"):
+            command = _command_center_payload(
+                active_platform, sport_filter, fast=True,
+                board_props=confirmed.get("raw_props") or [],
+                dashboard_stats=dashboard_stats,
+                ranked_props_override=confirmed.get("props") or [],
+            )
+    else:
+        command = {"cards": [], "ranked_props": [], "avoid": [], "model_health": _model_health_payload()}
+    with timing.stage("loss_protection_db"):
+        loss_protection = _loss_protection_payload()
     candidate_bet_cards = _daily_bet_cards(command["cards"])
     candidate_cards = _daily_best_available_cards(command["cards"]) if not candidate_bet_cards else []
     with timing.stage("paper_cards"):
@@ -4960,7 +5057,10 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
             dashboard_stats,
             command.get("model_health"),
         )
-    watch_cards = _daily_watch_cards(active_platform, sport_filter, command, confirmed)
+    with timing.stage("watch_cards"):
+        watch_cards = _daily_watch_cards(
+            active_platform, sport_filter, command, confirmed, live_market_alerts=False,
+        ) if has_verified_props else []
     avoid_cards = _daily_avoid_cards(command, confirmed)
     if loss_protection["active"]:
         watch_cards = _loss_protection_watch_cards(candidate_bet_cards, loss_protection) + watch_cards
@@ -4969,11 +5069,15 @@ def _daily_briefing_payload(platform: str, sport_filter: str | None) -> dict:
         bet_cards = candidate_bet_cards
     monthly = dashboard_stats.get("monthly_profit", {})
     current_month = monthly.get("current_month", {})
-    top_opportunities = _daily_top_opportunities(command, confirmed)
+    with timing.stage("top_opportunities"):
+        top_opportunities = _daily_top_opportunities(command, confirmed) if has_verified_props else []
     risk_summary = _daily_risk_summary(bet_cards, watch_cards, paper_cards)
-    games_today = _daily_games_today(active_platform, sport_filter, confirmed)
-    provider_availability = _daily_provider_availability(platform if requested == "Both" else active_platform)
-    selected_sport_health = _daily_selected_sport_health(sport_filter, provider_availability)
+    with timing.stage("games_today"):
+        games_today = _daily_games_today(active_platform, sport_filter, confirmed)
+    with timing.stage("provider_availability_db"):
+        provider_availability = _daily_provider_availability(platform if requested == "Both" else active_platform)
+    with timing.stage("provider_presentation"):
+        selected_sport_health = _daily_selected_sport_health(sport_filter, provider_availability)
     payload = {
         "as_of": iso_utc(utc_now()),
         "platform": active_platform,
@@ -5783,54 +5887,25 @@ def _daily_paper_cards(
             "timing": {"score": 0, "label": "Pending"},
             "button_label": "View Performance",
         }]
-    backtest_data = backtest_summary(BetRepository().get_all(), EntryRepository.all())
-    selected_sport = sport_filter or "All Sports"
-    payload = AutoPaperCalibrationPayload(
-        platform=platform,
-        sport=selected_sport,
-        leg_count=2,
-        max_entries=2,
-        prefer_confirmed=False,
-        dry_run=True,
-    )
-    cards: list[dict] = []
-    signatures: set[tuple] = set()
-    prop_pool_cache: dict[tuple[str, str], list[dict]] = {}
-    analyzed_cache: dict[tuple, dict] = {}
-    for target in _calibration_learning_targets(
-        backtest_data,
-        selected_sport,
-        PredictionLedgerRepository.evidence_rows(include_legacy=False),
-    ):
-        suggestions = _paper_calibration_suggestions(
-            payload,
-            target,
-            prop_pool_cache=prop_pool_cache,
-            analyzed_cache=analyzed_cache,
-        )
-        for suggestion in suggestions:
-            card = _command_suggestion_card(
-                "Paper Calibration",
-                target.get("reason", "Paper-only sample to strengthen model calibration."),
-                suggestion,
-                model_health,
-            )
-            signature = _entry_signature(card["suggestion"]["entry"])
-            if signature in signatures:
-                continue
-            signatures.add(signature)
-            action = _daily_action_card("paper", card, "Load Paper", target.get("reason", "Paper-only sample to improve calibration."))
-            action["calibration_target"] = target
-            action["entry_mode"] = "paper"
-            cards.append(action)
-            if len(cards) >= 2:
-                return cards
-    return cards
+    return [{
+        "type": "paper_status",
+        "title": "Paper Calibration",
+        "summary": "No paper entries are pending.",
+        "reason": "Automatic samples are generated separately from the daily briefing. View Performance for calibration progress.",
+        "props": [],
+        "stake": {"amount": 0.0, "unit_label": "Paper only"},
+        "trust": {"score": 0, "label": "Learning"},
+        "timing": {"score": 0, "label": "Waiting"},
+        "button_label": "View Performance",
+    }]
 
 
-def _daily_watch_cards(platform: str, sport_filter: str | None, command: dict, confirmed: dict) -> list[dict]:
+def _daily_watch_cards(
+    platform: str, sport_filter: str | None, command: dict, confirmed: dict,
+    *, live_market_alerts: bool = True,
+) -> list[dict]:
     watches: list[dict] = []
-    for alert in _market_timing_alert_rows(
+    alerts = _market_timing_alert_rows(
         platform,
         sport_filter,
         4,
@@ -5840,7 +5915,8 @@ def _daily_watch_cards(platform: str, sport_filter: str | None, command: dict, c
         alert_type="All",
         hide_outliers=True,
         scan_limit=12,
-    ):
+    ) if live_market_alerts else []
+    for alert in alerts:
         if alert.get("type") in {"Avoid", "Line Moved Against Price"}:
             continue
         watches.append({
@@ -6531,6 +6607,7 @@ def _optimized_entries(
     exclude_correlated: bool = False,
     apply_feedback: bool = True,
     platform_props: list[tuple[Platform, list[dict]]] | None = None,
+    candidate_cache: dict | None = None,
 ) -> list:
     ranked = []
     for platform_model, props in (platform_props if platform_props is not None else _props_by_platform(platform)):
@@ -6559,6 +6636,7 @@ def _optimized_entries(
                         max_same_team=max_same_team,
                         exclude_correlated=exclude_correlated,
                         apply_feedback=apply_feedback,
+                        candidate_cache=candidate_cache,
                     )
                 )
 
@@ -6813,7 +6891,7 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
         raw.get("player", ""),
         raw.get("league", ""),
         raw.get("stat", ""),
-        limit=100,
+        limit=100 if persist_evidence else 15,
         team=raw.get("team", ""),
         materialize_missing=persist_evidence,
     )
@@ -6822,7 +6900,7 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
             raw.get("player", ""),
             raw.get("stat", ""),
             sport=raw.get("league", ""),
-            limit=100,
+            limit=100 if persist_evidence else 15,
             team=raw.get("team", ""),
             include_opportunity_context=persist_evidence,
         )
@@ -6969,13 +7047,18 @@ def _confirmed_props_payload(
     limit: int = 20,
     analysis_limit: int | None = None,
     board_props: list[dict] | None = None,
+    persist_evidence: bool = True,
 ) -> dict:
     raw_props = list(board_props) if board_props is not None else _fetch_props(platform, sport_filter)
     _record_plausibility_rejections(raw_props, fallback_provider=platform)
     confirmed, pipeline_counts = evaluate_provider_candidates(
         raw_props, limit=limit, analysis_limit=analysis_limit,
         is_today=_is_prop_on_entry_day, eligibility=_end_to_end_prop_eligibility,
-        prefilter_key=_confirmed_prop_prefilter_key, analyze=_analyzed_feed_prop,
+        prefilter_key=_confirmed_prop_prefilter_key,
+        analyze=(
+            _analyzed_feed_prop if persist_evidence
+            else lambda raw: _analyzed_feed_prop(raw, persist_evidence=False)
+        ),
         candidate=_confirmed_prop_candidate,
     )
 
@@ -11066,11 +11149,7 @@ def _versioned_calibration_rows() -> list[dict]:
         cached_rows = _PREDICTION_EVIDENCE_CACHE.get_or_none()
         if cached_rows is not None:
             return cached_rows
-        rows = [
-            row
-            for row in PredictionLedgerRepository.evidence_rows()
-            if row.get("result") in {"Win", "Loss"}
-        ]
+        rows = PredictionLedgerRepository.calibration_rows()
         _PREDICTION_EVIDENCE_CACHE.set(rows, ttl=60.0)
         return rows
 
@@ -11715,6 +11794,7 @@ def _entry_audit_snapshot(
         "multiplier": payload.multiplier,
         "payout_type": payload.payout_type,
         "payout_analysis": analysis.get("payout_analysis", {}),
+        "model_payout_analysis": analysis.get("model_payout_analysis", {}),
         "entry_mode": payload.entry_mode,
         "recommended_by_app": payload.recommended_by_app,
         "recommendation_snapshot_id": payload.recommendation_snapshot_id,
@@ -11931,6 +12011,7 @@ def _data_health_payload(compact: bool = False) -> dict:
             _endpoint_timing_snapshot(),
             operational_health=operations,
         )
+        payload["recommendation_feed_performance"] = _FEED_CAPTURE_GATE.snapshot()
         cache.set(dict(payload), ttl=20.0)
         return payload
 
@@ -12166,12 +12247,14 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
 
     def run(context: JobContext) -> dict:
         context.update(10, f"Refreshing {canonical_platform} offers.")
+        cache_reused = threading.Event()
         selected = _selected_platforms(canonical_platform)
         if len(selected) > 1:
             with ThreadPoolExecutor(max_workers=len(selected)) as pool:
                 batches = list(pool.map(
                     lambda name: _fetch_platform_props(
                         name, force_refresh=True, sport_filter=sport_filter, progress=context.update,
+                        on_cache_reused=cache_reused.set,
                     ),
                     selected,
                 ))
@@ -12179,6 +12262,7 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
         else:
             props = _fetch_platform_props(
                 selected[0], force_refresh=True, sport_filter=sport_filter, progress=context.update,
+                on_cache_reused=cache_reused.set,
             ) if selected else []
         if sport_filter:
             props = [
@@ -12188,10 +12272,15 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
         context.update(90, "Saving provider freshness status.")
         SettingsRepository.set("last_provider_refresh", iso_utc(utc_now()))
         return {
-            "message": f"{canonical_platform} refreshed with {len(props):,} current {dedupe_sport.upper()} offers.",
+            "message": (
+                f"{canonical_platform} reused a recent refresh with {len(props):,} current {dedupe_sport.upper()} offers."
+                if cache_reused.is_set() and len(selected) == 1
+                else f"{canonical_platform} refreshed with {len(props):,} current {dedupe_sport.upper()} offers."
+            ),
             "platform": canonical_platform,
             "sport": dedupe_sport,
             "offers": len(props),
+            "cache_reused": cache_reused.is_set(),
         }
 
     return {
@@ -12253,6 +12342,14 @@ def _run_due_daily_operations() -> dict:
 
 
 def _run_due_daily_operations_locked() -> dict:
+    active_scan = _safe_json_loads(SettingsRepository.get(DAILY_SCAN_STATUS_KEY, ""))
+    if active_scan.get("status") in {"scanning_props", "analyzing_games", "building_entries"}:
+        return {
+            "ok": True,
+            "skipped": True,
+            "jobs_run": [],
+            "message": "Scheduled maintenance is waiting for the active Daily Briefing scan.",
+        }
     schedule_payload = _refresh_schedule_payload()
     schedule = schedule_payload["schedule"]
     if not schedule.get("enabled", True):
@@ -12301,19 +12398,24 @@ def _run_due_daily_operations_locked() -> dict:
         due.append(("odds_provider_recovery", _verify_odds_provider))
     scheduled = []
     failures = []
-    for name, callback in due:
+    for name, callback in due[:1]:
         run_key = f"daily_scheduler_run:{name}"
         try:
             def run_scheduled(context: JobContext, *, job_name=name, job_callback=callback) -> dict:
                 with named_operation_lock("scheduled-maintenance-execution") as acquired:
                     if not acquired:
                         raise RuntimeError("Another scheduled maintenance job is running. EdgeIQ will retry this job.")
-                    context.update(10, f"Running scheduled {job_name.replace('_', ' ')}.")
-                    return execute_scheduled_job(
-                        job_name, job_callback,
-                        save_setting=lambda key, value: SettingsRepository.set(key, value),
-                        timestamp=lambda: iso_utc(utc_now()),
-                    )
+                    nested_job = job_name in {"daily_briefing", "morning_scan", "auto_paper_samples"}
+                    guard = nullcontext(True) if nested_job else named_operation_lock("briefing-and-calibration")
+                    with guard as data_acquired:
+                        if not data_acquired:
+                            raise RuntimeError("An interactive refresh is running. EdgeIQ will retry scheduled maintenance.")
+                        context.update(10, f"Running scheduled {job_name.replace('_', ' ')}.")
+                        return execute_scheduled_job(
+                            job_name, job_callback,
+                            save_setting=lambda key, value: SettingsRepository.set(key, value),
+                            timestamp=lambda: iso_utc(utc_now()),
+                        )
 
             job = background_jobs.submit(
                 f"scheduled_{name}",

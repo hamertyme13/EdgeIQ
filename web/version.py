@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261008-smart-alerts"
+STATIC_ASSET_VERSION = "20261012-mission-control-7"

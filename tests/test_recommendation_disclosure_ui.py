@@ -16,7 +16,7 @@ const html = render({player: '<Player>', stat: 'Points', line: 20.5, direction: 
   counterargument: {supporting_factors: ['Recent form <strong>'], risk_factors: ['Minutes uncertain']},
   calibration_presentation: {status: 'UNAVAILABLE', calibrated_probability: 99, sample_size: 200},
   decision_receipt: {market_probability: null, movement: {change: 0, snapshots: 1}}});
-assert.match(html, /Why this pick\?/);
+assert.match(html, /Why EdgeIQ likes it · Why this can lose/);
 assert.match(html, /<details><summary>Evidence<\/summary>/);
 assert.match(html, /<details><summary>Advanced diagnostics<\/summary>/);
 assert.match(html, /Calibrated estimate<\/dt><dd>Unavailable/);

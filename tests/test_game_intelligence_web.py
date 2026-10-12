@@ -80,7 +80,7 @@ def test_games_pwa_surface_has_navigation_telemetry_and_mobile_styles():
     html = (root / "web/static/index.html").read_text()
     javascript = (root / "web/static/js/games.js").read_text()
     styles = (root / "web/static/styles.css").read_text()
-    assert 'data-view="games"' in html
+    assert 'data-view-shortcut="games"' in html
     assert "game_prediction_to_prop" in javascript
     assert "game_context_influenced_prop" in (root / "web/static/app.js").read_text()
     assert "@media (max-width: 640px)" in styles

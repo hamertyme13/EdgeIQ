@@ -14,11 +14,15 @@ const assert = require('node:assert/strict');
 const source = require('fs').readFileSync('web/static/app.js', 'utf8');
 const elements = {};
 global.$ = id => elements[id] ||= {disabled:false, textContent:'', classList:{add(){}}, value:'PrizePicks'};
-global.state = {
-  entryProps:[{player:'A',stat:'Points',game_time:'1',platform:'PrizePicks'}],
-  lastAnalysis:{score:90}, lastEntryPayload:{props:[{player:'A'}]},
-  recommendationSnapshotId:'old-id', entryAnalysisRequestId:4
-};
+global.window = global;
+require('./web/static/js/state.js');
+global.state = window.EdgeIQState;
+global.entryReviewState = state.entry.review;
+state.entryProps = [{player:'A',stat:'Points',game_time:'1',platform:'PrizePicks'}];
+entryReviewState.lastAnalysis = {score:90};
+entryReviewState.lastEntryPayload = {props:[{player:'A'}]};
+entryReviewState.analysisRequestId = 4;
+state.recommendationSnapshotId = 'old-id';
 global.setView = global.renderEntryProps = global.trackProductEvent = () => {};
 eval(source.slice(source.indexOf('function entryDirectionAllowed('), source.indexOf('function loadPaperProps(')));
 eval(source.slice(source.indexOf('function invalidateEntryReview('), source.indexOf('function loadPaperProps(')));
@@ -26,9 +30,9 @@ const added = addFeedProp({player:'B', stat:'Points', line:12.5, game_time:'2',
   platform:'PrizePicks', direction:'Over', recommendation_snapshot_id:'new-id'});
 assert.equal(added, true);
 assert.equal(state.entryProps.length, 2);
-assert.equal(state.lastAnalysis, null);
-assert.equal(state.lastEntryPayload, null);
-assert.equal(state.entryAnalysisRequestId, 5);
+assert.equal(entryReviewState.lastAnalysis, null);
+assert.equal(entryReviewState.lastEntryPayload, null);
+assert.equal(entryReviewState.analysisRequestId, 5);
 assert.equal(state.recommendationSnapshotId, 'new-id');
 for (const id of ['ai-review-entry','prepare-handoff','place-entry']) assert.equal($(id).disabled,true);
 '''
@@ -45,13 +49,19 @@ const source = require('fs').readFileSync('web/static/app.js', 'utf8');
 const elements = {};
 global.$ = id => elements[id] ||= {value:'', textContent:'', disabled:false};
 const button = {textContent:'Place Paid Entry'};
-global.state = {entryProps:[{player:'A'}], lastEntryPayload:{props:[{player:'A'}], entry_mode:'real'}, entryAnalysisRequestId:1};
+global.window = global;
+require('./web/static/js/state.js');
+global.state = window.EdgeIQState;
+global.entryReviewState = state.entry.review;
+state.entryProps = [{player:'A'}];
+entryReviewState.lastEntryPayload = {props:[{player:'A'}], entry_mode:'real'};
+entryReviewState.analysisRequestId = 1;
 global.syncEntryPlatformFromProps = () => ['PrizePicks'];
 global.parsePayoutSchedule = () => [];
 global.renderPlacementAudit = global.trackProductEvent = global.playCircuitSound = global.finishCircuitFeedback = () => {};
 global.money = value => `$${value}`;
 global.renderEntryProps = global.loadPending = global.loadDashboard = global.loadCommandCenter = () => {};
-global.window = {confirm:() => true};
+global.confirm = () => true;
 $('entry-mode').value='real'; $('entry-wager').value='10'; $('entry-multiplier').value='3';
 eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('async function loadProviderSuggestions(')));
 (async () => {
@@ -61,15 +71,15 @@ eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('
     ? new Promise(resolve => finishCheck=resolve)
     : (saves++, Promise.resolve({id:1,settlement_tracking:'verified'}));
   const first=placeEntry(button);
-  state.lastEntryPayload=null;
-  state.entryAnalysisRequestId++;
+  entryReviewState.lastEntryPayload=null;
+  entryReviewState.analysisRequestId++;
   state.entryProps=[{player:'B'}];
   finishCheck({ok:true, blocks:[], warnings:[]});
   assert.equal(await first,false);
   assert.equal(saves,0);
   assert.deepEqual(state.entryProps,[{player:'B'}]);
 
-  state.lastEntryPayload={props:[{player:'C'}], entry_mode:'real'};
+  entryReviewState.lastEntryPayload={props:[{player:'C'}], entry_mode:'real'};
   state.entryProps=[{player:'C'}];
   let finishSave;
   global.api = path => path.endsWith('placement-check')
@@ -77,8 +87,8 @@ eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('
     : (saves++, new Promise(resolve => finishSave=resolve));
   const second=placeEntry(button);
   await new Promise(resolve => setImmediate(resolve));
-  state.lastEntryPayload=null;
-  state.entryAnalysisRequestId++;
+  entryReviewState.lastEntryPayload=null;
+  entryReviewState.analysisRequestId++;
   state.entryProps=[{player:'D'}];
   finishSave({id:2,settlement_tracking:'verified'});
   assert.equal(await second,true);
@@ -163,10 +173,12 @@ const original = {player:'Old', stat:'Points', line:12.5, projection:14, directi
   leg_recommendation_snapshot_id:'old-leg', offer_snapshot_id:'old-offer-snapshot',
   end_to_end_confirmed:true, projection_source:'provider', auto_projected:false};
 global.state = {entryProps:[original], lastAnalysis:null, recommendationOrigin:true};
+global.entryReviewState = {lastAnalysis:null};
 const elements = {};
 global.$ = id => elements[id] ||= {innerHTML:'', textContent:'', value:'PrizePicks'};
 global.escapeHtml = value => String(value);
 global.directionBadge = value => value;
+global.confidenceLabel = value => value == null ? 'Confidence unavailable' : `${value}% confidence`;
 global.pct = value => String(value);
 global.entryDirectionAllowed = () => true;
 global.entrySourcePlatforms = () => ['PrizePicks'];
@@ -248,7 +260,7 @@ const fields = {
   'prop-game':'SEA vs LV','prop-game-time':'2026-10-01T19:30'
 };
 global.$ = id => ({value:fields[id]});
-global.state = {entrySelectedPlayerRecord:null,entrySelectedPlayerIdentityId:null};
+global.entryState = {selectedPlayerRecord:null,selectedPlayerIdentityId:null};
 eval(source.slice(source.indexOf('function gameStartInputValue('), source.indexOf('function entryPropFromFeed(')));
 eval(source.slice(source.indexOf('function propFromForm()'), source.indexOf('let entryPlayerLookupTimer')));
 const prop = propFromForm();

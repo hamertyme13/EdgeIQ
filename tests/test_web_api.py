@@ -690,7 +690,7 @@ def test_daily_briefing_returns_bet_paper_watch_avoid_sections(monkeypatch):
     assert body["sections"]["bet"][0]["explanation"]["freshness"]["label"]
     assert body["sections"]["bet"][0]["suggestion"] == command_card["suggestion"]
     assert body["sections"]["paper"][0].get("entry_mode") == "paper" or body["sections"]["paper"][0]["type"] == "paper"
-    assert body["sections"]["watch"][0]["title"] == "Take Now"
+    assert body["sections"]["watch"][0]["title"] == "Confirmed Board Ready"
     assert body["sections"]["avoid"]
     assert "require user confirmation" in body["rules"][0]
 
@@ -1023,6 +1023,22 @@ def test_daily_paper_cards_skip_generation_while_samples_are_pending(monkeypatch
     assert len(cards) == 1
     assert cards[0]["type"] == "paper_status"
     assert "skipped duplicate sample generation" in cards[0]["reason"]
+
+
+def test_daily_paper_cards_do_not_generate_synchronously_when_none_pending(monkeypatch):
+    monkeypatch.setattr(
+        web_app,
+        "backtest_summary",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("backtest should not run")),
+    )
+
+    cards = web_app._daily_paper_cards(
+        "PrizePicks", "WNBA", {"entries": {"paper": {"pending": 0}}},
+    )
+
+    assert len(cards) == 1
+    assert cards[0]["type"] == "paper_status"
+    assert cards[0]["button_label"] == "View Performance"
 
 
 def test_daily_opportunities_only_request_market_odds_for_visible_top_options(monkeypatch):
@@ -1629,6 +1645,76 @@ def test_daily_briefing_uses_verified_provider_fallback_when_selected_book_is_em
         "active_platform": "PrizePicks",
         "reason": "Underdog has no current offers with a verified final-stat path. Showing PrizePicks opportunities instead.",
     }
+
+
+def test_daily_briefing_skips_card_generators_when_no_props_are_verified(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Unverified offers must not enter card generation")
+
+    monkeypatch.setattr(web_app, "get_dashboard", lambda: {"entries": {"paper": {"pending": 1}}})
+    monkeypatch.setattr(web_app, "_user_preferences", lambda: {})
+    monkeypatch.setattr(web_app, "_fetch_props", lambda *_args: [{"league": "CS2", "player": "Research only"}])
+    monkeypatch.setattr(web_app, "_confirmed_props_payload", lambda *_args, **_kwargs: {
+        "count": 0, "props": [], "rejected_count": 1, "analyzed_count": 0, "slate": [],
+    })
+    monkeypatch.setattr(web_app, "_daily_verified_provider_fallback", lambda platform, sport, confirmed, **_kwargs: (platform, confirmed, None))
+    monkeypatch.setattr(web_app, "_command_center_payload", forbidden)
+    monkeypatch.setattr(web_app, "_daily_watch_cards", forbidden)
+    monkeypatch.setattr(web_app, "_daily_top_opportunities", forbidden)
+    monkeypatch.setattr(web_app, "_model_health_payload", lambda: {})
+    monkeypatch.setattr(web_app, "_loss_protection_payload", lambda: {"active": False})
+    monkeypatch.setattr(web_app, "_daily_paper_cards", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_avoid_cards", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_risk_summary", lambda *_args: {"risk_level": "Paper First", "expected_value": None})
+    monkeypatch.setattr(web_app, "_daily_games_today", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_provider_availability", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_selected_sport_health", lambda *_args: {})
+    monkeypatch.setattr(web_app, "_daily_provider_badges", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_sport_availability", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_empty_states", lambda *_args: {})
+    monkeypatch.setattr(web_app, "_daily_suggested_entries", lambda *_args: [])
+    monkeypatch.setattr(web_app, "_daily_user_context", lambda *_args: {})
+    monkeypatch.setattr(web_app, "_daily_loss_protection_headline", lambda *_args: "Research only")
+    monkeypatch.setattr(web_app, "_daily_model_health_summary", lambda *_args: {})
+    monkeypatch.setattr(web_app.ModelRehabilitationRepository, "save_feed", lambda payload, **_kwargs: payload)
+
+    briefing = web_app._daily_briefing_payload("PrizePicks", None)
+
+    assert briefing["top_opportunities"] == []
+    assert briefing["sections"]["bet"] == []
+
+
+def test_briefing_confirmed_analysis_does_not_materialize_features(monkeypatch):
+    observed = []
+    monkeypatch.setattr(web_app, "_record_plausibility_rejections", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(web_app, "_analyzed_feed_prop", lambda raw, *, persist_evidence=True: (
+        observed.append(persist_evidence) or raw
+    ))
+    def evaluate(rows, **kwargs):
+        kwargs["analyze"](rows[0])
+        return [], {"eligibility_rejected": 0, "analysis_rejected": 0, "analyzed": 1}
+
+    monkeypatch.setattr(web_app, "evaluate_provider_candidates", evaluate)
+
+    web_app._confirmed_props_payload(
+        "PrizePicks", "WNBA", board_props=[{"player": "A", "sport": "WNBA"}],
+        persist_evidence=False,
+    )
+
+    assert observed == [False]
+
+
+def test_briefing_watch_cards_reuse_existing_analysis(monkeypatch):
+    monkeypatch.setattr(web_app, "_market_timing_alert_rows", lambda *_args, **_kwargs: (
+        (_ for _ in ()).throw(AssertionError("briefing should not rescan timing alerts"))
+    ))
+
+    cards = web_app._daily_watch_cards(
+        "PrizePicks", "WNBA", {"cards": []}, {"count": 2, "props": []},
+        live_market_alerts=False,
+    )
+
+    assert cards[0]["type"] == "watch_status"
 
 
 def test_best_available_briefing_selects_primary_book_with_most_verified_props(monkeypatch):
@@ -3830,6 +3916,7 @@ def test_auto_paper_calibration_creates_zero_wager_paper_entries(monkeypatch):
     assert saved["payload"]["recommended_by_app"] is True
     assert "auto_paper_calibration" in saved["payload"]["audit_snapshot"]
     assert '"schema_version": 2' in saved["payload"]["audit_snapshot"]
+    assert "all_hit_probability" in json.loads(saved["payload"]["audit_snapshot"])["model_payout_analysis"]
 
 
 def test_auto_paper_calibration_dry_run_does_not_save(monkeypatch):
@@ -4094,7 +4181,7 @@ def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_s
             "board_diagnostics": {"eligible_same_day_props": 8},
         }
 
-    monkeypatch.setattr(web_app, "_auto_paper_calibration", fake_auto_paper)
+    monkeypatch.setattr(web_app, "_auto_paper_calibration_unlocked", fake_auto_paper)
     result = web_app._balanced_all_sports_paper_calibration(
         AutoPaperCalibrationPayload(sport="All Sports", standard_batch=True, dry_run=True)
     )
@@ -4148,11 +4235,16 @@ def test_under_leg_result_wins_below_line():
 
 def test_recommendation_accuracy_counts_only_recommended_decisions():
     entries = [
-        {"status": "Settled", "result": "Win", "recommended_by_app": True},
-        {"status": "Settled", "result": "Loss", "recommended_by_app": True},
-        {"status": "Settled", "result": "Push", "recommended_by_app": True},
-        {"status": "Pending", "result": "", "recommended_by_app": True},
-        {"status": "Settled", "result": "Win", "recommended_by_app": False},
+        {"status": "Settled", "result": "Win", "recommended_by_app": True,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 60.0}}},
+        {"status": "Settled", "result": "Loss", "recommended_by_app": True,
+         "audit_snapshot": json.dumps({"payout_analysis": {"all_hit_probability": 72.0}})},
+        {"status": "Settled", "result": "Push", "recommended_by_app": True,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 65.0}}},
+        {"status": "Pending", "result": "", "recommended_by_app": True,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 81.0}}},
+        {"status": "Settled", "result": "Win", "recommended_by_app": False,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 90.0}}},
     ]
 
     stats = EntryRepository._recommendation_accuracy(entries)
@@ -4163,6 +4255,36 @@ def test_recommendation_accuracy_counts_only_recommended_decisions():
     assert stats["pushes"] == 1
     assert stats["pending"] == 1
     assert stats["tracked"] == 4
+    assert stats["minimum_card_probability"] == 60.0
+
+
+def test_recommendation_accuracy_excludes_lower_and_unscored_cards_without_losing_calibration_records():
+    entries = [
+        {"status": "Settled", "result": "Win", "recommended_by_app": True, "entry_mode": "paper",
+         "average_confidence": 92.0,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 59.9}}},
+        {"status": "Settled", "result": "Loss", "recommended_by_app": True,
+         "average_confidence": 95.0, "audit_snapshot": "{}"},
+        {"status": "Settled", "result": "Win", "recommended_by_app": True,
+         "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 60.0}}},
+    ]
+
+    stats = EntryRepository._recommendation_accuracy(entries)
+
+    assert stats["accuracy"] == 100.0
+    assert stats["wins"] == 1
+    assert stats["decisions"] == 1
+    assert stats["tracked"] == 1
+    assert stats["calibration_only"] == 1
+    assert stats["probability_unavailable"] == 1
+    assert EntryRepository._paper_stats(entries[:1], entries[:1], [])["decisions"] == 1
+
+
+def test_recommendation_accuracy_rejects_invalid_historical_probabilities():
+    for value in ("NaN", -1, 101, "not a number"):
+        assert EntryRepository._evaluated_card_probability({
+            "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": value}}
+        }) is None
 
 
 def test_entry_profit_uses_multiplier_as_net_profit():
@@ -7193,7 +7315,8 @@ def test_place_entry_feedback_prevents_duplicate_submissions():
     state_source = static_dir.joinpath("js", "state.js").read_text(encoding="utf-8")
 
     assert "placementInFlight: false" in state_source
-    assert "if (state.placementInFlight || !state.lastEntryPayload) return false;" in source
+    assert "if (this.placementInFlight || !this.lastEntryPayload) return false;" in state_source
+    assert "if (!entryReviewState.beginPlacement()) return false;" in source
     assert 'playCircuitSound("engage")' in source
     assert 'playCircuitSound("success")' in source
     assert 'playCircuitSound("warning")' in source
@@ -7279,11 +7402,13 @@ def test_board_history_optimization_requires_preview_and_confirmation():
     static_dir = Path(web_app.__file__).with_name("static")
     html = static_dir.joinpath("index.html").read_text(encoding="utf-8")
     source = static_dir.joinpath("app.js").read_text(encoding="utf-8")
+    provider_health = static_dir.joinpath("js/provider-health.js").read_text(encoding="utf-8")
 
     assert 'id="compact-board-history"' in html
     assert 'api("/api/data/compact-board-history", { method: "POST" })' in source
     assert 'window.confirm(' in source
     assert 'api("/api/data/compact-board-history?execute=true", { method: "POST" })' in source
-    assert "Review blocked provider-board results" in source
-    assert "item.blocking_reason" in source
-    assert "item.next_retry_at" in source
+    assert "window.EdgeIQProviderHealth.create" in source
+    assert "Review blocked provider-board results" in provider_health
+    assert "item.blocking_reason" in provider_health
+    assert "item.next_retry_at" in provider_health

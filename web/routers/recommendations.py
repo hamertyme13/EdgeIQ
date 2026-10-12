@@ -114,7 +114,12 @@ def opportunity_feed(
 @router.post("/api/entries/auto-paper-calibration")
 def auto_paper_calibration(payload: AutoPaperCalibrationPayload, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
-    return _deps.auto_paper(payload)
+    try:
+        return _deps.auto_paper(payload)
+    except RuntimeError as exc:
+        if "Another data refresh is running" not in str(exc):
+            raise
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/api/entries/auto-paper-calibration/jobs", status_code=202)

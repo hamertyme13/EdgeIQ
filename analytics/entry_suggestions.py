@@ -49,6 +49,7 @@ def suggest_entries(
     apply_feedback: bool = False,
     diversify: bool = False,
     avoid_prop_keys: set[str] | None = None,
+    candidate_cache: dict[tuple[int, str], list[Prop]] | None = None,
 ) -> list[SuggestedEntry]:
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
@@ -66,12 +67,23 @@ def suggest_entries(
         ):
             continue
         eligible_props.append(prop)
-    if len(eligible_props) > 1:
-        with ThreadPoolExecutor(max_workers=min(4, len(eligible_props))) as pool:
-            for rows in pool.map(lambda prop: _props_from_feed(prop, platform, {}), eligible_props):
-                candidates.extend(rows)
-    elif eligible_props:
-        candidates.extend(_props_from_feed(eligible_props[0], platform, {}))
+    missing = [
+        prop for prop in eligible_props
+        if candidate_cache is None or (id(prop), str(platform)) not in candidate_cache
+    ]
+    if len(missing) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(missing))) as pool:
+            converted = list(pool.map(lambda prop: _props_from_feed(prop, platform, {}), missing))
+    else:
+        converted = [_props_from_feed(missing[0], platform, {})] if missing else []
+    if candidate_cache is not None:
+        for prop, rows in zip(missing, converted, strict=True):
+            candidate_cache[(id(prop), str(platform))] = rows
+        for prop in eligible_props:
+            candidates.extend(candidate_cache[(id(prop), str(platform))])
+    else:
+        for rows in converted:
+            candidates.extend(rows)
 
     candidates.sort(key=_candidate_sort_key, reverse=True)
     candidates = _top_markets_per_player(candidates, per_player=1, limit=48)

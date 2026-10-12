@@ -16,7 +16,7 @@ def test_entry_builder_requires_sport_before_player_lookup() -> None:
     assert "loadEntryPlayerDirectory" in javascript
     assert "/api/players/directory" in javascript
     assert "entryPlayerProviderLabel" in javascript
-    assert "player_identity_id: state.entrySelectedPlayerIdentityId" in javascript
+    assert "player_identity_id: entryState.selectedPlayerIdentityId" in javascript
 
 
 def test_today_game_predictions_can_be_added_to_entry_builder() -> None:

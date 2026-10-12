@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import RLock
@@ -417,6 +418,7 @@ def cached_daily_briefing_payload(
         cached.get("payload"), payload,
         previous_at=str(cached.get("created_at") or ""), current_at=created_at,
     )
+    cache_write_started = time.monotonic()
     set_setting(
         key,
         json.dumps(
@@ -428,6 +430,9 @@ def cached_daily_briefing_payload(
             }
         ),
     )
+    cache_write_ms = (time.monotonic() - cache_write_started) * 1000
+    if cache_write_ms >= 1000:
+        _log.warning("Daily Briefing cache write took %.1f ms for %s", cache_write_ms, key)
     return {
         **payload,
         "cache": {

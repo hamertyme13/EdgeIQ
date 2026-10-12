@@ -10,6 +10,28 @@ from repository.models.product_event_model import ProductEventModel
 from repository.models.research_session_model import ResearchSessionModel
 from utils.time import utc_now
 
+_BOUNDED_TELEMETRY_EVENTS = {
+    "evidence_expanded", "timeline_viewed", "ask_edgeiq_query", "ask_edgeiq_result",
+    "ask_edgeiq_failed", "provider_refresh_failed",
+}
+_BOUNDED_TELEMETRY_TEXT = {"sport", "platform", "grade"}
+_BOUNDED_TELEMETRY_FLAGS = {"grounded", "ai_fallback"}
+
+
+def _bounded_telemetry_metadata(metadata: dict | None) -> dict:
+    values = metadata if isinstance(metadata, dict) else {}
+    result = {
+        key: str(values[key])[:40]
+        for key in _BOUNDED_TELEMETRY_TEXT
+        if key in values and isinstance(values[key], str)
+    }
+    result.update({
+        key: values[key]
+        for key in _BOUNDED_TELEMETRY_FLAGS
+        if key in values and isinstance(values[key], bool)
+    })
+    return result
+
 
 class ProductExperienceRepository:
     FUNNEL = ("recommendation_viewed", "entry_analyzed", "recommendation_added", "entry_saved", "entry_settled")
@@ -24,6 +46,9 @@ class ProductExperienceRepository:
         user_id: int | None = None,
         session_id: str | None = None,
     ) -> dict:
+        if event_name in _BOUNDED_TELEMETRY_EVENTS:
+            entity_id = ""
+            metadata = _bounded_telemetry_metadata(metadata)
         initialize_database()
         with SessionLocal() as session:
             if event_name == "entry_settled" and user_id is None and entity_id:

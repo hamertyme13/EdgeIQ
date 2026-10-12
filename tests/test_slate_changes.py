@@ -5,7 +5,6 @@ import web.application.briefing_service as briefing_service
 from web.application.briefing_service import cached_daily_briefing_payload
 from web.application.slate_changes import compare_briefings
 
-
 NOW = "2026-10-07T16:00:00Z"
 BEFORE = "2026-10-07T15:00:00Z"
 

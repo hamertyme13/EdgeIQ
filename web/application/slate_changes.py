@@ -20,7 +20,7 @@ _LABELS = {
 
 def _number(value: object) -> float | None:
     try:
-        number = float(value)
+        number = float(value) if isinstance(value, bool) else float(str(value))
     except (TypeError, ValueError):
         return None
     return number if isfinite(number) else None

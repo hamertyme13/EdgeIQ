@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261008-smart-alerts" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261012-mission-control-7" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -23,13 +23,12 @@
             <div class="brand-subtitle">Player Prop Intelligence</div>
           </div>
         </div>
-        <nav class="nav">
+        <nav class="nav" aria-label="Primary navigation">
           <button class="nav-item active" data-view="dashboard">Today</button>
-          <button class="nav-item" data-view="games">Games</button>
-          <button class="nav-item" data-view="analysis">Players</button>
-          <button class="nav-item" data-view="best-lines">Best Lines</button>
-          <button class="nav-item" data-view="entries">Entries</button>
+          <button class="nav-item" data-view="analysis">Research</button>
+          <button class="nav-item" data-view="entries">Entry</button>
           <button class="nav-item" data-view="performance">Results</button>
+          <button class="nav-item" data-view="tools" data-workspace-jump="decision-desk:builder">Ask EdgeIQ</button>
         </nav>
       </aside>
 
@@ -43,6 +42,8 @@
             <details class="consumer-more">
               <summary>More</summary>
               <div class="consumer-more-content">
+                <button class="secondary" type="button" data-view-shortcut="games">Games Today</button>
+                <button class="secondary" type="button" data-view-shortcut="best-lines">Best Lines</button>
                 <button class="secondary" type="button" data-workspace-jump="decision-desk:value">Watchlists + Value Tools</button>
                 <button class="secondary" type="button" data-workspace-jump="decision-desk:alerts">Timing Alerts</button>
                 <button class="secondary" type="button" data-workspace-jump="decision-desk:builder">Ask EdgeIQ</button>
@@ -455,46 +456,53 @@
               <div class="panel-header">
                 <div>
                   <h2>Ask EdgeIQ</h2>
-                  <p id="ai-parlay-status">Ask for a custom entry from the live board.</p>
+                  <p>Research a prop or entry using EdgeIQ's recorded evidence.</p>
                 </div>
-                <button id="ask-ai-parlay">Ask EdgeIQ</button>
               </div>
-              <div class="chat-row">
-                <input id="ai-parlay-input" value="Build me the best entry from today's briefing" />
-              </div>
-              <div class="quick-prompts">
-                <button class="micro-button" data-ai-prompt="Give me a safer 2-leg parlay for WNBA">Safer 2-leg</button>
-                <button class="micro-button" data-ai-prompt="Give me the best confirmed 3-leg parlay">Confirmed 3-leg</button>
-                <button class="micro-button" data-ai-prompt="Give me an aggressive 4-leg parlay">Aggressive 4-leg</button>
-              </div>
-              <div id="ai-parlay-response" class="analysis-card muted-card">Ask EdgeIQ for a custom 2-leg, 3-leg, or 5-leg entry.</div>
               <div class="copilot-workspace">
                 <div class="section-heading compact-heading">
-                  <div><p class="eyebrow">Local Research Copilot</p><h3>Question grounded in EdgeIQ records</h3></div>
+                  <div><p class="eyebrow">Research</p><h3>What would you like to understand?</h3></div>
                   <button id="ask-copilot" class="secondary">Research</button>
                 </div>
-                <div class="form-grid copilot-fields">
-                  <input id="copilot-question" value="Summarize today's strongest evidence and biggest risk" aria-label="Copilot question" />
-                  <input id="copilot-player" placeholder="Player (optional)" aria-label="Copilot player" />
-                  <input id="copilot-stat" placeholder="Stat (optional)" aria-label="Copilot stat" />
-                  <input id="copilot-line" type="number" step="0.5" placeholder="Line (optional)" aria-label="Copilot line" />
-                </div>
+                <label class="ask-question-label" for="copilot-question">Question</label>
+                <textarea id="copilot-question" rows="2">Summarize today's strongest evidence and biggest risk</textarea>
                 <div class="quick-prompts">
                   <button class="micro-button" data-copilot-prompt="Show me my strongest historical segments">Personal Edge</button>
                   <button class="micro-button" data-copilot-prompt="Which open entries have the most correlated risk?">Open risk</button>
                   <button class="micro-button" data-copilot-prompt="Show me WNBA props above 60% model probability with at least 100 calibrated samples">Filter props</button>
                   <button class="micro-button" data-copilot-prompt="Which recommendations are based on stale evidence?">Stale evidence</button>
                 </div>
-                <div class="model-evaluation-row">
-                  <select id="copilot-model" aria-label="Local Ollama model">
-                    <option value="llama3.1:8b" selected>8B Research · llama3.1</option>
-                    <option value="llama3.2:3b">3B Fast · llama3.2</option>
-                  </select>
-                  <button id="evaluate-copilot-model" class="secondary">Qualify Model</button>
-                  <span id="copilot-model-status" class="subtle">Paid explanations require a passing grounding check.</span>
-                </div>
-                <div id="copilot-response" class="analysis-card muted-card">Ask about a player, recommendation, settled results, or portfolio exposure.</div>
+                <div id="copilot-response" class="analysis-card muted-card" aria-live="polite">The answer will appear here with supporting evidence and risks.</div>
+                <details class="ask-options">
+                  <summary>Focus on a player or change the research model</summary>
+                  <div class="form-grid copilot-fields">
+                    <input id="copilot-player" placeholder="Player (optional)" aria-label="Copilot player" />
+                    <input id="copilot-stat" placeholder="Stat (optional)" aria-label="Copilot stat" />
+                    <input id="copilot-line" type="number" step="0.5" placeholder="Line (optional)" aria-label="Copilot line" />
+                  </div>
+                  <div class="model-evaluation-row">
+                    <select id="copilot-model" aria-label="Local Ollama model">
+                      <option value="llama3.1:8b" selected>8B Research · llama3.1</option>
+                      <option value="llama3.2:3b">3B Fast · llama3.2</option>
+                    </select>
+                    <button id="evaluate-copilot-model" class="secondary">Qualify Model</button>
+                    <span id="copilot-model-status" class="subtle">Paid explanations require a passing grounding check.</span>
+                  </div>
+                </details>
               </div>
+              <details class="ask-entry-workspace">
+                <summary>Build a custom entry from the live board</summary>
+                <p id="ai-parlay-status" class="subtle">Ask for a custom entry from the live board.</p>
+                <label class="ask-question-label" for="ai-parlay-input">Entry request</label>
+                <div class="chat-row"><input id="ai-parlay-input" value="Build me the best entry from today's briefing" /></div>
+                <div class="quick-prompts">
+                  <button class="micro-button" data-ai-prompt="Give me a safer 2-leg parlay for WNBA">Safer 2-leg</button>
+                  <button class="micro-button" data-ai-prompt="Give me the best confirmed 3-leg parlay">Confirmed 3-leg</button>
+                  <button class="micro-button" data-ai-prompt="Give me an aggressive 4-leg parlay">Aggressive 4-leg</button>
+                </div>
+                <button id="ask-ai-parlay" type="button">Build Entry</button>
+                <div id="ai-parlay-response" class="analysis-card muted-card" aria-live="polite">Choose a card size or describe the entry you want.</div>
+              </details>
             </div>
 
             <div class="dashboard-side">
@@ -849,7 +857,7 @@
                   </label>
                   <p class="subtle">Enter wins:multiplier pairs exactly as shown in the provider app. EdgeIQ estimates EV from this payout and its calibrated probabilities; it does not verify the displayed payout automatically.</p>
                 </details>
-                <div class="table-wrap compact">
+                <div class="table-wrap compact entry-builder-table">
                   <table>
                     <thead>
                       <tr>
@@ -1743,7 +1751,7 @@
             <div class="panel-header">
               <div>
                 <h2>Performance Overview</h2>
-                <p>Profit, calibration, accuracy, and bet ledger access.</p>
+                <p>This month at a glance, with all-time results and model evidence below.</p>
               </div>
               <div class="panel-action">
                 <button class="secondary recheck-final-stats">Recheck Final Stats</button>
@@ -1752,13 +1760,14 @@
             </div>
             <div id="performance-summary" class="stats-grid"></div>
             <details class="inline-disclosure performance-summary-details">
-              <summary><span>More account metrics</span><small>Bankroll and pending exposure</small></summary>
+              <summary><span>All-time and account metrics</span><small>Record, bankroll, and pending exposure</small></summary>
               <div id="performance-summary-detail" class="stats-grid disclosure-grid"></div>
             </details>
             <div id="performance-recovery-summary" class="performance-recovery-summary"></div>
           </div>
           <details class="consumer-model-track">
             <summary>Model Performance</summary>
+            <p class="subtle">A well-calibrated model's 70% predictions should win about 70% of the time. Compare predicted and actual rates only where enough verified outcomes exist.</p>
             <form id="model-track-form" class="model-track-filters">
               <label>Sport<input name="sport" placeholder="All sports" maxlength="20"></label>
               <label>Provider<select name="provider"><option value="">All providers</option><option>PrizePicks</option><option>Underdog</option><option>DraftKings Pick6</option><option>Sleeper</option></select></label>
@@ -1805,17 +1814,23 @@
               </div>
               <button id="refresh-performance" class="secondary" type="button">Refresh</button>
             </div>
-            <div class="two-col monthly-profit-layout">
-              <div>
-                <h3>Current Month</h3>
-                <div id="monthly-profit-current" class="suggestion-list"></div>
+            <details class="results-monthly-history">
+              <summary>Monthly log</summary>
+              <div class="two-col monthly-profit-layout">
+                <div>
+                  <h3>Current Month</h3>
+                  <div id="monthly-profit-current" class="suggestion-list"></div>
+                </div>
+                <div>
+                  <h3>Monthly History</h3>
+                  <div id="monthly-profit-log" class="suggestion-list"></div>
+                </div>
               </div>
-              <div>
-                <h3>Monthly History</h3>
-                <div id="monthly-profit-log" class="suggestion-list"></div>
-              </div>
-            </div>
-            <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
+            </details>
+            <details class="results-monthly-trend">
+              <summary>Settled profit trend</summary>
+              <div id="monthly-profit-chart" class="monthly-profit-chart" role="img" aria-label="Monthly profit trend"></div>
+            </details>
             <button id="toggle-performance-details" class="secondary performance-detail-toggle" type="button" aria-expanded="false">Show Detailed Performance</button>
           </div>
           <details id="personal-edge" class="inline-disclosure personal-edge-section" data-workspace-pane="performance" data-auto-open="false">
@@ -1956,11 +1971,10 @@
     </div>
     <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
       <button class="nav-item active" data-view="dashboard" type="button">Today</button>
-      <button class="nav-item" data-view="games" type="button">Games</button>
-      <button class="nav-item" data-view="analysis" type="button">Players</button>
-      <button class="nav-item" data-view="best-lines" type="button">Best Lines</button>
-      <button class="nav-item" data-view="entries" type="button">Entries</button>
+      <button class="nav-item" data-view="analysis" type="button">Research</button>
+      <button class="nav-item" data-view="entries" type="button">Entry</button>
       <button class="nav-item" data-view="performance" type="button">Results</button>
+      <button class="nav-item" data-view="tools" data-workspace-jump="decision-desk:builder" type="button">Ask</button>
     </nav>
 
     <div id="edgeiq-overlay-root"></div>
@@ -1982,7 +1996,7 @@
         document.write('<script src="circuit-audio.js"><\/script>');
       }
     </script>
-    <script src="/static/js/state.js?v=20261004-recommendation-compare"></script>
+    <script src="/static/js/state.js?v=20261008-entry-review-state"></script>
     <script>
       if (!window.EdgeIQState) {
         document.write('<script src="js/state.js"><\/script>');
@@ -2005,14 +2019,26 @@
     <script src="/static/js/source-health.js?v=20261007-source-audits"></script>
     <script src="/static/js/personal-edge.js?v=20261007-personal-edge"></script>
     <script src="/static/js/recommendation-compare.js?v=20261007-recommendation-compare"></script>
-    <script src="/static/js/recommendation-disclosure.js?v=20261007-progressive-disclosure"></script>
-    <script src="/static/js/recommendation-card.js?v=20261007-recommendation-card"></script>
+    <script src="/static/js/recommendation-disclosure.js?v=20261012-mission-control-7"></script>
+    <script src="/static/js/recommendation-card.js?v=20261012-mission-control-7"></script>
     <script src="/static/js/slate-changes.js?v=20261008-smart-alerts"></script>
+    <script src="/static/js/alerts.js?v=20261008-alert-modules"></script>
+    <script>
+      if (!window.EdgeIQAlerts) {
+        document.write('<script src="js/alerts.js"><\/script>');
+      }
+    </script>
+    <script src="/static/js/provider-health.js?v=20261012-mission-control-7"></script>
+    <script>
+      if (!window.EdgeIQProviderHealth) {
+        document.write('<script src="js/provider-health.js"><\/script>');
+      }
+    </script>
     <script src="/static/js/market-disagreement.js?v=20261007-market-disagreement"></script>
     <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261008-smart-alerts"></script>
+    <script src="/static/app.js?v=20261012-mission-control-7"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

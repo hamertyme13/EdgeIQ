@@ -1,4 +1,5 @@
 import json
+import math
 import re
 from collections import defaultdict
 from datetime import UTC, datetime, timezone
@@ -738,12 +739,14 @@ class EntryRepository:
     @staticmethod
     def _recommendation_accuracy(entries: list[dict]) -> dict:
         recommended = [entry for entry in entries if entry.get("recommended_by_app")]
-        settled = [entry for entry in recommended if entry.get("status") == "Settled"]
+        evaluated = [(entry, EntryRepository._evaluated_card_probability(entry)) for entry in recommended]
+        qualified = [entry for entry, probability in evaluated if probability is not None and probability >= 60.0]
+        settled = [entry for entry in qualified if entry.get("status") == "Settled"]
         decisions = [entry for entry in settled if entry.get("result") in {"Win", "Loss"}]
         wins = sum(1 for entry in decisions if entry.get("result") == "Win")
         losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
         pushes = sum(1 for entry in settled if entry.get("result") == "Push")
-        pending = sum(1 for entry in recommended if entry.get("status") == "Pending")
+        pending = sum(1 for entry in qualified if entry.get("status") == "Pending")
         total = wins + losses
         return {
             "accuracy": round((wins / total * 100) if total else 0.0, 1),
@@ -751,10 +754,35 @@ class EntryRepository:
             "losses": losses,
             "pushes": pushes,
             "pending": pending,
-            "tracked": len(recommended),
+            "tracked": len(qualified),
             "settled": len(settled),
             "decisions": total,
+            "minimum_card_probability": 60.0,
+            "calibration_only": sum(1 for _, probability in evaluated if probability is not None and probability < 60.0),
+            "probability_unavailable": sum(1 for _, probability in evaluated if probability is None),
         }
+
+    @staticmethod
+    def _evaluated_card_probability(entry: dict) -> float | None:
+        audit = entry.get("audit_snapshot") or {}
+        if isinstance(audit, str):
+            try:
+                audit = json.loads(audit)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(audit, dict):
+            return None
+        for key in ("model_payout_analysis", "payout_analysis"):
+            analysis = audit.get(key)
+            if not isinstance(analysis, dict) or analysis.get("all_hit_probability") in (None, ""):
+                continue
+            try:
+                probability = float(analysis["all_hit_probability"])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(probability) and 0.0 <= probability <= 100.0:
+                return probability
+        return None
 
     @staticmethod
     def _paper_stats(active: list[dict], settled: list[dict], pending: list[dict]) -> dict:

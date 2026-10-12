@@ -81,6 +81,16 @@ def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
         page.locator('.consumer-more').evaluate('(element) => { element.open = false; }')
     page.locator(f'button[data-view="{VIEW_TARGETS[view_name]}"]:visible').first.click()
     page.wait_for_timeout(900)
+    if view_name == "Results":
+        page.locator('#performance-summary .stat-card').first.wait_for(state='visible')
+        assert page.locator('#performance-summary').get_by_text('This month profit').count() == 1
+        assert page.locator('#performance-recovery-summary').get_by_text('No settled entries yet').count() == 1
+        assert not page.locator('#monthly-profit-log').is_visible()
+        assert not page.locator('#monthly-profit-current').is_visible()
+        page.locator('.results-monthly-history summary').click()
+        assert page.locator('#monthly-profit-log').is_visible()
+        assert page.locator('#monthly-profit-current').is_visible()
+        page.locator('.results-monthly-history summary').click()
     issues = visual_issues(page)
     screenshot = OUTPUT / f"{viewport_name}-{view_name.lower()}.png"
     page.screenshot(path=screenshot, full_page=True)
@@ -89,6 +99,32 @@ def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
     if issues["blank_buttons"] or issues["clipped_buttons"] or issues["horizontal_overflow"]:
         raise AssertionError(f"{viewport_name} {view_name} visual issues: {issues}")
     return {"viewport": viewport_name, "view": view_name, "screenshot": str(screenshot), **issues}
+
+
+def capture_ask_edgeiq(page: Page, viewport_name: str) -> dict:
+    page.locator('button.nav-item[data-view="tools"]:visible').first.click()
+    page.locator('#decision-desk [data-workspace-pane="builder"]').wait_for(state="visible")
+    page.wait_for_timeout(900)
+    assert page.locator('#view-title').inner_text() == "Ask EdgeIQ"
+    assert page.locator('#copilot-question').is_visible()
+    assert not page.locator('#ai-parlay-input').is_visible()
+    page.locator('.ask-entry-workspace summary').click()
+    assert page.locator('#ai-parlay-input').is_visible()
+    page.locator('.ask-entry-workspace summary').click()
+    page.locator('.ask-options summary').click()
+    assert page.locator('#copilot-player').is_visible()
+    page.locator('.ask-options summary').click()
+    panel_opacity = page.locator('#decision-desk [data-workspace-pane="builder"] .panel').first.evaluate(
+        '(element) => Number.parseFloat(getComputedStyle(element).opacity)'
+    )
+    assert panel_opacity >= 0.98, f"Ask EdgeIQ panel remained dimmed: {panel_opacity}"
+    issues = visual_issues(page)
+    assert not issues["horizontal_overflow"], issues
+    assert not issues["clipped_buttons"], issues
+    screenshot = OUTPUT / f"{viewport_name}-ask-edgeiq.png"
+    page.screenshot(path=screenshot, full_page=True)
+    page.evaluate("setView('analysis')")
+    return {"viewport": viewport_name, "view": "Ask EdgeIQ", "screenshot": str(screenshot), **issues}
 
 
 def main() -> int:
@@ -138,6 +174,7 @@ def main() -> int:
                     continue
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
+                results.append(capture_ask_edgeiq(page, viewport_name))
                 results.extend(capture_research_details(page, viewport_name))
                 results.append(capture_entry_summary(page, viewport_name))
                 results.append(capture_model_track_record(page, viewport_name))
@@ -273,7 +310,7 @@ def capture_model_track_record(page: Page, viewport_name: str) -> dict:
     page.locator('#model-track-form input[name="sport"]').fill("WNBA")
     page.locator('#model-track-form button').click()
     page.locator('.model-track-segment').wait_for()
-    assert "Small sample" in page.locator('#model-track-output').inner_text()
+    assert "Fewer than 100 settled: descriptive only" in page.locator('#model-track-output').inner_text()
     page.locator('.consumer-model-track').scroll_into_view_if_needed()
     issues = visual_issues(page)
     assert not issues["horizontal_overflow"], issues
@@ -440,14 +477,15 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
                                  "lines": [{**offer, "platform": "PrizePicks", "line": 20.5},
                                            {**offer, "platform": "Underdog", "line": 21.5}]})
     page.route("**/api/market/best-lines?*", lambda route: route.fulfill(json=payload))
-    page.locator('button[data-view="best-lines"]:visible').first.click()
+    page.locator('.consumer-more > summary').click()
+    page.locator('button[data-view-shortcut="best-lines"]:visible').click()
     page.locator('.consumer-more').evaluate('(element) => { element.open = true; }')
     page.locator('button[data-display-mode="basic"]').click()
     page.locator('.consumer-more').evaluate('(element) => { element.open = false; }')
     assert page.locator("#best-lines").is_visible()
     page.locator('button[data-view="analysis"]:visible').first.click()
     assert page.locator("#analysis").is_visible()
-    assert page.locator("#view-title").inner_text() == "Players"
+    assert page.locator("#view-title").inner_text() == "Research"
     assert page.locator('[data-view="analysis"]:visible').first.get_attribute('aria-current') == 'page'
     page.evaluate('setView("unknown-destination")')
     assert page.locator('#analysis').is_visible()
@@ -489,7 +527,8 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     page.locator('.consumer-more > summary').click()
     page.keyboard.press("Escape")
     assert not page.locator('.consumer-more').evaluate('(element) => element.open')
-    page.locator('button[data-view="best-lines"]:visible').first.click()
+    page.locator('.consumer-more > summary').click()
+    page.locator('button[data-view-shortcut="best-lines"]:visible').click()
     page.locator("#shop-player").fill("Example Player")
     page.locator("#shop-stat").fill("Points")
     page.locator("#shop-sport").select_option("WNBA")
@@ -521,16 +560,24 @@ def capture_best_lines(page: Page, viewport_name: str) -> dict:
     assert page.evaluate('state.entryProps.length') == 1
     assert 'separate' in page.locator('#entry-status').inner_text()
     page.evaluate('''() => {
-        state.lastAnalysis = {score: 90};
-        state.lastEntryPayload = {old: true};
+        entryReviewState.lastAnalysis = {score: 90};
+        entryReviewState.lastEntryPayload = {old: true};
         document.getElementById('place-entry').disabled = false;
         loadPaperProps([{player:'Restricted Example', platform:'Sleeper', sport:'WNBA',
-            stat:'Points', line:20.5, direction:'Over', allowed_directions:['Under']}]);
+            stat:'Points', line:20.5, direction:'Over', allowed_directions:['Under'],
+            game:'AAA @ BBB', confidence:61.5, provider_backed:true}]);
     }''')
-    assert page.evaluate('state.lastAnalysis === null && state.lastEntryPayload === null')
+    assert page.evaluate('entryReviewState.lastAnalysis === null && entryReviewState.lastEntryPayload === null')
     assert page.locator('#place-entry').is_disabled()
     assert page.evaluate('state.entryProps[0].direction') == 'Over'
     assert 'Direction unavailable' in page.locator('#entry-props').inner_text()
+    assert 'AAA @ BBB · 61.5% confidence · Provider-backed' in page.locator('#entry-props').inner_text()
+    if viewport_name == 'mobile':
+        assert page.locator('.entry-action-dock').evaluate(
+            "(element) => getComputedStyle(element).position") == 'static'
+        assert page.locator('#entry-props tr[data-entry-leg]').evaluate(
+            "(element) => getComputedStyle(element).display") == 'grid'
+        assert not visual_issues(page)['horizontal_overflow']
     page.locator('[data-edit-prop="0"]').click()
     assert page.locator('[data-edit-field="direction"] option', has_text='Over').get_attribute('disabled') is not None
     page.locator('[data-edit-field="direction"]').select_option(label='Under')

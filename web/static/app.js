@@ -1,4 +1,7 @@
 const state = window.EdgeIQState;
+const entryState = state.entry;
+const entryReviewState = entryState.review;
+const marketState = state.market;
 window.EdgeIQLoaded = true;
 
 const {
@@ -24,6 +27,22 @@ const {
   sortNotifications,
   sortProviderHealth,
 } = window.EdgeIQUi;
+const {
+  loadNotifications,
+  loadAlertDeliverySettings,
+  saveAlertDeliverySettings,
+  testAlertDelivery,
+} = window.EdgeIQAlerts.create({ $, api, escapeHtml, friendlyStatus, pct, sortNotifications });
+const {
+  loadRuntimeStatus,
+  loadProviderStatus,
+  loadDataHealth,
+  renderGlobalHealthStrip,
+  renderTodayProviderStatus,
+} = window.EdgeIQProviderHealth.create({
+  $, api, state, document, escapeHtml, friendlyStatus, formatDateTime,
+  humanizeText: humanizeCopilotText, sortProviderHealth,
+});
 function registerPwa() {
   if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
     let refreshingForNewShell = false;
@@ -133,8 +152,7 @@ function syncEntryActionLabels() {
 }
 
 async function placeEntryFromButton(button) {
-  if (state.placementInFlight || !state.lastEntryPayload) return false;
-  state.placementInFlight = true;
+  if (!entryReviewState.beginPlacement()) return false;
   const controls = [$("place-entry"), $("mobile-place-entry")].filter(Boolean);
   const labels = new Map(controls.map((control) => [control, control.textContent]));
   controls.forEach((control) => {
@@ -149,14 +167,14 @@ async function placeEntryFromButton(button) {
     placed = await placeEntry(button);
     return placed;
   } finally {
-    state.placementInFlight = false;
+    entryReviewState.endPlacement();
     controls.forEach((control) => {
       control.classList.remove("is-busy");
       control.textContent = labels.get(control);
     });
     syncEntryActionLabels();
-    $("place-entry").disabled = !state.lastEntryPayload;
-    $("mobile-place-entry").disabled = state.entryProps.length < 2 || !state.lastEntryPayload;
+    $("place-entry").disabled = !entryReviewState.lastEntryPayload;
+    $("mobile-place-entry").disabled = state.entryProps.length < 2 || !entryReviewState.lastEntryPayload;
     if (!placed) window.setTimeout(() => button?.classList.remove("circuit-shimmer"), 160);
   }
 }
@@ -777,7 +795,7 @@ function setView(viewId) {
     button.setAttribute("aria-current", "page");
   });
   const navButton = document.querySelector(`[data-view="${viewId}"]`);
-  const titles = { dashboard: "Today", games: "Games", entries: "Entries", performance: "Results", analysis: "Players", systems: "System + Settings", tools: "Tools + Signals", bets: "Results · Ledger" };
+  const titles = { dashboard: "Today", games: "Games", entries: "Entry", performance: "Results", analysis: "Research", systems: "System + Settings", tools: "Ask EdgeIQ", bets: "Results · Ledger" };
   $("view-title").textContent = titles[viewId] || navButton?.textContent || viewId;
   if (state.providerHealth) renderGlobalHealthStrip(state.providerHealth.providers, state.providerHealth.summary, state.providerHealth.operations);
   loadViewData(viewId);
@@ -825,6 +843,7 @@ function renderStats(stats) {
   const monthly = stats.monthly_performance || stats;
   const accuracy = monthly.recommendation_accuracy || {};
   const paper = monthly.paper || {};
+  const qualifiedDecisions = Number(accuracy.decisions || 0);
   if ($("today-performance-period")) {
     $("today-performance-period").textContent = `${monthly.label || "This month"} results · live bankroll and exposure`;
   }
@@ -860,17 +879,18 @@ function renderStats(stats) {
     <div class="recommendation-accuracy-header">
       <div>
         <h2>EdgeIQ Recommendation Accuracy</h2>
-        <p>${escapeHtml(monthly.label || "This month")} · Entries placed from EdgeIQ recommendations</p>
+        <p>${escapeHtml(monthly.label || "This month")} · App-recommended cards evaluated at 60%+ complete-card probability</p>
       </div>
-      <div class="grade">${pct(accuracy.accuracy || 0)}</div>
+      <div class="grade">${qualifiedDecisions ? pct(accuracy.accuracy || 0) : "Not enough results"}</div>
     </div>
     <div class="accuracy-grid">
       <div><strong>${accuracy.wins || 0}-${accuracy.losses || 0}</strong><span>Win/Loss</span></div>
       <div><strong>${accuracy.pending || 0}</strong><span>Pending</span></div>
       <div><strong>${accuracy.pushes || 0}</strong><span>Pushes</span></div>
-      <div><strong>${accuracy.tracked || 0}</strong><span>Tracked</span></div>
-      <div><strong>${pct(paper.accuracy || 0)}</strong><span>Paper Accuracy</span></div>
+      <div><strong>${accuracy.tracked || 0}</strong><span>60%+ tracked</span></div>
+      <div><strong>${pct(paper.accuracy || 0)}</strong><span>Paper · All Buckets</span></div>
     </div>
+    <p class="subtle">${accuracy.calibration_only || 0} lower-probability cards remain in calibration records. ${accuracy.probability_unavailable || 0} legacy cards lack a saved complete-card probability.</p>
   `;
 }
 
@@ -1659,8 +1679,7 @@ function bindDailyBriefingActions() {
 }
 
 function bindDailyBriefingSummaryActions() {
-  state.opportunitySelections.clear();
-  state.compareSelections.clear();
+  marketState.resetBriefingSelections();
   const selectionButton = $("send-selected-opportunities");
   const compareButton = $("compare-selected-opportunities");
   const comparePanel = $("recommendation-compare-panel");
@@ -1696,18 +1715,18 @@ function bindDailyBriefingSummaryActions() {
   };
   marketPanel?.addEventListener("toggle", () => { if (marketPanel.open) loadMarketDisagreement(); });
   marketRefresh?.addEventListener("click", () => loadMarketDisagreement(true));
-  const selectedForComparison = () => [...state.compareSelections].sort((a, b) => a - b)
+  const selectedForComparison = () => [...marketState.compareSelections].sort((a, b) => a - b)
     .map(index => state.dailyBriefing?.top_opportunities?.[index]).filter(Boolean);
   const updateCompareButton = () => {
     if (!compareButton) return;
-    compareButton.disabled = state.compareSelections.size < 2;
-    compareButton.textContent = `Compare (${state.compareSelections.size})`;
+    compareButton.disabled = marketState.compareSelections.size < 2;
+    compareButton.textContent = `Compare (${marketState.compareSelections.size})`;
   };
   const renderComparison = () => {
     if (!compareOutput || !comparePanel?.open) return;
     compareOutput.innerHTML = window.EdgeIQRecommendationCompare.render(
       selectedForComparison(), compareMetric.value,
-      Object.fromEntries(state.compareTrackRecords),
+      Object.fromEntries(marketState.compareTrackRecords),
     );
   };
   const loadComparisonRecords = async () => {
@@ -1716,16 +1735,16 @@ function bindDailyBriefingSummaryActions() {
     await Promise.all(props.map(async (prop) => {
       if (!prop.model_version) return;
       const key = window.EdgeIQRecommendationCompare.trackKey(prop);
-      if (state.compareTrackRecords.has(key)) return;
+      if (marketState.compareTrackRecords.has(key)) return;
       const params = new URLSearchParams({
         sport: prop.sport || "", stat: prop.stat || "", provider: prop.platform || "",
         direction: prop.direction || "", model_version: prop.model_version,
       });
       try {
         const record = await api(`/api/analytics/model-track-record?${params}`, { timeoutMs: 15000 });
-        state.compareTrackRecords.set(key, record);
+        marketState.compareTrackRecords.set(key, record);
       } catch {
-        state.compareTrackRecords.set(key, { error: true });
+        marketState.compareTrackRecords.set(key, { error: true });
       }
       if (compareOutput.isConnected) renderComparison();
     }));
@@ -1733,19 +1752,19 @@ function bindDailyBriefingSummaryActions() {
   document.querySelectorAll("[data-compare-opportunity]").forEach((button) => {
     button.addEventListener("click", () => {
       const index = Number(button.dataset.compareOpportunity);
-      if (state.compareSelections.has(index)) state.compareSelections.delete(index);
-      else if (state.compareSelections.size < 5) state.compareSelections.add(index);
+      if (marketState.compareSelections.has(index)) marketState.compareSelections.delete(index);
+      else if (marketState.compareSelections.size < 5) marketState.compareSelections.add(index);
       else {
         $("daily-briefing-status").textContent = "Compare up to five props. Remove one before adding another.";
         return;
       }
-      button.setAttribute("aria-pressed", String(state.compareSelections.has(index)));
+      button.setAttribute("aria-pressed", String(marketState.compareSelections.has(index)));
       updateCompareButton();
       if (comparePanel?.open) loadComparisonRecords();
     });
   });
   compareButton?.addEventListener("click", () => {
-    if (state.compareSelections.size < 2) return;
+    if (marketState.compareSelections.size < 2) return;
     comparePanel.hidden = false;
     comparePanel.open = true;
     loadComparisonRecords();
@@ -1753,7 +1772,7 @@ function bindDailyBriefingSummaryActions() {
   });
   compareMetric?.addEventListener("change", renderComparison);
   $("clear-recommendation-compare")?.addEventListener("click", () => {
-    state.compareSelections.clear();
+    marketState.compareSelections.clear();
     document.querySelectorAll("[data-compare-opportunity]").forEach((button) => button.setAttribute("aria-pressed", "false"));
     comparePanel.open = false;
     comparePanel.hidden = true;
@@ -1761,8 +1780,8 @@ function bindDailyBriefingSummaryActions() {
   });
   const updateOpportunitySelection = () => {
     if (!selectionButton) return;
-    selectionButton.disabled = state.opportunitySelections.size === 0;
-    selectionButton.textContent = `Send selected (${state.opportunitySelections.size})`;
+    selectionButton.disabled = marketState.opportunitySelections.size === 0;
+    selectionButton.textContent = `Send selected (${marketState.opportunitySelections.size})`;
   };
   document.querySelectorAll("[data-opportunity-risk]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1780,7 +1799,7 @@ function bindDailyBriefingSummaryActions() {
       const index = Number(checkbox.dataset.selectOpportunity);
       const opportunity = state.dailyBriefing?.top_opportunities?.[index];
       if (!opportunity) return;
-      const selectedPlatforms = [...state.opportunitySelections].map(
+      const selectedPlatforms = [...marketState.opportunitySelections].map(
         (selectedIndex) => state.dailyBriefing?.top_opportunities?.[selectedIndex]?.platform
       ).filter(Boolean);
       if (checkbox.checked && selectedPlatforms.length && !selectedPlatforms.includes(opportunity.platform)) {
@@ -1788,13 +1807,13 @@ function bindDailyBriefingSummaryActions() {
         $("daily-briefing-status").textContent = "A single entry must use one app. Send the current selection, then build a separate card for the other app.";
         return;
       }
-      if (checkbox.checked) state.opportunitySelections.add(index);
-      else state.opportunitySelections.delete(index);
+      if (checkbox.checked) marketState.opportunitySelections.add(index);
+      else marketState.opportunitySelections.delete(index);
       updateOpportunitySelection();
     });
   });
   selectionButton?.addEventListener("click", () => {
-    const selected = [...state.opportunitySelections]
+    const selected = [...marketState.opportunitySelections]
       .sort((left, right) => left - right)
       .map((index) => state.dailyBriefing?.top_opportunities?.[index])
       .filter(Boolean);
@@ -1857,6 +1876,9 @@ function bindDailyBriefingSummaryActions() {
           platform: opportunity.platform || "",
         });
         const timeline = await api(`/api/recommendations/timeline?${params}`);
+        trackProductEvent("timeline_viewed", "recommendation", "", {
+          sport: opportunity.sport || "", platform: opportunity.platform || "",
+        });
         openExplanationDrawer(opportunityExplanation(opportunity));
         const section = document.createElement("section");
         section.className = "analysis-card";
@@ -2137,208 +2159,6 @@ async function loadModelHealth() {
   renderModelHealth(data);
 }
 
-async function loadRuntimeStatus() {
-  if (!$("runtime-status-list")) return;
-  const data = await api("/api/runtime/status");
-  $("runtime-status-list").innerHTML = (data.items || []).map((item) => `
-    <div class="runtime-status-item runtime-${escapeHtml(item.status || "attention")}" title="${escapeHtml(humanizeCopilotText(item.detail || ""))}">
-      <span class="runtime-status-dot" aria-hidden="true"></span>
-      <div><strong>${escapeHtml(item.label || "System")}</strong><small>${escapeHtml(humanizeCopilotText(item.value || "Unknown"))}</small></div>
-    </div>
-  `).join("") || `<div class="runtime-status-loading">Runtime status is not available yet.</div>`;
-  const modelItem = (data.items || []).find((item) => /model|release/i.test(String(item.label || "")));
-  const settlementItem = (data.items || []).find((item) => /settlement|worker/i.test(String(item.label || "")));
-  if ($("global-model-status")) $("global-model-status").textContent = modelItem
-    ? `${modelItem.label}: ${humanizeCopilotText(modelItem.value || "Unknown")}`
-    : "Model release unavailable";
-  if ($("global-settlement-status") && settlementItem) {
-    $("global-settlement-status").textContent = `${settlementItem.label}: ${humanizeCopilotText(settlementItem.value || "Unknown")}`;
-  }
-}
-
-function renderGlobalHealthStrip(providers = [], summary = {}, operations = {}) {
-  const strip = $("global-health-strip");
-  if (!strip) return;
-  const activeView = document.querySelector(".view.active")?.id || "dashboard";
-  const selectedPlatform = activeView === "entries"
-    ? $("entry-platform")?.value
-    : activeView === "analysis"
-      ? $("research-context-platform")?.value
-      : activeView === "dashboard"
-        ? $("props-platform")?.value
-        : "";
-  const platformToken = String(selectedPlatform || "").toLowerCase().split(" ")[0];
-  const contextual = platformToken && !["all", "both"].includes(platformToken)
-    ? providers.filter((provider) => String(provider.name || "").toLowerCase().includes(platformToken))
-    : [];
-  const healthyProviders = providers.filter((provider) => !["empty", "unavailable", "disabled"].includes(String(provider.status || "").toLowerCase()));
-  const selected = (contextual.length ? contextual : healthyProviders).slice(0, activeView === "performance" ? 0 : 2);
-  const providerRows = selected.map((provider) => {
-    const status = String(provider.status || "unavailable").toLowerCase();
-    const tone = ["fresh", "connected", "healthy", "available"].includes(status)
-      ? "ready"
-      : ["empty", "stale", "degraded"].includes(status)
-        ? "warning"
-        : "danger";
-    return `<span title="${escapeHtml(provider.message || provider.purpose || "")}"><i class="global-health-dot status-${tone}"></i>${escapeHtml(provider.name)} ${escapeHtml(friendlyStatus(status))}</span>`;
-  }).join("");
-  const settlement = operations.shadow_settlement || {};
-  const settlementLabel = settlement.ran_at ? `Settlement ${settlement.failures?.length ? "needs attention" : "healthy"}` : "Settlement waiting";
-  const systemCount = selected.length + 2;
-  strip.innerHTML = `${providerRows || `<span><i class="global-health-dot status-ready"></i>${Number(summary.connected || 0)} data sources available</span>`}<span id="global-settlement-status">${escapeHtml(settlementLabel)}</span><span id="global-model-status">${escapeHtml($("global-model-status")?.textContent || "Model checking")}</span><button id="global-health-toggle" class="global-health-toggle" type="button" aria-expanded="false">${systemCount} systems</button>`;
-  $("global-health-toggle")?.addEventListener("click", () => {
-    const expanded = strip.classList.toggle("expanded");
-    $("global-health-toggle").setAttribute("aria-expanded", expanded ? "true" : "false");
-    $("global-health-toggle").textContent = expanded ? "Collapse" : `${systemCount} systems`;
-  });
-}
-
-async function loadDataHealth() {
-  const data = await api("/api/data-health");
-  const providers = sortProviderHealth(data.providers);
-  renderTodayProviderStatus(providers, data.summary || {});
-  const usage = data.api_usage || {};
-  const totals = usage.totals || {};
-  const endpointPerformance = data.endpoint_performance || {};
-  const endpointRoutes = endpointPerformance.routes || [];
-  const operations = data.operations || {};
-  const scheduler = operations.scheduler || {};
-  const shadow = operations.shadow_evaluation || {};
-  const shadowSettlement = operations.shadow_settlement || {};
-  const researchMemory = operations.research_memory || {};
-  const completeBoard = operations.complete_board || {};
-  const boardRetry = completeBoard.settlement_retry || {};
-  state.providerHealth = { providers, summary: data.summary || {}, operations };
-  renderGlobalHealthStrip(providers, data.summary || {}, operations);
-  $("data-health-list").innerHTML = `
-    <div class="suggestion compact-suggestion">
-      <div class="suggestion-top">
-        <strong>${data.summary.connected}/${data.summary.total} sources available</strong>
-        <span class="status-pill ${data.summary.warnings ? "status-warning" : "status-connected"}">${data.summary.warnings} warnings</span>
-      </div>
-      <p>${data.summary.last_daily_refresh ? `Last scheduled provider refresh ${formatDateTime(data.summary.last_daily_refresh)}` : "No scheduled provider refresh recorded yet."}</p>
-      <p>${Number(usage.requests_avoided || 0)} provider calls avoided · ${Number(totals.network_requests || 0)} network requests · ${Number(usage.avoidance_pct || 0).toFixed(1)}% cache efficiency · ${Number(totals.stale_fallbacks || 0)} stale fallbacks</p>
-    </div>
-    <div class="suggestion compact-suggestion health-${operations.status === "degraded" ? "degraded" : "fresh"}">
-      <div class="suggestion-top">
-        <strong>Evidence collection</strong>
-        <span class="status-pill ${operations.status === "degraded" ? "status-warning" : "status-connected"}">${operations.status === "degraded" ? "Needs attention" : "Operational"}</span>
-      </div>
-      <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
-      <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
-      <p>${Number(completeBoard.settled || 0).toLocaleString()} provider-board observations settled · ${Number(boardRetry.due || 0).toLocaleString()} retries due · ${Number(boardRetry.deferred || 0).toLocaleString()} waiting.</p>
-      ${(boardRetry.items || []).length ? `
-        <details class="compact-details">
-          <summary>Review blocked provider-board results</summary>
-          ${(boardRetry.items || []).map((item) => `
-            <div class="settlement-diagnostic">
-              <strong>${escapeHtml(item.player || "Unknown player")} · ${escapeHtml(item.stat || "Unknown stat")}</strong>
-              <p class="subtle">${escapeHtml(item.sport || "Unknown sport")} · ${escapeHtml(item.provider || "Provider unavailable")} · ${escapeHtml(item.game || "Game unavailable")}</p>
-              <p>${escapeHtml(item.blocking_reason || "Waiting for a verified final box score.")}</p>
-              <p class="subtle">Checked ${Number(item.attempts || 0)} time${Number(item.attempts || 0) === 1 ? "" : "s"} · Next retry ${item.next_retry_at ? formatDateTime(item.next_retry_at) : "not scheduled"}</p>
-            </div>
-          `).join("")}
-        </details>
-      ` : ""}
-      <p class="subtle">Last scheduler check ${scheduler.ran_at ? formatDateTime(scheduler.ran_at) : "not recorded"} · Queued ${escapeHtml(humanizeCopilotText((scheduler.jobs_queued || scheduler.jobs_run || []).join(", ") || "none"))} · Last settlement attempt ${shadowSettlement.ran_at ? formatDateTime(shadowSettlement.ran_at) : "not recorded"}</p>
-      ${(operations.warnings || []).map((warning) => `<p class="human-error">${escapeHtml(warning)}</p>`).join("")}
-      ${(scheduler.failures || []).map((failure) => `<p class="human-error">${escapeHtml(failure.job || "Scheduled job")}: ${escapeHtml(failure.message || "The job did not complete.")}</p>`).join("")}
-    </div>
-    ${providers.map((provider) => `
-      <div class="suggestion compact-suggestion health-${provider.status}">
-        <div class="suggestion-top">
-          <strong>${provider.name}</strong>
-          <span class="status-pill status-${provider.status}">${friendlyStatus(provider.status)}</span>
-        </div>
-        <p>${provider.purpose} · ${provider.message}</p>
-        <p class="subtle">
-          ${escapeHtml(humanizeCopilotText(provider.data_role || "Unclassified"))} ·
-          ${escapeHtml(humanizeCopilotText(provider.settlement_suitability || "Not for settlement"))} ·
-          ${provider.officially_documented ? "Officially documented" : "Undocumented endpoint"} ·
-          Contract ${escapeHtml(provider.contract_version || "unversioned")}
-        </p>
-        <p class="subtle">Sports: ${(provider.supported_sports || []).length
-          ? (provider.supported_sports || []).map((sport) => escapeHtml(sport === "NCAAF" ? "College Football" : sport)).join(" · ")
-          : "Coverage not declared"}</p>
-        <p class="subtle">${provider.api_usage?.used_this_session
-          ? `${Number(provider.api_usage.requests_avoided || 0)} calls avoided · ${Number(provider.api_usage.network_requests || 0)} network requests this session`
-          : "Not requested in this session yet"}</p>
-      </div>
-    `).join("")}
-    <div class="suggestion compact-suggestion endpoint-performance-card">
-      <div class="suggestion-top">
-        <strong>App response times</strong>
-        <span class="status-pill ${Number(endpointPerformance.slow_requests || 0) ? "status-warning" : "status-connected"}">${Number(endpointPerformance.slow_requests || 0)} slow calls</span>
-      </div>
-      <p>${Number(endpointPerformance.requests || 0)} recent API calls measured · slow threshold ${Number(endpointPerformance.slow_threshold_ms || 1000)} ms</p>
-      <div class="endpoint-timing-list">
-        ${endpointRoutes.slice(0, 8).map((route) => `
-          <div class="endpoint-timing-row ${route.slow ? "endpoint-slow" : ""}">
-            <code>${escapeHtml(route.route)}</code>
-            <span>${Number(route.average_ms || 0).toFixed(0)} ms avg</span>
-            <span>${Number(route.p95_ms || 0).toFixed(0)} ms p95</span>
-            <span>${Number(route.requests || 0)} calls</span>
-          </div>
-        `).join("") || `<p class="subtle">Response timing appears after the first app requests complete.</p>`}
-      </div>
-    </div>
-  `;
-  return data;
-}
-
-async function loadProviderStatus() {
-  const data = await api("/api/data-health?compact=true");
-  const providers = sortProviderHealth(data.providers || []);
-  state.providerHealth = { providers, summary: data.summary || {}, operations: data.operations || {} };
-  renderTodayProviderStatus(providers, data.summary || {});
-  renderGlobalHealthStrip(providers, data.summary || {}, data.operations || {});
-}
-
-function renderTodayProviderStatus(providers = [], summary = {}) {
-  const status = $("today-provider-status");
-  if (!status) return;
-  const relevant = providers.filter((provider) => provider.configured !== false);
-  const stale = relevant.filter((provider) => ["stale", "degraded", "error", "unavailable"].includes(String(provider.status || "").toLowerCase()));
-  status.classList.toggle("needs-refresh", stale.length > 0);
-  status.classList.toggle("is-fresh", stale.length === 0 && relevant.length > 0);
-  if (stale.length) {
-    status.textContent = `${stale.length} provider${stale.length === 1 ? "" : "s"} need${stale.length === 1 ? "s" : ""} a refresh`;
-  } else if (relevant.length) {
-    status.textContent = "Providers are fresh";
-  } else if (summary.last_daily_refresh) {
-    status.textContent = `Last refreshed ${formatDateTime(summary.last_daily_refresh)}`;
-  } else {
-    status.textContent = "Provider status unavailable";
-  }
-}
-
-async function loadNotifications() {
-  const data = await api("/api/notifications");
-  const notifications = sortNotifications(data.notifications);
-  $("notification-list").innerHTML = notifications.map((note) => `
-    <div class="suggestion compact-suggestion notification-${note.severity || "neutral"}">
-      <div class="suggestion-top">
-        <strong>${escapeHtml(note.title)}</strong>
-        <span class="status-pill status-${note.severity || "neutral"}">${friendlyStatus(note.type)}</span>
-      </div>
-      <p>${escapeHtml(note.message)}</p>
-    </div>
-  `).join("") || `
-    <div class="suggestion compact-suggestion">
-      <div class="suggestion-top">
-        <strong>All clear</strong>
-        <span class="status-pill status-connected">No alerts</span>
-      </div>
-      <p>No smart notifications right now.</p>
-    </div>
-  `;
-  if ($("notification-center-list")) $("notification-center-list").innerHTML = $("notification-list").innerHTML;
-  if ($("notification-center-count")) {
-    $("notification-center-count").textContent = String(notifications.length);
-    $("notification-center-count").hidden = notifications.length === 0;
-  }
-}
-
 async function loadProductAnalytics() {
   if (!$("product-analytics-list")) return;
   const data = await api("/api/experience/analytics");
@@ -2437,19 +2257,23 @@ async function refreshTodayProviders() {
     if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
     waitForBackgroundJob(result, (job) => {
       if (status) status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
-    }).then(() => {
+    }).then((job) => {
       if (status) {
-        status.textContent = "Provider data refreshed. Refresh Briefing when you are ready to rebuild recommendations.";
+        status.textContent = `${job.result?.message || "Provider data refreshed."} Refresh Briefing when you are ready to rebuild recommendations.`;
         status.classList.add("is-fresh");
       }
       return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyScanStatus()]);
     }).catch((error) => {
+      trackProductEvent("provider_refresh_failed", "provider", "", { platform, sport });
       if (status) {
         status.textContent = humanErrorMessage(error, "Provider refresh did not finish. Try again.");
         status.classList.add("needs-refresh");
       }
     });
   } catch (error) {
+    trackProductEvent("provider_refresh_failed", "provider", "", {
+      platform: $("props-platform")?.value || "", sport: $("today-sport")?.value || "",
+    });
     if (status) {
       status.textContent = "Provider refresh did not finish. Try again.";
       status.classList.add("needs-refresh");
@@ -2568,7 +2392,7 @@ async function loadTrendingProps() {
   if (!$("trending-props-list")) return;
   const platform = $("trending-props-platform").value;
   const sport = $("trending-props-sport").value;
-  state.trendingSelections.clear();
+  const requestId = marketState.beginTrendingLoad();
   updateTrendingSelectionActions();
   $("trending-props-status").textContent = `Loading ${sport} market activity...`;
   $("trending-props-list").innerHTML = Array.from({ length: 5 }, () => `<div class="skeleton-row"></div>`).join("");
@@ -2576,16 +2400,17 @@ async function loadTrendingProps() {
   try {
     data = await api(`/api/props/trending?platform=${encodeURIComponent(platform)}&sport=${encodeURIComponent(sport)}&limit=15`);
   } catch (error) {
+    if (requestId !== marketState.trendingLoadId) return;
     $("trending-props-count").textContent = "Unavailable";
     $("trending-props-status").textContent = humanizeErrorText(error.message);
     $("trending-props-list").innerHTML = `<div class="suggestion compact-suggestion"><strong>Trending props could not load.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-trending>Try again</button></div>`;
     $("trending-props-list").querySelector("[data-retry-trending]")?.addEventListener("click", loadTrendingProps);
     return;
   }
-  state.trendingProps = data.props || [];
+  if (!marketState.acceptTrendingLoad(requestId, data.props)) return;
   $("trending-props-count").textContent = `Top ${data.count || 0}`;
   $("trending-props-status").textContent = data.note || `${data.count || 0} end-to-end trackable props ranked by model and data strength.`;
-  $("trending-props-list").innerHTML = state.trendingProps.map((prop, index) => `
+  $("trending-props-list").innerHTML = marketState.trendingProps.map((prop, index) => `
     <div class="trending-prop-row ${prop.research_only ? "research-only-market" : ""} ${!prop.research_only && (Number(prop.confidence) >= 90 || Number(prop.grade_score) >= 90) ? "high-confidence-card" : ""}">
       ${!prop.research_only && (Number(prop.confidence) >= 90 || Number(prop.grade_score) >= 90) ? `<span class="high-confidence-banner">${Number(prop.confidence) >= 90 ? "High model confidence" : "High EdgeIQ score"}</span>` : ""}
       <input class="opportunity-select" type="checkbox" data-select-trending-prop="${index}" aria-label="Select ${escapeHtml(prop.player || "prop")}" ${prop.research_only ? "disabled" : ""} />
@@ -2602,12 +2427,12 @@ async function loadTrendingProps() {
     checkbox.addEventListener("change", () => toggleTrendingPropSelection(checkbox));
   });
   document.querySelectorAll("[data-add-trending-prop]").forEach((button) => {
-    button.addEventListener("click", () => addFeedProp(state.trendingProps[Number(button.dataset.addTrendingProp)]));
+    button.addEventListener("click", () => addFeedProp(marketState.trendingProps[Number(button.dataset.addTrendingProp)]));
   });
 }
 
 function updateTrendingSelectionActions() {
-  const count = state.trendingSelections.size;
+  const count = marketState.trendingSelections.size;
   const sendButton = $("send-selected-trending");
   const clearButton = $("clear-selected-trending");
   if (sendButton) {
@@ -2619,15 +2444,15 @@ function updateTrendingSelectionActions() {
 
 function toggleTrendingPropSelection(checkbox) {
   const index = Number(checkbox.dataset.selectTrendingProp);
-  const prop = state.trendingProps[index];
+  const prop = marketState.trendingProps[index];
   if (!prop) return;
   if (!checkbox.checked) {
-    state.trendingSelections.delete(index);
+    marketState.trendingSelections.delete(index);
     updateTrendingSelectionActions();
     return;
   }
-  const selected = [...state.trendingSelections]
-    .map((selectedIndex) => state.trendingProps[selectedIndex])
+  const selected = [...marketState.trendingSelections]
+    .map((selectedIndex) => marketState.trendingProps[selectedIndex])
     .filter(Boolean);
   const selectedPlatform = selected[0]?.platform;
   if (selectedPlatform && prop.platform !== selectedPlatform) {
@@ -2636,25 +2461,25 @@ function toggleTrendingPropSelection(checkbox) {
     return;
   }
   const maximumLegs = providerMaximumLegs(prop.platform);
-  if (state.trendingSelections.size >= maximumLegs) {
+  if (marketState.trendingSelections.size >= maximumLegs) {
     checkbox.checked = false;
     $("trending-props-status").textContent = `${prop.platform} supports up to ${maximumLegs} legs in one entry.`;
     return;
   }
-  state.trendingSelections.add(index);
+  marketState.trendingSelections.add(index);
   updateTrendingSelectionActions();
 }
 
 function clearTrendingPropSelection() {
-  state.trendingSelections.clear();
+  marketState.trendingSelections.clear();
   document.querySelectorAll("[data-select-trending-prop]").forEach((checkbox) => { checkbox.checked = false; });
   updateTrendingSelectionActions();
 }
 
 function sendSelectedTrendingProps() {
-  const selected = [...state.trendingSelections]
+  const selected = [...marketState.trendingSelections]
     .sort((left, right) => left - right)
-    .map((index) => state.trendingProps[index])
+    .map((index) => marketState.trendingProps[index])
     .filter(Boolean);
   if (!selected.length) return;
   renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
@@ -2943,6 +2768,9 @@ async function loadTimingAlerts() {
 
 function openExplanationDrawer(explanation) {
   if (!explanation) return;
+  trackProductEvent("evidence_expanded", "recommendation", "", {
+    grade: String(explanation.grade || "").slice(0, 4),
+  });
   $("drawer-title").textContent = explanation.title || "Why this pick?";
   $("drawer-content").innerHTML = `
     <div class="grade">${explanation.grade || "-"}</div>
@@ -3065,7 +2893,7 @@ function syncMobileSlip() {
       <small>${prop.line} · ${prop.projection == null ? "Auto" : prop.projection}</small>
     </div>
   `).join("") || `<p class="subtle">Load a recommendation or add props from the board.</p>`;
-  $("mobile-place-entry").disabled = count < 2 || state.placementInFlight || !state.lastEntryPayload;
+  $("mobile-place-entry").disabled = count < 2 || entryReviewState.placementInFlight || !entryReviewState.lastEntryPayload;
   syncEntryActionLabels();
   if ($("entry-wager").value && !$("mobile-slip-wager").value) $("mobile-slip-wager").value = $("entry-wager").value;
   if ($("entry-multiplier").value && !$("mobile-slip-multiplier").value) $("mobile-slip-multiplier").value = $("entry-multiplier").value;
@@ -3385,18 +3213,27 @@ async function askCopilot() {
   $("copilot-response").classList.add("muted-card");
   $("copilot-response").textContent = "Collecting verified EdgeIQ evidence...";
   const line = $("copilot-line").value;
-  const data = await api("/api/ai/copilot", {
-    method: "POST",
-    body: JSON.stringify({
-      question: $("copilot-question").value,
-      player: $("copilot-player").value.trim(),
-      stat: $("copilot-stat").value.trim(),
-      line: line === "" ? null : Number(line),
-      sport: $("props-sport").value,
-      platform: $("props-platform").value,
-    }),
-  });
-  renderCopilotResponse(data);
+  const context = { sport: $("props-sport").value, platform: $("props-platform").value };
+  trackProductEvent("ask_edgeiq_query", "copilot", "", context);
+  try {
+    const data = await api("/api/ai/copilot", {
+      method: "POST",
+      body: JSON.stringify({
+        question: $("copilot-question").value,
+        player: $("copilot-player").value.trim(),
+        stat: $("copilot-stat").value.trim(),
+        line: line === "" ? null : Number(line),
+        ...context,
+      }),
+    });
+    trackProductEvent("ask_edgeiq_result", "copilot", "", {
+      ...context, grounded: Boolean(data.grounded), ai_fallback: Boolean(data.ai_error),
+    });
+    renderCopilotResponse(data);
+  } catch (error) {
+    trackProductEvent("ask_edgeiq_failed", "copilot", "", context);
+    throw error;
+  }
 }
 
 function renderCopilotResponse(data) {
@@ -3703,9 +3540,7 @@ function addFeedProp(prop) {
 }
 
 function invalidateEntryReview() {
-  state.entryAnalysisRequestId = (state.entryAnalysisRequestId || 0) + 1;
-  state.lastAnalysis = null;
-  state.lastEntryPayload = null;
+  entryReviewState.invalidate();
   state.recommendationSnapshotId = "";
   ["ai-review-entry", "prepare-handoff", "place-entry"].forEach((id) => {
     if ($(id)) $(id).disabled = true;
@@ -3753,27 +3588,32 @@ async function optimizeBoardHistory() {
 }
 
 function renderEntryProps() {
-  const corrections = new Map((state.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
+  const corrections = new Map((entryReviewState.lastAnalysis?.corrections?.legs || []).map((leg) => [Number(leg.index), leg]));
   $("entry-props").innerHTML = state.entryProps.map((prop, index) => {
     const gameWinner = prop.stat === "Game Winner";
-    const projection = prop.projection == null ? "Auto" : gameWinner ? pct(Number(prop.projection) * 100) : Number(prop.projection).toFixed(1);
+    const projection = prop.projection == null ? "Pending analysis" : gameWinner ? pct(Number(prop.projection) * 100) : Number(prop.projection).toFixed(1);
     const directionalEdge = String(prop.direction || "Over").toLowerCase() === "under"
       ? Number(prop.line) - Number(prop.projection)
       : Number(prop.projection) - Number(prop.line);
-    const edge = prop.projection == null ? "Auto" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
+    const edge = prop.projection == null ? "Unavailable" : `${directionalEdge >= 0 ? "+" : ""}${directionalEdge.toFixed(1)}`;
     const correction = corrections.get(index);
     const differs = correction?.action === "flip";
     const directionWarning = !gameWinner && !entryDirectionAllowed(prop, prop.direction || "Over")
       ? `<small class="danger-text">Direction unavailable for this offer. Review before continuing.</small>` : "";
+    const evidence = [
+      prop.game ? escapeHtml(prop.game) : "Matchup unavailable",
+      confidenceLabel(prop.confidence),
+      prop.provider_backed ? "Provider-backed" : prop.auto_projected ? "Auto-projected" : "Source unverified",
+    ];
     return `
       <tr data-entry-leg="${index}">
-        <td>${escapeHtml(prop.player)}${directionWarning}</td>
-        <td>${gameWinner ? `<span class="direction-badge direction-over">WIN</span>` : directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
-        <td>${escapeHtml(prop.stat)}</td>
-        <td>${gameWinner ? "Wins game" : prop.line}</td>
-        <td>${projection}</td>
-        <td>${edge}</td>
-        <td><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
+        <td data-label="Player"><strong>${escapeHtml(prop.player)}</strong><small class="entry-leg-evidence">${evidence.join(" · ")}</small>${directionWarning}</td>
+        <td data-label="Pick">${gameWinner ? `<span class="direction-badge direction-over">WIN</span>` : directionBadge(prop.direction || "Over")}${differs ? `<small class="model-disagreement">EdgeIQ: ${escapeHtml(correction.suggested_direction)}</small>` : ""}</td>
+        <td data-label="Stat">${escapeHtml(prop.stat)}</td>
+        <td data-label="Line">${gameWinner ? "Wins game" : prop.line}</td>
+        <td data-label="Projection">${projection}</td>
+        <td data-label="Edge">${edge}</td>
+        <td data-label="Actions"><button class="secondary compact-button" data-edit-prop="${index}">Edit</button><button class="danger compact-button" data-remove-prop="${index}">Remove</button></td>
       </tr>
       <tr class="entry-leg-editor" data-entry-editor="${index}" hidden>
         <td colspan="7">
@@ -3915,13 +3755,13 @@ function renderEntryProps() {
   if ($("entry-card-summary")) {
     const legs = state.entryProps.length;
     const platform = entrySourcePlatforms()[0] || $("entry-platform")?.value || "Sportsbook";
-    const score = Number(state.lastAnalysis?.recommendation?.score ?? state.lastAnalysis?.score ?? 0);
-    const risk = state.lastAnalysis?.risk?.level || "";
+    const score = Number(entryReviewState.lastAnalysis?.recommendation?.score ?? entryReviewState.lastAnalysis?.score ?? 0);
+    const risk = entryReviewState.lastAnalysis?.risk?.level || "";
     $("entry-card-summary").innerHTML = `
       <strong>${legs} ${legs === 1 ? "leg" : "legs"} · ${escapeHtml(platform)}</strong>
       <span>${legs < 2
         ? "Add at least two props to begin."
-        : state.lastAnalysis
+        : entryReviewState.lastAnalysis
           ? `${score.toFixed(0)}/100 model score${risk ? ` · ${escapeHtml(risk)} risk` : ""}`
           : "Ready for analysis."}</span>
     `;
@@ -3931,7 +3771,7 @@ function renderEntryProps() {
 
 function propFromForm() {
   const projectionValue = $("prop-projection").value;
-  const selectedPlayer = state.entrySelectedPlayerRecord;
+  const selectedPlayer = entryState.selectedPlayerRecord;
   const selectedPlatform = $("entry-platform").value;
   const providerAlias = (selectedPlayer?.provider_aliases || []).find((row) => (
     String(row.provider || "").replaceAll(" ", "").toLowerCase() === selectedPlatform.replaceAll(" ", "").toLowerCase()
@@ -3939,7 +3779,7 @@ function propFromForm() {
   const directProviderMatches = String(selectedPlayer?.provider || "").replaceAll(" ", "").toLowerCase() === selectedPlatform.replaceAll(" ", "").toLowerCase();
   return {
     player: $("prop-player").value.trim(),
-    player_identity_id: state.entrySelectedPlayerIdentityId,
+    player_identity_id: entryState.selectedPlayerIdentityId,
     player_provider: selectedPlatform,
     provider_player_id: providerAlias?.provider_player_id || (directProviderMatches ? selectedPlayer.provider_player_id : ""),
     team: $("prop-team").value.trim(),
@@ -3976,10 +3816,10 @@ async function loadEntryPlayerDirectory(query = "") {
   const sport = $("prop-sport")?.value || "";
   const playerInput = $("prop-player");
   const status = $("entry-player-lookup-status");
+  const requestId = entryState.invalidatePlayerLookup();
   if (!sport) {
-    state.entryPlayerDirectory = [];
-    state.entrySelectedPlayerIdentityId = null;
-    state.entrySelectedPlayerRecord = null;
+    entryState.playerDirectory = [];
+    entryState.clearPlayerSelection();
     playerInput.disabled = true;
     playerInput.placeholder = "Select a sport first";
     $("entry-player-options").innerHTML = "";
@@ -3990,10 +3830,15 @@ async function loadEntryPlayerDirectory(query = "") {
   playerInput.placeholder = `Search ${sport} players`;
   status.textContent = `Loading saved ${sport} players...`;
   const requestedSport = sport;
-  const data = await api(`/api/players/directory?sport=${encodeURIComponent(sport)}&query=${encodeURIComponent(query)}&limit=150`);
-  if ($("prop-sport").value !== requestedSport) return;
-  state.entryPlayerDirectory = data.players || [];
-  $("entry-player-options").innerHTML = state.entryPlayerDirectory.map((player) => (
+  let data;
+  try {
+    data = await api(`/api/players/directory?sport=${encodeURIComponent(sport)}&query=${encodeURIComponent(query)}&limit=150`);
+  } catch (error) {
+    if (requestId !== entryState.directoryRequestId) return;
+    throw error;
+  }
+  if ($("prop-sport").value !== requestedSport || !entryState.acceptPlayerLookup(requestId, data.players)) return;
+  $("entry-player-options").innerHTML = entryState.playerDirectory.map((player) => (
     `<option value="${escapeHtml(player.name)}">${escapeHtml(`${player.team || player.sport} · ${entryPlayerProviderLabel(player)}`)}</option>`
   )).join("");
   status.textContent = data.count
@@ -4004,9 +3849,9 @@ async function loadEntryPlayerDirectory(query = "") {
 
 function applyEntryPlayerSelection() {
   const playerName = $("prop-player")?.value.trim().toLowerCase() || "";
-  const match = state.entryPlayerDirectory.find((player) => String(player.name).trim().toLowerCase() === playerName);
-  state.entrySelectedPlayerIdentityId = match?.id || null;
-  state.entrySelectedPlayerRecord = match || null;
+  const match = entryState.playerDirectory.find((player) => String(player.name).trim().toLowerCase() === playerName);
+  entryState.selectedPlayerIdentityId = match?.id || null;
+  entryState.selectedPlayerRecord = match || null;
   if (match?.team && !$("prop-team").value.trim()) $("prop-team").value = match.team;
   if (match && $("entry-player-lookup-status")) {
     $("entry-player-lookup-status").textContent = `${match.name} · ${entryPlayerProviderLabel(match)}.`;
@@ -4335,13 +4180,10 @@ async function analyzeEntry() {
     playCircuitSound("warning");
     return;
   }
-  const requestId = (state.entryAnalysisRequestId || 0) + 1;
-  state.entryAnalysisRequestId = requestId;
+  const requestId = entryReviewState.invalidate();
   const requestedEntry = JSON.stringify(payload);
-  const isCurrent = () => state.entryAnalysisRequestId === requestId
+  const isCurrent = () => entryReviewState.analysisRequestId === requestId
     && JSON.stringify(entryPayload()) === requestedEntry;
-  state.lastAnalysis = null;
-  state.lastEntryPayload = null;
   ["ai-review-entry", "prepare-handoff", "place-entry"].forEach((id) => {
     if ($(id)) $(id).disabled = true;
   });
@@ -4363,10 +4205,10 @@ async function analyzeEntry() {
   }
   if (!isCurrent()) return;
   renderEntryPropsFromAnalyzed(data.entry.props, false, true);
-  state.lastAnalysis = data;
+  entryReviewState.lastAnalysis = data;
   trackProductEvent("entry_analyzed", "entry", state.recommendationSnapshotId || "manual", { legs: state.entryProps.length, platform: payload.platform, mode: payload.entry_mode });
   renderAnalysis(data);
-  state.lastEntryPayload = entryPayload();
+  entryReviewState.lastEntryPayload = entryPayload();
   renderEntryProps();
   $("ai-review-entry").disabled = false;
   const isPaper = payload.entry_mode === "paper";
@@ -4405,7 +4247,7 @@ async function reviewEntryWithAi() {
 }
 
 async function prepareEntryHandoff() {
-  const payload = state.lastEntryPayload || entryPayload();
+  const payload = entryReviewState.lastEntryPayload || entryPayload();
   if (!payload.props || payload.props.length < 2) {
     $("entry-status").textContent = "Add and analyze at least two props before preparing handoff.";
     return;
@@ -4469,7 +4311,7 @@ function renderEntryHandoff(data) {
 }
 
 async function shareCurrentSlip() {
-  const payload = state.lastEntryPayload || entryPayload();
+  const payload = entryReviewState.lastEntryPayload || entryPayload();
   payload.platform = $("entry-platform").value || payload.platform || "PrizePicks";
   payload.entry_mode = $("entry-mode")?.value || payload.entry_mode || "real";
   payload.wager = payload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || payload.wager || 0);
@@ -4599,11 +4441,11 @@ function chooseEntrySaveMode(reasons, paidAllowed = true) {
 }
 
 async function placeEntry(triggerButton = $("place-entry")) {
-  if (!state.lastEntryPayload) return false;
-  const reviewedPayload = state.lastEntryPayload;
-  const reviewRevision = state.entryAnalysisRequestId;
-  const reviewIsCurrent = () => state.lastEntryPayload === reviewedPayload
-    && state.entryAnalysisRequestId === reviewRevision;
+  if (!entryReviewState.lastEntryPayload) return false;
+  const reviewedPayload = entryReviewState.lastEntryPayload;
+  const reviewRevision = entryReviewState.analysisRequestId;
+  const reviewIsCurrent = () => entryReviewState.lastEntryPayload === reviewedPayload
+    && entryReviewState.analysisRequestId === reviewRevision;
   const payload = {...reviewedPayload, props: state.entryProps.map((prop) => ({...prop}))};
   const sourcePlatforms = syncEntryPlatformFromProps();
   if (sourcePlatforms.length > 1) {
@@ -4721,7 +4563,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   const sport = $(sportId).value;
   const legCount = Number($(legsId).value || 3);
   const historyKey = `${platform}|${sport}|${legCount}`;
-  const recentPropKeys = state.generatorRecentProps[historyKey] || [];
+  const recentPropKeys = marketState.generatorRecentProps[historyKey] || [];
   list.innerHTML = `<div class="suggestion">Building ${escapeHtml(platform)} ${legCount}-leg entries...</div>`;
   const avoidQuery = recentPropKeys.length ? `&avoid=${encodeURIComponent(recentPropKeys.join(","))}` : "";
   let data;
@@ -4735,7 +4577,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   const generatedPropKeys = [...new Set(
     (data.suggestions || []).flatMap((suggestion) => suggestion.diversification?.prop_keys || []),
   )];
-  if (generatedPropKeys.length) state.generatorRecentProps[historyKey] = generatedPropKeys.slice(0, 32);
+  if (generatedPropKeys.length) marketState.generatorRecentProps[historyKey] = generatedPropKeys.slice(0, 32);
   const diversity = data.diversification || {};
   const diversityNote = data.suggestions.length
     ? `<div class="generator-diversity-note">
@@ -5550,76 +5392,6 @@ function lossCoachBody(buckets) {
   return "Keep tracking verified results. EdgeIQ will turn repeated loss causes into stricter rules.";
 }
 
-async function loadAlertDeliverySettings() {
-  const data = await api("/api/settings/alert-delivery");
-  const settings = data.settings || {};
-  $("alert-browser-enabled").checked = Boolean(settings.browser_enabled);
-  $("alert-email-enabled").checked = Boolean(settings.email_enabled);
-  $("alert-email-address").value = settings.email_address || "";
-  $("alert-sms-enabled").checked = Boolean(settings.sms_enabled);
-  $("alert-sms-number").value = settings.sms_number || "";
-  $("alert-webhook-enabled").checked = Boolean(settings.webhook_enabled);
-  $("alert-webhook-url").value = settings.webhook_url || "";
-  $("alert-min-priority").value = settings.min_priority ?? 65;
-  $("smart-alerts-enabled").checked = Boolean(settings.smart_alerts_enabled);
-  for (const kind of ["upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"]) {
-    $(`smart-${kind.replaceAll("_", "-")}`).checked = (settings.smart_alert_types || []).includes(kind);
-  }
-  $("smart-alert-line-move").value = settings.smart_alert_line_move ?? 1;
-  renderAlertDeliveryStatus(data);
-}
-
-async function saveAlertDeliverySettings(event) {
-  event.preventDefault();
-  const payload = {
-    browser_enabled: $("alert-browser-enabled").checked,
-    email_enabled: $("alert-email-enabled").checked,
-    email_address: $("alert-email-address").value.trim(),
-    sms_enabled: $("alert-sms-enabled").checked,
-    sms_number: $("alert-sms-number").value.trim(),
-    webhook_enabled: $("alert-webhook-enabled").checked,
-    webhook_url: $("alert-webhook-url").value.trim(),
-    min_priority: Number($("alert-min-priority").value || 65),
-    smart_alerts_enabled: $("smart-alerts-enabled").checked,
-    smart_alert_types: ["upgrades", "downgrades", "line_changes", "invalidated", "injury_context_changes"].filter((kind) => $(`smart-${kind.replaceAll("_", "-")}`).checked),
-    smart_alert_line_move: Number($("smart-alert-line-move").value || 1),
-  };
-  const data = await api("/api/settings/alert-delivery", { method: "POST", body: JSON.stringify(payload) });
-  renderAlertDeliveryStatus(data);
-}
-
-function renderAlertDeliveryStatus(data) {
-  const settings = data.settings || {};
-  const hooks = data.delivery_hooks || {};
-  $("alert-delivery-status").classList.remove("muted-card");
-  $("alert-delivery-status").innerHTML = `
-    <div class="suggestion-top">
-      <strong>${(settings.channels || []).join(", ") || "No channels"}</strong>
-      <span class="subtle">Min ${pct(settings.min_priority || 0)}</span>
-    </div>
-    <p>Browser ${hooks.browser || "-"} · Email ${hooks.email || "-"} · SMS ${hooks.sms || "-"} · Webhook ${hooks.webhook || "-"}</p>
-    <p class="subtle">Browser alerts can run immediately. Webhook delivery can bridge push, email, SMS, or automation tools.</p>
-  `;
-}
-
-async function testAlertDelivery() {
-  $("alert-delivery-status").classList.remove("muted-card");
-  $("alert-delivery-status").textContent = "Sending test alert...";
-  const data = await api("/api/alerts/test-delivery", {
-    method: "POST",
-    body: JSON.stringify({
-      title: "EdgeIQ alert test",
-      message: "Alert delivery is connected.",
-      priority: Number($("alert-min-priority").value || 65),
-      severity: "positive",
-    }),
-  });
-  $("alert-delivery-status").innerHTML = `
-    <h2>${data.delivered ? "Delivery Ready" : "Skipped"}</h2>
-    ${(data.channels || []).map((row) => `<p>${escapeHtml(row.channel)} · ${escapeHtml(row.status)} · ${escapeHtml(row.detail)}</p>`).join("") || `<p>${escapeHtml(data.reason || "No channels configured.")}</p>`}
-  `;
-}
-
 async function loadImportWizard() {
   const data = await api("/api/import-wizard");
   $("import-wizard-result").classList.remove("muted-card");
@@ -6152,7 +5924,7 @@ async function mobileAnalyzeEntry() {
 async function mobilePlaceEntry() {
   if ($("mobile-slip-wager").value) $("entry-wager").value = $("mobile-slip-wager").value;
   if ($("mobile-slip-multiplier").value) $("entry-multiplier").value = $("mobile-slip-multiplier").value;
-  if (!state.lastEntryPayload && state.entryProps.length >= 2) {
+  if (!entryReviewState.lastEntryPayload && state.entryProps.length >= 2) {
     await analyzeEntry();
   }
   const placed = await placeEntryFromButton($("mobile-place-entry"));
@@ -6161,9 +5933,15 @@ async function mobilePlaceEntry() {
 
 async function loadPerformance(options = {}) {
   const data = await api(options.refresh ? "/api/performance?refresh=true" : "/api/performance");
+  const monthly = data.monthly_profit || data.summary.monthly_profit || {};
+  const currentMonth = monthly.current_month || {};
+  const hasCurrentMonth = Boolean(monthly.current_month);
   const summaryItems = [
-    ["Record", data.summary.record],
+    ["This month profit", hasCurrentMonth ? money(currentMonth.profit || 0) : "Unavailable"],
+    ["This month record", hasCurrentMonth ? `${currentMonth.wins || 0}-${currentMonth.losses || 0}-${currentMonth.pushes || 0}` : "Unavailable"],
+    ["This month ROI", hasCurrentMonth ? pct(currentMonth.roi || 0) : "Unavailable"],
     ["All-time net profit", money(data.summary.profit)],
+    ["All-time record", data.summary.record],
     ["All-time ROI", pct(data.summary.roi)],
     ["Current bankroll", money(data.summary.bankroll)],
     ["Settled entry profit", money(data.entries.profit)],
@@ -6179,20 +5957,26 @@ async function loadPerformance(options = {}) {
   const sportRows = Array.isArray(data.by_sport) ? data.by_sport : [];
   const weakSports = sportRows.filter((row) => Number(row.roi || 0) < 0 || Number(row.win_rate || row.win_pct || 0) < 50).slice(0, 2);
   if ($("performance-recovery-summary")) {
+    const performanceStatus = !settledEntries
+      ? "No settled entries yet"
+      : Number(data.summary.roi || 0) >= 0 ? "Performance is above break-even" : "Recovery mode is active";
+    const performanceDetail = !settledEntries
+      ? "Settle paper entries to begin measuring performance and calibration."
+      : `<ul>
+          <li>${settledEntries} settled entries currently support the all-time view.</li>
+          <li>${weakSports.length ? `${weakSports.map((row) => escapeHtml(row.group || row.name || row.label || "Weak segment")).join(" and ")} remain under review.` : "No sport-level pause is currently identified in this report."}</li>
+          <li>Negative or thin-evidence segments stay paper-first while fresh outcomes accumulate.</li>
+          <li>Next evidence milestone: 300 fresh, independently settled props before broader paid release.</li>
+        </ul>`;
     $("performance-recovery-summary").innerHTML = `
-      <div><span class="status-dot ${Number(data.summary.roi || 0) >= 0 ? "status-dot-ready" : "status-dot-warning"}"></span><strong>${Number(data.summary.roi || 0) >= 0 ? "Performance is above break-even" : "Recovery mode is active"}</strong></div>
-      <ul>
-        <li>${settledEntries} settled entries currently support the all-time view.</li>
-        <li>${weakSports.length ? `${weakSports.map((row) => escapeHtml(row.group || row.name || row.label || "Weak segment")).join(" and ")} remain under review.` : "No sport-level pause is currently identified in this report."}</li>
-        <li>Negative or thin-evidence segments stay paper-first while fresh outcomes accumulate.</li>
-        <li>Next evidence milestone: 300 fresh, independently settled props before broader paid release.</li>
-      </ul>`;
+      <div><span class="status-dot ${settledEntries && Number(data.summary.roi || 0) >= 0 ? "status-dot-ready" : "status-dot-warning"}"></span><strong>${performanceStatus}</strong></div>
+      ${performanceDetail}`;
   }
   renderGroup("perf-sport", data.by_sport);
   renderGroup("perf-stat", data.by_stat);
   renderGroup("perf-platform", data.by_platform);
   renderSportSuccessPie(data.by_sport);
-  renderMonthlyProfit(data.monthly_profit || data.summary.monthly_profit || {});
+  renderMonthlyProfit(monthly);
   renderPerformanceInsights(data.summary.performance_insights);
   renderEntryPerformance(data.entries);
   renderEntryPlatformProfitability(data.summary.entry_platform_profitability || data.entries.platform_profitability || []);
@@ -6320,7 +6104,7 @@ async function loadBacktest() {
       <p class="subtle">${escapeHtml(grouped.message || "New versioned predictions will be evaluated after their verified results arrive.")}</p>
       <p class="subtle">${ledger.versioned_records || 0} versioned records · ${ledger.legacy_quarantined || 0} legacy records quarantined</p>
     </div>
-    <div id="model-version-evidence">${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, state.boardEvidence || completeBoardEvidence, { escapeHtml }) || ""}</div>
+    <div id="model-version-evidence">${window.EdgeIQModelVersionEvaluation?.render(modelVersionEvaluation, marketState.boardEvidence || completeBoardEvidence, { escapeHtml }) || ""}</div>
     <div class="suggestion ${shadow.release_ready ? "insight-positive" : "insight-warning"}">
       <div class="suggestion-top">
         <strong>v2.2 Shadow Evaluation</strong>
@@ -6470,7 +6254,7 @@ async function loadCompleteBoardEvidence() {
   status.textContent = "Scanning captured provider offers. The scorecard remains available while this runs.";
   try {
     const evidence = await api("/api/analytics/complete-board-evidence", { timeoutMs: 120000 });
-    state.boardEvidence = evidence;
+    marketState.boardEvidence = evidence;
     const panel = $("model-version-evidence");
     if (panel) panel.innerHTML = window.EdgeIQModelVersionEvaluation?.render(
       state.modelVersionEvaluation || {}, evidence, { escapeHtml }
@@ -6801,7 +6585,11 @@ function bindEvents() {
     button.addEventListener("click", () => setView(button.dataset.view));
   });
   document.querySelectorAll("[data-view-shortcut]").forEach((button) => {
-    button.addEventListener("click", () => setView(button.dataset.viewShortcut));
+    button.addEventListener("click", () => {
+      setView(button.dataset.viewShortcut);
+      const more = button.closest(".consumer-more");
+      if (more) more.open = false;
+    });
   });
   document.querySelectorAll("[data-phone-scan]").forEach((button) => {
     button.addEventListener("click", () => withButtonBusy(button, "Scanning...", startDailyBriefingScan));
@@ -6873,15 +6661,17 @@ function bindEvents() {
   $("prop-sport").addEventListener("change", () => {
     $("prop-player").value = "";
     $("prop-team").value = "";
-    state.entrySelectedPlayerIdentityId = null;
-    state.entrySelectedPlayerRecord = null;
+    entryState.invalidatePlayerLookup();
+    entryState.clearPlayerSelection();
+    entryState.playerDirectory = [];
+    $("entry-player-options").innerHTML = "";
     loadEntryPlayerDirectory().catch((error) => {
       $("entry-player-lookup-status").textContent = humanizeErrorText(error.message);
     });
   });
   $("prop-player").addEventListener("input", () => {
-    state.entrySelectedPlayerIdentityId = null;
-    state.entrySelectedPlayerRecord = null;
+    entryState.invalidatePlayerLookup();
+    entryState.clearPlayerSelection();
     applyEntryPlayerSelection();
     window.clearTimeout(entryPlayerLookupTimer);
     const query = $("prop-player").value.trim();
@@ -6941,8 +6731,8 @@ function bindEvents() {
     $("prop-sport").value = entryDefaults.sport;
     $("prop-player").disabled = false;
     $("prop-player").placeholder = `Search ${entryDefaults.sport} players`;
-    state.entrySelectedPlayerIdentityId = null;
-    state.entrySelectedPlayerRecord = null;
+    entryState.invalidatePlayerLookup();
+    entryState.clearPlayerSelection();
     renderEntryProps();
   });
   $("entry-platform").addEventListener("change", () => {

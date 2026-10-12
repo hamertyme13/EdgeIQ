@@ -213,6 +213,46 @@ class PredictionLedgerRepository:
             ]
 
     @staticmethod
+    def calibration_rows(sport: str | None = None) -> list[dict]:
+        """Read only settled fields needed to identify weak calibration segments."""
+        PredictionLedgerRepository._ensure_schema()
+        with SessionLocal() as session:
+            query = session.query(
+                PredictionRecordModel.independent_market_key,
+                PredictionRecordModel.player_identity_id,
+                PredictionRecordModel.predicted_at,
+                PredictionRecordModel.outcome_source,
+                PredictionRecordModel.outcome,
+                PredictionRecordModel.sport,
+                PredictionRecordModel.stat,
+                PredictionRecordModel.platform,
+                PredictionRecordModel.direction,
+                PredictionRecordModel.projection_source,
+                PredictionRecordModel.probability,
+            ).filter(
+                PredictionRecordModel.legacy_quarantined.is_(False),
+                PredictionRecordModel.outcome.in_(("Win", "Loss")),
+            )
+            if sport and sport.upper() != "ALL SPORTS":
+                query = query.filter(PredictionRecordModel.sport == sport.upper())
+            return [
+                {
+                    "independent_market_key": row.independent_market_key,
+                    "player_identity_id": row.player_identity_id,
+                    "predicted_at": row.predicted_at,
+                    "outcome_source": row.outcome_source,
+                    "result": row.outcome,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                    "platform": row.platform,
+                    "direction": row.direction,
+                    "projection_source": row.projection_source,
+                    "probability": row.probability,
+                }
+                for row in query.yield_per(500)
+            ]
+
+    @staticmethod
     def summary() -> dict:
         rows = PredictionLedgerRepository.evidence_rows(include_legacy=True)
         unique = {row["independent_market_key"] for row in rows if row["result"] in {"Win", "Loss", "Push"}}
