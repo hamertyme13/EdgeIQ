@@ -32,6 +32,10 @@ def test_today_provider_refresh_is_separate_from_briefing_refresh() -> None:
     assert "/api/automation/start-daily-refresh" not in refresh_function
     assert "loadDailyBriefing()" not in refresh_function
     assert "final results" not in refresh_function.lower()
+    assert "state.providerRefreshInProgress = true" in refresh_function
+    assert "refreshId !== state.providerRefreshGeneration" in refresh_function
+    assert "await loadProviderStatus()" in refresh_function
+    assert 'status.classList.add("is-fresh")' not in refresh_function
 
 
 def test_launcher_version_matches_static_cache_version() -> None:

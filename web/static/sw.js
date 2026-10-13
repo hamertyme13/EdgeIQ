@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20261012-mission-control-7";
+const CACHE_NAME = "edgeiq-shell-20261013-mission-control-10";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -18,6 +18,7 @@ const SHELL_ASSETS = [
   "/static/js/model-track-record.js",
   "/static/js/evidence-lab.js",
   "/static/js/source-health.js",
+  "/static/js/forecast-range.js",
   "/static/js/recommendation-disclosure.js",
   "/static/js/recommendation-card.js",
   "/static/js/slate-changes.js",

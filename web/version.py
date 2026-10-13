@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261012-mission-control-7"
+STATIC_ASSET_VERSION = "20261013-mission-control-10"

@@ -38,6 +38,25 @@ assert.match(calibrated, /Calibrated probability<\/dt><dd>59%/);
 assert.match(calibrated, /Market 54%/);
 assert.match(calibrated, /EdgeIQ 59%/);
 assert.match(calibrated, /recommendation-probability-track/);
+const partial = render({...base,
+  confidence: 59,
+  calibration_presentation: {status: 'PARTIAL', label: 'Partial calibration evidence', model_probability: 64, calibrated_probability: 59, sample_size: 75},
+  decision_receipt: {market_probability: 54, market_book_count: 2}});
+assert.match(partial, /Provisional probability<\/dt><dd>59%/);
+assert.doesNotMatch(partial, /Calibrated probability<\/dt><dd>59%/);
+assert.match(partial, /Partial calibration evidence/);
+assert.match(partial, /Provisional adjustment 59%/);
+assert.match(partial, /Model 64%/);
+assert.match(partial, /EdgeIQ 59%/);
+const capped = render({...base, confidence: 65,
+  calibration_presentation: {status: 'INSUFFICIENT_SAMPLE', model_probability: 93, sample_size: 0}});
+assert.match(capped, /Capped model probability<\/dt><dd>65%/);
+assert.match(capped, /Model 93%/);
+assert.doesNotMatch(capped, /high-confidence-banner/);
+const missingCalibration = render({...base,
+  calibration_presentation: {status: 'CALIBRATED', calibrated_probability: null, sample_size: 150}});
+assert.match(missingCalibration, /Model probability<\/dt><dd>62%/);
+assert.doesNotMatch(missingCalibration, /Calibrated probability<\/dt><dd>0%/);
 const expired = render({...base, recommendation_freshness: {status: 'expired'}});
 assert.match(expired, /data-add-opportunity="3" disabled/);
 assert.match(expired, /data-select-opportunity="3" disabled/);

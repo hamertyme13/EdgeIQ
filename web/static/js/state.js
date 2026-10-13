@@ -69,6 +69,8 @@
       },
     },
     dailyScanPoll: null,
+    providerRefreshInProgress: false,
+    providerRefreshGeneration: 0,
     dailyScanAutoStartedFor: "",
     deferredInstallPrompt: null,
     backgroundLoadPromise: null,

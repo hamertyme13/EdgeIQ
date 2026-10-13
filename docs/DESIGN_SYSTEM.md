@@ -22,11 +22,11 @@ Use the same words across screens: Fresh, Aging, Stale, Expired, Verified, Unver
 
 ## Recommendation Cards
 
-The first layer shows player, stat, direction, exact line, qualified probability, grade, fragility, and evidence state. EdgeIQ Score remains separate from probability. The comparison track appears only when an exact-line market probability exists. Projection and model probability are secondary; supporting factors and equally visible counterarguments open below. Evidence and advanced diagnostics remain progressively disclosed.
+The first layer shows player, stat, direction, exact line, qualified probability, grade, fragility, and evidence state. EdgeIQ Score remains separate from probability. Only a `CALIBRATED` estimate receives the calibrated label; partial or degraded adjustments are labeled provisional, and insufficient-history estimates are labeled capped. Raw model probability stays in supporting context when it differs from the decision-facing value. The comparison track appears only when an exact-line market probability exists. Projection and model probability are secondary; supporting factors and equally visible counterarguments open below. Evidence and advanced diagnostics remain progressively disclosed.
 
 ## Charts and Motion
 
-Use compact lines, range bands, or comparison tracks only when they answer a decision question. Market and model values need labels and sample context. Avoid radar charts, decorative 3D, continuous glows, and flashing numbers. Respect `prefers-reduced-motion`.
+Use compact lines, range bands, or comparison tracks only when they answer a decision question. The expected-range band shows the model's 25th and 75th percentiles, with distinct projection and market-line markers; hide it when the distribution is incomplete or invalid. Market and model values need labels and sample context. Avoid radar charts, decorative 3D, continuous glows, and flashing numbers. Respect `prefers-reduced-motion`.
 
 ## Responsive and Accessible
 

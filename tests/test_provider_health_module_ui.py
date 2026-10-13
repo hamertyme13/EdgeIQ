@@ -20,7 +20,8 @@ const calls = [];
 const api = async (path) => {
   calls.push(path);
   if (path === '/api/runtime/status') return {items:[{label:'Model release',value:'Ready',status:'ready'},{label:'Settlement worker',value:'Running',status:'ready'}]};
-  return {providers:[{name:'<PrizePicks>',status:'stale',configured:true,message:'Refresh needed'}],summary:{connected:0,total:1},operations:{}};
+  return {providers:[{name:'PrizePicks',status:'stale',configured:true,message:'Refresh needed'},
+    {name:'<NewsAPI>',status:'stale',configured:true,message:'Refresh needed'}],summary:{connected:0,total:2},operations:{}};
 };
 const state = {};
 const module = global.EdgeIQProviderHealth.create({$,api,state,document:{querySelector:()=>({id:'dashboard'})},
@@ -28,8 +29,8 @@ const module = global.EdgeIQProviderHealth.create({$,api,state,document:{querySe
 (async () => {
   await module.loadProviderStatus();
   assert.deepEqual(calls,['/api/data-health?compact=true']);
-  assert.equal(state.providerHealth.providers.length,1);
-  assert.match($('today-provider-status').textContent,/1 provider needs a refresh/);
+  assert.equal(state.providerHealth.providers.length,2);
+  assert.match($('today-provider-status').textContent,/0\/1 sportsbook feeds fresh · 1 needs a refresh/);
   assert.match($('global-health-strip').innerHTML,/PrizePicks/);
   await module.loadRuntimeStatus();
   assert.match($('runtime-status-list').innerHTML,/Settlement worker/);
@@ -38,9 +39,48 @@ const module = global.EdgeIQProviderHealth.create({$,api,state,document:{querySe
   assert.equal(calls.at(-1),'/api/data-health');
   assert.match($('data-health-list').innerHTML,/Evidence collection/);
   assert.match($('data-health-list').innerHTML,/App response times/);
-  assert.match($('data-health-list').innerHTML,/&lt;PrizePicks&gt;/);
-  assert.doesNotMatch($('data-health-list').innerHTML,/<PrizePicks>/);
+  assert.match($('data-health-list').innerHTML,/&lt;NewsAPI&gt;/);
+  assert.doesNotMatch($('data-health-list').innerHTML,/<NewsAPI>/);
 })().catch(error => { console.error(error); process.exitCode=1; });
+"""
+    subprocess.run(["node", "-e", script], check=True)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is needed for the browser-module test")
+def test_today_provider_freshness_requires_producing_sportsbook_feed():
+    script = r"""
+const assert = require('node:assert/strict');
+global.window = global;
+require('./web/static/js/provider-health.js');
+const elements = new Map();
+const $ = (id) => {
+  if (!elements.has(id)) elements.set(id, {textContent:'',innerHTML:'',classList:{toggle(){}},addEventListener(){},setAttribute(){}});
+  return elements.get(id);
+};
+let providers = [
+  {name:'PrizePicks',status:'available',configured:true,producing_data:false},
+  {name:'Sleeper',status:'fresh',configured:true,producing_data:true},
+  {name:'ESPN public',status:'stale',configured:true,producing_data:false},
+];
+const state = {providerRefreshInProgress:false};
+const module = global.EdgeIQProviderHealth.create({$,api:async()=>({providers,summary:{},operations:{}}),state,
+  document:{querySelector:()=>({id:'dashboard'})},escapeHtml:x=>x,friendlyStatus:x=>x,
+  formatDateTime:x=>x,humanizeText:x=>x,sortProviderHealth:x=>x});
+(async () => {
+  await module.loadProviderStatus();
+  assert.match($('today-provider-status').textContent,/1\/2 sportsbook feeds fresh · 1 needs a refresh/);
+  state.providerRefreshInProgress = true;
+  $('today-provider-status').textContent = 'Refreshing current provider offers...';
+  await module.loadProviderStatus();
+  assert.equal($('today-provider-status').textContent,'Refreshing current provider offers...');
+  state.providerRefreshInProgress = false;
+  providers = [{name:'PrizePicks',status:'fresh',configured:true,producing_data:true}];
+  await module.loadProviderStatus();
+  assert.equal($('today-provider-status').textContent,'1 sportsbook feed fresh');
+  providers = [{name:'ESPN public',status:'fresh',configured:true,producing_data:true}];
+  await module.loadProviderStatus();
+  assert.equal($('today-provider-status').textContent,'No sportsbook prop feed connected');
+})().catch(error => {console.error(error);process.exitCode=1;});
 """
     subprocess.run(["node", "-e", script], check=True)
 

@@ -332,8 +332,9 @@ def capture_recommendation_compare(page: Page, viewport_name: str) -> dict:
       const rows = [
         {player:'Example One',sport:'WNBA',platform:'PrizePicks',stat:'Points',direction:'Over',line:19.5,
          projection:22,confidence:64,score:70,model_version:'v2.4',risk_profile:{key:'balanced',label:'Balanced'},
-         edgeiq_score:{score:72},calibration_presentation:{model_probability:68,calibrated_probability:63,
-         segment_sample_size:120,label:'Calibrated'},counterargument:{fragility_label:'Low',fragility_score:20},
+         edgeiq_score:{score:72},calibration_presentation:{status:'CALIBRATED',sample_size:150,model_probability:68,calibrated_probability:63,
+         segment_sample_size:120,label:'Calibrated'},forecast_snapshot:{distribution:{p25:17.4,p75:26.8}},
+         counterargument:{fragility_label:'Low',fragility_score:20},
          recommendation_freshness:{status:'fresh'},recommendation_eligibility:{paper_ready:true}},
         {player:'Example Two',sport:'WNBA',platform:'Underdog',stat:'Rebounds',direction:'Under',line:8.5,
          projection:7,confidence:61,score:66,model_version:'v2.4',risk_profile:{key:'balanced',label:'Balanced'},
@@ -358,6 +359,8 @@ def capture_recommendation_compare(page: Page, viewport_name: str) -> dict:
     assert "example two" in output_text.lower(), output_text
     page.locator("#recommendation-compare-metric").select_option("score")
     assert "Highest EdgeIQ Score" in page.locator("#recommendation-compare-output").inner_text()
+    page.locator(".recommendation-card .opportunity-disclosure").first.locator("summary").first.click()
+    assert page.locator(".recommendation-card .forecast-range").first.is_visible()
     issues = visual_issues(page)
     assert not issues["horizontal_overflow"], issues
     assert not issues["clipped_buttons"], issues

@@ -2245,6 +2245,8 @@ async function runDailyRefresh() {
 
 async function refreshTodayProviders() {
   const status = $("today-provider-status");
+  const refreshId = ++state.providerRefreshGeneration;
+  state.providerRefreshInProgress = true;
   if (status) {
     status.textContent = "Refreshing current provider offers...";
     status.classList.remove("is-fresh", "needs-refresh");
@@ -2256,14 +2258,25 @@ async function refreshTodayProviders() {
     const result = await api(`/api/automation/start-provider-refresh?${params.toString()}`, { method: "POST" });
     if (status) status.textContent = result.phase || "Provider refresh started. You can keep using EdgeIQ.";
     waitForBackgroundJob(result, (job) => {
-      if (status) status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
-    }).then((job) => {
-      if (status) {
-        status.textContent = `${job.result?.message || "Provider data refreshed."} Refresh Briefing when you are ready to rebuild recommendations.`;
-        status.classList.add("is-fresh");
+      if (status && refreshId === state.providerRefreshGeneration) {
+        status.textContent = `${job.phase || "Refreshing providers..."} ${Number(job.progress || 0)}%`;
       }
-      return Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyScanStatus()]);
+    }).then(async (job) => {
+      if (refreshId !== state.providerRefreshGeneration) return;
+      state.providerRefreshInProgress = false;
+      if (status) status.textContent = job.result?.message || "Provider refresh complete. Checking feed freshness...";
+      await Promise.allSettled([loadDataHealth(), loadDashboard(), loadDailyScanStatus()]);
+      try {
+        await loadProviderStatus();
+      } catch {
+        if (status) {
+          status.textContent = "Refresh finished, but feed freshness could not be checked.";
+          status.classList.add("needs-refresh");
+        }
+      }
     }).catch((error) => {
+      if (refreshId !== state.providerRefreshGeneration) return;
+      state.providerRefreshInProgress = false;
       trackProductEvent("provider_refresh_failed", "provider", "", { platform, sport });
       if (status) {
         status.textContent = humanErrorMessage(error, "Provider refresh did not finish. Try again.");
@@ -2271,6 +2284,8 @@ async function refreshTodayProviders() {
       }
     });
   } catch (error) {
+    if (refreshId !== state.providerRefreshGeneration) throw error;
+    state.providerRefreshInProgress = false;
     trackProductEvent("provider_refresh_failed", "provider", "", {
       platform: $("props-platform")?.value || "", sport: $("today-sport")?.value || "",
     });

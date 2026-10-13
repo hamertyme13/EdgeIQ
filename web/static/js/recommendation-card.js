@@ -18,8 +18,16 @@
       prop.market_supported !== false && Number(prop.trust?.score || 0) >= 50
       && Number(prop.confidence || 0) >= 52
     );
-    const hasCalibration = ["CALIBRATED", "PARTIAL", "DEGRADED"].includes(calibration.status)
-      && Number(calibration.sample_size) > 0 && Number.isFinite(Number(calibration.calibrated_probability));
+    const hasCalibration = calibration.status === "CALIBRATED"
+      && Number(calibration.sample_size) > 0
+      && calibration.calibrated_probability != null && calibration.calibrated_probability !== ""
+      && Number.isFinite(Number(calibration.calibrated_probability));
+    const hasRawModel = calibration.model_probability != null && calibration.model_probability !== ""
+      && Number.isFinite(Number(calibration.model_probability));
+    const hasProvisional = ["PARTIAL", "DEGRADED"].includes(calibration.status)
+      && calibration.calibrated_probability != null && calibration.calibrated_probability !== ""
+      && Number.isFinite(Number(calibration.calibrated_probability));
+    const modelProbability = hasRawModel ? calibration.model_probability : prop.confidence;
     const calibrated = hasCalibration ? percent(calibration.calibrated_probability) : "Unavailable";
     const market = receipt.market_probability == null
       ? "No exact-line odds" : `${Number(receipt.market_book_count || 0)} book${Number(receipt.market_book_count || 0) === 1 ? "" : "s"} · ${percent(receipt.market_probability)}`;
@@ -30,19 +38,23 @@
       : "Standard line";
     const status = expired ? prop.edgeiq_score_freshness?.label || "Expired · refresh required"
       : eligibility.label || (!actionable ? "Research only · cannot add" : "Fresh recommendation");
-    const high = !expired && (Number(prop.confidence) >= 90 || Number(score.score) >= 90);
+    const highCalibrated = hasCalibration && Number(calibration.calibrated_probability) >= 90;
+    const high = !expired && (highCalibrated || Number(score.score) >= 90);
     const primaryProbability = hasCalibration ? calibrated : percent(prop.confidence);
-    const primaryLabel = hasCalibration ? "Calibrated probability" : "Model probability";
+    const primaryLabel = hasCalibration ? "Calibrated probability"
+      : hasProvisional ? "Provisional probability"
+        : calibration.status === "INSUFFICIENT_SAMPLE" ? "Capped model probability" : "Model probability";
     const fragility = prop.counterargument?.fragility_label || "Unavailable";
     const marketProbability = receipt.market_probability == null ? null : Number(receipt.market_probability);
-    const edgeProbability = hasCalibration ? Number(calibration.calibrated_probability) : Number(prop.confidence);
+    const edgeValue = hasCalibration ? calibration.calibrated_probability : prop.confidence;
+    const edgeProbability = edgeValue == null || edgeValue === "" ? null : Number(edgeValue);
     const comparison = Number.isFinite(marketProbability) && Number.isFinite(edgeProbability)
       ? `<div class="recommendation-probability-compare" aria-label="Market ${percent(marketProbability)}, EdgeIQ ${percent(edgeProbability)}">
           <span>Market ${percent(marketProbability)}</span><span>EdgeIQ ${percent(edgeProbability)}</span>
           <div class="recommendation-probability-track"><i style="left:${Math.max(0, Math.min(100, marketProbability))}%" title="Market probability"></i><b style="left:${Math.max(0, Math.min(100, edgeProbability))}%" title="EdgeIQ probability"></b></div>
         </div>` : "";
     return `<article class="opportunity-row recommendation-card ${expired ? "opportunity-expired" : ""} ${high ? "high-confidence-card" : ""}" data-risk-lane="${escape(prop.risk_profile?.key || "aggressive")}">
-      ${high ? `<span class="high-confidence-banner">${Number(prop.confidence) >= 90 ? "High model confidence" : "High EdgeIQ score"}</span>` : ""}
+      ${high ? `<span class="high-confidence-banner">${highCalibrated ? "High calibrated confidence" : "High EdgeIQ score"}</span>` : ""}
       <div class="recommendation-card-heading">
         <label aria-label="Select ${escape(prop.player || `opportunity ${index + 1}`)}"><input class="opportunity-select" type="checkbox" data-select-opportunity="${index}" ${expired || !actionable ? "disabled" : ""} /></label>
         <div class="recommendation-card-identity"><strong>${escape(prop.player || "Player unavailable")}</strong><span>${escape(prop.stat || "Stat unavailable")} · <b>${escape(prop.direction || "Over")} ${quantity(prop.line)}</b></span><small>${escape(prop.platform || options.platform || "Provider")} · ${escape(prop.sport || options.sport || "Sport unavailable")} · ${escape(offerType)}</small></div>
@@ -55,7 +67,7 @@
         ${metric("Evidence", freshness)}
       </dl>
       ${comparison}
-      <p class="recommendation-card-context">Model ${percent(prop.confidence)} · Projection ${quantity(receipt.projection ?? prop.projection)} · ${escape(market)}</p>
+      <p class="recommendation-card-context">Model ${percent(modelProbability)}${hasProvisional ? ` · Provisional adjustment ${percent(prop.confidence)}` : ""} · Projection ${quantity(receipt.projection ?? prop.projection)} · ${escape(market)}${!hasCalibration && calibration.label ? ` · ${escape(calibration.label)}` : ""}</p>
       <p class="recommendation-card-status ${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escape(status)}</p>
       <div class="opportunity-actions recommendation-card-actions">
         <button class="secondary" type="button" data-add-opportunity="${index}" ${expired || !actionable ? "disabled" : ""}>Add to Entry</button>

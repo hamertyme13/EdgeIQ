@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261012-mission-control-7" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261013-mission-control-10" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -2019,8 +2019,12 @@
     <script src="/static/js/source-health.js?v=20261007-source-audits"></script>
     <script src="/static/js/personal-edge.js?v=20261007-personal-edge"></script>
     <script src="/static/js/recommendation-compare.js?v=20261007-recommendation-compare"></script>
-    <script src="/static/js/recommendation-disclosure.js?v=20261012-mission-control-7"></script>
-    <script src="/static/js/recommendation-card.js?v=20261012-mission-control-7"></script>
+    <script src="/static/js/forecast-range.js?v=20261013-mission-control-10"></script>
+    <script>
+      if (!window.EdgeIQForecastRange) document.write('<script src="js/forecast-range.js"><\/script>');
+    </script>
+    <script src="/static/js/recommendation-disclosure.js?v=20261013-mission-control-10"></script>
+    <script src="/static/js/recommendation-card.js?v=20261013-mission-control-10"></script>
     <script src="/static/js/slate-changes.js?v=20261008-smart-alerts"></script>
     <script src="/static/js/alerts.js?v=20261008-alert-modules"></script>
     <script>
@@ -2028,7 +2032,7 @@
         document.write('<script src="js/alerts.js"><\/script>');
       }
     </script>
-    <script src="/static/js/provider-health.js?v=20261012-mission-control-7"></script>
+    <script src="/static/js/provider-health.js?v=20261013-mission-control-10"></script>
     <script>
       if (!window.EdgeIQProviderHealth) {
         document.write('<script src="js/provider-health.js"><\/script>');
@@ -2038,7 +2042,7 @@
     <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261012-mission-control-7"></script>
+    <script src="/static/app.js?v=20261013-mission-control-10"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

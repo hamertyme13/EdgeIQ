@@ -7207,6 +7207,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .recommendation-probability-track i, .recommendation-probability-track b { position: absolute; top: 50%; width: 8px; height: 8px; border-radius: 50%; transform: translate(-50%, -50%); }
 .recommendation-probability-track i { background: var(--info); }
 .recommendation-probability-track b { background: var(--brand-accent); border: 1px solid var(--bg-primary); }
+.forecast-range { margin: var(--space-md) 0; padding: var(--space-md) 0; border-block: 1px solid var(--border-subtle); min-width: 0; }
+.forecast-range-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-xs) var(--space-md); }
+.forecast-range-heading strong { font-size: 13px; }
+.forecast-range-heading small { color: var(--text-secondary); }
+.forecast-range-track { position: relative; height: 16px; margin: var(--space-md) 3px; background: var(--surface-secondary); border-radius: var(--radius-small); }
+.forecast-range-band { position: absolute; top: 5px; height: 6px; border-radius: var(--radius-small); background: var(--info); opacity: .7; }
+.forecast-range-marker { position: absolute; top: 1px; width: 2px; height: 14px; transform: translateX(-50%); }
+.forecast-range-projection { background: var(--brand-accent); }
+.forecast-range-line { background: var(--warning); }
+.forecast-range-legend { display: flex; flex-wrap: wrap; gap: var(--space-xs) var(--space-lg); color: var(--text-secondary); font-size: 11px; }
+.forecast-range-legend span:nth-child(2)::before, .forecast-range-legend span:nth-child(3)::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 5px; border-radius: 50%; background: var(--brand-accent); }
+.forecast-range-legend span:nth-child(3)::before { background: var(--warning); }
 .recommendation-card .opportunity-disclosure { border-color: var(--border-subtle); }
 .opportunity-disclosure summary { color: var(--text-primary); }
 

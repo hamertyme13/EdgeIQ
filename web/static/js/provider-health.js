@@ -59,19 +59,21 @@
 
     function renderTodayProviderStatus(providers = [], summary = {}) {
       const status = $('today-provider-status');
-      if (!status) return;
-      const relevant = providers.filter((provider) => provider.configured !== false);
-      const stale = relevant.filter((provider) => ['stale', 'degraded', 'error', 'unavailable'].includes(String(provider.status || '').toLowerCase()));
-      status.classList.toggle('needs-refresh', stale.length > 0);
-      status.classList.toggle('is-fresh', stale.length === 0 && relevant.length > 0);
-      if (stale.length) {
-        status.textContent = `${stale.length} provider${stale.length === 1 ? '' : 's'} need${stale.length === 1 ? 's' : ''} a refresh`;
-      } else if (relevant.length) {
-        status.textContent = 'Providers are fresh';
-      } else if (summary.last_daily_refresh) {
-        status.textContent = `Last refreshed ${formatDateTime(summary.last_daily_refresh)}`;
+      if (!status || state.providerRefreshInProgress) return;
+      const offerProviders = new Set(['PrizePicks', 'Underdog', 'DraftKings Pick6', 'Sleeper']);
+      const relevant = providers.filter((provider) => offerProviders.has(provider.name) && provider.configured !== false);
+      const fresh = relevant.filter((provider) =>
+        ['fresh', 'connected'].includes(String(provider.status || '').toLowerCase()) && provider.producing_data === true
+      );
+      const needsRefresh = relevant.length - fresh.length;
+      status.classList.toggle('needs-refresh', needsRefresh > 0);
+      status.classList.toggle('is-fresh', needsRefresh === 0 && fresh.length > 0);
+      if (needsRefresh) {
+        status.textContent = `${fresh.length}/${relevant.length} sportsbook feeds fresh · ${needsRefresh} need${needsRefresh === 1 ? 's' : ''} a refresh`;
+      } else if (fresh.length) {
+        status.textContent = `${fresh.length} sportsbook feed${fresh.length === 1 ? '' : 's'} fresh`;
       } else {
-        status.textContent = 'Provider status unavailable';
+        status.textContent = 'No sportsbook prop feed connected';
       }
     }
 

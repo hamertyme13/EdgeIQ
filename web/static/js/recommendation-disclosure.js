@@ -24,10 +24,18 @@
       features.season_average == null ? null : `Season average: ${number(features.season_average)}`,
       features.opponent_sample == null ? null : `Opponent sample: ${escape(features.opponent_sample)}`,
     ].filter(Boolean);
+    const forecastRange = window.EdgeIQForecastRange?.render({
+      p25: distribution.p25, p75: distribution.p75,
+      projection: receipt.projection ?? prop.projection, line: prop.line,
+    }) || "";
+    const settledCalibration = calibration.status === "CALIBRATED" && Number(calibration.sample_size) > 0
+      && calibration.calibrated_probability != null && calibration.calibrated_probability !== ""
+      && Number.isFinite(Number(calibration.calibrated_probability));
     return `<details class="opportunity-disclosure">
       <summary>Why EdgeIQ likes it · Why this can lose</summary>
       <div class="opportunity-disclosure-body">
         <p><strong>Projection</strong> ${number(receipt.projection ?? prop.projection)} against ${escape(prop.direction || "Over")} ${number(prop.line)}. ${escape(market)}.</p>
+        ${forecastRange}
         <div class="opportunity-disclosure-columns">
           <div><strong>Why EdgeIQ likes it</strong>${list(supports, "No supporting factors recorded for this snapshot.")}</div>
           <div><strong>Why this can lose</strong>${list(risks, "No counterarguments recorded. This does not mean the pick is risk-free.")}</div>
@@ -39,7 +47,8 @@
           <details><summary>Advanced diagnostics</summary>
             <dl>
               <div><dt>Original model estimate</dt><dd>${number(calibration.model_probability, "%")}</dd></div>
-              <div><dt>Calibrated estimate</dt><dd>${["CALIBRATED", "PARTIAL", "DEGRADED"].includes(calibration.status) && Number(calibration.sample_size) > 0 ? number(calibration.calibrated_probability, "%") : "Unavailable"}</dd></div>
+              <div><dt>Calibrated estimate</dt><dd>${settledCalibration ? number(calibration.calibrated_probability, "%") : "Unavailable"}</dd></div>
+              ${!settledCalibration && ["PARTIAL", "DEGRADED"].includes(calibration.status) && Number(calibration.sample_size) > 0 ? `<div><dt>Provisional adjustment</dt><dd>${number(calibration.calibrated_probability, "%")} · ${escape(calibration.label || "Limited evidence")}</dd></div>` : ""}
               <div><dt>Forecast deviation</dt><dd>${number(prop.forecast_snapshot?.standard_deviation)}</dd></div>
               <div><dt>Distribution interval</dt><dd>${distribution.p25 == null || distribution.p75 == null ? "Unavailable" : `${number(distribution.p25)} to ${number(distribution.p75)}`}</dd></div>
               <div><dt>Model version</dt><dd>${escape(prop.model_version || "Unavailable")}</dd></div>
