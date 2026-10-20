@@ -117,6 +117,62 @@
     }
   }
 
+  async function streamCopilot(payload, onStatus = () => {}) {
+    const controller = new AbortController();
+    const timeout = global.setTimeout(() => controller.abort(), 70000);
+    try {
+      const betaToken = global.localStorage?.getItem("edgeiq.beta.token") || "";
+      const response = await fetch(`${API_BASE}/api/ai/copilot/stream`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...(betaToken ? { Authorization: `Bearer ${betaToken}` } : {}),
+        },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (response.status === 404) {
+        return api("/api/ai/copilot", { method: "POST", body: JSON.stringify(payload) });
+      }
+      if (!response.ok) throw new Error(humanizeApiError(await response.text(), response.status));
+      if (!response.body) throw new Error("Research progress is unavailable. Please retry.");
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      let answer = null;
+      const consume = (block) => {
+        const lines = block.split("\n");
+        const event = lines.find((line) => line.startsWith("event: "))?.slice(7);
+        const raw = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice(6)).join("\n");
+        if (!event || !raw) return;
+        const data = JSON.parse(raw);
+        if (event === "status" && typeof data.label === "string") onStatus(data.label);
+        if (event === "answer") answer = data;
+        if (event === "error") throw new Error(humanizeErrorText(data.message));
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+        pending = pending.replace(/\r\n/g, "\n");
+        let boundary;
+        while ((boundary = pending.indexOf("\n\n")) >= 0) {
+          consume(pending.slice(0, boundary));
+          pending = pending.slice(boundary + 2);
+        }
+        if (done) break;
+      }
+      if (!answer) throw new Error("EdgeIQ did not return a verified answer. Please try again.");
+      return answer;
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("Research took too long. Please try a narrower question.");
+      throw error;
+    } finally {
+      global.clearTimeout(timeout);
+    }
+  }
+
   async function withButtonBusy(buttonOrId, busyLabel, task) {
     const button = typeof buttonOrId === "string" ? $(buttonOrId) : buttonOrId;
     if (!button) return task();
@@ -154,6 +210,7 @@
   global.EdgeIQApi = {
     $,
     api,
+    streamCopilot,
     copyText,
     deferWork,
     hideRuntimeNotice,

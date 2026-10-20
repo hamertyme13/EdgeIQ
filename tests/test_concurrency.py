@@ -69,6 +69,30 @@ def test_operation_lock_survives_high_contention():
 
 
 @pytest.mark.concurrency
+def test_provider_archive_waits_for_refresh_before_sqlite_write(tmp_path):
+    database = tmp_path / "archive-contention.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE observations (value TEXT NOT NULL)")
+
+    entered = threading.Event()
+
+    def write_observation():
+        entered.set()
+        with sqlite3.connect(database, timeout=1) as connection:
+            connection.execute("INSERT INTO observations (value) VALUES ('archived')")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with named_operation_lock("briefing-and-calibration") as acquired:
+            assert acquired
+            future = pool.submit(web_app._run_provider_archive_batch, write_observation)
+            assert entered.wait(0.05) is False
+            assert future.done() is False
+        future.result(timeout=3)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT value FROM observations").fetchall() == [("archived",)]
+
+
+@pytest.mark.concurrency
 def test_scheduled_maintenance_runs_only_once_under_contention(monkeypatch):
     barrier = threading.Barrier(12)
     calls = 0

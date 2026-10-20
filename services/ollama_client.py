@@ -3,13 +3,37 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 from collections.abc import Callable
+from contextlib import suppress
+from typing import TypeVar
 
 import requests
+from pydantic import BaseModel, ValidationError
+
+from services.ollama_qualification import approved_role_model
+from utils.config_bounds import bounded_env_int
+
+PlanT = TypeVar("PlanT", bound=BaseModel)
+OLLAMA_USAGE_KEYS = (
+    "total_duration", "load_duration", "prompt_eval_count",
+    "prompt_eval_cached_count", "prompt_eval_duration", "eval_count", "eval_duration",
+)
 
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.1:8b"
 DEFAULT_OLLAMA_VISION_MODEL = "llama3.2-vision:11b"
+
+
+def ollama_keep_alive() -> str:
+    value = os.getenv("OLLAMA_KEEP_ALIVE", "10m").strip()
+    return value if re.fullmatch(r"(?:0|-1|[1-9]\d*(?:ms|s|m|h))", value) else "10m"
+
+
+def ollama_predict_limit(role: str) -> int:
+    defaults = {"planner": (192, 64, 512), "analyst": (240, 128, 1024), "vision": (240, 128, 1024)}
+    default, minimum, maximum = defaults.get(role, defaults["analyst"])
+    return bounded_env_int(f"OLLAMA_{role.upper()}_NUM_PREDICT", default, minimum, maximum)
 
 
 def ollama_url() -> str:
@@ -18,6 +42,44 @@ def ollama_url() -> str:
 
 def ollama_model() -> str:
     return os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL).strip() or DEFAULT_OLLAMA_MODEL
+
+
+def ollama_role_model(role: str) -> str:
+    configured = os.getenv(f"OLLAMA_{role.upper()}_MODEL", "").strip()
+    return configured or approved_role_model(role) or ollama_model()
+
+
+def ollama_typed(
+    messages: list[dict],
+    output_model: type[PlanT],
+    *,
+    role: str = "planner",
+    model: str | None = None,
+    timeout: int = 10,
+    num_predict: int | None = None,
+    post: Callable[..., requests.Response] = requests.post,
+) -> tuple[PlanT | None, str | None, dict]:
+    if not ollama_enabled():
+        return None, "Ollama is disabled.", {}
+    payload = {
+        "model": model or ollama_role_model(role),
+        "messages": messages,
+        "stream": False,
+        "keep_alive": ollama_keep_alive(),
+        "format": output_model.model_json_schema(),
+        "options": {"temperature": 0.0, "num_predict": num_predict if num_predict is not None else ollama_predict_limit(role)},
+    }
+    try:
+        response = post(f"{ollama_url()}/api/chat", json=payload, timeout=timeout)
+        response.raise_for_status()
+        body = response.json()
+        value = output_model.model_validate_json(str((body.get("message") or {}).get("content") or ""))
+        usage = {key: body[key] for key in OLLAMA_USAGE_KEYS if key in body}
+        return value, None, usage
+    except (ValidationError, ValueError, TypeError):
+        return None, "Ollama returned a plan EdgeIQ could not validate.", {}
+    except requests.RequestException:
+        return None, "Ollama is unavailable; EdgeIQ used its existing analysis.", {}
 
 
 def ollama_vision_model() -> str:
@@ -78,7 +140,9 @@ def ollama_chat(
     *,
     timeout: int = 45,
     model: str | None = None,
+    role: str = "analyst",
     format_schema: dict | None = None,
+    usage_callback: Callable[[dict], None] | None = None,
     post: Callable[..., requests.Response] = requests.post,
 ) -> tuple[str | None, str | None]:
     if not ollama_enabled():
@@ -88,8 +152,8 @@ def ollama_chat(
         "model": selected_model,
         "messages": messages,
         "stream": False,
-        "keep_alive": "10m",
-        "options": {"temperature": 0.0, "num_predict": 240},
+        "keep_alive": ollama_keep_alive(),
+        "options": {"temperature": 0.0, "num_predict": ollama_predict_limit(role)},
     }
     if format_schema:
         payload["format"] = format_schema
@@ -100,7 +164,11 @@ def ollama_chat(
             timeout=timeout,
         )
         response.raise_for_status()
-        content = str((response.json().get("message") or {}).get("content") or "").strip()
+        body = response.json()
+        if usage_callback:
+            with suppress(Exception):
+                usage_callback({key: body[key] for key in OLLAMA_USAGE_KEYS if key in body})
+        content = str((body.get("message") or {}).get("content") or "").strip()
         if not content:
             return None, "Ollama returned an empty response. EdgeIQ used its rules-based review instead."
         return content, None
@@ -121,13 +189,17 @@ def ollama_structured(
     *,
     timeout: int = 60,
     model: str | None = None,
+    role: str = "analyst",
+    usage_callback: Callable[[dict], None] | None = None,
     post: Callable[..., requests.Response] = requests.post,
 ) -> tuple[dict | None, str | None]:
     text, error = ollama_chat(
         messages,
         timeout=timeout,
         model=model,
+        role=role,
         format_schema=schema,
+        usage_callback=usage_callback,
         post=post,
     )
     if not text:
@@ -158,5 +230,6 @@ def ollama_vision_structured(
         schema,
         timeout=timeout,
         model=selected_model,
+        role="vision",
         post=post,
     )

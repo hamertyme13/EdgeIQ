@@ -2,7 +2,11 @@
   const escape = value => String(value ?? "").replace(/[&<>"']/g, char => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[char]));
   const finite = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
   const value = (number, suffix = "") => finite(number) === null ? "Unavailable" : `${finite(number).toFixed(1)}${suffix}`;
-  const labels = {calibrated: "Highest calibrated probability", fragility: "Lowest fragility", score: "Highest EdgeIQ Score"};
+  const labels = {
+    supported: "Best supported evidence", calibrated: "Highest calibrated probability",
+    fragility: "Lowest fragility", overlap: "Lowest pending-entry overlap",
+    market: "Largest model-market probability gap", score: "Highest EdgeIQ Score",
+  };
   const trackKey = prop => [prop.model_version, prop.sport, prop.stat, prop.platform, prop.direction].join("|");
   const calibrated = prop => {
     const evidence = prop.calibration_presentation || {};
@@ -10,15 +14,22 @@
       ? finite(evidence.calibrated_probability) : null;
   };
   function metric(prop, selected) {
+    if (selected === "supported") {
+      const evidence = prop.calibration_presentation || {};
+      if (evidence.status !== "CALIBRATED" || prop.recommendation_freshness?.status !== "fresh") return null;
+      return finite(evidence.segment_sample_size);
+    }
     if (selected === "calibrated") return calibrated(prop);
     if (selected === "fragility") return finite(prop.counterargument?.fragility_score);
+    if (selected === "overlap") return finite(prop.decision_receipt?.portfolio_exposure?.same_player_entries);
+    if (selected === "market") return finite(prop.decision_receipt?.model_market_edge);
     return finite(prop.edgeiq_score?.score);
   }
   function sorted(props, selected) {
     return props.map((prop, index) => ({prop, index, score: metric(prop, selected)})).sort((a, b) => {
       if (a.score === null) return b.score === null ? a.index - b.index : 1;
       if (b.score === null) return -1;
-      return (selected === "fragility" ? a.score - b.score : b.score - a.score) || a.index - b.index;
+      return (["fragility", "overlap"].includes(selected) ? a.score - b.score : b.score - a.score) || a.index - b.index;
     }).map(row => row.prop);
   }
   function render(props, selected = "calibrated", records = {}) {
@@ -42,7 +53,14 @@
       if (prop.recommendation_eligibility?.paper_ready) return "Paper-ready; paid evidence incomplete";
       return "Not verified for entry";
     };
-    return `<p class="subtle">Sorted by ${escape(labels[selected] || labels.calibrated)}. Missing values sort last. This is a comparison, not a guaranteed winner.</p>
+    const criteria = selected === "supported"
+      ? "Only fresh, fully calibrated segments qualify; matching segment sample size decides the order."
+      : selected === "market"
+        ? "A model-market gap is not verified EV and does not account for the provider payout."
+        : selected === "overlap"
+          ? "Pending player overlap is not a full correlation estimate."
+          : "Missing values sort last. This is a comparison, not a guaranteed winner.";
+    return `<p class="subtle">Sorted by ${escape(labels[selected] || labels.calibrated)}. ${escape(criteria)}</p>
       <div class="recommendation-compare-scroll" role="region" aria-label="Recommendation comparison" tabindex="0"><table class="recommendation-compare-table" style="min-width:${180 + ordered.length * 180}px">
         <thead><tr><th scope="col">Evidence</th>${ordered.map(prop => `<th scope="col">${escape(prop.player)}<small>${escape(prop.platform)} · ${escape(prop.sport)}</small></th>`).join("")}</tr></thead>
         <tbody>
@@ -55,7 +73,15 @@
           ${line("Data quality score", prop => value(prop.data_quality?.score, "/100"))}
           ${line("Forecast standard deviation", prop => value(prop.forecast_snapshot?.standard_deviation))}
           ${line("Fragility", prop => prop.counterargument?.fragility_label ? `${prop.counterargument.fragility_label} · ${value(prop.counterargument.fragility_score, "/100")}` : "Unavailable")}
+          ${line("Line sensitivity", prop => prop.sensitivity?.status === "model_only"
+            ? prop.sensitivity.first_tested_failing_line == null
+              ? "No tested failure boundary"
+              : `Tested failure at ${value(prop.sensitivity.first_tested_failing_line)}`
+            : "Unavailable")}
           ${line("Line movement", prop => value(prop.decision_receipt?.movement?.change ?? prop.line_movement?.change))}
+          ${line("Model-market gap", prop => prop.decision_receipt?.market_probability == null
+            ? "Unavailable: no matched market odds"
+            : `${value(prop.decision_receipt.model_market_edge, " pts")} · ${prop.decision_receipt.market_book_count || 0} books`)}
           ${line("Model track record", record)}
           ${line("Evidence freshness", prop => prop.recommendation_freshness?.status || "Unavailable")}
           ${line("Provider availability", availability)}

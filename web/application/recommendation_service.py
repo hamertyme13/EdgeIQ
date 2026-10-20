@@ -5,7 +5,7 @@ from collections.abc import Callable
 from copy import deepcopy
 
 from data.providers import pandascore, sleeper
-from utils.entity_normalization import canonical_person_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.platforms import maximum_entry_legs
 from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
 from utils.ttl_cache import TTLMap
@@ -17,6 +17,48 @@ class RecommendationRequestError(ValueError):
 
 _ENTRY_GENERATOR_CACHE: TTLMap[tuple, dict] = TTLMap(max_size=64)
 _ENTRY_GENERATOR_TTL_SECONDS = 45.0
+
+
+def _generator_game_key(prop: dict) -> str:
+    matchup = canonical_matchup_key(prop.get("game"))
+    if matchup.count("@") != 1 or not prop.get("game_time"):
+        return ""
+    sport = str(prop.get("league") or prop.get("sport") or "").strip().upper()
+    return f"{sport}|{matchup}" if sport else ""
+
+
+def generator_games_payload(
+    sport: str,
+    platform: str,
+    *,
+    fetch_props: Callable[[str, str | None], list[dict]],
+    props_by_platform: Callable[[str, list[dict]], list[tuple]],
+) -> dict:
+    """List only today's identifiable matchups with usable provider offers."""
+    sport_filter = _sport_filter(sport)
+    grouped = props_by_platform(platform, fetch_props(platform, sport_filter))
+    games: dict[str, dict] = {}
+    players_by_game: dict[str, set[str]] = {}
+    for _, props in grouped:
+        for prop in props:
+            key = _generator_game_key(prop)
+            if not key:
+                continue
+            game = games.setdefault(key, {
+                "key": key,
+                "game": str(prop.get("game") or ""),
+                "sport": str(prop.get("league") or prop.get("sport") or "").upper(),
+                "game_time": str(prop.get("game_time") or ""),
+                "prop_count": 0,
+            })
+            game["prop_count"] += 1
+            player = canonical_person_key(prop.get("player"))
+            if player:
+                players_by_game.setdefault(key, set()).add(player)
+    for key, game in games.items():
+        game["player_count"] = len(players_by_game.get(key, set()))
+    return {"games": sorted(games.values(), key=lambda row: (row["game_time"], row["game"])),
+            "platform": platform, "sport": sport_filter or "All Sports"}
 
 
 def top_props_payload(
@@ -276,6 +318,8 @@ def entry_suggestions_payload(
     suggest: Callable[..., list],
     serialize_suggestion: Callable[[object], dict],
     avoid_prop_keys: set[str] | None = None,
+    direction_filter: str = "Both",
+    game_key: str = "",
 ) -> dict:
     started = time.perf_counter()
     sport_filter = _sport_filter(sport)
@@ -287,6 +331,11 @@ def entry_suggestions_payload(
         raise RecommendationRequestError(
             f"{entry_platform} entries support between 2 and {maximum_legs} legs."
         )
+    if direction_filter not in {"Both", "Over", "Under"}:
+        raise RecommendationRequestError("Choose Both, Over, or Under for the direction filter.")
+    selected_game_keys = {key.strip() for key in game_key.split(",") if key.strip()}
+    if len(selected_game_keys) > 64 or len(game_key) > 8192 or any(len(key) > 160 for key in selected_game_keys):
+        raise RecommendationRequestError("Choose up to 64 games from today's available matchups.")
     if entry_platform == "Sleeper" and not sleeper.public_api_status()["props_configured"]:
         return {
             "suggestions": [],
@@ -328,12 +377,17 @@ def entry_suggestions_payload(
         }
     briefing = cached_briefing(entry_platform, sport_filter)
     raw_props = _briefing_generator_props(briefing, entry_platform, sport_filter)
+    if selected_game_keys:
+        raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
     source = "daily_briefing_snapshot"
     if len({canonical_person_key(prop.get("player")) for prop in raw_props}) < leg_count:
         raw_props = fetch_props(entry_platform, sport_filter)
         source = "live_provider_board"
+    if selected_game_keys:
+        raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
     cache_key = (
-        entry_platform, sport_filter or "ALL", int(leg_count), tuple(sorted(avoid_prop_keys or set())), id(suggest),
+        entry_platform, sport_filter or "ALL", int(leg_count), direction_filter, tuple(sorted(selected_game_keys)),
+        tuple(sorted(avoid_prop_keys or set())), id(suggest),
         tuple(
             (str(prop.get("platform") or ""), str(prop.get("player") or ""), str(prop.get("stat") or ""),
              float(prop.get("line") or 0.0), str(prop.get("direction") or ""))
@@ -352,6 +406,8 @@ def entry_suggestions_payload(
     platform_pairs = props_by_platform(entry_platform, raw_props)
     if not platform_pairs and source == "daily_briefing_snapshot":
         raw_props = fetch_props(entry_platform, sport_filter)
+        if selected_game_keys:
+            raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
         platform_pairs = props_by_platform(entry_platform, raw_props)
         source = "live_provider_fallback"
     if sport_filter in {"NFL", "NCAAF"} and not platform_pairs:
@@ -410,7 +466,7 @@ def entry_suggestions_payload(
                     else f"No same-day {entry_platform} card is available for this filter. "
                 )
                 + (f"The next posted slate begins {next_slate}. " if next_slate else "")
-                + "EdgeIQ does not mix tomorrow's props into today's entry."
+                + "EdgeIQ does not mix tomorrow's props into today's entry. Refresh Providers for current lines."
             ),
             "performance": {
                 "cache_hit": False,
@@ -419,14 +475,16 @@ def entry_suggestions_payload(
             },
         }
     suggestions = _generate_entry_suggestions(
-        platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
+        platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(), direction_filter,
     )
     if not suggestions and source == "daily_briefing_snapshot":
         raw_props = fetch_props(entry_platform, sport_filter)
+        if selected_game_keys:
+            raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
         platform_pairs = props_by_platform(entry_platform, raw_props)
         source = "live_provider_fallback"
         suggestions = _generate_entry_suggestions(
-            platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(),
+            platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(), direction_filter,
         )
     serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
     seen_keys: set[str] = set()
@@ -444,6 +502,9 @@ def entry_suggestions_payload(
         "mode": f"{entry_platform.lower()}_{leg_count}_leg",
         "platform": entry_platform,
         "leg_count": leg_count,
+        "direction_filter": direction_filter,
+        "game_key": game_key,
+        "game_keys": sorted(selected_game_keys),
         "maximum_legs": maximum_legs,
         "diversification": {
             "enabled": True,
@@ -474,6 +535,7 @@ def _generate_entry_suggestions(
     leg_count: int,
     suggest: Callable[..., list],
     avoid_prop_keys: set[str],
+    direction_filter: str = "Both",
 ) -> list:
     suggestions = []
     for platform_model, props in platform_pairs:
@@ -484,7 +546,8 @@ def _generate_entry_suggestions(
                 int(prop.get("trending_count") or 0),
             ),
             reverse=True,
-        )[:40]
+        )[:80 if direction_filter != "Both" else 40]
+        options = {"direction_filter": direction_filter} if direction_filter != "Both" else {}
         suggestions.extend(
             suggest(
                 bounded_props,
@@ -495,6 +558,7 @@ def _generate_entry_suggestions(
                 apply_feedback=True,
                 diversify=True,
                 avoid_prop_keys=avoid_prop_keys,
+                **options,
             )
         )
     return suggestions

@@ -46,6 +46,7 @@ class PropPayload(BaseModel):
 class EntryPayload(BaseModel):
     platform: str = "PrizePicks"
     wager: float = Field(default=0.0, ge=0)
+    provider_available_balance: float | None = Field(default=None, ge=0)
     multiplier: float = Field(default=1.0, ge=1)
     payout_type: Literal["standard", "flex"] = "standard"
     payout_schedule: dict[str, float] = Field(default_factory=dict)
@@ -98,18 +99,18 @@ class ShareSlipPayload(EntryPayload):
 class AutoPaperCalibrationPayload(BaseModel):
     platform: str = "PrizePicks"
     sport: str = "All Sports"
-    leg_count: int = Field(default=2, ge=2, le=5)
+    leg_count: int = Field(default=2, ge=2, le=6)
     max_entries: int = Field(default=3, ge=1, le=10)
     standard_batch: bool = False
-    batch_plan: list[int] | None = Field(default=None, min_length=1, max_length=5)
+    batch_plan: list[int] | None = Field(default=None, min_length=1, max_length=6)
     prefer_confirmed: bool = True
     dry_run: bool = False
 
     @field_validator("batch_plan")
     @classmethod
     def validate_batch_plan(cls, value: list[int] | None) -> list[int] | None:
-        if value is not None and any(legs < 2 or legs > 5 for legs in value):
-            raise ValueError("Paper calibration cards must contain between 2 and 5 legs.")
+        if value is not None and any(legs < 2 or legs > 6 for legs in value):
+            raise ValueError("Paper calibration cards must contain between 2 and 6 legs.")
         return value
 
 

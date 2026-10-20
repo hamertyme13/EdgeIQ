@@ -101,12 +101,76 @@ def capture_view(page: Page, viewport_name: str, view_name: str) -> dict:
     return {"viewport": viewport_name, "view": view_name, "screenshot": str(screenshot), **issues}
 
 
+def capture_generator_filters(page: Page, viewport_name: str) -> dict:
+    requested_suggestions: list[str] = []
+    page.route("**/api/entries/generator-games?*", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"games": [
+            {"key": "WNBA|ACES@STORM", "game": "Aces vs Storm", "sport": "WNBA", "player_count": 3,
+             "game_time": "2026-10-16T12:00:00-04:00"},
+            {"key": "WNBA|FEVER@LIBERTY", "game": "Fever vs Liberty", "sport": "WNBA", "player_count": 1,
+             "game_time": "2026-10-16T12:00:00-04:00"},
+            {"key": "WNBA|DREAM@MYSTICS", "game": "Dream vs Mystics", "sport": "WNBA", "player_count": 4,
+             "game_time": "2026-10-16T15:00:00-04:00"},
+        ]}),
+    ))
+
+    def suggestions_response(route) -> None:
+        requested_suggestions.append(route.request.url)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "suggestions": [], "mode": "waiting_for_same_day_lines", "message": "No matching test card.",
+        }))
+
+    page.route("**/api/entries/suggestions?*", suggestions_response)
+    page.locator('.consumer-more').evaluate('(element) => { element.open = true; }')
+    page.locator('button[data-display-mode="advanced"]').click()
+    page.locator('.consumer-more').evaluate('(element) => { element.open = false; }')
+    page.locator('button[data-view="entries"]:visible').first.click()
+    page.locator('button[data-entry-mode="generate"]').click()
+    page.locator('button[data-provider-generator-tab="prizepicks"]').click()
+    page.wait_for_timeout(600)
+    page.locator('#prizepicks-generator-game-picker > summary').click()
+    for control in ("sport", "legs", "direction", "time"):
+        assert page.locator(f'#prizepicks-generator-{control}').is_visible()
+    assert page.locator('[data-load-generator-games="prizepicks"]').is_visible()
+    assert page.locator('#prizepicks-generator-direction option').count() == 3
+    page.locator('[data-load-generator-games="prizepicks"]').click()
+    page.wait_for_function('document.querySelectorAll("#prizepicks-generator-games input").length === 3')
+    page.locator('#prizepicks-generator-time').select_option('12:00 PM ET')
+    assert page.locator('#prizepicks-generator-game-summary').inner_text() == '2 games selected'
+    assert page.locator('#prizepicks-generator-games input:checked').count() == 2
+    page.locator('#prizepicks-generator-games input[value="WNBA|FEVER@LIBERTY"]').uncheck()
+    page.locator('[data-select-generator-games="prizepicks"]').click()
+    assert page.locator('#prizepicks-generator-games input:checked').count() == 2
+    page.locator('#prizepicks-generator-direction').select_option('Over')
+    page.locator('#generate-prizepicks').click()
+    page.locator('#prizepicks-suggestions-list').get_by_text('No matching test card.').wait_for()
+    assert requested_suggestions and 'direction=Over' in requested_suggestions[-1]
+    assert 'game_key=WNBA%7CACES%40STORM%2CWNBA%7CFEVER%40LIBERTY' in requested_suggestions[-1]
+    page.locator('[data-clear-generator-games="prizepicks"]').click()
+    assert page.locator('#prizepicks-generator-game-summary').inner_text() == 'All games today'
+    issues = visual_issues(page)
+    screenshot = OUTPUT / f"{viewport_name}-generator-filters.png"
+    page.screenshot(path=screenshot, full_page=True)
+    if issues["blank_buttons"] or issues["clipped_buttons"] or issues["horizontal_overflow"]:
+        raise AssertionError(f"{viewport_name} generator filter visual issues: {issues}")
+    return {"viewport": viewport_name, "view": "Generator Filters", "screenshot": str(screenshot), **issues}
+
+
 def capture_ask_edgeiq(page: Page, viewport_name: str) -> dict:
     page.locator('button.nav-item[data-view="tools"]:visible').first.click()
     page.locator('#decision-desk [data-workspace-pane="builder"]').wait_for(state="visible")
     page.wait_for_timeout(900)
     assert page.locator('#view-title').inner_text() == "Ask EdgeIQ"
     assert page.locator('#copilot-question').is_visible()
+    assert page.locator('#ask-copilot').is_visible()
+    assert page.locator('#ask-copilot').bounding_box()['y'] > page.locator('#copilot-question').bounding_box()['y']
+    assert not page.locator('.ask-context').get_attribute('open')
+    context_summary = page.locator('.ask-context > summary')
+    context_summary.focus()
+    context_summary.press('Enter')
+    assert page.locator('.ask-context').get_attribute('open') is not None
+    context_summary.press('Enter')
+    assert page.locator('.ask-context').get_attribute('open') is None
     assert not page.locator('#ai-parlay-input').is_visible()
     page.locator('.ask-entry-workspace summary').click()
     assert page.locator('#ai-parlay-input').is_visible()
@@ -172,9 +236,14 @@ def main() -> int:
                     results.append(capture_source_health(page, viewport_name))
                     page.close()
                     continue
+                if os.environ.get("EDGEIQ_VISUAL_FOCUS") == "generator":
+                    results.append(capture_generator_filters(page, viewport_name))
+                    page.close()
+                    continue
                 for view_name in VIEWS:
                     results.append(capture_view(page, viewport_name, view_name))
                 results.append(capture_ask_edgeiq(page, viewport_name))
+                results.append(capture_ask_edgeiq_quant(page, viewport_name))
                 results.extend(capture_research_details(page, viewport_name))
                 results.append(capture_entry_summary(page, viewport_name))
                 results.append(capture_model_track_record(page, viewport_name))
@@ -196,6 +265,35 @@ def main() -> int:
     (OUTPUT / "report.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Captured and validated {len(results)} EdgeIQ desktop/mobile views.")
     return 0
+
+
+def capture_ask_edgeiq_quant(page: Page, viewport_name: str) -> dict:
+    page.locator('button.nav-item[data-view="tools"]:visible').first.click()
+    page.evaluate("""() => renderCopilotResponse({
+      provider: 'Ollama', model: 'Synthetic test model', grounded: true,
+      response: {
+        answer: 'Test Player has a 61% model probability.',
+        recommendation: 'Keep this synthetic card in paper mode.',
+        supporting_evidence: ['Recorded model forecast'],
+        counterargument: 'The sample is limited.',
+        missing_information: ['Confirmed lineup'],
+        suggested_correction: 'Wait for lineup confirmation.',
+        citations: ['forecast-1'],
+      },
+      citations: [{id: 'forecast-1', label: 'Synthetic forecast'}],
+      quantitative_facts: [{subject: 'Test Player', label: 'Model probability', value: 61, citation_id: 'forecast-1'}],
+      fact_references: [{field: 'answer', number: '61', fact_id: 'fact:forecast-1:model_probability', citation_id: 'forecast-1'}],
+    })""")
+    page.locator('[data-copilot-mode="quant"]').click()
+    assert page.locator('.copilot-quant-facts').get_by_text('Numbers checked in this answer').is_visible()
+    assert page.locator('.copilot-quant-facts').get_by_text('61 · Synthetic forecast').is_visible()
+    issues = visual_issues(page)
+    assert not issues['horizontal_overflow'], issues
+    assert not issues['clipped_buttons'], issues
+    screenshot = OUTPUT / f'{viewport_name}-ask-edgeiq-quant.png'
+    page.screenshot(path=screenshot, full_page=True)
+    page.evaluate("setView('analysis')")
+    return {'viewport': viewport_name, 'view': 'Ask EdgeIQ Quant', 'screenshot': str(screenshot), **issues}
 
 
 def capture_market_model_timeline(page: Page, viewport_name: str) -> dict:
@@ -267,7 +365,8 @@ def capture_source_health(page: Page, viewport_name: str) -> dict:
             "settlement_suitability": "Not for settlement", "officially_documented": False,
             "network_attempts_this_session": 2, "availability_percent_this_session": 50.0,
             "error_percent_this_session": 50.0,
-            "settlement_coverage": {"eligible": 20, "verified": 12, "percent": 60.0,
+            "settlement_coverage": {"eligible": 20, "verified": 12, "unresolved": 8,
+                                    "oldest_unresolved_game_at": "2026-10-05T10:00:00+00:00", "percent": 60.0,
                                     "scope": "Tracked pregame prop markets, last 30 days"},
             "research_evidence": {"facts": 4, "uses": 7, "linked_outcomes": 2},
         }, {
@@ -288,6 +387,7 @@ def capture_source_health(page: Page, viewport_name: str) -> dict:
     page.locator('.source-health-row').first.wait_for()
     output = page.locator('#source-health-output')
     assert '60.0%' in output.inner_text()
+    assert '8 tracked markets' in output.inner_text()
     assert 'Unavailable' in output.inner_text()
     issues = visual_issues(page)
     assert not issues['horizontal_overflow'], issues

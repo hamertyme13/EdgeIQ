@@ -3,6 +3,7 @@ from sqlalchemy import (
     Column,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
 )
@@ -13,6 +14,7 @@ from repository.database import Base
 class EntryPropModel(Base):
 
     __tablename__ = "entry_props"
+    __table_args__ = (Index("ix_entry_props_player_sport_stat", "player_name", "sport", "stat"),)
 
     id = Column(Integer, primary_key=True)
 

@@ -18,6 +18,7 @@ global.window = global;
 require('./web/static/js/state.js');
 global.state = window.EdgeIQState;
 global.entryReviewState = state.entry.review;
+global.entryHandoffRequestId = 0;
 state.entryProps = [{player:'A',stat:'Points',game_time:'1',platform:'PrizePicks'}];
 entryReviewState.lastAnalysis = {score:90};
 entryReviewState.lastEntryPayload = {props:[{player:'A'}]};
@@ -25,7 +26,7 @@ entryReviewState.analysisRequestId = 4;
 state.recommendationSnapshotId = 'old-id';
 global.setView = global.renderEntryProps = global.trackProductEvent = () => {};
 eval(source.slice(source.indexOf('function entryDirectionAllowed('), source.indexOf('function loadPaperProps(')));
-eval(source.slice(source.indexOf('function invalidateEntryReview('), source.indexOf('function loadPaperProps(')));
+eval(source.slice(source.indexOf('function clearPreparedHandoff('), source.indexOf('function loadPaperProps(')));
 const added = addFeedProp({player:'B', stat:'Points', line:12.5, game_time:'2',
   platform:'PrizePicks', direction:'Over', recommendation_snapshot_id:'new-id'});
 assert.equal(added, true);
@@ -35,6 +36,61 @@ assert.equal(entryReviewState.lastEntryPayload, null);
 assert.equal(entryReviewState.analysisRequestId, 5);
 assert.equal(state.recommendationSnapshotId, 'new-id');
 for (const id of ['ai-review-entry','prepare-handoff','place-entry']) assert.equal($(id).disabled,true);
+assert.equal($('entry-handoff').textContent, 'No handoff prepared yet.');
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_changed_balance_discards_in_flight_handoff_without_mutating_analysis():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const elements = {};
+global.$ = id => elements[id] ||= {value:'', textContent:'', classList:{add(){},remove(){}}};
+global.entryHandoffRequestId = 0;
+global.entryReviewState = {analysisRequestId: 1, lastEntryPayload:{platform:'PrizePicks', props:[{player:'A'},{player:'B'}]}};
+global.state = {entryProps:[{player:'A'},{player:'B'}]};
+global.renderEntryHandoff = () => { throw Error('stale handoff rendered'); };
+$('entry-platform').value='PrizePicks'; $('entry-mode').value='real';
+$('entry-wager').value='10'; $('entry-multiplier').value='3';
+$('entry-provider-balance').value='50';
+let resolveRequest;
+global.api = () => new Promise(resolve => { resolveRequest = resolve; });
+eval(source.slice(source.indexOf('function clearPreparedHandoff('), source.indexOf('function invalidateEntryReview(')));
+eval(source.slice(source.indexOf('async function prepareEntryHandoff('), source.indexOf('function renderEntryHandoff(')));
+(async () => {
+  const pending = prepareEntryHandoff();
+  assert.equal(entryReviewState.lastEntryPayload.provider_available_balance, undefined);
+  clearPreparedHandoff();
+  resolveRequest({ready_for_handoff:true});
+  await pending;
+  assert.equal($('entry-handoff').textContent, 'No handoff prepared yet.');
+})().catch(error => { console.error(error); process.exitCode=1; });
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_expired_handoff_cannot_be_reused():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const elements = {};
+global.$ = id => elements[id] ||= {textContent:'', classList:{add(){}}};
+global.entryHandoffRequestId = 2;
+global.entryHandoffExpiresAt = Date.now() - 1;
+eval(source.slice(source.indexOf('function clearPreparedHandoff('), source.indexOf('function invalidateEntryReview(')));
+assert.equal(handoffIsCurrent(), false);
+assert.equal(entryHandoffRequestId, 3);
+assert.equal($('entry-handoff').textContent, 'No handoff prepared yet.');
+assert.match($('entry-status').textContent, /Prepare a fresh handoff/);
+entryHandoffExpiresAt = Date.now() + 60000;
+assert.equal(handoffIsCurrent(), true);
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
 
@@ -94,6 +150,42 @@ eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('
   assert.equal(await second,true);
   assert.equal(saves,1);
   assert.deepEqual(state.entryProps,[{player:'D'}]);
+})().catch(error => {console.error(error); process.exit(1);});
+'''
+    subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)
+
+
+def test_paid_override_still_requires_submitted_entry_confirmation():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node is required")
+    script = r'''
+const assert = require('node:assert/strict');
+const source = require('fs').readFileSync('web/static/app.js', 'utf8');
+const elements = {};
+global.$ = id => elements[id] ||= {value:'', textContent:'', disabled:false};
+global.window = global;
+require('./web/static/js/state.js');
+global.state = window.EdgeIQState;
+global.entryReviewState = state.entry.review;
+state.entryProps = [{player:'A'}];
+entryReviewState.lastEntryPayload = {props:[{player:'A'}], entry_mode:'real'};
+global.syncEntryPlatformFromProps = () => ['PrizePicks'];
+global.parsePayoutSchedule = () => [];
+global.renderPlacementAudit = global.playCircuitSound = global.finishCircuitFeedback = () => {};
+global.chooseEntrySaveMode = async () => 'paid';
+let confirmations = 0;
+global.confirm = () => { confirmations++; return false; };
+let saves = 0;
+global.api = path => path.endsWith('placement-check')
+  ? Promise.resolve({ok:false, blocks:['Weak card'], warnings:[], tracking_override_allowed:true})
+  : (saves++, Promise.resolve({id:1}));
+$('entry-mode').value='real'; $('entry-wager').value='10'; $('entry-multiplier').value='3';
+eval(source.slice(source.indexOf('async function placeEntry('), source.indexOf('async function loadProviderSuggestions(')));
+(async () => {
+  assert.equal(await placeEntry({textContent:'Track Paid Entry'}), false);
+  assert.equal(confirmations, 1);
+  assert.equal(saves, 0);
 })().catch(error => {console.error(error); process.exit(1);});
 '''
     subprocess.run([node, "-e", script], cwd=Path(__file__).resolve().parents[1], check=True)

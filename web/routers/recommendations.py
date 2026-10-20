@@ -24,7 +24,8 @@ class RecommendationDependencies:
     auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
     start_auto_paper: Callable[[AutoPaperCalibrationPayload], dict]
     paper_calibration_status: Callable[[], dict]
-    entry_suggestions: Callable[[str, str, int, set[str]], dict]
+    entry_suggestions: Callable[[str, str, int, set[str], str, str], dict]
+    generator_games: Callable[[str, str], dict]
     confirmed_suggestions: Callable[[str, str], dict]
     crazy_six: Callable[[str, str], dict]
     optimizer: Callable[..., dict]
@@ -140,11 +141,19 @@ def entry_suggestions(
     platform: str = "PrizePicks",
     leg_count: int = 2,
     avoid: str = "",
+    direction: str = "Both",
+    game_key: str = "",
     deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
     avoid_prop_keys = {key for key in avoid.split(",") if key}
-    return _request(lambda: _deps.entry_suggestions(sport, platform, leg_count, avoid_prop_keys))
+    return _request(lambda: _deps.entry_suggestions(sport, platform, leg_count, avoid_prop_keys, direction, game_key))
+
+
+@router.get("/api/entries/generator-games")
+def generator_games(sport: str = "All Sports", platform: str = "PrizePicks", deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _deps.generator_games(sport, platform)
 
 
 @router.get("/api/entries/confirmed-suggestions")

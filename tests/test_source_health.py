@@ -30,6 +30,8 @@ def test_source_health_reports_only_measured_rates_and_distinct_coverage():
     assert rows["PrizePicks"]["availability_percent_this_session"] == 75.0
     assert rows["PrizePicks"]["error_percent_this_session"] == 25.0
     assert rows["PrizePicks"]["settlement_coverage"]["percent"] == 50.0
+    assert rows["PrizePicks"]["settlement_coverage"]["unresolved"] == 1
+    assert rows["PrizePicks"]["settlement_coverage"]["oldest_unresolved_game_at"] == "2026-10-05T10:00:00+00:00"
     assert rows["PrizePicks"]["research_evidence"] == {"facts": 2, "uses": 4, "linked_outcomes": 3}
     assert rows["ESPN public"]["settlement_coverage"] == {
         "eligible": 3, "verified": 2, "scope": "Latest recorded attempt per ledger leg and final-stat source, last 30 days", "percent": 66.7,

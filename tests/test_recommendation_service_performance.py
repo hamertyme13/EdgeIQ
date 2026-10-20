@@ -1,4 +1,72 @@
-from web.application.recommendation_service import entry_suggestions_payload, trending_props_payload
+from web.application.recommendation_service import (
+    entry_suggestions_payload,
+    generator_games_payload,
+    trending_props_payload,
+)
+
+
+def test_generator_games_lists_only_same_day_identifiable_provider_matchups() -> None:
+    props = [
+        {"league": "WNBA", "game": "Aces vs Storm", "game_time": "2026-10-15T23:00:00Z", "player": "A"},
+        {"league": "WNBA", "game": "Storm @ Aces", "game_time": "2026-10-15T23:00:00Z", "player": "B"},
+        {"league": "WNBA", "game": "Fever vs Liberty", "game_time": "2026-10-15T23:00:00Z", "player": "C"},
+        {"league": "WNBA", "game": "Fever", "game_time": "2026-10-15T23:00:00Z", "player": "D"},
+    ]
+    result = generator_games_payload(
+        "WNBA", "PrizePicks",
+        fetch_props=lambda *args: props,
+        props_by_platform=lambda platform, rows: [(object(), rows[:3])],
+    )
+    assert {game["key"] for game in result["games"]} == {"WNBA|ACES@STORM", "WNBA|FEVER@LIBERTY"}
+    assert sum(game["prop_count"] for game in result["games"]) == 3
+    assert {game["key"]: game["player_count"] for game in result["games"]} == {
+        "WNBA|ACES@STORM": 2, "WNBA|FEVER@LIBERTY": 1,
+    }
+
+
+def test_generator_game_and_direction_filter_reach_only_selected_candidates() -> None:
+    props = [
+        {"platform": "PrizePicks", "league": "WNBA", "game": game,
+         "game_time": "2026-10-15T23:00:00Z", "player": player, "stat": "Points", "line": 10.5}
+        for game, player in (("Aces vs Storm", "A"), ("Aces vs Storm", "B"),
+                             ("Fever vs Liberty", "C"), ("Fever vs Liberty", "D"),
+                             ("Dream vs Mystics", "E"))
+    ]
+    calls = []
+
+    def suggest(rows, *args, **kwargs):
+        calls.append((rows, kwargs))
+        return []
+
+    kwargs = {
+        "canonical_platform": lambda value: value,
+        "entry_platforms": {"PrizePicks"},
+        "cached_briefing": lambda *args: {},
+        "fetch_props": lambda *args: props,
+        "props_by_platform": lambda platform, rows: [(object(), rows)] if rows else [],
+        "mixed_risk": lambda *args: [],
+        "suggest": suggest,
+        "serialize_suggestion": lambda value: value,
+    }
+    result = entry_suggestions_payload(
+        "WNBA", "PrizePicks", 2, game_key="WNBA|ACES@STORM", direction_filter="Under", **kwargs,
+    )
+    assert result["game_key"] == "WNBA|ACES@STORM"
+    assert [row["player"] for row in calls[0][0]] == ["A", "B"]
+    assert calls[0][1]["direction_filter"] == "Under"
+    calls.clear()
+    mixed = entry_suggestions_payload(
+        "WNBA", "PrizePicks", 2,
+        game_key="WNBA|ACES@STORM,WNBA|FEVER@LIBERTY", direction_filter="Over", **kwargs,
+    )
+    assert mixed["game_keys"] == ["WNBA|ACES@STORM", "WNBA|FEVER@LIBERTY"]
+    assert [row["player"] for row in calls[0][0]] == ["A", "B", "C", "D"]
+    calls.clear()
+    stale = entry_suggestions_payload(
+        "WNBA", "PrizePicks", 2, game_key="WNBA|UNKNOWN@TEAM", direction_filter="Over", **kwargs,
+    )
+    assert stale["suggestions"] == []
+    assert calls == []
 
 
 def test_gaming_markets_are_visible_but_not_graded_as_paid_recommendations() -> None:

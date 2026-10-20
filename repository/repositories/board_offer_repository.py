@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from threading import RLock
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -110,49 +110,66 @@ class BoardOfferRepository:
         prepared = list(prepared_by_key.values())
         if not prepared:
             return 0
-        identities = PlayerIdentityRepository.capture_provider_players(prepared, provider).get("identity_ids", {})
-        for row in prepared:
+        missing_identities = [row for row in prepared if not row.get("player_identity_id")]
+        identities = (
+            PlayerIdentityRepository.capture_provider_players(missing_identities, provider).get("identity_ids", {})
+            if missing_identities else {}
+        )
+        for row in missing_identities:
             row["player_identity_id"] = identities.get((row["sport"], row["normalized_player_key"]))
-        market_keys = {row["market_key"] for row in prepared}
         with SessionLocal() as session:
-            opening_rows = (
-                session.query(
-                    BoardOfferObservationModel.market_key,
-                    func.min(BoardOfferObservationModel.id),
-                )
-                .filter(BoardOfferObservationModel.market_key.in_(market_keys))
-                .group_by(BoardOfferObservationModel.market_key)
-                .all()
-            )
-            opening_ids = [row_id for _key, row_id in opening_rows]
-            openings = {
-                row.market_key: row.line
-                for row in session.query(BoardOfferObservationModel)
-                .filter(BoardOfferObservationModel.id.in_(opening_ids)).all()
-            } if opening_ids else {}
+            existing = dict(session.query(
+                BoardOfferObservationModel.observation_key,
+                BoardOfferObservationModel.offer_snapshot_id,
+            ).filter(
+                BoardOfferObservationModel.observation_key.in_(row["observation_key"] for row in prepared)
+            ).all())
+            new_rows = [row for row in prepared if row["observation_key"] not in existing]
             inserts = []
-            for row in prepared:
-                row["opening_line"] = openings.get(row["market_key"], row["line"])
-                inserts.append({**row, "captured_at": captured})
-            insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
-            result = session.execute(
-                insert_factory(BoardOfferObservationModel)
-                .values(inserts)
-                .on_conflict_do_nothing(index_elements=["observation_key"])
-            )
-            created = max(0, int(result.rowcount or 0))
+            created = 0
+            if new_rows:
+                market_keys = {row["market_key"] for row in new_rows}
+                opening_rows = (
+                    session.query(
+                        BoardOfferObservationModel.market_key,
+                        func.min(BoardOfferObservationModel.id),
+                    )
+                    .filter(BoardOfferObservationModel.market_key.in_(market_keys))
+                    .group_by(BoardOfferObservationModel.market_key)
+                    .all()
+                )
+                opening_ids = [row_id for _key, row_id in opening_rows]
+                openings = dict(session.query(
+                    BoardOfferObservationModel.market_key,
+                    BoardOfferObservationModel.line,
+                ).filter(BoardOfferObservationModel.id.in_(opening_ids)).all()) if opening_ids else {}
+                for row in new_rows:
+                    row["opening_line"] = openings.get(row["market_key"], row["line"])
+                    inserts.append({**row, "captured_at": captured})
+                insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+                result = session.execute(
+                    insert_factory(BoardOfferObservationModel)
+                    .values(inserts)
+                    .on_conflict_do_nothing(index_elements=["observation_key"])
+                )
+                created = max(0, int(result.rowcount or 0))
             links = {
                 row["observation_key"]: row["offer_snapshot_id"]
-                for row in prepared if row.get("offer_snapshot_id")
+                for row in prepared
+                if row.get("offer_snapshot_id") and row["observation_key"] in existing
+                and not existing[row["observation_key"]]
             }
             if links:
-                existing_rows = session.query(BoardOfferObservationModel).filter(
+                session.query(BoardOfferObservationModel).filter(
                     BoardOfferObservationModel.observation_key.in_(links),
                     BoardOfferObservationModel.offer_snapshot_id == "",
-                ).all()
-                for observation in existing_rows:
-                    observation.offer_snapshot_id = links[observation.observation_key]
-            if inserts:
+                ).update(
+                    {BoardOfferObservationModel.offer_snapshot_id: case(
+                        links, value=BoardOfferObservationModel.observation_key,
+                    )},
+                    synchronize_session=False,
+                )
+            if inserts or links:
                 session.commit()
             if created:
                 BoardOfferRepository.invalidate_summary()

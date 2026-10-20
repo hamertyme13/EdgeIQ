@@ -37,7 +37,9 @@ if [[ ! -x "$LAUNCHER" ]]; then
   /bin/chmod +x "$LAUNCHER"
 fi
 
-"$PYTHON_BIN" "$APP_DIR/scripts/generate_desktop_icon.py" >/dev/null
+if [[ ! -s "$ICON_PATH" ]]; then
+  "$PYTHON_BIN" "$APP_DIR/scripts/generate_desktop_icon.py" >/dev/null
+fi
 
 /bin/rm -rf "$APP_BUNDLE"
 /bin/mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"

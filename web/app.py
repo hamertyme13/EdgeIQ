@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, date, datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
@@ -40,6 +41,7 @@ import data.providers.sleeper as sleeper
 import data.providers.sleeper_apify as sleeper_apify
 import data.providers.sportsdataio as sportsdataio
 import data.providers.statshawk as statshawk
+import data.providers.tennis_sportradar as tennis_sportradar
 import data.providers.underdog as underdog
 import data.providers.underdog_apify as underdog_apify
 from analytics.backtesting import backtest_summary
@@ -114,6 +116,7 @@ from services.ollama_client import (
     ollama_vision_structured,
 )
 from services.operation_lock import named_operation_lock
+from services.sqlite_wal_maintenance import checkpoint_large_wal
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key, same_person
 from utils.logging_config import configure_logging
 from utils.market_validation import is_partial_game_market
@@ -213,6 +216,8 @@ from web.application.intelligence_service import game_context_response as build_
 from web.application.intelligence_service import parlay_chat_payload as build_parlay_chat_payload
 from web.application.intelligence_service import projection_assist_payload as build_projection_assist_payload
 from web.application.intelligence_service import trending_games_response as build_trending_games_response
+from web.application.manual_handoff import review_stake
+from web.application.model_input_status import model_input_status
 from web.application.offer_evidence import (
     game_start_status,
     handoff_blocking_reason,
@@ -286,6 +291,7 @@ from web.application.recommendation_service import (
 from web.application.recommendation_service import (
     entry_suggestions_payload as build_entry_suggestions_payload,
 )
+from web.application.recommendation_service import generator_games_payload as build_generator_games_payload
 from web.application.recommendation_service import (
     optimized_entries_payload as build_optimized_entries_payload,
 )
@@ -587,6 +593,7 @@ _PROP_FETCH_KEY_LOCKS: dict[str, threading.Lock] = {}
 _PROP_FETCH_METRICS: dict[str, dict[str, int]] = {}
 _FEED_CAPTURE_GATE = FeedCaptureGate()
 _PROVIDER_ARCHIVE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-provider-archive")
+_PROVIDER_ARCHIVE_PAUSE = threading.Event()
 _SETTLEMENT_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="edgeiq-settlement")
 _SETTLEMENT_JOB_GUARD = threading.Lock()
 _SETTLEMENT_JOB_FUTURE = None
@@ -624,6 +631,7 @@ async def lifespan(_: FastAPI):
             tasks = [
                 asyncio.create_task(_settlement_refresh_loop()),
                 asyncio.create_task(_daily_operations_scheduler_loop()),
+                asyncio.create_task(_sqlite_wal_checkpoint_loop()),
             ]
         try:
             yield
@@ -633,6 +641,18 @@ async def lifespan(_: FastAPI):
             for task in tasks:
                 with suppress(asyncio.CancelledError):
                     await task
+
+
+async def _sqlite_wal_checkpoint_loop() -> None:
+    await asyncio.sleep(120)
+    while True:
+        try:
+            from repository.database import engine
+
+            await asyncio.to_thread(checkpoint_large_wal, engine)
+        except Exception:
+            _log.warning("SQLite idle checkpoint failed; the next cycle will retry", exc_info=True)
+        await asyncio.sleep(300)
 
 
 async def _settlement_refresh_loop() -> None:
@@ -1669,6 +1689,7 @@ def _fetch_platform_props(
     platform: str, *, force_refresh: bool = False, sport_filter: str | None = None,
     progress: Callable[[int, str], None] | None = None,
     on_cache_reused: Callable[[], None] | None = None,
+    defer_archive: bool = False,
 ) -> list[dict]:
     canonical = _canonical_platform(platform)
     fetcher = _platform_prop_fetcher(canonical)
@@ -1719,9 +1740,9 @@ def _fetch_platform_props(
             fetcher = lambda: draftkings_pick6.fetch_projections(refresh=force_refresh)
         if force_refresh:
             props = _fetch_platform_props_uncached(
-                canonical, fetcher, archive_full_board=True, progress=progress, raise_on_error=True,
+                canonical, fetcher, archive_full_board=not defer_archive, progress=progress, raise_on_error=True,
             ) if progress else _fetch_platform_props_uncached(
-                canonical, fetcher, archive_full_board=True, raise_on_error=True,
+                canonical, fetcher, archive_full_board=not defer_archive, raise_on_error=True,
             )
         else:
             props = _fetch_platform_props_uncached(canonical, fetcher)
@@ -1731,11 +1752,12 @@ def _fetch_platform_props(
                 time.monotonic() + PROP_FETCH_CACHE_SECONDS,
                 [dict(prop) for prop in props],
             )
-        _PROVIDER_ARCHIVE_EXECUTOR.submit(
-            _record_line_snapshots,
-            [dict(prop) for prop in props],
-            force_snapshot=force_refresh,
-        )
+        if not defer_archive:
+            _PROVIDER_ARCHIVE_EXECUTOR.submit(
+                _record_line_snapshots,
+                [dict(prop) for prop in props],
+                force_snapshot=force_refresh,
+            )
         return [dict(prop) for prop in props]
     finally:
         key_lock.release()
@@ -1897,18 +1919,51 @@ def _fetch_platform_props_uncached(
 
 def _record_board_offers(props: list[dict], platform: str) -> None:
     try:
-        batch_size = 500
+        batch_size = 50
+        identity_ids: dict[tuple[str, str], int] = {}
+        unique_players = list({
+            (
+                str(prop.get("league") or prop.get("sport") or "").upper(),
+                canonical_person_key(prop.get("player")),
+                str(prop.get("provider_player_id") or prop.get("player_id") or ""),
+            ): prop for prop in props
+        }.values())
+        for start in range(0, len(unique_players), 200):
+            rows = unique_players[start:start + 200]
+            identity_ids.update(_run_provider_archive_batch(
+                lambda rows=rows: PlayerIdentityRepository.capture_provider_players(rows, platform)["identity_ids"]
+            ))
         for start in range(0, len(props), batch_size):
+            while _PROVIDER_ARCHIVE_PAUSE.is_set():
+                time.sleep(0.1)
             batch = props[start:start + batch_size]
             for prop in batch:
                 prop.setdefault("platform", platform)
-                eligibility = _end_to_end_prop_eligibility(prop)
-                prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
-                prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
-            captured = ProviderOfferSnapshotRepository.capture_many(batch)
-            BoardOfferRepository.record_many(captured, platform)
+                sport = str(prop.get("league") or prop.get("sport") or "").upper()
+                prop["player_identity_id"] = identity_ids.get((sport, canonical_person_key(prop.get("player"))))
+                if "end_to_end_confirmed" not in prop:
+                    eligibility = _end_to_end_prop_eligibility(prop)
+                    prop["end_to_end_confirmed"] = bool(eligibility["eligible"])
+                    prop["eligibility_reason"] = "; ".join(eligibility.get("reasons") or [])
+            _run_provider_archive_batch(lambda batch=batch: _persist_board_offer_batch(batch, platform))
     except Exception:
         _log.warning("Failed to record board offers for platform %s", platform, exc_info=True)
+
+
+def _persist_board_offer_batch(batch: list[dict], platform: str) -> None:
+    captured = ProviderOfferSnapshotRepository.capture_many(batch)
+    BoardOfferRepository.record_many(captured, platform)
+
+
+def _run_provider_archive_batch(callback: Callable[[], Any]) -> Any:
+    deadline = time.monotonic() + 120
+    while True:
+        with named_operation_lock("briefing-and-calibration") as acquired:
+            if acquired:
+                return callback()
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Provider archive waited too long for an active refresh to finish.")
+        time.sleep(0.25)
 
 
 def _provider_sport_counts(props: list[dict]) -> dict[str, int]:
@@ -2109,6 +2164,20 @@ def _end_to_end_prop_eligibility(prop: dict | PropPayload, *, require_context: b
             "goals", "assists", "points", "shots on goal", "blocked shots", "hits",
             "saves", "goalie saves", "goals against", "shots against",
         }
+    elif sport == "TENNIS":
+        market_supported = tennis_sportradar.configured() and tennis_sportradar.supported_market(stat)
+        if market_supported:
+            settlement_provider = "Sportradar Tennis v3"
+            if require_context:
+                tennis_prop = prop if isinstance(prop, dict) else {
+                    key: _prop_value(prop, key)
+                    for key in ("sport", "stat", "player", "game", "game_time")
+                }
+                offer_verified, offer_reason = tennis_sportradar.offer_support(tennis_prop)
+                if not offer_verified:
+                    reasons.append(offer_reason)
+        elif tennis_sportradar.supported_market(stat):
+            reasons.append("Tennis settlement requires SPORTRADAR_TENNIS_API_KEY")
 
     platform = str(_prop_value(prop, "platform") or "").strip().lower()
     if stat == "fantasy score" and platform in {"draftkings", "draftkings pick6", "dk pick6"}:
@@ -2198,6 +2267,7 @@ def _canonical_platform(value: str) -> str:
 
 def _refresh_final_stats(pending_entries: list[dict]) -> dict:
     espn_refresh = refresh_final_stats_for_entries(pending_entries)
+    tennis_refresh = tennis_sportradar.refresh_final_stats_for_entries(pending_entries)
     statshawk_refresh = statshawk.refresh_final_stats_for_entries(pending_entries)
     sportsdataio_refresh = _sportsdataio_refresh(pending_entries)
     summer_league_refresh = nba_summer_league.refresh_final_stats_for_entries(pending_entries)
@@ -2217,6 +2287,7 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
         )
     imported = (
         espn_refresh.get("imported", 0)
+        + tennis_refresh.get("imported", 0)
         + statshawk_refresh.get("imported", 0)
         + sportsdataio_refresh.get("imported", 0)
         + summer_league_refresh.get("imported", 0)
@@ -2224,15 +2295,17 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
     )
     fetched_rows = (
         espn_refresh.get("fetched_rows", 0)
+        + tennis_refresh.get("fetched_rows", 0)
         + statshawk_refresh.get("fetched_rows", 0)
         + sportsdataio_refresh.get("fetched_rows", 0)
         + summer_league_refresh.get("fetched_rows", 0)
         + pandascore_refresh.get("fetched_rows", 0)
     )
     return {
-        "providers": ["espn", "statshawk", "sportsdataio", "nba_summer_league", "pandascore"],
+        "providers": ["espn", "sportradar_tennis_v3", "statshawk", "sportsdataio", "nba_summer_league", "pandascore"],
         "provider": "espn+statshawk+sportsdataio+nba_summer_league+pandascore",
         "espn": espn_refresh,
+        "tennis": tennis_refresh,
         "statshawk": statshawk_refresh,
         "sportsdataio": sportsdataio_refresh,
         "nba_summer_league": summer_league_refresh,
@@ -2241,6 +2314,7 @@ def _refresh_final_stats(pending_entries: list[dict]) -> dict:
         "fetched_rows": fetched_rows,
         "errors": (
             espn_refresh.get("errors", [])
+            + tennis_refresh.get("errors", [])
             + statshawk_refresh.get("errors", [])
             + sportsdataio_refresh.get("errors", [])
             + summer_league_refresh.get("errors", [])
@@ -2475,7 +2549,7 @@ def _auto_paper_calibration_unlocked(payload: AutoPaperCalibrationPayload) -> di
                     continue
 
     requested_plan = (
-        list(payload.batch_plan or [2, 2, 3, 4, 5])
+        list(payload.batch_plan or [2, 2, 3, 4, 5, 6])
         if payload.standard_batch
         else [payload.leg_count] * payload.max_entries
     )
@@ -2550,13 +2624,13 @@ def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload)
                 "sport": sport,
                 "created_count": 0,
                 "created_plan": [],
-                "shortfall": 5,
+                "shortfall": 6,
                 "eligible_same_day_props": sum(provider_counts.values()),
                 "providers": [],
             })
             continue
 
-        plan = [2, 2, 3, 4, 5]
+        plan = [2, 2, 3, 4, 5, 6]
         if len(available_providers) > 1:
             rotate = datetime.now(ENTRY_DAY_TIME_ZONE).date().toordinal() % 2
             ordered_providers = available_providers[rotate:] + available_providers[:rotate]
@@ -2600,14 +2674,14 @@ def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload)
             "sport": sport,
             "created_count": len(sport_created),
             "created_plan": sport_created_plan,
-            "shortfall": max(0, 5 - len(sport_created)),
+            "shortfall": max(0, len(plan) - len(sport_created)),
             "eligible_same_day_props": sum(provider_counts.values()),
             "providers": provider_results,
         })
         created.extend(sport_created)
         skipped.extend({**row, "sport": row.get("sport") or sport} for row in sport_skipped)
         targets.extend(sport_targets)
-    requested_plan = [leg for _sport in active_sports for leg in (2, 2, 3, 4, 5)]
+    requested_plan = [leg for _sport in active_sports for leg in (2, 2, 3, 4, 5, 6)]
     return {
         "created": created,
         "created_count": len(created),
@@ -2627,7 +2701,7 @@ def _balanced_all_sports_paper_calibration(payload: AutoPaperCalibrationPayload)
                 entry for entry in EntryRepository.pending()
                 if str(entry.get("entry_mode", "real")).lower() == "paper"
             ]),
-            "minimum_props_for_full_batch": 5,
+            "minimum_props_for_full_batch": 6,
         },
         "dashboard": get_dashboard() if not payload.dry_run else None,
     }
@@ -2651,7 +2725,7 @@ def _auto_paper_board_diagnostics(
         "eligible_same_day_props": len(unique_markets),
         "sports": _available_prop_sports(pools),
         "pending_paper_cards": pending_paper_count,
-        "minimum_props_for_full_batch": 5,
+        "minimum_props_for_full_batch": 6,
     }
 
 
@@ -2659,7 +2733,7 @@ def _run_automatic_paper_samples() -> dict:
     payload = AutoPaperCalibrationPayload(
         platform="Both",
         sport="All Sports",
-        max_entries=5,
+        max_entries=6,
         standard_batch=True,
         prefer_confirmed=True,
         dry_run=False,
@@ -2782,7 +2856,7 @@ def _create_standard_calibration_batch(
     prop_pool_cache: dict[tuple[str, str], list[dict]],
     analyzed_cache: dict[tuple, dict],
 ) -> None:
-    plan = list(payload.batch_plan or [2, 2, 3, 4, 5])
+    plan = list(payload.batch_plan or [2, 2, 3, 4, 5, 6])
     confidence_targets = [target for target in targets if target.get("type") == "Confidence"]
     existing_buckets = {target.get("name") for target in confidence_targets}
     for bucket in backtest_data.get("calibration", []):
@@ -2813,7 +2887,7 @@ def _create_standard_calibration_batch(
         candidate_targets: list[dict] = []
         # Try distinct confidence buckets first; only use general coverage
         # when today's verified offers cannot form a card for a bucket.
-        for target in fresh_targets + coverage_targets:
+        for target in fresh_targets + coverage_targets + (ordered_targets if leg_count == 6 else []):
             if target not in candidate_targets:
                 candidate_targets.append(target)
         created_for_slot = False
@@ -3152,7 +3226,7 @@ def _paper_calibration_suggestions_for_props(
     return suggestions
 
 
-def _paper_calibration_prop_pool(raw_props: list[dict], sport: str | None, limit: int = 20) -> list[dict]:
+def _paper_calibration_prop_pool(raw_props: list[dict], sport: str | None, limit: int = 60) -> list[dict]:
     eligible = [
         prop for prop in raw_props
         if _end_to_end_prop_eligibility(prop)["eligible"]
@@ -4311,9 +4385,9 @@ def _record_line_snapshots(props: list[dict], *, force_snapshot: bool = False) -
             "line_offer_type": _prizepicks_offer_type(prop),
         })
     if force_snapshot:
-        LineHistoryRepository.record_many(rows, force_snapshot=True)
+        _run_provider_archive_batch(lambda: LineHistoryRepository.record_many(rows, force_snapshot=True))
     else:
-        LineHistoryRepository.record_many(rows)
+        _run_provider_archive_batch(lambda: LineHistoryRepository.record_many(rows))
 
 
 def _unique_player_props(props: list[dict], limit: int) -> list[dict]:
@@ -4576,22 +4650,72 @@ def _run_daily_briefing_scan_unlocked(
             failed_scan = _save_daily_scan_status(failed_scan)
             _append_daily_scan_log(failed_scan)
             return failed_scan
-        return run_briefing_scan(
-            platform,
-            sport_filter,
-            scan_id=scan_id,
-            trigger=trigger,
-            sync_result=sync_result,
-            create_scan=lambda selected_platform, selected_sport, selected_trigger: _new_daily_scan(
-                selected_platform,
-                selected_sport,
-                selected_trigger,
-            ),
-            save_status=lambda scan: _save_daily_scan_status(scan),
-            update_scan=lambda *args, **kwargs: _update_daily_scan(*args, **kwargs),
-            cached_briefing=lambda *args, **kwargs: _cached_daily_briefing_payload(*args, **kwargs),
-            append_log=lambda scan: _append_daily_scan_log(scan),
-        )
+        deferred_archives: list[tuple[str, list[dict]]] = []
+        if trigger == "manual-provider-refresh":
+            _PROVIDER_ARCHIVE_PAUSE.set()
+            scan = _new_daily_scan(platform, sport_filter, trigger)
+            if scan_id:
+                scan["id"] = scan_id
+            scan = _update_daily_scan(
+                scan, "scanning_props", "Refreshing current provider offers before rebuilding the briefing.", 10
+            )
+            try:
+                selected = _selected_platforms(_canonical_platform(platform))
+                refreshed = 0
+                for name in selected:
+                    provider_props = _fetch_platform_props(
+                        name,
+                        force_refresh=True,
+                        sport_filter=sport_filter,
+                        defer_archive=True,
+                        progress=lambda _percent, message: _update_daily_scan(
+                            scan, "scanning_props", message, 15 if _percent < 70 else 25,
+                        ),
+                    )
+                    refreshed += len(provider_props)
+                    if provider_props:
+                        deferred_archives.append((name, provider_props))
+                if not refreshed:
+                    raise ValueError("No current provider offers were returned for this board.")
+                _update_daily_scan(
+                    scan, "scanning_props", f"Refreshed {refreshed:,} offers. Building today's briefing.", 35
+                )
+            except Exception:
+                _PROVIDER_ARCHIVE_PAUSE.clear()
+                _log.exception("Provider refresh failed before Daily Briefing scan")
+                failed_scan = _update_daily_scan(
+                    scan,
+                    "failed",
+                    "Provider offers could not be refreshed. The briefing was not marked ready.",
+                    100,
+                    completed_at=iso_utc(utc_now()),
+                    errors=["Provider refresh failed or returned no current offers. Check provider status and try again."],
+                )
+                _append_daily_scan_log(failed_scan)
+                return failed_scan
+        try:
+            return run_briefing_scan(
+                platform,
+                sport_filter,
+                scan_id=scan_id,
+                trigger=trigger,
+                sync_result=sync_result,
+                create_scan=lambda selected_platform, selected_sport, selected_trigger: _new_daily_scan(
+                    selected_platform,
+                    selected_sport,
+                    selected_trigger,
+                ),
+                save_status=lambda scan: _save_daily_scan_status(scan),
+                update_scan=lambda *args, **kwargs: _update_daily_scan(*args, **kwargs),
+                cached_briefing=lambda *args, **kwargs: _cached_daily_briefing_payload(*args, **kwargs),
+                append_log=lambda scan: _append_daily_scan_log(scan),
+            )
+        finally:
+            if trigger == "manual-provider-refresh":
+                _PROVIDER_ARCHIVE_PAUSE.clear()
+            for provider, props in deferred_archives:
+                _PROVIDER_ARCHIVE_EXECUTOR.submit(_record_board_offers, [dict(prop) for prop in props], provider)
+                _PROVIDER_ARCHIVE_EXECUTOR.submit(_record_line_snapshots, [dict(prop) for prop in props], force_snapshot=True)
 
 
 def _daily_scan_summary(briefing: dict) -> dict:
@@ -6826,6 +6950,35 @@ def _props_by_platform_from_props(platform: str, props: list[dict]) -> list[tupl
     ]
 
 
+def _generator_game_cached_props(platform: str, sport_filter: str | None) -> list[dict]:
+    """List games from current offers without starting provider or archival work."""
+    rows: list[dict] = []
+    now = time.monotonic()
+    with _PROP_FETCH_LOCK:
+        for name in _selected_entry_platforms(platform):
+            canonical = _canonical_platform(name)
+            cache_key = f"{canonical}:{_platform_fetcher_cache_token(canonical)}"
+            scoped_key = f"{cache_key}:{sport_filter}" if canonical in {"Underdog", "Sleeper"} and sport_filter else cache_key
+            cached = _PROP_FETCH_CACHE.get(scoped_key) or _PROP_FETCH_CACHE.get(cache_key)
+            if cached and cached[0] > now:
+                rows.extend(dict(prop) for prop in cached[1])
+    if rows:
+        return [
+            prop for prop in rows
+            if not sport_filter or str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter.upper()
+        ]
+    briefing = _cached_daily_briefing_payload(platform, sport_filter, cached_only=True)
+    if (briefing.get("cache") or {}).get("stale"):
+        return []
+    selected = {_canonical_platform(name) for name in _selected_entry_platforms(platform)}
+    return [
+        {**prop, "league": prop.get("league") or prop.get("sport") or ""}
+        for prop in briefing.get("top_opportunities") or []
+        if _canonical_platform(prop.get("platform") or briefing.get("platform") or "") in selected
+        and (not sport_filter or str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter.upper())
+    ]
+
+
 def _prefer_standard_provider_offers(props: list[dict]) -> list[dict]:
     """Use adjusted offers only when a market has no usable standard line."""
     groups: dict[tuple[str, str, str, str, str, str], list[dict]] = {}
@@ -8160,10 +8313,20 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
         payload, live_refresh=True, source_props_by_sport=source_props_by_sport,
     )
     recommended_platform = platform_value.get("recommended_platform") or _canonical_platform(payload.platform)
+    stake_review = review_stake(
+        wager=payload.wager,
+        bankroll=float(_cached_dashboard_stats().get("bankroll") or 0),
+        open_exposure=_open_real_money_exposure(),
+        strategy=_bankroll_strategy(),
+        provider_balance=payload.provider_available_balance,
+        require_provider_balance=_canonical_platform(payload.platform) == "PrizePicks",
+    ) if payload.entry_mode == "real" else None
     release_blocks = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") == "danger"]
     release_warnings = [guard["message"] for guard in analysis.get("risk_guardrails", []) if guard.get("severity") != "danger"]
     release_blocks.extend(evidence_validation["invalidations"])
     release_warnings.extend(evidence_validation["warnings"])
+    if stake_review:
+        release_blocks.extend(stake_review["blocks"])
     live_verification = _verify_handoff_live_offers(
         payload, recommended_platform, source_props_by_sport=source_props_by_sport,
     )
@@ -8191,6 +8354,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
         "recommended_platform": recommended_platform,
         "open_url": urls.get(recommended_platform, urls.get(_canonical_platform(payload.platform), "")),
         "copy_text": copy_text,
+        "stake_review": stake_review,
         "legs": legs,
         "ready_for_handoff": not release_blocks and bool(payload.props) and live_verification["all_current"],
         "live_verification": live_verification,
@@ -12062,10 +12226,11 @@ def _build_runtime_status_payload() -> dict:
     paid_enabled = model_health.get("paid_entry_mode") == "enabled"
     registry = model_registry()
     feature_status = PlayerFeatureRepository.status()
+    model_inputs = model_input_status(feature_status)
     deployment = _deploy_readiness_payload()
     active_jobs = [job for job in background_jobs.list(limit=20) if job.get("status") in {"queued", "running", "canceling"}]
     return {
-        "overall": "ready" if not provider_summary.get("warnings") and paid_enabled else "attention",
+        "overall": "ready" if not provider_summary.get("warnings") and paid_enabled and model_inputs["status"] == "ready" else "attention",
         "items": [
             {
                 "key": "ollama", "label": "Ask EdgeIQ",
@@ -12100,12 +12265,7 @@ def _build_runtime_status_payload() -> dict:
                     f"{model_health.get('status') or 'Status unavailable'}."
                 ),
             },
-            {
-                "key": "features", "label": "Player Features",
-                "status": "ready" if feature_status.get("segments") else "attention",
-                "value": f"{feature_status.get('segments', 0)} segments",
-                "detail": f"Last materialized {feature_status.get('last_materialized_at') or 'not yet'}.",
-            },
+            model_inputs,
             {
                 "key": "jobs", "label": "Background Work",
                 "status": "ready",
@@ -12245,7 +12405,7 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
     sport_filter = None if sport == "All Sports" else str(sport or "").upper()
     dedupe_sport = sport_filter or "all"
 
-    def run(context: JobContext) -> dict:
+    def perform_refresh(context: JobContext) -> dict:
         context.update(10, f"Refreshing {canonical_platform} offers.")
         cache_reused = threading.Event()
         selected = _selected_platforms(canonical_platform)
@@ -12282,6 +12442,12 @@ def _start_provider_refresh_job(platform: str, sport: str) -> dict:
             "offers": len(props),
             "cache_reused": cache_reused.is_set(),
         }
+
+    def run(context: JobContext) -> dict:
+        with named_operation_lock("briefing-and-calibration") as acquired:
+            if not acquired:
+                raise RuntimeError("Another data refresh is running. Try refreshing providers again when it finishes.")
+            return perform_refresh(context)
 
     return {
         **background_jobs.submit(
@@ -12708,7 +12874,10 @@ def _serialize_prop(prop: Prop) -> dict:
     return serialized
 
 
-def _serialize_suggestion(suggestion, include_release: bool = True) -> dict:
+def _serialize_suggestion(
+    suggestion, include_release: bool = True, *, model_health: dict | None = None,
+    lineage_feed: dict | None = None,
+) -> dict:
     leg_count = suggestion.entry.prop_count
     entry = _serialize_entry(suggestion.entry)
     trust = _trust_score_for_props(entry["props"], suggestion.warnings)
@@ -12734,18 +12903,37 @@ def _serialize_suggestion(suggestion, include_release: bool = True) -> dict:
         "trust": trust,
     }
     if include_release:
-        serialized["release_status"] = _card_release_status(card)
+        serialized["release_status"] = _card_release_status(card, model_health=model_health)
         if not serialized["release_status"]["ok"] and "pass" not in str(serialized["action"]).lower():
             serialized["action"] = "Track on Paper"
-    _stamp_current_recommendation_lineage(serialized, groups=("props",))
+    _stamp_current_recommendation_lineage(serialized, groups=("props",), feed=lineage_feed)
     entry["recommendation_snapshot_id"] = serialized.get("recommendation_snapshot_id", "")
     for prop in entry["props"]:
         prop["recommendation_snapshot_id"] = serialized.get("recommendation_snapshot_id", "")
     return serialized
 
 
-def _stamp_current_recommendation_lineage(payload: dict, *, groups: tuple[str, ...] = ()) -> dict:
-    feed = ModelRehabilitationRepository.load_feed()
+def _batch_suggestion_serializer() -> Callable:
+    context: dict[str, dict] = {}
+
+    def serialize(suggestion) -> dict:
+        if "model_health" not in context:
+            context["model_health"] = _model_health_payload()
+            context["lineage_feed"] = ModelRehabilitationRepository.load_feed()
+        return _serialize_suggestion(
+            suggestion,
+            model_health=context["model_health"],
+            lineage_feed=context["lineage_feed"],
+        )
+
+    return serialize
+
+
+def _stamp_current_recommendation_lineage(
+    payload: dict, *, groups: tuple[str, ...] = (), feed: dict | None = None,
+) -> dict:
+    if feed is None:
+        feed = ModelRehabilitationRepository.load_feed()
     snapshot_id = str(feed.get("snapshot_id") or "")
     model_version = str(feed.get("model_version") or EDGEIQ_LOCAL_MODEL_VERSION)
     if not snapshot_id:
@@ -13232,11 +13420,9 @@ configure_intelligence_router(
             platform,
             sport,
             limit,
-            fetch_props=lambda selected_platform, sport_filter: [
-                prop
-                for selected_name in _selected_entry_platforms(selected_platform)
-                for prop in _fetch_props(selected_name, sport_filter)
-            ],
+            fetch_props=lambda selected_platform, sport_filter: _fetch_props(
+                selected_platform, sport_filter,
+            ),
             is_current_day=lambda prop: _is_prop_on_entry_day(prop),
             top_props_by_sport=lambda props, per_sport_limit, sport_filter: _top_props_by_sport(
                 props,
@@ -13264,7 +13450,7 @@ configure_intelligence_router(
             bankroll=lambda: get_starting_bankroll(),
         ),
         projection_assist=lambda payload: build_projection_assist_payload(payload),
-        copilot_query=lambda payload: build_copilot_query_payload(
+        copilot_query=lambda payload, progress=None: build_copilot_query_payload(
             payload,
             player_research=lambda player, stat, sport, platform, line: _player_research_payload(
                 player, stat, sport, platform, line,
@@ -13278,6 +13464,7 @@ configure_intelligence_router(
                 bankroll=float(get_dashboard().get("bankroll") or get_starting_bankroll() or 0.0),
                 strategy=_bankroll_strategy(),
             ),
+            progress=progress,
         ),
         explain_recommendation=lambda payload: build_explain_recommendation_payload(payload),
         evaluate_model=lambda payload: build_model_evaluation_payload(payload),
@@ -13364,7 +13551,7 @@ configure_recommendation_router(
         auto_paper=lambda payload: _auto_paper_calibration(payload),
         start_auto_paper=lambda payload: _start_auto_paper_calibration_job(payload),
         paper_calibration_status=lambda: _paper_calibration_status_payload(),
-        entry_suggestions=lambda sport, platform, leg_count, avoid_prop_keys: build_entry_suggestions_payload(
+        entry_suggestions=lambda sport, platform, leg_count, avoid_prop_keys, direction, game_key: build_entry_suggestions_payload(
             sport,
             platform,
             leg_count,
@@ -13375,11 +13562,9 @@ configure_recommendation_router(
                 sport_filter,
                 cached_only=True,
             ),
-            fetch_props=lambda selected_platform, sport_filter: [
-                prop
-                for selected_name in _selected_entry_platforms(selected_platform)
-                for prop in _fetch_props(selected_name, sport_filter)
-            ],
+            fetch_props=lambda selected_platform, sport_filter: _generator_game_cached_props(
+                selected_platform, sport_filter,
+            ),
             props_by_platform=lambda selected_platform, props: _props_by_platform_from_props(
                 selected_platform,
                 props,
@@ -13390,8 +13575,18 @@ configure_recommendation_router(
                 platform_model,
             ),
             suggest=lambda *args, **kwargs: suggest_entries(*args, **kwargs),
-            serialize_suggestion=lambda suggestion: _serialize_suggestion(suggestion),
+            serialize_suggestion=_batch_suggestion_serializer(),
             avoid_prop_keys=avoid_prop_keys,
+            direction_filter=direction,
+            game_key=game_key,
+        ),
+        generator_games=lambda sport, platform: build_generator_games_payload(
+            sport,
+            platform,
+            fetch_props=lambda selected_platform, sport_filter: _generator_game_cached_props(
+                selected_platform, sport_filter,
+            ),
+            props_by_platform=lambda selected_platform, props: _props_by_platform_from_props(selected_platform, props),
         ),
         confirmed_suggestions=lambda sport, platform: build_confirmed_entry_suggestions_payload(
             sport,

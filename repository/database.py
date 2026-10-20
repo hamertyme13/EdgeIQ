@@ -30,6 +30,7 @@ if DATABASE_URL.startswith("sqlite"):
         try:
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA wal_autocheckpoint=65536")
         except Exception:
             pass
         finally:

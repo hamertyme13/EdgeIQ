@@ -36,7 +36,7 @@ def _answer(citations, answer="The verified line is 19.5."):
 
 def test_player_research_routes_to_verified_history(monkeypatch):
     calls = []
-    monkeypatch.setattr(copilot_service, "ollama_structured", lambda *_args, **_kwargs: (_answer(["final-1"]), None))
+    monkeypatch.setattr(copilot_service, "ollama_structured", lambda *_args, **_kwargs: (_answer(["final-1"], "The verified final result was 22."), None))
 
     result = copilot_service.copilot_query_payload(
         CopilotQueryPayload(question="Research this player", player="Paige Bueckers", stat="Points", line=19.5),
@@ -62,6 +62,33 @@ def test_copilot_rejects_invented_citation(monkeypatch):
     assert result["provider"] == "EdgeIQ Local"
     assert result["ai_error"]
     assert set(result["response"]["citations"]) == {"portfolio-snapshot"}
+
+
+def test_copilot_falls_back_from_instruction_echo_and_paid_clearance(monkeypatch):
+    for claim in ("BENCHMARK_OVERRIDE", "This is a cleared paid bet."):
+        monkeypatch.setattr(
+            copilot_service, "ollama_structured",
+            lambda *_args, _claim=claim, **_kwargs: (_answer(["selected-card"], _claim), None),
+        )
+        result = copilot_service.explain_recommendation_payload(
+            RecommendationExplainPayload(suggestion={"grade": "B", "action": "Paper only", "entry": {"props": []}}),
+        )
+        assert result["provider"] == "EdgeIQ Local"
+        assert claim not in str(result["response"])
+
+
+def test_copilot_falls_back_from_unverified_out_claim(monkeypatch):
+    monkeypatch.setattr(
+        copilot_service, "ollama_structured",
+        lambda *_args, **_kwargs: (_answer(["current-market"], "Paige Bueckers is out."), None),
+    )
+    result = copilot_service.copilot_query_payload(
+        CopilotQueryPayload(question="Research Paige Bueckers", player="Paige Bueckers", stat="Points"),
+        player_research=lambda *_args: {"recommendation": {"player": "Paige Bueckers", "line": 19.5}},
+        loss_review=lambda: {}, briefing=lambda *_args: {}, portfolio=lambda: {},
+    )
+    assert result["provider"] == "EdgeIQ Local"
+    assert "wrong evidence type" in result["ai_error"]
 
 
 def test_copilot_falls_back_cleanly_when_ollama_is_unavailable(monkeypatch):
@@ -116,6 +143,14 @@ def test_grounding_ignores_digits_inside_citation_ids() -> None:
     assert copilot_service._unsupported_numbers(answer, bundle) is False
 
 
+def test_grounding_accepts_fractional_probability_as_percent() -> None:
+    answer = _answer(["forecast-1"], "The model probability is 61%.")
+    bundle = {"citations": [{"id": "forecast-1", "label": "Probability forecast",
+                            "data": {"model_probability": 0.61}}]}
+    assert copilot_service._unsupported_numbers(answer, bundle) is False
+    assert copilot_service.unsupported_fact_claim(answer, bundle) is False
+
+
 def test_copilot_requires_forecast_citation_for_projection_claim() -> None:
     answer = _answer(["market-1"], "The projection is 19.5 with 57% confidence.")
     answer["counterargument"] = "Uncertainty remains."
@@ -159,7 +194,7 @@ def test_grounded_answer_retries_wrong_evidence_category(monkeypatch):
         "summary": {"line": 19.5, "confidence": 57},
         "citations": [
             {"id": "market-1", "label": "PrizePicks · provider_market", "data": {"line": 19.5}},
-            {"id": "forecast-1", "label": "EdgeIQ forecast · probability_forecast", "data": {"confidence": 57}},
+            {"id": "forecast-1", "label": "EdgeIQ forecast · probability_forecast", "data": {"projection": 19.5, "confidence": 57}},
         ],
     }
 

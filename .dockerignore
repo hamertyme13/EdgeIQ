@@ -8,6 +8,7 @@ __pycache__
 *.pyc
 .env
 .env.*
+.edgeiq_local_postgres.env
 *.db
 *.db-*
 *.sqlite*

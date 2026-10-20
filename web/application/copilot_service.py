@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Callable
 
-from services.ollama_client import ollama_model, ollama_structured
+from services.ollama_client import ollama_model, ollama_role_model, ollama_structured
 from services.recommendation_timeline import recommendation_timeline
 from web.application.copilot_commands import plan_command, run_command
+from web.application.copilot_evidence_ranker import rank_player_evidence
+from web.application.copilot_grounding import (
+    cited_facts,
+    claim_fact_references,
+    unsupported_control_claim,
+    unsupported_fact_claim,
+    unsupported_status_claim,
+)
+from web.application.copilot_orchestrator import run_workflow
+from web.application.copilot_planner import plan_with_ollama
+from web.application.copilot_presentation import quantitative_facts
+from web.application.copilot_session import focus_from_research, resolve_followup
+from web.application.copilot_skeptic import skeptic_response
+from web.application.copilot_telemetry import CopilotTrace
+from web.application.copilot_tools import ToolContext, invoke_tool
 from web.application.personal_edge_service import personal_edge_payload
 from web.schemas import CopilotQueryPayload, ModelEvaluationPayload, RecommendationExplainPayload
 
@@ -35,14 +51,94 @@ def copilot_query_payload(
     loss_review: Callable[[], dict],
     briefing: Callable[[str, str | None], dict],
     portfolio: Callable[[], dict],
+    progress: Callable[[str, str], None] | None = None,
 ) -> dict:
-    command = plan_command(payload)
-    if command:
-        return run_command(
-            command, platform=payload.platform, briefing=briefing, portfolio=portfolio,
-            personal_edge=personal_edge_payload, timeline=recommendation_timeline,
+    trace = CopilotTrace(progress)
+    result = None
+    error = None
+    try:
+        result = _copilot_query_payload_impl(
+            payload,
+            player_research=player_research,
+            loss_review=loss_review,
+            briefing=briefing,
+            portfolio=portfolio,
+            progress=trace.progress,
+            usage_callback=trace.record_analyst_usage,
         )
+        return result
+    except Exception as exc:
+        error = exc
+        raise
+    finally:
+        trace.finish(result, error)
+
+
+def _copilot_query_payload_impl(
+    payload: CopilotQueryPayload,
+    *,
+    player_research: Callable[[str, str, str | None, str, float | None], dict],
+    loss_review: Callable[[], dict],
+    briefing: Callable[[str, str | None], dict],
+    portfolio: Callable[[], dict],
+    progress: Callable[[str, str], None] | None = None,
+    usage_callback: Callable[[dict], None] | None = None,
+) -> dict:
+    if progress:
+        progress("planning", "Interpreting your question")
+    if payload.question.strip().casefold() == "challenge this recommendation":
+        if progress:
+            progress("retrieval", "Checking the selected recommendation")
+        return skeptic_response(payload, briefing)
+    payload, needs_player = resolve_followup(payload)
+    if needs_player:
+        return {
+            "intent": "player_research", "provider": "EdgeIQ Local", "model": "edgeiq-context-v1",
+            "response": {
+                "answer": "Choose a player and sport to research this stat.",
+                "recommendation": "Player needed",
+                "supporting_evidence": [], "counterargument": "",
+                "missing_information": ["The previous player is unavailable, expired, or ambiguous."],
+                "suggested_correction": "", "citations": [],
+            },
+            "citations": [], "grounded": False,
+        }
+    command = plan_command(payload)
+    planner = "rules"
+    planner_usage: dict = {}
+    if command is None and os.getenv("EDGEIQ_SEMANTIC_PLANNER_ENABLED", "false").lower() in {"1", "true", "yes"}:
+        command, planner_usage = plan_with_ollama(payload)
+        planner = "ollama" if command else "rules_fallback"
+    if command:
+        if progress:
+            progress("retrieval", "Checking saved EdgeIQ evidence")
+        context = ToolContext(cached_briefing=briefing, portfolio=portfolio)
+        workflow = run_workflow(command, payload.question, payload.platform, context)
+        if workflow is not None:
+            workflow["execution"].update({"planner": planner, "ollama_usage": planner_usage})
+            return workflow
+        if planner == "ollama":
+            briefing = lambda platform, sport: invoke_tool(
+                "cached_briefing", {"platform": platform, "sport": sport}, context,
+            )
+            portfolio = lambda: invoke_tool("portfolio_risk", {}, context)
+            personal_edge = lambda mode: invoke_tool("personal_edge", {"mode": mode}, context)
+            timeline: Callable[..., dict] = lambda **kwargs: invoke_tool("recommendation_timeline", kwargs, context)
+            track_record = lambda **kwargs: invoke_tool("model_track_record", kwargs, context)
+        else:
+            personal_edge = personal_edge_payload
+            timeline = recommendation_timeline
+            track_record = None
+        result = run_command(
+            command, platform=payload.platform, briefing=briefing, portfolio=portfolio,
+            personal_edge=personal_edge, timeline=timeline,
+            **({"track_record": track_record} if track_record is not None else {}),
+        )
+        result["execution"] = {"planner": planner, "ollama_usage": planner_usage}
+        return result
     intent = _intent(payload)
+    if progress:
+        progress("retrieval", "Checking saved EdgeIQ evidence")
     if intent == "player_research":
         evidence = player_research(
             payload.player, payload.stat,
@@ -65,18 +161,27 @@ def copilot_query_payload(
         evidence = portfolio()
     else:
         evidence = briefing(payload.platform, None if payload.sport == "All Sports" else payload.sport)
-    bundle = _evidence_bundle(intent, evidence)
-    answer, error = _grounded_answer(payload.question, bundle)
-    return {
+    bundle = _evidence_bundle(intent, evidence, question=payload.question)
+    if progress:
+        progress("analysis", "Preparing a source-linked answer")
+    answer, error = _grounded_answer(payload.question, bundle, progress=progress, usage_callback=usage_callback)
+    result = {
         "intent": intent,
         "provider": "Ollama" if answer else "EdgeIQ Local",
-        "model": ollama_model() if answer else "edgeiq-grounded-fallback-v1",
+        "model": ollama_role_model("analyst") if answer else "edgeiq-grounded-fallback-v1",
         "response": answer or _fallback_answer(intent, bundle),
         "citations": _public_citations(bundle),
         "evidence_summary": _evidence_manifest(bundle),
+        "quantitative_facts": quantitative_facts(bundle),
+        "fact_references": claim_fact_references(answer, bundle)[0] if answer else [],
         "ai_error": error,
         "grounded": True,
     }
+    if intent == "player_research":
+        focus = focus_from_research(payload, evidence)
+        if focus:
+            result["focus"] = focus.model_dump(mode="json")
+    return result
 
 
 def explain_recommendation_payload(payload: RecommendationExplainPayload) -> dict:
@@ -87,7 +192,7 @@ def explain_recommendation_payload(payload: RecommendationExplainPayload) -> dic
     answer, error = _grounded_answer(payload.question, bundle)
     return {
         "provider": "Ollama" if answer else "EdgeIQ Local",
-        "model": ollama_model() if answer else "edgeiq-grounded-fallback-v1",
+        "model": ollama_role_model("analyst") if answer else "edgeiq-grounded-fallback-v1",
         "response": answer or _fallback_answer("recommendation", bundle),
         "citations": _public_citations(bundle),
         "grounded": True,
@@ -109,11 +214,14 @@ def model_evaluation_payload(payload: ModelEvaluationPayload) -> dict:
     return {
         "model": model,
         "passed": passed,
+        "smoke_passed": passed,
+        "qualified": False,
+        "qualification_scope": "one_card_smoke_check",
         "structured_output": bool(answer),
         "citation_valid": passed,
         "error": error,
         "response": answer,
-        "note": "A model must pass structured-output and citation checks before use in paid recommendation explanations.",
+        "note": "This checks one card only. Full role-specific benchmark evidence is required before qualification.",
     }
 
 
@@ -128,11 +236,16 @@ def _intent(payload: CopilotQueryPayload) -> str:
     return "daily_briefing"
 
 
-def _evidence_bundle(intent: str, evidence: dict) -> dict:
+def _evidence_bundle(intent: str, evidence: dict, *, question: str = "") -> dict:
+    if intent == "player_research" and evidence.get("evidence"):
+        evidence = {
+            **evidence,
+            "evidence": rank_player_evidence(evidence["evidence"], evidence, question),
+        }
     compact = _compact_for_intent(intent, evidence)
     citations = []
     if intent == "player_research":
-        for row in (compact.get("evidence") or [])[:20]:
+        for row in compact.get("evidence") or []:
             citations.append({
                 "id": str(row.get("id") or ""),
                 "label": f"{row.get('source') or 'EdgeIQ'} · {row.get('type') or 'evidence'}",
@@ -140,6 +253,8 @@ def _evidence_bundle(intent: str, evidence: dict) -> dict:
                 "captured_at": str(row.get("captured_at") or ""),
                 "expires_at": str(row.get("expires_at") or ""),
                 "data": row.get("payload") or {},
+                "selection_score": row.get("selection_score"),
+                "selection_reason": str(row.get("selection_reason") or ""),
             })
         if not citations:
             for index, row in enumerate(compact.get("chart") or [], start=1):
@@ -203,7 +318,10 @@ def _evidence_manifest(bundle: dict) -> dict:
     return {
         "intent": bundle["intent"],
         "citation_count": len(bundle["citations"]),
-        "citations": [{"id": row["id"], "label": row["label"]} for row in bundle["citations"]],
+        "citations": [
+            {"id": row["id"], "label": row["label"], "selection_reason": row.get("selection_reason", "")}
+            for row in bundle["citations"]
+        ],
     }
 
 
@@ -213,6 +331,7 @@ def _public_citations(bundle: dict) -> list[dict]:
         "source_url": row.get("source_url", ""),
         "captured_at": row.get("captured_at", ""),
         "expires_at": row.get("expires_at", ""),
+        "selection_reason": row.get("selection_reason", ""),
     } for row in bundle["citations"]]
 
 
@@ -220,7 +339,11 @@ def _pick(row: dict, *keys: str) -> dict:
     return {key: _compact(row.get(key)) for key in keys if row.get(key) not in (None, "", [], {})}
 
 
-def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -> tuple[dict | None, str | None]:
+def _grounded_answer(
+    question: str, bundle: dict, *, model: str | None = None,
+    progress: Callable[[str, str], None] | None = None,
+    usage_callback: Callable[[dict], None] | None = None,
+) -> tuple[dict | None, str | None]:
     citation_ids = [row["id"] for row in bundle["citations"]]
     messages = [
         {
@@ -233,6 +356,7 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
                 "offer uses another line, label it separately and never silently substitute it for the requested line. "
                 "Cite forecast evidence for projection or probability claims, provider-market evidence for current-line "
                 "claims, and final-stat or history evidence for historical claims. "
+                "Do not describe a player as out, active, or starting from a risk score or an unconfirmed lineup. "
                 "Matchup history describes the player's results, never opponent defense. "
                 "Write for a bettor, not a developer: use short plain-English sentences, never JSON field names, "
                 "underscores, raw object dumps, or unexplained model jargon. Lead with the decision and state uncertainty plainly. "
@@ -243,7 +367,12 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
     ]
     schema = json.loads(json.dumps(ANSWER_SCHEMA))
     schema["properties"]["citations"]["items"]["enum"] = citation_ids
-    answer, error = ollama_structured(messages, schema, model=model, timeout=25)
+    answer, error = ollama_structured(
+        messages, schema, model=model or ollama_role_model("analyst"), timeout=25,
+        usage_callback=usage_callback,
+    )
+    if progress and answer:
+        progress("grounding", "Verifying citations and factual claims")
     if not answer:
         return None, error
     used = answer.get("citations") or []
@@ -251,9 +380,13 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
         return None, "Ollama returned an unsupported citation, so EdgeIQ used its grounded fallback."
     if _unsupported_numbers(answer, bundle):
         return None, "Ollama introduced a number that was not in the evidence, so EdgeIQ used its grounded fallback."
-    if _unsupported_matchup_claim(answer):
+    if _unsupported_matchup_claim(answer) or unsupported_control_claim(answer, bundle):
         return None, "Ollama misread matchup evidence, so EdgeIQ used its grounded fallback."
-    if not _citations_support_claim_types(answer, bundle) or _misstates_requested_line(answer, bundle):
+    if (not _citations_support_claim_types(answer, bundle)
+            or _misstates_requested_line(answer, bundle)
+            or unsupported_fact_claim(answer, bundle)
+            or unsupported_control_claim(answer, bundle)
+            or unsupported_status_claim(answer, bundle)):
         correction_messages = messages + [
             {"role": "assistant", "content": json.dumps(answer)},
             {
@@ -262,19 +395,25 @@ def _grounded_answer(question: str, bundle: dict, *, model: str | None = None) -
                     "Revise the JSON answer. One or more claims cite the wrong evidence category. "
                     "Use a probability_forecast citation for projection/probability/confidence, a provider_market "
                     "or current-market citation for current offers, and a final_stat/history/role_and_lineup citation "
-                    "for historical claims. Remove any claim that lacks the matching evidence type. Preserve the "
-                    "requested line and distinguish it from other provider lines."
+                    "for historical claims. Match each number to the cited player's correct field, not just any "
+                    "number in the snapshot. Remove unsupported claims. Preserve the "
+                    "requested line and distinguish it from other provider lines. Do not infer confirmed injury "
+                    "or starter status from a risk score or missing lineup evidence."
                 ),
             },
         ]
         revised, revised_error = ollama_structured(
-            correction_messages, schema, model=model, timeout=20,
+            correction_messages, schema, model=model or ollama_role_model("analyst"), timeout=20,
+            usage_callback=usage_callback,
         )
         if (
             not revised
             or not (revised.get("citations") or [])
             or not set(revised.get("citations") or []).issubset(set(citation_ids))
             or _unsupported_numbers(revised, bundle)
+            or unsupported_fact_claim(revised, bundle)
+            or unsupported_control_claim(revised, bundle)
+            or unsupported_status_claim(revised, bundle)
             or _unsupported_matchup_claim(revised)
             or not _citations_support_claim_types(revised, bundle)
             or _misstates_requested_line(revised, bundle)
@@ -299,6 +438,11 @@ def _unsupported_numbers(answer: dict, bundle: dict) -> bool:
         float(token)
         for token in re.findall(r"\d+(?:\.\d+)?", json.dumps(bundle, default=str))
     ]
+    evidence.extend(
+        fact.value * 100
+        for fact in cited_facts(bundle, set(answer.get("citations") or []))
+        if fact.kind == "probability" and 0 <= fact.value <= 1
+    )
     return any(not any(abs(value - supported) < 0.011 for supported in evidence) for value in generated)
 
 

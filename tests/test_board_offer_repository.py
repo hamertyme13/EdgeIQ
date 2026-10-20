@@ -192,6 +192,35 @@ def test_complete_board_capture_is_idempotent_across_concurrent_writers(tmp_path
         assert session.query(BoardOfferObservationModel).count() == 1
 
 
+def test_complete_board_reuses_precaptured_player_identity(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        board_module.PlayerIdentityRepository,
+        "capture_provider_players",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("identity was already captured")),
+    )
+
+    assert BoardOfferRepository.record_many([{**_offer(), "player_identity_id": 42}], "PrizePicks") == 1
+
+    with session_local() as session:
+        row = session.query(BoardOfferObservationModel).one()
+        assert row.player_identity_id == 42
+
+
+def test_complete_board_backfills_snapshot_link_without_duplicate(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    offer = _offer()
+    assert BoardOfferRepository.record_many([offer], "PrizePicks") == 1
+    linked = ProviderOfferSnapshotRepository.capture_many([offer])[0]
+
+    assert BoardOfferRepository.record_many([linked], "PrizePicks") == 0
+
+    with session_local() as session:
+        rows = session.query(BoardOfferObservationModel).all()
+        assert len(rows) == 1
+        assert rows[0].offer_snapshot_id == linked["offer_snapshot_id"]
+
+
 def test_analysis_enriches_board_without_removing_unselected_offers(tmp_path, monkeypatch):
     session_local = _isolated_database(tmp_path, monkeypatch)
     BoardOfferRepository.record_many([_offer(), {**_offer(18.5), "id": "offer-2", "stat": "Rebounds"}], "PrizePicks")

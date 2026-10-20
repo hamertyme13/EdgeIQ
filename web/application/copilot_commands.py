@@ -23,6 +23,10 @@ class QueryPlan:
     player: str = ""
     stat: str = ""
     evidence_filter: str = ""
+    min_calibrated_probability: float | None = None
+    max_abs_line_move: float | None = None
+    fragility: str = ""
+    freshness: str = ""
 
 
 def plan_command(payload: CopilotQueryPayload) -> QueryPlan | None:
@@ -33,7 +37,11 @@ def plan_command(payload: CopilotQueryPayload) -> QueryPlan | None:
     intent = None
     if any(term in question for term in ("my strongest historical", "my weakest historical", "personal edge", "my strongest segment")):
         intent = "personal_edge"
-    elif "model track record" in question or "model validation" in question:
+    elif (any(term in question for term in ("recommendation", "prop", "candidate"))
+          and any(term in question for term in ("concentration", "overlap", "exposure"))):
+        intent = "portfolio_risk"
+    elif (any(term in question for term in ("today", "current", "tonight"))
+          and any(term in question for term in ("model record", "model track record", "how trustworthy", "model performance"))) or "model track record" in question or "model validation" in question:
         intent = "model_track_record"
     elif any(term in question for term in ("most correlated risk", "concentration risk", "which open entries", "shared-leg risk")):
         intent = "portfolio_risk"
@@ -162,6 +170,14 @@ def run_command(
             rows = [row for row in rows if _meets_probability(row, plan.min_probability)]
         if plan.min_samples is not None:
             rows = [row for row in rows if _has_calibration_samples(row, plan.min_samples)]
+        if plan.min_calibrated_probability is not None:
+            rows = [row for row in rows if _meets_calibrated_probability(row, plan.min_calibrated_probability)]
+        if plan.max_abs_line_move is not None:
+            rows = [row for row in rows if _within_line_move(row, plan.max_abs_line_move)]
+        if plan.fragility:
+            rows = [row for row in rows if str((row.get("counterargument") or {}).get("fragility_label") or "").casefold() == plan.fragility.casefold()]
+        if plan.freshness:
+            rows = [row for row in rows if str((row.get("recommendation_freshness") or {}).get("status") or "").casefold() == plan.freshness.casefold()]
     elif plan.intent == "evidence_review":
         # The same cached snapshot supplies the fragility and freshness fields shown on Today.
         rows = [row for row in rows if _matches_evidence_request(row, plan)]
@@ -196,6 +212,17 @@ def _number(value: object) -> float | None:
 def _meets_probability(row: dict, minimum: float) -> bool:
     value = _number(row.get("confidence"))
     return value is not None and value > minimum
+
+
+def _meets_calibrated_probability(row: dict, minimum: float) -> bool:
+    calibration = row.get("calibration_presentation") or {}
+    value = _number(calibration.get("calibrated_probability"))
+    return calibration.get("status") == "CALIBRATED" and value is not None and value >= minimum
+
+
+def _within_line_move(row: dict, maximum: float) -> bool:
+    change = _number(((row.get("decision_receipt") or {}).get("movement") or {}).get("change"))
+    return change is not None and abs(change) <= maximum
 
 
 def _sample_count(row: dict) -> int:

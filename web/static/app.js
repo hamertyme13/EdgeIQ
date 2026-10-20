@@ -2,11 +2,14 @@ const state = window.EdgeIQState;
 const entryState = state.entry;
 const entryReviewState = entryState.review;
 const marketState = state.market;
+let entryHandoffRequestId = 0;
+let entryHandoffExpiresAt = 0;
 window.EdgeIQLoaded = true;
 
 const {
   $,
   api,
+  streamCopilot,
   copyText,
   deferWork,
   hideRuntimeNotice,
@@ -147,8 +150,11 @@ function finishCircuitFeedback(button, outcome) {
 
 function syncEntryActionLabels() {
   const isPaper = ($("entry-mode")?.value || "real") === "paper";
-  if ($("place-entry")) $("place-entry").textContent = isPaper ? "Save Paper Entry" : "Place Paid Entry";
-  if ($("mobile-place-entry")) $("mobile-place-entry").textContent = isPaper ? "Save Paper Entry" : "Place Paid Entry";
+  if ($("place-entry")) $("place-entry").textContent = isPaper ? "Save Paper Entry" : "Track Paid Entry";
+  if ($("mobile-place-entry")) $("mobile-place-entry").textContent = isPaper ? "Save Paper Entry" : "Track Paid Entry";
+  if ($("entry-provider-balance-field")) {
+    $("entry-provider-balance-field").hidden = isPaper || $("entry-platform")?.value !== "PrizePicks";
+  }
 }
 
 async function placeEntryFromButton(button) {
@@ -645,6 +651,102 @@ function setupProviderGeneratorTabs() {
   activate(tabs.some((tab) => tab.dataset.providerGeneratorTab === stored) ? stored : "prizepicks");
 }
 
+function setupProviderGeneratorFilters() {
+  const platforms = { prizepicks: "PrizePicks", underdog: "Underdog", draftkings: "DraftKings Pick6", sleeper: "Sleeper" };
+  document.querySelectorAll("[data-load-generator-games]").forEach((button) => {
+    const key = button.dataset.loadGeneratorGames;
+    const sportSelect = $(`${key}-generator-sport`);
+    const timeSelect = $(`${key}-generator-time`);
+    const gameList = $(`${key}-generator-games`);
+    const gameSummary = $(`${key}-generator-game-summary`);
+    if (!sportSelect || !timeSelect || !gameList || !gameSummary) return;
+    let games = [];
+    const selected = new Set();
+    const kickoff = (value) => {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "Time unavailable" : new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/New_York", hour: "numeric", minute: "2-digit",
+      }).format(date) + " ET";
+    };
+    const updateSummary = () => {
+      gameSummary.textContent = selected.size ? `${selected.size} game${selected.size === 1 ? "" : "s"} selected` : "All games today";
+      gameList.dataset.selectedGames = [...selected].sort().join(",");
+    };
+    const renderGames = () => {
+      const visible = games.filter((game) => !timeSelect.value || game.kickoff === timeSelect.value);
+      gameList.innerHTML = visible.map((game) => {
+        const label = sportSelect.value === "All Sports" ? `${game.sport} · ${game.game}` : game.game;
+        const players = Number(game.player_count || 0);
+        return `<label class="generator-game-option"><input type="checkbox" value="${escapeHtml(game.key)}" ${selected.has(game.key) ? "checked" : ""}><span>${escapeHtml(label)}<small>${escapeHtml(game.kickoff)} · ${players} player${players === 1 ? "" : "s"}</small></span></label>`;
+      }).join("") || '<p class="subtle">No games at this kickoff time.</p>';
+      gameList.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => checkbox.addEventListener("change", () => {
+        if (checkbox.checked && selected.size >= 64) {
+          checkbox.checked = false;
+          return;
+        }
+        if (checkbox.checked) selected.add(checkbox.value);
+        else selected.delete(checkbox.value);
+        updateSummary();
+      }));
+    };
+    sportSelect.addEventListener("change", () => {
+      games = [];
+      selected.clear();
+      timeSelect.innerHTML = '<option value="">All kickoff times</option>';
+      gameList.textContent = "Load games to choose matchups.";
+      updateSummary();
+    });
+    timeSelect.addEventListener("change", () => {
+      selected.clear();
+      if (timeSelect.value) {
+        games.filter((game) => game.kickoff === timeSelect.value).slice(0, 64).forEach((game) => selected.add(game.key));
+      }
+      updateSummary();
+      renderGames();
+    });
+    document.querySelector(`[data-select-generator-games="${key}"]`)?.addEventListener("click", () => {
+      games.filter((game) => !timeSelect.value || game.kickoff === timeSelect.value).forEach((game) => {
+        if (selected.size < 64) selected.add(game.key);
+      });
+      updateSummary();
+      renderGames();
+    });
+    document.querySelector(`[data-clear-generator-games="${key}"]`)?.addEventListener("click", () => {
+      selected.clear();
+      updateSummary();
+      renderGames();
+    });
+    button.addEventListener("click", async () => {
+      const sport = sportSelect.value;
+      button.disabled = true;
+      button.textContent = "Loading...";
+      try {
+        const data = await api(`/api/entries/generator-games?platform=${encodeURIComponent(platforms[key])}&sport=${encodeURIComponent(sport)}`, { timeoutMs: 30000 });
+        if (sportSelect.value !== sport) return;
+        games = (data.games || []).map((game) => ({ ...game, kickoff: kickoff(game.game_time) }));
+        const available = new Set(games.map((game) => game.key));
+        [...selected].forEach((gameKey) => { if (!available.has(gameKey)) selected.delete(gameKey); });
+        const times = [...new Set(games.map((game) => game.kickoff))];
+        const previousTime = timeSelect.value;
+        timeSelect.innerHTML = '<option value="">All kickoff times</option>' + times.map((time) =>
+          `<option value="${escapeHtml(time)}">${escapeHtml(time)}</option>`
+        ).join("");
+        if (times.includes(previousTime)) timeSelect.value = previousTime;
+        updateSummary();
+        renderGames();
+        if (!games.length) $(`${key}-suggestions-list`).innerHTML =
+          '<div class="suggestion">No same-day games are in the current provider snapshot. Refresh Providers, then load games again.</div>';
+      } catch (error) {
+        $(`${key}-suggestions-list`).innerHTML = `<div class="suggestion">Could not load today’s games: ${escapeHtml(humanizeErrorText(error.message))}</div>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Load Games";
+      }
+    });
+    updateSummary();
+  });
+}
+
 function jumpToWorkspace(button) {
   const [workspaceId, paneName] = String(button?.dataset.workspaceJump || "").split(":");
   const root = document.querySelector(`[data-workspace="${workspaceId}"]`);
@@ -879,7 +981,7 @@ function renderStats(stats) {
     <div class="recommendation-accuracy-header">
       <div>
         <h2>EdgeIQ Recommendation Accuracy</h2>
-        <p>${escapeHtml(monthly.label || "This month")} · App-recommended cards evaluated at 60%+ complete-card probability</p>
+        <p>${escapeHtml(monthly.label || "This month")} · Entry Builder and generated cards evaluated at 60%+ complete-card probability</p>
       </div>
       <div class="grade">${qualifiedDecisions ? pct(accuracy.accuracy || 0) : "Not enough results"}</div>
     </div>
@@ -915,11 +1017,14 @@ async function loadDailyBriefing(options = {}) {
   await maybeAutoStartDailyScan(data);
 }
 
-async function startDailyBriefingScan() {
-  $("daily-briefing-status").textContent = "Refreshing today's briefing in the background...";
+async function startDailyBriefingScan({ refreshProviders = false } = {}) {
+  $("daily-briefing-status").textContent = refreshProviders
+    ? "Refreshing provider offers, then rebuilding today's briefing in the background..."
+    : "Refreshing today's briefing in the background...";
   const platform = $("props-platform").value;
   const sport = $("today-sport")?.value || $("props-sport").value;
   const params = new URLSearchParams({ platform, sport });
+  if (refreshProviders) params.set("refresh_providers", "true");
   try {
     const scan = await api(`/api/daily-briefing/scan?${params.toString()}`, { method: "POST" });
     state.dailyScanPollStartedAt = Date.now();
@@ -1037,7 +1142,8 @@ function pollDailyScanStatus(immediate = false) {
         $("daily-briefing-status").textContent = `The scan finished, but the briefing could not load: ${error.message}`;
       }
     } else if (status === "failed") {
-      $("daily-briefing-status").textContent = "The briefing could not finish. Check Provider Health, then try again.";
+      $("daily-briefing-status").textContent = state.dailyScanCurrent?.message
+        || "The briefing could not finish. Check Provider Health, then try again.";
     }
   };
   state.dailyScanPoll = window.setTimeout(tick, immediate ? 400 : 2500);
@@ -1398,8 +1504,11 @@ function renderDailyBriefing(data) {
         <div class="toolbar compact-controls">
           <label>Sort by
             <select id="recommendation-compare-metric">
+              <option value="supported">Best supported evidence</option>
               <option value="calibrated">Highest calibrated probability</option>
               <option value="fragility">Lowest fragility</option>
+              <option value="overlap">Lowest pending-entry overlap</option>
+              <option value="market">Largest model-market gap</option>
               <option value="score">Highest EdgeIQ Score</option>
             </select>
           </label>
@@ -1860,6 +1969,40 @@ function bindDailyBriefingSummaryActions() {
     button.addEventListener("click", () => {
       const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.inspectOpportunity)];
       if (opportunity) openExplanationDrawer(opportunityExplanation(opportunity));
+    });
+  });
+  document.querySelectorAll("[data-challenge-opportunity]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const index = Number(button.dataset.challengeOpportunity);
+      const snapshotId = state.dailyBriefing?.recommendation_snapshot_id;
+      const selected = state.dailyBriefing?.top_opportunities?.[index];
+      if (!snapshotId || !selected) {
+        $("daily-briefing-status").textContent = "Refresh Today before challenging this recommendation.";
+        return;
+      }
+      button.disabled = true;
+      button.textContent = "Checking...";
+      try {
+        const result = await api("/api/ai/copilot", {
+          method: "POST",
+          body: JSON.stringify({
+            question: "Challenge this recommendation",
+            selected_snapshot_id: snapshotId,
+            selected_recommendation_index: index,
+            selected_recommendation_identity: Object.fromEntries(
+              ["player", "sport", "stat", "direction", "line", "platform", "game"].map((key) => [key, String(selected[key] ?? "")])
+            ),
+            platform: state.dailyBriefing.requested_platform || $("props-platform")?.value || "PrizePicks",
+            sport: state.dailyBriefing.sport || $("today-sport")?.value || "All Sports",
+          }),
+        });
+        openSkepticDrawer(result);
+      } catch (error) {
+        $("daily-briefing-status").textContent = `Challenge unavailable: ${humanizeErrorText(error.message)}`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Challenge";
+      }
     });
   });
   document.querySelectorAll("[data-timeline-opportunity]").forEach((button) => {
@@ -2781,6 +2924,25 @@ async function loadTimingAlerts() {
   });
 }
 
+function openSkepticDrawer(result) {
+  const response = result?.response || {};
+  const evidence = result?.evidence || {};
+  const list = (items) => (items || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  $("drawer-title").textContent = "Challenge this recommendation";
+  $("drawer-content").innerHTML = `
+    <div class="analysis-card">
+      <h3>${result?.grounded ? "Why this could lose" : "Current evidence unavailable"}</h3>
+      <p>${escapeHtml(response.answer || "No recorded challenge is available.")}</p>
+      ${result?.grounded ? `<p class="subtle">Fragility: ${escapeHtml(evidence.fragility || "Unavailable")} · Calibration: ${escapeHtml(evidence.calibration_status || "Unavailable")} · Offer: ${escapeHtml(evidence.freshness || "Unknown")}</p>` : ""}
+    </div>
+    ${result?.grounded && response.supporting_evidence?.length ? `<div class="analysis-card"><h3>Other recorded risks</h3><ul>${list(response.supporting_evidence)}</ul></div>` : ""}
+    ${result?.grounded && result.invalidating_conditions?.length ? `<div class="analysis-card"><h3>What would invalidate it</h3><ul>${list(result.invalidating_conditions)}</ul></div>` : ""}
+    ${response.missing_information?.length ? `<div class="analysis-card"><h3>What remains unknown</h3><ul>${list(response.missing_information)}</ul></div>` : ""}
+    ${result?.grounded ? `<p class="subtle">Recorded briefing: ${escapeHtml(evidence.as_of || "Unknown")}. This review does not recheck the live provider line.</p>` : ""}
+  `;
+  $("recommendation-drawer").hidden = false;
+}
+
 function openExplanationDrawer(explanation) {
   if (!explanation) return;
   trackProductEvent("evidence_expanded", "recommendation", "", {
@@ -3211,6 +3373,7 @@ function renderAiParlayResponse(data) {
 async function explainAiSuggestion() {
   const current = state.lastAiRecommendation || {};
   if (!current.suggestion) return;
+  lastCopilotResponse = null;
   $("copilot-response").classList.add("muted-card");
   $("copilot-response").textContent = "Checking the recommendation snapshot and alternatives...";
   const data = await api("/api/ai/explain-recommendation", {
@@ -3224,36 +3387,57 @@ async function explainAiSuggestion() {
   renderCopilotResponse(data);
 }
 
+let copilotFocus = null;
+let copilotResponseMode = "standard";
+let lastCopilotResponse = null;
+let copilotRequestId = 0;
+
 async function askCopilot() {
+  const requestId = ++copilotRequestId;
+  lastCopilotResponse = null;
   $("copilot-response").classList.add("muted-card");
   $("copilot-response").textContent = "Collecting verified EdgeIQ evidence...";
   const line = $("copilot-line").value;
   const context = { sport: $("props-sport").value, platform: $("props-platform").value };
+  if (copilotFocus && (copilotFocus.sport !== context.sport || copilotFocus.platform !== context.platform)) {
+    copilotFocus = null;
+  }
+  const player = $("copilot-player").value.trim();
   trackProductEvent("ask_edgeiq_query", "copilot", "", context);
   try {
-    const data = await api("/api/ai/copilot", {
-      method: "POST",
-      body: JSON.stringify({
+    const data = await streamCopilot({
         question: $("copilot-question").value,
-        player: $("copilot-player").value.trim(),
+        player,
         stat: $("copilot-stat").value.trim(),
         line: line === "" ? null : Number(line),
+        focus: copilotFocus,
         ...context,
-      }),
+      }, (label) => {
+        if (requestId === copilotRequestId) $("copilot-response").textContent = label;
     });
+    if (requestId !== copilotRequestId) return;
     trackProductEvent("ask_edgeiq_result", "copilot", "", {
       ...context, grounded: Boolean(data.grounded), ai_fallback: Boolean(data.ai_error),
     });
+    if (data.focus) copilotFocus = data.focus;
+    else if (player) copilotFocus = null;
     renderCopilotResponse(data);
   } catch (error) {
+    if (requestId !== copilotRequestId) return;
     trackProductEvent("ask_edgeiq_failed", "copilot", "", context);
     throw error;
   }
 }
 
 function renderCopilotResponse(data) {
+  lastCopilotResponse = data;
   const response = data.response || {};
   const citationMap = new Map((data.citations || []).map((row) => [row.id, row]));
+  const usedCitationIds = new Set(response.citations || []);
+  const quick = copilotResponseMode === "quick";
+  const detailed = ["analyst", "quant"].includes(copilotResponseMode);
+  const numericFacts = (data.quantitative_facts || []).filter((fact) => usedCitationIds.has(fact.citation_id) && citationMap.has(fact.citation_id));
+  const claimReferences = (data.fact_references || []).filter((reference) => usedCitationIds.has(reference.citation_id) && citationMap.has(reference.citation_id)).slice(0, 8);
   $("copilot-response").classList.remove("muted-card");
   $("copilot-response").innerHTML = `
     <div class="ai-answer-header">
@@ -3263,22 +3447,33 @@ function renderCopilotResponse(data) {
     </div>
     <section class="copilot-decision-brief">
       <div class="copilot-bottom-line"><span>Bottom line</span><h3>${escapeHtml(humanizeCopilotText(response.recommendation || "Evidence review"))}</h3><p>${escapeHtml(humanizeCopilotText(response.answer || "No answer was available."))}</p></div>
-      <div class="copilot-brief-grid">
+      <div class="copilot-brief-grid ${quick ? "copilot-brief-quick" : ""}">
+        ${quick ? "" : `
         <div><strong>Why</strong><ul>${(response.supporting_evidence || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No verified support was returned.</li>"}</ul></div>
+        `}
         <div><strong>What could go wrong</strong><p>${escapeHtml(humanizeCopilotText(response.counterargument || "No counterargument was returned."))}</p></div>
+        ${quick ? "" : `
         <div><strong>Suggested action</strong><p>${escapeHtml(humanizeCopilotText(response.suggested_correction || "No correction was suggested."))}</p></div>
+        `}
         <div><strong>Still unknown</strong><ul>${(response.missing_information || []).slice(0, 4).map((row) => `<li>${escapeHtml(humanizeCopilotText(row))}</li>`).join("") || "<li>No important gaps were reported.</li>"}</ul></div>
       </div>
     </section>
+    ${copilotResponseMode === "quant" ? `<div class="copilot-quant-facts"><strong>Recorded figures</strong>${numericFacts.length
+      ? `<dl>${numericFacts.map((fact) => `<div><dt>${escapeHtml(fact.subject)} · ${escapeHtml(fact.label)}</dt><dd>${escapeHtml(Number(fact.value).toLocaleString())}</dd></div>`).join("")}</dl>`
+      : `<p class="subtle">No source-linked numeric breakdown was returned for this answer.</p>`}
+      ${claimReferences.length ? `<strong>Numbers checked in this answer</strong><ul>${claimReferences.map((reference) => `<li>${escapeHtml(reference.number)} · ${escapeHtml(humanizeCopilotText(citationMap.get(reference.citation_id)?.label || "Recorded source"))}</li>`).join("")}</ul>` : ""}</div>` : ""}
     <div class="source-heading">Sources used</div>
     <div class="citation-row">
       ${(response.citations || []).map((id) => {
         const citation = citationMap.get(id);
         const label = escapeHtml(humanizeCopilotText(citation?.label || id));
         const timing = citation?.captured_at ? `Captured ${formatDateTime(citation.captured_at)}` : "Current EdgeIQ snapshot";
-        return citation?.source_url
-          ? `<a class="copilot-source" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${label} · ${escapeHtml(timing)}">${label}</a>`
-          : `<span class="copilot-source" title="${label} · ${escapeHtml(timing)}">${label}</span>`;
+        const sourceLabel = detailed ? `${label} · ${escapeHtml(timing)}` : label;
+        const selection = citation?.selection_reason ? ` · Selected: ${escapeHtml(citation.selection_reason)}` : "";
+        const title = `${label} · ${escapeHtml(timing)}${selection}`;
+        return /^https?:\/\//i.test(citation?.source_url || "")
+          ? `<a class="copilot-source" href="${escapeHtml(citation.source_url)}" target="_blank" rel="noopener" title="${title}">${sourceLabel}</a>`
+          : `<span class="copilot-source" title="${title}">${sourceLabel}</span>`;
       }).join("")}
     </div>
     ${data.ai_error ? `<p class="subtle">${humanizeErrorText(data.ai_error)}</p>` : ""}
@@ -3302,8 +3497,8 @@ async function evaluateCopilotModel() {
   });
   const status = $("copilot-model-status");
   status.textContent = data.passed
-    ? `${data.model} passed structured output and citation checks.`
-    : `${data.model} is not qualified: ${humanizeErrorText(data.error || data.note)}`;
+    ? `${data.model} passed the single-card check. Full qualification has not been run.`
+    : `${data.model} did not pass the single-card check: ${humanizeErrorText(data.error || data.note)}`;
   status.className = data.passed ? "success-text" : "warning-text";
 }
 
@@ -3502,6 +3697,7 @@ function syncEntryPlatformFromProps(props = state.entryProps) {
   const platforms = entrySourcePlatforms(props);
   if (platforms.length === 1 && $("entry-platform")) {
     $("entry-platform").value = platforms[0];
+    if (typeof syncEntryActionLabels === "function") syncEntryActionLabels();
   }
   return platforms;
 }
@@ -3554,8 +3750,25 @@ function addFeedProp(prop) {
   return true;
 }
 
+function clearPreparedHandoff() {
+  entryHandoffRequestId += 1;
+  entryHandoffExpiresAt = 0;
+  if ($("entry-handoff")) {
+    $("entry-handoff").textContent = "No handoff prepared yet.";
+    $("entry-handoff").classList.add("muted-card");
+  }
+}
+
+function handoffIsCurrent() {
+  if (entryHandoffExpiresAt && Date.now() < entryHandoffExpiresAt) return true;
+  clearPreparedHandoff();
+  $("entry-status").textContent = "Provider lines may have changed. Prepare a fresh handoff before using this slip.";
+  return false;
+}
+
 function invalidateEntryReview() {
   entryReviewState.invalidate();
+  clearPreparedHandoff();
   state.recommendationSnapshotId = "";
   ["ai-review-entry", "prepare-handoff", "place-entry"].forEach((id) => {
     if ($(id)) $(id).disabled = true;
@@ -3875,11 +4088,13 @@ function applyEntryPlayerSelection() {
 
 function entryPayload() {
   const entryMode = $("entry-mode")?.value || "real";
+  const providerBalanceText = String($("entry-provider-balance")?.value ?? "").trim();
   const sourcePlatforms = syncEntryPlatformFromProps();
   const platform = sourcePlatforms.length === 1 ? sourcePlatforms[0] : $("entry-platform").value;
   return {
     platform,
     wager: entryMode === "paper" ? 0 : Number($("entry-wager").value || 0),
+    provider_available_balance: providerBalanceText === "" ? null : Number(providerBalanceText),
     multiplier: Number($("entry-multiplier").value || 1),
     payout_type: $("entry-payout-type")?.value || "standard",
     payout_schedule: parsePayoutSchedule($("entry-payout-schedule")?.value || ""),
@@ -4196,6 +4411,7 @@ async function analyzeEntry() {
     return;
   }
   const requestId = entryReviewState.invalidate();
+  clearPreparedHandoff();
   const requestedEntry = JSON.stringify(payload);
   const isCurrent = () => entryReviewState.analysisRequestId === requestId
     && JSON.stringify(entryPayload()) === requestedEntry;
@@ -4233,7 +4449,7 @@ async function analyzeEntry() {
     ? "Entry analyzed. Save it as a paper entry when ready."
     : data.release_verdict?.paid_allowed
       ? "Paid-entry checks passed. Review before placing."
-      : `${data.release_verdict?.verdict || "Not recommended"}: ${data.release_verdict?.reasons?.[0] || "Release checks did not pass."} You can still press Place Paid Entry to track your decision after reviewing the warning.`;
+      : `${data.release_verdict?.verdict || "Not recommended"}: ${data.release_verdict?.reasons?.[0] || "Release checks did not pass."} You can still press Track Paid Entry after submitting in the sportsbook and reviewing the warning.`;
   syncEntryActionLabels();
 }
 
@@ -4262,26 +4478,48 @@ async function reviewEntryWithAi() {
 }
 
 async function prepareEntryHandoff() {
-  const payload = entryReviewState.lastEntryPayload || entryPayload();
-  if (!payload.props || payload.props.length < 2) {
+  const reviewed = entryReviewState.lastEntryPayload;
+  if (!reviewed?.props || reviewed.props.length < 2) {
     $("entry-status").textContent = "Add and analyze at least two props before preparing handoff.";
     return;
   }
+  const payload = { ...reviewed, props: state.entryProps.map((prop) => ({ ...prop })) };
   payload.platform = $("entry-platform").value || payload.platform || "PrizePicks";
   payload.entry_mode = $("entry-mode")?.value || payload.entry_mode || "real";
   payload.wager = payload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || payload.wager || 0);
   payload.multiplier = Number($("entry-multiplier").value || payload.multiplier || 1);
-  payload.props = state.entryProps;
+  const providerBalanceText = String($("entry-provider-balance")?.value ?? "").trim();
+  payload.provider_available_balance = providerBalanceText === "" ? null : Number(providerBalanceText);
+  const requestId = ++entryHandoffRequestId;
+  const analysisId = entryReviewState.analysisRequestId;
   $("entry-handoff").classList.remove("muted-card");
   $("entry-handoff").textContent = "Preparing platform handoff...";
-  const data = await api("/api/entries/handoff", { method: "POST", body: JSON.stringify(payload) });
+  let data;
+  try {
+    data = await api("/api/entries/handoff", { method: "POST", body: JSON.stringify(payload) });
+  } catch (error) {
+    if (requestId !== entryHandoffRequestId || analysisId !== entryReviewState.analysisRequestId) return;
+    clearPreparedHandoff();
+    $("entry-status").textContent = `Handoff could not be prepared: ${humanizeErrorText(error.message)} Try again after checking the provider line.`;
+    return;
+  }
+  if (requestId !== entryHandoffRequestId || analysisId !== entryReviewState.analysisRequestId) return;
   renderEntryHandoff(data);
+  if (requestId !== entryHandoffRequestId) return;
   $("entry-status").textContent = data.ready_for_handoff
     ? `Handoff ready for ${data.recommended_platform}.`
     : `Handoff prepared, but ${data.blocks?.[0] || "release checks still need review."}`;
 }
 
 function renderEntryHandoff(data) {
+  const verifiedAt = Date.parse(data.live_verification?.verified_at || "");
+  entryHandoffExpiresAt = Number.isFinite(verifiedAt)
+    ? verifiedAt + 5 * 60 * 1000 : 0;
+  const requestId = entryHandoffRequestId;
+  if (!entryHandoffExpiresAt || !handoffIsCurrent()) return;
+  setTimeout(() => {
+    if (requestId === entryHandoffRequestId && Date.now() >= entryHandoffExpiresAt) handoffIsCurrent();
+  }, Math.max(0, entryHandoffExpiresAt - Date.now()) + 100);
   $("entry-handoff").classList.remove("muted-card");
   $("entry-handoff").innerHTML = `
     <div class="suggestion-top">
@@ -4292,6 +4530,13 @@ function renderEntryHandoff(data) {
       <span class="subtle">${data.legs?.length || 0} legs</span>
     </div>
     <p>${escapeHtml(data.platform_value?.recommendation || "Verify the best platform manually.")}</p>
+    <p class="subtle">Checked ${escapeHtml(formatDateTime(data.live_verification.verified_at))}. This slip expires five minutes after verification.</p>
+    ${data.stake_review ? `<div class="suggestion compact-suggestion">
+      <strong>Stake check</strong>
+      <p>Suggested ${money(data.stake_review.suggested)} · Your wager ${money(data.stake_review.requested)} · Maximum ${money(data.stake_review.maximum)}</p>
+      <p class="subtle">EdgeIQ bankroll ${money(data.stake_review.bankroll)} · Open exposure ${money(data.stake_review.open_exposure)}${data.stake_review.provider_balance == null ? " · PrizePicks balance not entered" : ` · PrizePicks balance ${money(data.stake_review.provider_balance)}`}</p>
+      <p class="subtle">${escapeHtml(data.stake_review.source)}</p>
+    </div>` : ""}
     ${(data.blocks || []).map((block) => `<p class="danger-text">${escapeHtml(block)}</p>`).join("")}
     ${(data.warnings || []).slice(0, 3).map((warning) => `<p class="warning">${escapeHtml(warning)}</p>`).join("")}
     <div class="suggestion-list">
@@ -4316,24 +4561,34 @@ function renderEntryHandoff(data) {
     </div>
   `;
   $("copy-handoff").addEventListener("click", async () => {
+    if (!handoffIsCurrent()) return;
     const copied = await copyText(data.copy_text || "");
     $("entry-status").textContent = copied ? "Slip copied for manual entry." : "Copy is unavailable in this browser; use the handoff text.";
   });
   $("share-handoff").addEventListener("click", shareCurrentSlip);
   if ($("open-handoff")) {
-    $("open-handoff").addEventListener("click", () => window.open(data.open_url, "_blank", "noopener"));
+    $("open-handoff").addEventListener("click", () => {
+      if (handoffIsCurrent()) window.open(data.open_url, "_blank", "noopener");
+    });
   }
 }
 
 async function shareCurrentSlip() {
-  const payload = entryReviewState.lastEntryPayload || entryPayload();
+  if (!handoffIsCurrent()) return;
+  const reviewed = entryReviewState.lastEntryPayload;
+  if (!reviewed) {
+    $("entry-status").textContent = "Analyze this entry before sharing a slip.";
+    return;
+  }
+  const requestId = entryHandoffRequestId;
+  const payload = { ...reviewed, props: state.entryProps.map((prop) => ({ ...prop })) };
   payload.platform = $("entry-platform").value || payload.platform || "PrizePicks";
   payload.entry_mode = $("entry-mode")?.value || payload.entry_mode || "real";
   payload.wager = payload.entry_mode === "paper" ? 0 : Number($("entry-wager").value || payload.wager || 0);
   payload.multiplier = Number($("entry-multiplier").value || payload.multiplier || 1);
-  payload.props = state.entryProps;
   payload.note = "Generated by EdgeIQ. Verify current provider lines before placing.";
   const data = await api("/api/entries/share", { method: "POST", body: JSON.stringify(payload) });
+  if (requestId !== entryHandoffRequestId || !handoffIsCurrent()) return;
   const url = new URL(data.share_url, window.location.origin).toString();
   const copied = await copyText(url);
   $("entry-status").textContent = copied ? "Share link copied." : `Share link: ${url}`;
@@ -4483,7 +4738,6 @@ async function placeEntry(triggerButton = $("place-entry")) {
   }
   let isPaper = payload.entry_mode === "paper";
   let placementCheck = { ok: true, blocks: [], warnings: [] };
-  let modeChoiceConfirmed = false;
   if (!isPaper) {
     try {
       placementCheck = await api("/api/entries/placement-check", { method: "POST", body: JSON.stringify(payload) });
@@ -4522,7 +4776,6 @@ async function placeEntry(triggerButton = $("place-entry")) {
       } else {
         payload.tracking_override = true;
       }
-      modeChoiceConfirmed = true;
     }
   }
   const checkWarnings = [...(placementCheck.blocks || []), ...(placementCheck.warnings || [])];
@@ -4535,9 +4788,9 @@ async function placeEntry(triggerButton = $("place-entry")) {
     ? `\n\nProvider check:\n${checkWarnings.slice(0, 6).map((warning) => `- ${warning}`).join("\n")}${checkWarnings.length > 6 ? "\n- More warnings hidden." : ""}`
     : "\n\nProvider check passed: current lines and available game times were reviewed.";
   const paidPrompt = placementCheck.loss_protection?.active
-    ? "Loss Protection is active and EdgeIQ recommends that you do not place this entry. Did you place it and want EdgeIQ to track it?"
-    : "Will you place this entry?";
-  const confirmed = modeChoiceConfirmed || window.confirm(
+    ? "Loss Protection is active and EdgeIQ recommends against this entry. Have you already submitted it in the sportsbook and want EdgeIQ to track it?"
+    : "Have you already submitted this paid entry in the sportsbook? EdgeIQ only tracks it; this button does not place a wager.";
+  const confirmed = window.confirm(
     (payload.entry_mode === "paper" ? "Save this as a paper entry for calibration?" : paidPrompt)
     + checkText
     + valueText
@@ -4564,6 +4817,7 @@ async function placeEntry(triggerButton = $("place-entry")) {
     invalidateEntryReview();
     state.recommendationOrigin = false;
     if ($("entry-payout-schedule")) $("entry-payout-schedule").value = "";
+    if ($("entry-provider-balance")) $("entry-provider-balance").value = "";
     renderEntryProps();
   }
   Promise.allSettled([loadPending(), loadDashboard(), loadCommandCenter()]).then((results) => {
@@ -4577,13 +4831,16 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   const list = $(listId);
   const sport = $(sportId).value;
   const legCount = Number($(legsId).value || 3);
-  const historyKey = `${platform}|${sport}|${legCount}`;
+  const controlPrefix = sportId.replace(/-sport$/, "");
+  const direction = $(`${controlPrefix}-direction`)?.value || "Both";
+  const gameKey = $(`${controlPrefix}-games`)?.dataset.selectedGames || "";
+  const historyKey = `${platform}|${sport}|${legCount}|${direction}|${gameKey}`;
   const recentPropKeys = marketState.generatorRecentProps[historyKey] || [];
   list.innerHTML = `<div class="suggestion">Building ${escapeHtml(platform)} ${legCount}-leg entries...</div>`;
   const avoidQuery = recentPropKeys.length ? `&avoid=${encodeURIComponent(recentPropKeys.join(","))}` : "";
   let data;
   try {
-    data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}${avoidQuery}`, { timeoutMs: 30000 });
+    data = await api(`/api/entries/suggestions?sport=${encodeURIComponent(sport)}&platform=${encodeURIComponent(platform)}&leg_count=${legCount}&direction=${encodeURIComponent(direction)}&game_key=${encodeURIComponent(gameKey)}${avoidQuery}`, { timeoutMs: 30000 });
   } catch (error) {
     list.innerHTML = `<div class="suggestion"><strong>${escapeHtml(platform)} entries could not be generated.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><button class="secondary" type="button" data-retry-generator>Try again</button></div>`;
     list.querySelector("[data-retry-generator]")?.addEventListener("click", () => loadProviderSuggestions(platform, sportId, legsId, listId));
@@ -4617,7 +4874,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
         <button class="secondary" data-explain-provider-suggestion="${index}">Why?</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion"><strong>${data.mode === "waiting_for_same_day_lines" ? "No same-day card available." : "No card cleared the safeguards."}</strong><p>${escapeHtml(data.message || `No ${platform} ${legCount}-leg card cleared the current filters. Try fewer legs or use paper calibration.`)}</p></div>`;
+  `).join("") || `<div class="suggestion"><strong>${data.mode === "waiting_for_same_day_lines" ? "No same-day card available." : "No card cleared the safeguards."}</strong><p>${escapeHtml(data.message || `No ${platform} ${legCount}-leg card cleared the selected game and direction. Try fewer legs or another filter.`)}</p></div>`;
   list.querySelectorAll("[data-load-provider-suggestion]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadProviderSuggestion)];
@@ -6562,6 +6819,7 @@ function bindEvents() {
   setupWorkspaces();
   setupEntryModes();
   setupProviderGeneratorTabs();
+  setupProviderGeneratorFilters();
   setupEntryOptions();
   setupEntryBuilderSteps();
   setupPerformanceDetails();
@@ -6618,7 +6876,7 @@ function bindEvents() {
     window.localStorage.setItem("edgeiq-install-dismissed", "1");
     $("install-hint").hidden = true;
   });
-  $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", startDailyBriefingScan).catch(() => {}));
+  $("refresh-daily-briefing").addEventListener("click", () => withButtonBusy("refresh-daily-briefing", "Scanning...", () => startDailyBriefingScan({ refreshProviders: true })).catch(() => {}));
   $("briefing-schedule")?.addEventListener("toggle", (event) => {
     if (event.target.open) loadBriefingSchedule();
   });
@@ -6760,6 +7018,7 @@ function bindEvents() {
       return;
     }
     invalidateEntryReview();
+    syncEntryActionLabels();
     state.recommendationOrigin = false;
     renderEntryProps();
     $("entry-status").textContent = `New props will be validated against ${platform}.`;
@@ -6776,6 +7035,10 @@ function bindEvents() {
       invalidateEntryReview();
       $("entry-status").textContent = "Entry terms changed. Analyze again before saving.";
     });
+  });
+  $("entry-provider-balance")?.addEventListener("input", () => {
+    clearPreparedHandoff();
+    $("entry-status").textContent = "PrizePicks balance changed. Prepare the handoff again.";
   });
   $("entry-payout-type")?.addEventListener("change", () => {
     invalidateEntryReview();
@@ -6820,6 +7083,13 @@ function bindEvents() {
   $("run-portfolio-batch").addEventListener("click", () => withButtonBusy("run-portfolio-batch", "Diversifying...", () => runOptimizer(true)));
   $("refresh-portfolio-lines").addEventListener("click", () => withButtonBusy("refresh-portfolio-lines", "Refreshing...", refreshPortfolioLines));
   $("ask-copilot").addEventListener("click", () => withButtonBusy("ask-copilot", "Researching...", askCopilot));
+  document.querySelectorAll("[data-copilot-mode]").forEach((button) => button.addEventListener("click", () => {
+    copilotResponseMode = button.dataset.copilotMode;
+    document.querySelectorAll("[data-copilot-mode]").forEach((option) => {
+      option.setAttribute("aria-pressed", String(option === button));
+    });
+    if (lastCopilotResponse) renderCopilotResponse(lastCopilotResponse);
+  }));
   $("evaluate-copilot-model").addEventListener("click", () => withButtonBusy("evaluate-copilot-model", "Checking...", evaluateCopilotModel));
   document.querySelectorAll("[data-copilot-prompt]").forEach((button) => {
     button.addEventListener("click", () => {

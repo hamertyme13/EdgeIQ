@@ -3,6 +3,22 @@ from analytics.entry_suggestions import prop_exposure_key, suggest_entries
 from models.platform import Platform
 
 
+def test_prefilter_reaches_distinct_prizepicks_players_before_alternate_stats():
+    rows = [
+        {"player": "Star", "league": "WNBA", "stat": f"Stat {index}", "game": "A", "line": 10.5,
+         "trending_count": 100 - index}
+        for index in range(8)
+    ] + [
+        {"player": f"Player {index}", "league": "WNBA", "stat": "Points", "game": "B", "line": 10.5,
+         "trending_count": 50 - index}
+        for index in range(5)
+    ]
+
+    selected = suggestions_module._prefilter_raw_markets(rows, "WNBA", limit=6)
+
+    assert len({row["player"] for row in selected}) == 6
+
+
 def test_suggest_entries_returns_ranked_sport_specific_entries():
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000},
@@ -29,6 +45,36 @@ def test_suggest_entries_can_recommend_under_legs_without_explicit_projection():
 
     directions = {prop.direction for suggestion in suggestions for prop in suggestion.entry.props}
     assert "Under" in directions
+
+
+def test_suggest_entries_direction_filter_applies_to_every_leg():
+    raw_props = [
+        {"player": f"Over {index}", "team": f"O{index}", "league": "WNBA", "stat": "Points",
+         "line": 10.5, "projection": 13.5, "direction": "Over"}
+        for index in range(3)
+    ] + [
+        {"player": f"Under {index}", "team": f"U{index}", "league": "WNBA", "stat": "Points",
+         "line": 20.5, "projection": 15.5, "direction": "Under"}
+        for index in range(3)
+    ]
+    for direction in ("Over", "Under"):
+        cards = suggest_entries(raw_props, "WNBA", Platform.PRIZEPICKS, leg_count=2, direction_filter=direction)
+        assert cards
+        assert all(prop.direction == direction for card in cards for prop in card.entry.props)
+
+
+def test_suggest_entries_can_combine_selected_games_for_three_legs():
+    raw_props = [
+        {"player": player, "team": team, "league": "NCAAF", "stat": "Passing Yards",
+         "line": 220.5, "projection": 260.5, "direction": "Over", "game": game}
+        for player, team, game in (
+            ("Player A", "AAA", "AAA vs BBB"), ("Player B", "BBB", "AAA vs BBB"),
+            ("Player C", "CCC", "CCC vs DDD"), ("Player D", "DDD", "CCC vs DDD"),
+        )
+    ]
+    cards = suggest_entries(raw_props, "NCAAF", Platform.PRIZEPICKS, leg_count=3, direction_filter="Over")
+    assert cards
+    assert all(len({prop.game for prop in card.entry.props}) == 2 for card in cards)
 
 
 def test_suggest_entries_keeps_one_best_market_per_player():

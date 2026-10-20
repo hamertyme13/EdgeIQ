@@ -69,6 +69,7 @@ def summarize_source_health(
 
     tracked: dict[str, set[str]] = defaultdict(set)
     settled: dict[str, set[str]] = defaultdict(set)
+    due_games: dict[str, dict[str, datetime]] = defaultdict(dict)
     cutoff = now - timedelta(hours=24)
     for platform, market_key, game_time, outcome, final_source in predictions:
         name = str(platform or "")
@@ -76,6 +77,9 @@ def summarize_source_health(
         if name not in _OFFER_SOURCES or not market_key or game is None or game > cutoff:
             continue
         tracked[name].add(str(market_key))
+        previous = due_games[name].get(str(market_key))
+        if previous is None or game < previous:
+            due_games[name][str(market_key)] = game
         if outcome in {"Win", "Loss", "Push"} and str(final_source or "").lower() in _FINAL_SOURCES:
             settled[name].add(str(market_key))
 
@@ -86,10 +90,14 @@ def summarize_source_health(
         successes = int(usage.get("network_successes") or 0) + int(usage.get("not_modified") or 0)
         failures = int(usage.get("network_failures") or 0)
         total_attempts = successes + failures
+        coverage: dict[str, object]
         if name in _OFFER_SOURCES:
             eligible, verified_count = len(tracked[name]), len(settled[name])
+            unresolved = tracked[name] - settled[name]
             coverage = {
                 "eligible": eligible, "verified": verified_count,
+                "unresolved": len(unresolved),
+                "oldest_unresolved_game_at": min((due_games[name][key] for key in unresolved), default=None),
                 "scope": "Tracked pregame prop markets past the 24-hour final-stat window, last 30 days",
             }
         elif provider.get("settlement_capable"):
@@ -102,6 +110,9 @@ def summarize_source_health(
             eligible, verified_count = 0, 0
             coverage = {"eligible": 0, "verified": 0, "scope": "Context only; not a final-stat settlement source"}
         coverage["percent"] = _percentage(verified_count, eligible)
+        oldest_unresolved = coverage.get("oldest_unresolved_game_at")
+        if isinstance(oldest_unresolved, datetime):
+            coverage["oldest_unresolved_game_at"] = oldest_unresolved.isoformat()
         rows.append({
             "name": name,
             "status": provider.get("status") or "unknown",
@@ -119,7 +130,7 @@ def summarize_source_health(
         })
     return {
         "sources": rows, "truncated": truncated,
-        "note": "Network rates cover only requests observed by this app process. Settlement coverage is scoped to tracked markets or latest recorded attempts for ledger legs, not every provider event. Research outcome links may repeat across entries and do not establish predictive accuracy.",
+        "note": "Network rates cover only requests observed by this app process. Unresolved markets are tracked props past the final-stat window, not proof that every provider game was checked. Research outcome links may repeat across entries and do not establish predictive accuracy.",
     }
 
 

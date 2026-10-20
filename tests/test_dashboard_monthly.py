@@ -41,7 +41,7 @@ def test_today_performance_resets_on_month_boundary_without_losing_history():
     assert current["roi"] == -100.0
     assert current["current_streak"] == -1
     assert current["recommendation_accuracy"]["pending"] == 1
-    assert current["recommendation_accuracy"]["accuracy"] == 0.0
+    assert current["recommendation_accuracy"]["accuracy"] == 50.0
     assert current["paper"]["accuracy"] == 100.0
     assert previous["record"] == "2-0"
     assert previous["recommendation_accuracy"]["accuracy"] == 100.0

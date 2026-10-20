@@ -19,30 +19,38 @@ def attach_opportunity_context(session, history: list[dict], identity: dict | No
     if not history:
         return
     from repository.models.final_player_stat_model import FinalPlayerStatModel
-    query = session.query(FinalPlayerStatModel).filter(FinalPlayerStatModel.stat.in_(ROLE_STATS))
-    if identity:
-        query = query.filter(FinalPlayerStatModel.player_identity_id == identity["id"])
-    else:
-        matching_ids = [
-            row.id for row in session.query(FinalPlayerStatModel.id).filter(
-                func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
-            ).all()
-        ]
-        if not matching_ids:
-            matching_ids = recent_canonical_player_ids(session, player, sport=sport, stats=ROLE_STATS)
-        query = query.filter(FinalPlayerStatModel.id.in_(matching_ids))
-    if sport:
-        query = query.filter(FinalPlayerStatModel.sport == sport.upper())
     game_dates = {
         str(row.get("game_date") or "").strip()
         for row in history
         if str(row.get("game_date") or "").strip()
     }
+    context_limit = max(100, min(2000, len(history) * len(ROLE_STATS)))
+    query = session.query(FinalPlayerStatModel).filter(FinalPlayerStatModel.stat.in_(ROLE_STATS))
+    if identity:
+        query = query.filter(FinalPlayerStatModel.player_identity_id == identity["id"])
+    else:
+        candidates = session.query(FinalPlayerStatModel.id).filter(FinalPlayerStatModel.stat.in_(ROLE_STATS))
+        if sport:
+            candidates = candidates.filter(FinalPlayerStatModel.sport == sport.upper())
+        if game_dates:
+            candidates = candidates.filter(FinalPlayerStatModel.game_date.in_(game_dates))
+        matching_ids = [
+            row.id for row in candidates.filter(FinalPlayerStatModel.player == str(player).strip())
+            .limit(context_limit).all()
+        ]
+        if not matching_ids:
+            matching_ids = [row.id for row in candidates.filter(
+                func.lower(FinalPlayerStatModel.player) == str(player).strip().lower()
+            ).limit(context_limit).all()]
+        if not matching_ids:
+            matching_ids = recent_canonical_player_ids(session, player, sport=sport, stats=ROLE_STATS)
+        query = query.filter(FinalPlayerStatModel.id.in_(matching_ids))
+    if sport:
+        query = query.filter(FinalPlayerStatModel.sport == sport.upper())
     if game_dates:
         query = query.filter(FinalPlayerStatModel.game_date.in_(game_dates))
 
     context: dict[tuple[str, str], dict[str, float]] = {}
-    context_limit = max(100, min(2000, len(history) * len(ROLE_STATS)))
     for row in query.limit(context_limit).all():
         context.setdefault((str(row.game_date or ""), _game_key(row.game)), {})[row.stat] = float(row.actual)
     for row in history:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 
+from sqlalchemy import text
+
 from repository.database import SessionLocal, initialize_database
 from repository.models.background_job_model import BackgroundJobModel
 
@@ -24,22 +26,35 @@ class BackgroundJobRepository:
             if row is None:
                 row = BackgroundJobModel(job_id=job["job_id"])
                 session.add(row)
-            row.kind = str(job.get("kind") or "job")
-            row.label = str(job.get("label") or "")
-            row.dedupe_key = str(job.get("dedupe_key") or "")
-            row.status = str(job.get("status") or "queued")
-            row.progress = int(job.get("progress") or 0)
-            row.phase = str(job.get("phase") or "")
-            row.created_at = str(job.get("created_at") or "")
-            row.started_at = str(job.get("started_at") or "")
-            row.completed_at = str(job.get("completed_at") or "")
-            row.cancel_requested = bool(job.get("cancel_requested"))
-            row.result_json = json.dumps(job.get("result") or {}, default=str, sort_keys=True)
-            row.error = str(job.get("error") or "")
-            row.owner_id = str(job.get("_owner_id") or "")
-            row.process_id = int(job.get("_process_id") or 0)
-            row.heartbeat_at = str(job.get("_heartbeat_at") or "")
+            _assign(row, job)
             session.commit()
+
+    @staticmethod
+    def claim(job: dict) -> dict | None:
+        """Atomically reserve a dedupe key or return its active job."""
+        BackgroundJobRepository._ensure_schema()
+        with SessionLocal() as session:
+            dialect = session.get_bind().dialect.name
+            if dialect == "sqlite":
+                session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+            elif dialect == "postgresql":
+                session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": job["dedupe_key"]})
+            rows = (
+                session.query(BackgroundJobModel)
+                .filter_by(dedupe_key=job["dedupe_key"])
+                .filter(BackgroundJobModel.status.in_(("queued", "running", "canceling")))
+                .order_by(BackgroundJobModel.id.desc())
+                .all()
+            )
+            active = next((_serialize(row) for row in rows if _process_alive(row.process_id)), None)
+            if active is not None:
+                session.commit()
+                return active
+            row = BackgroundJobModel(job_id=job["job_id"])
+            _assign(row, job)
+            session.add(row)
+            session.commit()
+            return None
 
     @staticmethod
     def get(job_id: str) -> dict | None:
@@ -47,6 +62,7 @@ class BackgroundJobRepository:
         with SessionLocal() as session:
             row = session.query(BackgroundJobModel).filter_by(job_id=job_id).first()
             return _serialize(row) if row else None
+
 
     @staticmethod
     def active(dedupe_key: str) -> dict | None:
@@ -94,6 +110,24 @@ class BackgroundJobRepository:
                 recovered.append(_serialize(row))
             session.commit()
             return recovered
+
+
+def _assign(row: BackgroundJobModel, job: dict) -> None:
+    row.kind = str(job.get("kind") or "job")
+    row.label = str(job.get("label") or "")
+    row.dedupe_key = str(job.get("dedupe_key") or "")
+    row.status = str(job.get("status") or "queued")
+    row.progress = int(job.get("progress") or 0)
+    row.phase = str(job.get("phase") or "")
+    row.created_at = str(job.get("created_at") or "")
+    row.started_at = str(job.get("started_at") or "")
+    row.completed_at = str(job.get("completed_at") or "")
+    row.cancel_requested = bool(job.get("cancel_requested"))
+    row.result_json = json.dumps(job.get("result") or {}, default=str, sort_keys=True)
+    row.error = str(job.get("error") or "")
+    row.owner_id = str(job.get("_owner_id") or "")
+    row.process_id = int(job.get("_process_id") or 0)
+    row.heartbeat_at = str(job.get("_heartbeat_at") or "")
 
 
 def _serialize(row: BackgroundJobModel) -> dict:

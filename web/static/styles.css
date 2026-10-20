@@ -2117,6 +2117,7 @@ p { color: var(--muted); margin: 5px 0 0; }
   text-transform: uppercase;
   letter-spacing: .08em;
 }
+#entry-provider-balance-field[hidden] { display: none; }
 .field-label input,
 .field-label select,
 .field-label textarea {
@@ -4530,6 +4531,55 @@ tr:hover td {
   min-width: 0;
 }
 
+.provider-generator .generator-games {
+  flex: 1 1 100%;
+  border-top: 1px solid var(--line);
+}
+
+.generator-games > summary {
+  cursor: pointer;
+  padding: 10px 2px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.generator-game-controls {
+  display: grid;
+  gap: 9px;
+  padding-bottom: 10px;
+}
+
+.generator-game-controls select { width: 100%; }
+
+.generator-game-options {
+  max-height: 230px;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+}
+
+.generator-game-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 3px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+
+.generator-game-option input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 0;
+  padding: 0;
+  margin: 2px 0 0;
+  appearance: auto;
+  accent-color: var(--primary);
+}
+.generator-game-option span { min-width: 0; overflow-wrap: anywhere; }
+.generator-game-option small { display: block; margin-top: 3px; color: var(--muted); }
+
 .comparison-grid .suggestion {
   color: var(--text);
 }
@@ -5957,6 +6007,37 @@ td,
   gap: 14px;
 }
 
+.copilot-mode-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 12px 0;
+}
+.copilot-mode-switch button {
+  flex: 1 1 90px;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--text);
+}
+.copilot-mode-switch button[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+.copilot-brief-grid.copilot-brief-quick { grid-template-columns: minmax(0, 1fr); }
+.copilot-quant-facts { margin: 14px 0; }
+.copilot-quant-facts dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px;
+}
+.copilot-quant-facts dl > div { min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 4px; }
+.copilot-quant-facts dt { color: var(--muted); overflow-wrap: anywhere; }
+.copilot-quant-facts dd { margin: 4px 0 0; font-weight: 700; }
+
 .copilot-bottom-line {
   padding-bottom: 12px;
   border-bottom: 1px solid var(--line);
@@ -7231,6 +7312,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .ask-options[open] summary, .ask-entry-workspace[open] summary { margin-bottom: var(--space-md); }
 .ask-options .copilot-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-bottom: var(--space-md); }
 .ask-entry-workspace #ai-parlay-response { margin-top: var(--space-md); }
+.ask-action-row { display: flex; justify-content: flex-end; margin-top: var(--space-sm); }
+.ask-action-row button { min-width: 120px; }
+.ask-context { align-self: start; min-width: 0; border-top: 1px solid var(--border-subtle); padding-top: var(--space-md); }
+.ask-context > summary { min-height: 44px; color: var(--text-secondary); cursor: pointer; font-weight: 650; }
+.ask-context > summary small { display: block; font-weight: 400; }
+.ask-context[open] > summary { margin-bottom: var(--space-md); }
 .entry-leg-evidence { display: block; margin-top: 5px; color: var(--text-secondary); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
 .protection-disclosure > summary > div { flex: 1 1 auto; }
 .protection-disclosure > summary .toggle-control { flex: 0 0 auto; white-space: nowrap; }

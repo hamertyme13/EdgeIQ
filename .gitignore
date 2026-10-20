@@ -5,6 +5,7 @@ __pycache__/
 data/*.csv
 .DS_Store
 .env
+.edgeiq_local_postgres.env
 edgeiq.db
 *.db
 edgeiq.db-shm
@@ -15,3 +16,4 @@ edgeiq.db-wal
 .edgeiq_exports/
 assets/*.iconset/
 artifacts/visual-regression/
+artifacts/copilot-benchmarks/

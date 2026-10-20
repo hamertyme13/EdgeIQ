@@ -72,6 +72,7 @@
       <div class="opportunity-actions recommendation-card-actions">
         <button class="secondary" type="button" data-add-opportunity="${index}" ${expired || !actionable ? "disabled" : ""}>Add to Entry</button>
         <button class="secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
+        <button class="secondary" type="button" data-challenge-opportunity="${index}" title="Review recorded reasons this recommendation could fail">Challenge</button>
         <button class="secondary" type="button" data-timeline-opportunity="${index}">Timeline</button>
         <button class="secondary" type="button" data-compare-opportunity="${index}" aria-pressed="false">Compare</button>
       </div>

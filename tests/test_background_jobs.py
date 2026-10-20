@@ -162,6 +162,39 @@ def test_background_job_deduplicates_across_managers():
     first_manager._futures[first["job_id"]].result(timeout=2)
 
 
+def test_background_job_manager_reuses_atomic_claim_when_active_lookup_misses():
+    class ClaimRepository(MemoryJobRepository):
+        def active(self, dedupe_key):
+            return None
+
+        def claim(self, job):
+            existing = MemoryJobRepository.active(self, job["dedupe_key"])
+            if existing is not None:
+                return existing
+            self.save(job)
+            return None
+
+    repository = ClaimRepository()
+    first_manager = BackgroundJobManager(max_workers=1, repository=repository)
+    second_manager = BackgroundJobManager(max_workers=1, repository=repository)
+    started = Event()
+    release = Event()
+
+    def task(_context):
+        started.set()
+        assert release.wait(timeout=2)
+        return {"message": "Finished"}
+
+    first = first_manager.submit("refresh", task, dedupe_key="shared-refresh")
+    assert started.wait(timeout=2)
+    second = second_manager.submit("refresh", task, dedupe_key="shared-refresh")
+    assert second["job_id"] == first["job_id"]
+    assert second["reused"] is True
+    assert second["external"] is True
+    release.set()
+    first_manager._futures[first["job_id"]].result(timeout=2)
+
+
 def test_scheduled_jobs_serialize_without_blocking_interactive_refresh():
     manager = BackgroundJobManager(max_workers=1)
     scheduled_started = Event()

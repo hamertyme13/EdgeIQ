@@ -31,3 +31,5 @@ Use compact lines, range bands, or comparison tracks only when they answer a dec
 ## Responsive and Accessible
 
 The mobile bottom navigation exposes five intent-based destinations. Games and Best Lines remain reachable through More. Touch targets should be at least 42 px high, text must wrap without clipping, and primary commands must remain reachable. New controls require semantic labels, keyboard operation, and contrast against the dark surface.
+
+Ask EdgeIQ places the question before its Research action and answer. Live-entry progress and trending games remain available under Other live context rather than competing with the question on a narrow screen.

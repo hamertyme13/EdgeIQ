@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261013-mission-control-10"
+STATIC_ASSET_VERSION = "20261019-handoff-expiry"

@@ -50,6 +50,7 @@ def suggest_entries(
     diversify: bool = False,
     avoid_prop_keys: set[str] | None = None,
     candidate_cache: dict[tuple[int, str], list[Prop]] | None = None,
+    direction_filter: str = "Both",
 ) -> list[SuggestedEntry]:
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
@@ -57,7 +58,7 @@ def suggest_entries(
     recommendation_props = _prefilter_raw_markets(
         [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)],
         sport,
-        limit=max(8, leg_count * 2),
+        limit=max(32, leg_count * 4) if direction_filter in {"Over", "Under"} else max(8, leg_count * 2),
     )
     candidates = []
     eligible_props = []
@@ -85,6 +86,8 @@ def suggest_entries(
         for rows in converted:
             candidates.extend(rows)
 
+    if direction_filter in {"Over", "Under"}:
+        candidates = [prop for prop in candidates if prop.direction == direction_filter]
     candidates.sort(key=_candidate_sort_key, reverse=True)
     candidates = _top_markets_per_player(candidates, per_player=1, limit=48)
     adjusted_candidates: dict[int, Prop] = {}
@@ -209,16 +212,19 @@ def _prefilter_raw_markets(raw_props: list[dict], sport: str, limit: int = 16) -
     ), reverse=True)
     selected, seen = [], set()
     player_counts: dict[str, int] = {}
-    for prop in filtered:
-        player = canonical_person_key(prop.get("player"))
-        key = (player, str(prop.get("stat") or "").strip().lower(), str(prop.get("game") or "").strip().lower())
-        if not player or key in seen or player_counts.get(player, 0) >= 8:
-            continue
-        seen.add(key)
-        player_counts[player] = player_counts.get(player, 0) + 1
-        selected.append(prop)
-        if len(selected) >= limit:
-            break
+    for unique_players_only in (True, False):
+        for prop in filtered:
+            player = canonical_person_key(prop.get("player"))
+            key = (player, str(prop.get("stat") or "").strip().lower(), str(prop.get("game") or "").strip().lower())
+            if not player or key in seen or player_counts.get(player, 0) >= 8:
+                continue
+            if unique_players_only and player in player_counts:
+                continue
+            seen.add(key)
+            player_counts[player] = player_counts.get(player, 0) + 1
+            selected.append(prop)
+            if len(selected) >= limit:
+                return selected
     return selected
 
 

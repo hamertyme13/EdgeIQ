@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import web.app as web_app
@@ -79,3 +79,28 @@ def test_runtime_status_returns_stale_snapshot_while_refreshing(monkeypatch):
         assert started == [True]
     finally:
         web_app._RUNTIME_STATUS_CACHE.clear()
+
+
+def test_runtime_status_separates_model_inputs_from_provider_health(monkeypatch):
+    monkeypatch.setattr(web_app, "_data_health_payload", lambda **_kwargs: {
+        "summary": {"warnings": 0, "connected": 2, "total": 2}, "operations": {}
+    })
+    monkeypatch.setattr(web_app, "_model_health_payload", lambda: {"paid_entry_mode": "enabled", "trust_score": 80})
+    monkeypatch.setattr(web_app, "build_ai_status_payload", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(web_app, "model_registry", lambda: {"router_version": "test"})
+    monkeypatch.setattr(web_app.PlayerFeatureRepository, "status", lambda: {
+        "segments": 20,
+        "last_materialized_at": (datetime.now(UTC) - timedelta(hours=13)).isoformat(),
+    })
+    monkeypatch.setattr(web_app, "_deploy_readiness_payload", lambda: {})
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda *_args: "")
+    monkeypatch.setattr(web_app.background_jobs, "list", lambda **_kwargs: [])
+
+    payload = web_app._build_runtime_status_payload()
+    items = {item["key"]: item for item in payload["items"]}
+
+    assert items["providers"]["status"] == "ready"
+    assert items["model"]["status"] == "ready"
+    assert items["features"]["label"] == "Model Inputs"
+    assert items["features"]["status"] == "attention"
+    assert payload["overall"] == "attention"

@@ -69,6 +69,7 @@ def start_daily_briefing_scan(
     background_tasks: BackgroundTasks,
     platform: str = "PrizePicks",
     sport: str = "All Sports",
+    refresh_providers: bool = False,
     deps: DepsBriefing = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, BriefingDependencies) else get_deps()
@@ -78,9 +79,10 @@ def start_daily_briefing_scan(
         if current.get("platform") == platform and current.get("sport") == (sport_filter or "All Sports"):
             return current
         raise HTTPException(status_code=409, detail="Another briefing scan is running. Try again when it finishes.")
-    scan = _deps.new_scan(platform, sport_filter, "manual")
+    trigger = "manual-provider-refresh" if refresh_providers else "manual"
+    scan = _deps.new_scan(platform, sport_filter, trigger)
     _deps.save_scan(scan)
-    background_tasks.add_task(_deps.run_scan, platform, sport_filter, scan["id"], "manual", None)
+    background_tasks.add_task(_deps.run_scan, platform, sport_filter, scan["id"], trigger, None)
     return scan
 
 

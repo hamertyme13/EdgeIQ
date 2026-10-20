@@ -30,7 +30,8 @@ Contributing sportsbook quote timestamps are parsed as UTC instants before oldes
 - An entry can still be manually submitted without an offer snapshot, but it cannot be described as a verified provider offer.
 - Older recommendation feed IDs are coarse-grained and remain readable but cannot verify a leg by themselves. Previously captured board observations have no exact offer snapshot link and are not backfilled by guesswork. Independent model-feature freshness remains unfinished.
 - Provider source identity is hashed in the new table; raw credentials and payloads are not stored there. Secrets must stay in environment configuration and out of Git.
-- Provider-offer observation updates now use an atomic upsert, and parallel SQLite captures are tested for one stable offer with monotonic first/last timestamps. The source label follows the latest observation, so a newer collector refresh cannot extend an older direct-verification claim; a fresh direct check can restore it. Provider retries and PostgreSQL concurrency and upgrade/downgrade still need deployment-environment verification.
+- Model Inputs status now counts current materialized segments and segments backed by dated source games without loading full history payloads. A recent materialization or game date still does not prove that an external source has delivered every final stat; that independent freshness check remains open.
+- Provider-offer observation updates now use an atomic upsert, and parallel SQLite captures are tested for one stable offer with monotonic first/last timestamps. The source label follows the latest observation, so a newer collector refresh cannot extend an older direct-verification claim; a fresh direct check can restore it. Background jobs now atomically claim a deduplication key in SQLite or PostgreSQL before starting; simultaneous SQLite claims are covered by a database test. Provider retries, PostgreSQL runtime concurrency, and upgrade/downgrade still need deployment-environment verification.
 
 ## Deployment and testing
 
@@ -40,4 +41,18 @@ The Today page now offers an optional daily Briefing refresh time separate from 
 
 ## Remaining beta blockers
 
-Collect enough independent, verified linked outcomes and paired no-vig quotes to assess the chronological review gate; incorporate approved evidence into model-release governance only after validation; test provider refresh deduplication and asynchronous races; expose provider/model freshness independently; verify PostgreSQL migrations and a real browser workflow. These are the recommended next milestones before expanding consumer access.
+Collect enough independent, verified linked outcomes and paired no-vig quotes to assess the chronological review gate; incorporate approved evidence into model-release governance only after validation; verify provider refresh races on deployed PostgreSQL, and verify PostgreSQL migrations and a real browser workflow. Runtime Status now reports model-input freshness separately from provider availability using the player-feature store's 12-hour window; this is an observability signal, not a paid-model promotion. These are the recommended next milestones before expanding consumer access.
+
+### Railway observation, October 15, 2026
+
+A read-only inspection of the configured production Railway environment showed no active deployment for either EdgeIQ or Postgres; their recent deployments were marked removed. No cron service was present. This does not establish why they are offline, and no recovery or migration was attempted. The user asked to leave production untouched. Hosted PostgreSQL migration, scheduler execution, and end-to-end phone workflow remain unverified until a separately authorized recovery and backed-up test can be performed.
+
+### Local qualification and verification, October 15, 2026
+
+The fixed-case `llama3.1:8b` qualification run did not pass either planner or analyst gates (18/60 and 15/60, respectively). A subsequent one-pass v2 diagnostic found two analyst instruction/paid-clearance echoes, three missing-data disclosure failures, and ten safe fallbacks. The answer guard now rejects control-token echoes and any paid-clearance assertion; focused service tests cover the fallback. A full three-repetition post-fix run reached the local Ollama service: planner 18/60, analyst 15/60, zero analyst forbidden claims, 36 analyst fallbacks, and nine missing-data disclosure failures. Neither role passed its automatic gate or was promoted. The fixed fixture is a safety screen, not proof that all possible prompts are grounded. One-pass reports cannot qualify a role.
+
+Local Ruff, the CI mypy scope, full Python tests, visual regression, and an isolated SQLite Alembic upgrade/downgrade/upgrade passed during this work. No hosted PostgreSQL migration or remote CI result was verified. These local checks do not establish model accuracy or production readiness.
+
+### Isolated local validation, October 18, 2026
+
+An ephemeral localhost PostgreSQL 16 container passed Alembic base-to-head upgrade, latest-revision downgrade, and re-upgrade. The Model Inputs aggregate status query returned successfully on that schema. The container was removed after the check. Playwright validated 30 desktop/mobile views against a separate temporary SQLite database. These checks do not validate the offline Railway services or a real beta account workflow. Source-game dates and cache age remain observability only: no independent external final-stat completeness or freshness audit has been established, so that beta blocker remains open.

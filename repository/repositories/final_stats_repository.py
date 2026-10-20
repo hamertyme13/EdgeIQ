@@ -4,7 +4,6 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from repository.database import SessionLocal
@@ -614,11 +613,10 @@ def _entry_prop_history(session, player: str, stat: str, sport: str | None, limi
         query = query.filter(EntryPropModel.sport == sport)
     player_key = canonical_person_key(player)
     ordered = query.order_by(EntryModel.settled_at.desc(), EntryPropModel.id.desc())
-    # Most lookups have an exact provider spelling. Filter those in SQL so a
-    # projection does not materialize the entire settled ledger for every
-    # candidate prop. Keep the canonical fallback for accents and aliases.
+    # Use the indexed provider spelling first. A function on player_name
+    # forces a table scan for every candidate in a briefing build.
     rows = (
-        ordered.filter(func.lower(EntryPropModel.player_name) == str(player).strip().lower())
+        ordered.filter(EntryPropModel.player_name == str(player).strip())
         .limit(limit)
         .all()
     )

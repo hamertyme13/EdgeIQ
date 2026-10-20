@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from statistics import mean
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from repository.database import SessionLocal, initialize_database
@@ -213,11 +214,24 @@ class PlayerFeatureRepository:
     def status() -> dict:
         PlayerFeatureRepository._ensure_schema()
         with SessionLocal() as session:
-            count = session.query(PlayerFeatureModel).count()
-            latest = session.query(PlayerFeatureModel).order_by(PlayerFeatureModel.materialized_at.desc()).first()
+            cutoff = datetime.now(UTC) - timedelta(hours=12)
+            count, current, sourced, latest, newest_source = session.query(
+                func.count(PlayerFeatureModel.id),
+                func.count(PlayerFeatureModel.id).filter(PlayerFeatureModel.materialized_at >= cutoff),
+                func.count(PlayerFeatureModel.id).filter(
+                    PlayerFeatureModel.sample_size > 0,
+                    PlayerFeatureModel.source_updated_at.is_not(None),
+                    PlayerFeatureModel.source_updated_at != "",
+                ),
+                func.max(PlayerFeatureModel.materialized_at),
+                func.max(PlayerFeatureModel.source_updated_at),
+            ).one()
             return {
                 "segments": count,
-                "last_materialized_at": latest.materialized_at.isoformat() if latest else "",
+                "current_segments": current,
+                "sourced_segments": sourced,
+                "last_materialized_at": latest.isoformat() if latest else "",
+                "latest_source_game_date": newest_source or "",
             }
 
 

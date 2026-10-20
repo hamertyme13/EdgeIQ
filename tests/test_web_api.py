@@ -106,6 +106,7 @@ from web.app import (
 from web.app import (
     test_alert_delivery as send_test_alert_delivery,
 )
+from web.routers.recommendations import generator_games
 
 
 def _verified_rows(rows: list[dict]) -> list[dict]:
@@ -1408,6 +1409,213 @@ def test_daily_briefing_scan_writes_status_and_run_log(monkeypatch):
     assert status["runs"][0]["id"] == "scan123"
 
 
+def test_manual_briefing_refreshes_provider_before_building(monkeypatch):
+    store = {}
+    events = []
+    class ArchiveRecorder:
+        def submit(self, function, *args, **kwargs):
+            events.append(("archive", {"function": function.__name__}))
+
+    monkeypatch.setattr(web_app, "_PROVIDER_ARCHIVE_EXECUTOR", ArchiveRecorder())
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(web_app, "_selected_platforms", lambda platform: ["PrizePicks"])
+    def fetch_props(*args, **kwargs):
+        assert web_app._PROVIDER_ARCHIVE_PAUSE.is_set()
+        events.append(("provider", kwargs))
+        return [{"player": "Test"}]
+
+    monkeypatch.setattr(web_app, "_fetch_platform_props", fetch_props)
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda *args, **kwargs: events.append(("briefing", kwargs)) or {"summary": {}, "games_today": [], "sections": {}})
+
+    scan = web_app._run_daily_briefing_scan("PrizePicks", "WNBA", trigger="manual-provider-refresh")
+
+    assert scan["status"] == "ready"
+    assert [event[0] for event in events] == ["provider", "briefing", "archive", "archive"]
+    assert events[0][1]["force_refresh"] is True
+    assert events[0][1]["sport_filter"] == "WNBA"
+    assert events[0][1]["defer_archive"] is True
+    assert not web_app._PROVIDER_ARCHIVE_PAUSE.is_set()
+
+
+def test_generator_serialization_reuses_release_and_lineage_context(monkeypatch):
+    calls = []
+    health = {"paid_entry_mode": "paper_only"}
+    feed = {"snapshot_id": "snapshot-test"}
+    monkeypatch.setattr(web_app, "_model_health_payload", lambda: calls.append("health") or health)
+    monkeypatch.setattr(
+        web_app.ModelRehabilitationRepository, "load_feed",
+        lambda: calls.append("feed") or feed,
+    )
+    monkeypatch.setattr(
+        web_app, "_serialize_suggestion",
+        lambda suggestion, **kwargs: calls.append((suggestion, kwargs)) or {},
+    )
+
+    serialize = web_app._batch_suggestion_serializer()
+    serialize("first")
+    serialize("second")
+
+    assert calls[:2] == ["health", "feed"]
+    assert [item[0] for item in calls[2:]] == ["first", "second"]
+    assert all(item[1]["model_health"] is health and item[1]["lineage_feed"] is feed for item in calls[2:])
+
+
+def test_generator_game_picker_reuses_fresh_offers_without_provider_fetch(monkeypatch):
+    monkeypatch.setattr(web_app, "_PROP_FETCH_CACHE", {
+        f"PrizePicks:{web_app._platform_fetcher_cache_token('PrizePicks')}": (
+            web_app.time.monotonic() + 60,
+            [
+                {"player": "Test Player", "league": "WNBA", "platform": "PrizePicks", "game": "MIN @ DAL"},
+                {"player": "Other Player", "league": "MLB", "platform": "PrizePicks", "game": "NYY @ BOS"},
+            ],
+        ),
+    })
+    monkeypatch.setattr(
+        web_app, "_cached_daily_briefing_payload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("fresh offers should be reused")),
+    )
+
+    rows = web_app._generator_game_cached_props("PrizePicks", "WNBA")
+
+    assert len(rows) == 1
+    assert rows[0]["game"] == "MIN @ DAL"
+
+
+def test_generator_game_picker_ignores_stale_briefing(monkeypatch):
+    monkeypatch.setattr(web_app, "_PROP_FETCH_CACHE", {})
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda *args, **kwargs: {
+        "cache": {"stale": True},
+        "top_opportunities": [{"player": "Old Player", "sport": "WNBA", "platform": "PrizePicks"}],
+    })
+
+    assert web_app._generator_game_cached_props("PrizePicks", "WNBA") == []
+
+
+def test_generator_game_picker_filters_cached_briefing_by_sport(monkeypatch):
+    monkeypatch.setattr(web_app, "_PROP_FETCH_CACHE", {})
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda *args, **kwargs: {
+        "cache": {"stale": False},
+        "top_opportunities": [
+            {"player": "WNBA Player", "sport": "WNBA", "platform": "PrizePicks"},
+            {"player": "MLB Player", "sport": "MLB", "platform": "PrizePicks"},
+        ],
+    })
+
+    rows = web_app._generator_game_cached_props("PrizePicks", "WNBA")
+
+    assert [row["player"] for row in rows] == ["WNBA Player"]
+
+
+def test_provider_refresh_defers_when_maintenance_is_active(monkeypatch):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def unavailable_lock(name):
+        assert name == "briefing-and-calibration"
+        yield False
+
+    queued = {}
+
+    def capture_job(kind, task, **kwargs):
+        queued["task"] = task
+        return {"job_id": "test-refresh", "status": "queued"}
+
+    monkeypatch.setattr(web_app, "named_operation_lock", unavailable_lock)
+    monkeypatch.setattr(web_app.background_jobs, "submit", capture_job)
+    monkeypatch.setattr(
+        web_app, "_fetch_platform_props",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("refresh must wait")),
+    )
+
+    web_app._start_provider_refresh_job("PrizePicks", "WNBA")
+
+    with pytest.raises(RuntimeError, match="Another data refresh is running"):
+        queued["task"](SimpleNamespace(update=lambda *args: None))
+
+
+def test_provider_archive_waits_for_maintenance_lock(monkeypatch):
+    from contextlib import contextmanager
+
+    attempts = []
+
+    @contextmanager
+    def maintenance_lock(name):
+        assert name == "briefing-and-calibration"
+        attempts.append(name)
+        yield len(attempts) > 1
+
+    completed = []
+    monkeypatch.setattr(web_app, "named_operation_lock", maintenance_lock)
+    monkeypatch.setattr(web_app.time, "sleep", lambda seconds: None)
+
+    web_app._run_provider_archive_batch(lambda: completed.append(True))
+
+    assert len(attempts) == 2
+    assert completed == [True]
+
+
+def test_board_archive_captures_shared_player_identities_once(monkeypatch):
+    props = [
+        {
+            "player": f"Player {index % 4}", "league": "WNBA", "stat": "Points",
+            "line": 10.5 + index, "platform": "PrizePicks",
+            "end_to_end_confirmed": True, "eligibility_reason": "",
+        }
+        for index in range(120)
+    ]
+    identity_calls = []
+    archived = []
+
+    def capture_identities(rows, platform):
+        identity_calls.append((len(rows), platform))
+        return {"identity_ids": {("WNBA", web_app.canonical_person_key(row["player"])): 10 + index
+                                  for index, row in enumerate(rows)}}
+
+    monkeypatch.setattr(web_app.PlayerIdentityRepository, "capture_provider_players", capture_identities)
+    monkeypatch.setattr(web_app.ProviderOfferSnapshotRepository, "capture_many", lambda rows: rows)
+    monkeypatch.setattr(web_app.BoardOfferRepository, "record_many", lambda rows, platform: archived.extend(rows))
+    monkeypatch.setattr(
+        web_app, "_end_to_end_prop_eligibility",
+        lambda prop: (_ for _ in ()).throw(AssertionError("eligibility was already checked")),
+    )
+
+    web_app._record_board_offers(props, "PrizePicks")
+
+    assert identity_calls == [(4, "PrizePicks")]
+    assert len(archived) == 120
+    assert all(row["player_identity_id"] is not None for row in archived)
+
+
+def test_entry_generator_does_not_fetch_live_provider_when_snapshot_is_empty(monkeypatch):
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda *args, **kwargs: {})
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda *args: [])
+    monkeypatch.setattr(
+        web_app, "_fetch_props",
+        lambda *args: (_ for _ in ()).throw(AssertionError("generator must not fetch providers")),
+    )
+
+    payload = entry_suggestions(sport="WNBA", platform="PrizePicks", leg_count=2)
+
+    assert payload["suggestions"] == []
+    assert "Refresh Providers" in payload["message"]
+
+
+def test_manual_briefing_provider_failure_does_not_mark_board_ready(monkeypatch):
+    store = {}
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda key, default="": store.get(key, default))
+    monkeypatch.setattr(web_app.SettingsRepository, "set", lambda key, value: store.__setitem__(key, value))
+    monkeypatch.setattr(web_app, "_selected_platforms", lambda platform: ["PrizePicks"])
+    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("briefing must not build")))
+
+    scan = web_app._run_daily_briefing_scan("PrizePicks", "WNBA", trigger="manual-provider-refresh")
+
+    assert scan["status"] == "failed"
+    assert "Provider refresh" in scan["errors"][0]
+    assert not web_app._PROVIDER_ARCHIVE_PAUSE.is_set()
+
+
 def test_daily_scan_status_does_not_return_embedded_maintenance_payloads(monkeypatch):
     current = web_app._new_daily_scan("PrizePicks", "WNBA", trigger="daily_refresh")
     current["sync_result"] = {"entries": [{"props": [{"large": "payload"}]}]}
@@ -1830,15 +2038,18 @@ def test_daily_scan_status_keeps_slow_worker_active(monkeypatch):
 
 def test_entry_suggestions_limit_both_to_entry_platforms(monkeypatch):
     calls = []
-    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: [{
-        "player": f"{platform} Player",
-        "team": "AAA",
-        "league": "WNBA",
-        "stat": "Points",
-        "line": 20.5,
-        "platform": platform,
-        "game_time": _today_game_time(),
-    }])
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda platform, sport: [
+        {
+            "player": f"{name} Player {index}",
+            "team": "AAA",
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 20.5,
+            "platform": name,
+            "game_time": _today_game_time(),
+        }
+        for name in ("PrizePicks", "Underdog", "Sleeper") for index in range(3)
+    ])
 
     def fake_suggest_entries(raw_props, sport, platform_model, **kwargs):
         calls.append(platform_model.value)
@@ -1851,9 +2062,24 @@ def test_entry_suggestions_limit_both_to_entry_platforms(monkeypatch):
     assert calls == ["PrizePicks", "Underdog", "Sleeper"]
 
 
+def test_generator_games_route_excludes_future_matchups(monkeypatch):
+    today = _today_game_time()
+    tomorrow = (datetime.now(ZoneInfo("America/New_York")) + timedelta(days=1)).replace(
+        hour=19, minute=0, second=0, microsecond=0,
+    ).isoformat()
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda *_args: [
+        {"player": "A", "platform": "PrizePicks", "league": "WNBA", "stat": "Points",
+         "line": 10.5, "game": "Aces vs Storm", "game_time": today},
+        {"player": "B", "platform": "PrizePicks", "league": "WNBA", "stat": "Points",
+         "line": 10.5, "game": "Fever vs Liberty", "game_time": tomorrow},
+    ])
+    payload = generator_games(sport="WNBA", platform="PrizePicks")
+    assert [game["game"] for game in payload["games"]] == ["Aces vs Storm"]
+
+
 def test_context_only_platform_falls_back_for_entry_suggestions(monkeypatch):
     fetched = []
-    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: fetched.append(platform) or [{
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda platform, sport: fetched.append(platform) or [{
         "player": "A",
         "team": "AAA",
         "league": "WNBA",
@@ -1870,15 +2096,18 @@ def test_context_only_platform_falls_back_for_entry_suggestions(monkeypatch):
 
 def test_underdog_generator_supports_eight_legs(monkeypatch):
     calls = []
-    monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: [{
-        "player": "A",
-        "team": "AAA",
-        "league": "WNBA",
-        "stat": "Points",
-        "line": 20.5,
-        "platform": platform,
-        "game_time": _today_game_time(),
-    }])
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda platform, sport: [
+        {
+            "player": f"Player {index}",
+            "team": "AAA",
+            "league": "WNBA",
+            "stat": "Points",
+            "line": 20.5 + index,
+            "platform": "Underdog",
+            "game_time": _today_game_time(),
+        }
+        for index in range(8)
+    ])
 
     def fake_suggest_entries(*args, **kwargs):
         calls.append(kwargs)
@@ -1927,7 +2156,7 @@ def test_provider_generator_supports_configured_maximum_legs(monkeypatch, platfo
 
 
 def test_nfl_entry_suggestions_explain_when_same_day_lines_are_unavailable(monkeypatch):
-    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: [])
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda platform, sport: [])
 
     body = entry_suggestions(sport="NFL", platform="Both", leg_count=3)
 
@@ -3947,6 +4176,29 @@ def test_auto_paper_calibration_dry_run_does_not_save(monkeypatch):
     assert body["dashboard"] is None
 
 
+def test_auto_paper_calibration_builds_six_leg_card_from_distinct_verified_offers(monkeypatch):
+    raw_props = _verified_rows([
+        {"player": f"Player {index}", "team": f"TEAM{index}", "league": "WNBA",
+         "stat": "Points", "line": 10.5 + index, "trending_count": 100 - index,
+         "platform": "PrizePicks"}
+        for index in range(6)
+    ])
+    monkeypatch.setattr(web_app.EntryRepository, "all", lambda: [])
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [])
+    monkeypatch.setattr(web_app.BetRepository, "get_all", lambda self: [])
+    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(web_app.EntryRepository, "save", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("dry run should not save")))
+
+    body = auto_paper_calibration(AutoPaperCalibrationPayload(
+        platform="PrizePicks", sport="WNBA", leg_count=6, max_entries=1,
+        prefer_confirmed=True, dry_run=True,
+    ))
+
+    assert body["created_plan"] == [6]
+    props = body["created"][0]["suggestion"]["entry"]["props"]
+    assert len({prop["player"] for prop in props}) == 6
+
+
 def test_auto_paper_calibration_all_sports_confirmed_finds_dominant_sport(monkeypatch):
     raw_props = [
         {"player": "A", "team": "AAA", "league": "WNBA", "stat": "Points", "line": 20.5, "trending_count": 100000, "platform": "PrizePicks"},
@@ -4112,9 +4364,9 @@ def test_standard_calibration_batch_uses_fixed_leg_plan_and_distinct_targets(mon
         {},
     )
 
-    assert [leg_count for leg_count, _target in observed] == [2, 2, 3, 4, 5]
+    assert [leg_count for leg_count, _target in observed] == [2, 2, 3, 4, 5, 6]
     assert len({target for _leg_count, target in observed}) == 5
-    assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5]
+    assert [row["suggestion"]["leg_count"] for row in created] == [2, 2, 3, 4, 5, 6]
 
 
 def test_standard_calibration_batch_samples_healthy_buckets_when_available(monkeypatch):
@@ -4135,7 +4387,7 @@ def test_standard_calibration_batch_samples_healthy_buckets_when_available(monke
         set(), created, [], {}, {},
     )
 
-    assert observed == ["90-100%", "80-90%", "70-80%", "60-70%", "50-60%"]
+    assert observed == ["90-100%", "80-90%", "70-80%", "60-70%", "50-60%", "40-50%"]
 
 
 def test_automatic_paper_samples_balances_providers_across_all_sports(monkeypatch):
@@ -4151,7 +4403,7 @@ def test_automatic_paper_samples_balances_providers_across_all_sports(monkeypatc
     assert captured["payload"].platform == "Both"
     assert captured["payload"].sport == "All Sports"
     assert captured["payload"].standard_batch is True
-    assert captured["payload"].max_entries == 5
+    assert captured["payload"].max_entries == 6
     assert result["automatic"] is True
     assert "Created 2" in result["message"]
 
@@ -4194,10 +4446,10 @@ def test_balanced_all_sports_paper_calibration_requests_equal_batch_per_active_s
     }
     for sport in ("WNBA", "NFL", "NCAAF"):
         provider_sizes = sorted(len(plan) for row_sport, _platform, plan in observed if row_sport == sport)
-        assert provider_sizes == [2, 3]
+        assert provider_sizes == [3, 3]
     assert result["sports_requested"] == ["WNBA", "NFL", "NCAAF"]
-    assert result["requested_count"] == 15
-    assert result["created_count"] == 15
+    assert result["requested_count"] == 18
+    assert result["created_count"] == 18
     assert [row["sport"] for row in result["sport_results"]] == ["WNBA", "NFL", "NCAAF"]
     assert all(len(row["providers"]) == 2 for row in result["sport_results"])
 
@@ -4233,7 +4485,7 @@ def test_under_leg_result_wins_below_line():
     assert _leg_result(20.5, 20.5, "Under") == "Push"
 
 
-def test_recommendation_accuracy_counts_only_recommended_decisions():
+def test_recommendation_accuracy_counts_qualified_builder_and_generated_decisions():
     entries = [
         {"status": "Settled", "result": "Win", "recommended_by_app": True,
          "audit_snapshot": {"model_payout_analysis": {"all_hit_probability": 60.0}}},
@@ -4249,12 +4501,12 @@ def test_recommendation_accuracy_counts_only_recommended_decisions():
 
     stats = EntryRepository._recommendation_accuracy(entries)
 
-    assert stats["accuracy"] == 50.0
-    assert stats["wins"] == 1
+    assert stats["accuracy"] == 66.7
+    assert stats["wins"] == 2
     assert stats["losses"] == 1
     assert stats["pushes"] == 1
     assert stats["pending"] == 1
-    assert stats["tracked"] == 4
+    assert stats["tracked"] == 5
     assert stats["minimum_card_probability"] == 60.0
 
 
@@ -4420,7 +4672,7 @@ def test_entry_suggestions_generate_exact_requested_leg_count(monkeypatch):
         }
         for i in range(8)
     ]
-    monkeypatch.setattr(web_app, "_fetch_props", lambda platform, sport: raw_props)
+    monkeypatch.setattr(web_app, "_generator_game_cached_props", lambda platform, sport: raw_props)
 
     body = entry_suggestions(sport="WNBA", platform="PrizePicks")
 
@@ -4512,7 +4764,7 @@ def test_crazy_six_uses_current_end_to_end_verified_unique_legs(monkeypatch):
     ])
     monkeypatch.setattr(web_app, "_fetch_platform_props", lambda platform: raw_props)
     monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
-    monkeypatch.setattr(web_app, "_card_release_status", lambda card: {"ok": False, "blocks": ["High variance"], "warnings": []})
+    monkeypatch.setattr(web_app, "_card_release_status", lambda card, **kwargs: {"ok": False, "blocks": ["High variance"], "warnings": []})
 
     body = web_app.crazy_six_suggestion(sport="All Sports", platform="PrizePicks")
 
@@ -7258,7 +7510,7 @@ def test_completed_entry_refresh_uses_existing_loader():
     assert "A ranked prop is research, not a cleared paid card" in source
     assert "recommended_by_app: Boolean(state.recommendationOrigin)" in source
     assert "tracking_override_allowed" in source
-    assert "You can still press Place Paid Entry to track your decision" in source
+    assert "You can still press Track Paid Entry after submitting in the sportsbook" in source
 
 
 def test_notification_timing_alerts_reuse_cached_briefing(monkeypatch):

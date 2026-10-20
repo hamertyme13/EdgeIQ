@@ -10,7 +10,7 @@ Historical starter/bench splits, expected minutes or opportunities, and teammate
 
 Entry payout analysis uses exact-line forecast probabilities when available, builds a conservative pairwise correlation matrix, and runs deterministic Gaussian-copula Monte Carlo simulation. Results include provider-specific payout evidence, complete-card probability, independent versus correlation-adjusted probability, expected value, shared-outcome pairs, and exposure by player, game, team, stat, and direction.
 
-Ollama is the default local language provider. Set `OLLAMA_MODEL` for text (default `llama3.1:8b`) and optionally install/set `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`) for screenshot extraction. The lighter `llama3.2:3b` model remains available in the UI for faster reviews. Screenshot picks are still deduplicated and matched against live provider markets before they can enter the builder. The **Qualify Model** control checks structured output and citation compliance before a model is trusted for recommendation explanations.
+Ollama is the default local language provider. Set `OLLAMA_MODEL` for text (default `llama3.1:8b`) and optionally install/set `OLLAMA_VISION_MODEL` (default `llama3.2-vision:11b`) for screenshot extraction. The lighter `llama3.2:3b` model remains available in the UI for faster reviews. Screenshot picks are still deduplicated and matched against live provider markets before they can enter the builder. **Check Model** is a single-card structured-output smoke test, not full model qualification.
 
 EdgeIQ is a Python desktop, browser, and CLI application for player prop research, entry
 building, bet tracking, and bankroll/performance review.
@@ -205,7 +205,20 @@ Optional configuration:
 OLLAMA_ENABLED=true
 OLLAMA_MODEL=llama3.1:8b
 OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_PLANNER_MODEL=
+OLLAMA_ANALYST_MODEL=
+OLLAMA_VISION_MODEL=
+OLLAMA_PLANNER_NUM_PREDICT=192
+OLLAMA_ANALYST_NUM_PREDICT=240
+OLLAMA_VISION_NUM_PREDICT=240
+OLLAMA_KEEP_ALIVE=10m
+EDGEIQ_COPILOT_MAX_TOOL_CALLS=2
+EDGEIQ_COPILOT_MAX_EVIDENCE=9
 ```
+
+The role-specific models fall back to `OLLAMA_MODEL` when unset. Tool calls and selected evidence can be reduced on constrained hardware, but their configured ceilings cannot raise the existing read-only limits (two tool calls and nine selected research facts). These settings do not qualify a model for paid recommendations.
+
+Local model benchmark reports and the optional, manually approved role registry are described in [Ollama qualification](docs/OLLAMA_QUALIFICATION.md). A benchmark run never activates a model.
 
 If Ollama is unavailable, Ask EdgeIQ tries OpenAI when configured and otherwise
 uses the deterministic EdgeIQ Local review.
@@ -276,6 +289,8 @@ a Rogue Circuit themed web UI. Link to the deployed EdgeIQ URL from your website
 or embed API calls from another frontend.
 
 For the existing Railway project, follow the [private-beta deployment checklist](docs/RAILWAY_DEPLOYMENT.md).
+
+For an isolated localhost PostgreSQL target, use the [local PostgreSQL guide](docs/LOCAL_POSTGRES.md). It creates an empty, persistent database for migration testing; it does not move the desktop SQLite ledger or switch the app automatically.
 
 Useful environment variables:
 

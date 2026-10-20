@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261013-mission-control-10" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261019-handoff-expiry" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -462,10 +462,16 @@
               <div class="copilot-workspace">
                 <div class="section-heading compact-heading">
                   <div><p class="eyebrow">Research</p><h3>What would you like to understand?</h3></div>
-                  <button id="ask-copilot" class="secondary">Research</button>
                 </div>
                 <label class="ask-question-label" for="copilot-question">Question</label>
                 <textarea id="copilot-question" rows="2">Summarize today's strongest evidence and biggest risk</textarea>
+                <div class="ask-action-row"><button id="ask-copilot" type="button">Research</button></div>
+                <div class="copilot-mode-switch" role="group" aria-label="Answer detail">
+                  <button type="button" data-copilot-mode="quick" aria-pressed="false">Quick</button>
+                  <button type="button" data-copilot-mode="standard" aria-pressed="true">Standard</button>
+                  <button type="button" data-copilot-mode="analyst" aria-pressed="false">Analyst</button>
+                  <button type="button" data-copilot-mode="quant" aria-pressed="false">Quant</button>
+                </div>
                 <div class="quick-prompts">
                   <button class="micro-button" data-copilot-prompt="Show me my strongest historical segments">Personal Edge</button>
                   <button class="micro-button" data-copilot-prompt="Which open entries have the most correlated risk?">Open risk</button>
@@ -485,8 +491,8 @@
                       <option value="llama3.1:8b" selected>8B Research · llama3.1</option>
                       <option value="llama3.2:3b">3B Fast · llama3.2</option>
                     </select>
-                    <button id="evaluate-copilot-model" class="secondary">Qualify Model</button>
-                    <span id="copilot-model-status" class="subtle">Paid explanations require a passing grounding check.</span>
+                    <button id="evaluate-copilot-model" class="secondary">Check Model</button>
+                    <span id="copilot-model-status" class="subtle">Single-card check only. This does not qualify a model.</span>
                   </div>
                 </details>
               </div>
@@ -505,7 +511,8 @@
               </details>
             </div>
 
-            <div class="dashboard-side">
+            <details class="dashboard-side ask-context">
+              <summary>Other live context <small>Entry progress and trending games</small></summary>
               <div class="panel compact-panel">
                 <div class="panel-header">
                 <div>
@@ -533,7 +540,7 @@
                   <div id="trending-games-list" class="game-grid"></div>
                 </div>
               </details>
-            </div>
+            </details>
           </div>
 
           <div class="panel board-panel" data-workspace-pane="board" hidden>
@@ -838,6 +845,9 @@
                   <label class="field-label entry-config-field">Wager
                     <input id="entry-wager" type="number" min="0" step="0.01" placeholder="Amount wagered" />
                   </label>
+                  <label class="field-label entry-config-field" id="entry-provider-balance-field" hidden>PrizePicks available balance (manual)
+                    <input id="entry-provider-balance" type="number" min="0" step="0.01" placeholder="Balance shown in PrizePicks" />
+                  </label>
                   <label class="field-label entry-config-field">Multiplier
                     <input id="entry-multiplier" type="number" min="1" step="0.1" value="3" placeholder="Multiplier" />
                   </label>
@@ -973,6 +983,11 @@
                         <select id="prizepicks-generator-legs" aria-label="PrizePicks legs">
                           <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option>
                         </select>
+                        <select id="prizepicks-generator-direction" aria-label="PrizePicks direction">
+                          <option value="Both">Overs and Unders</option><option value="Over">Only Overs</option><option value="Under">Only Unders</option>
+                        </select>
+                        <details class="generator-games" id="prizepicks-generator-game-picker"><summary id="prizepicks-generator-game-summary">All games today</summary><div class="generator-game-controls"><select id="prizepicks-generator-time" aria-label="PrizePicks kickoff time"><option value="">All kickoff times</option></select><div class="button-row"><button type="button" class="secondary" data-select-generator-games="prizepicks">Select shown</button><button type="button" class="secondary" data-clear-generator-games="prizepicks">Clear</button></div><div id="prizepicks-generator-games" class="generator-game-options" role="group" aria-label="PrizePicks games today">Load games to choose matchups.</div></div></details>
+                        <button class="secondary" type="button" data-load-generator-games="prizepicks">Load Games</button>
                         <button id="generate-prizepicks">Generate PrizePicks</button>
                       </div>
                       <div id="prizepicks-suggestions-list" class="suggestion-list"></div>
@@ -990,6 +1005,11 @@
                         <select id="underdog-generator-legs" aria-label="Underdog legs">
                           <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option><option value="7">7 Legs</option><option value="8">8 Legs</option>
                         </select>
+                        <select id="underdog-generator-direction" aria-label="Underdog direction">
+                          <option value="Both">Overs and Unders</option><option value="Over">Only Overs</option><option value="Under">Only Unders</option>
+                        </select>
+                        <details class="generator-games" id="underdog-generator-game-picker"><summary id="underdog-generator-game-summary">All games today</summary><div class="generator-game-controls"><select id="underdog-generator-time" aria-label="Underdog kickoff time"><option value="">All kickoff times</option></select><div class="button-row"><button type="button" class="secondary" data-select-generator-games="underdog">Select shown</button><button type="button" class="secondary" data-clear-generator-games="underdog">Clear</button></div><div id="underdog-generator-games" class="generator-game-options" role="group" aria-label="Underdog games today">Load games to choose matchups.</div></div></details>
+                        <button class="secondary" type="button" data-load-generator-games="underdog">Load Games</button>
                         <button id="generate-underdog">Generate Underdog</button>
                       </div>
                       <div id="underdog-suggestions-list" class="suggestion-list"></div>
@@ -1007,6 +1027,11 @@
                         <select id="draftkings-generator-legs" aria-label="DraftKings Pick6 legs">
                           <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option><option value="7">7 Legs</option>
                         </select>
+                        <select id="draftkings-generator-direction" aria-label="DraftKings Pick6 direction">
+                          <option value="Both">Overs and Unders</option><option value="Over">Only Overs</option><option value="Under">Only Unders</option>
+                        </select>
+                        <details class="generator-games" id="draftkings-generator-game-picker"><summary id="draftkings-generator-game-summary">All games today</summary><div class="generator-game-controls"><select id="draftkings-generator-time" aria-label="DraftKings Pick6 kickoff time"><option value="">All kickoff times</option></select><div class="button-row"><button type="button" class="secondary" data-select-generator-games="draftkings">Select shown</button><button type="button" class="secondary" data-clear-generator-games="draftkings">Clear</button></div><div id="draftkings-generator-games" class="generator-game-options" role="group" aria-label="DraftKings Pick6 games today">Load games to choose matchups.</div></div></details>
+                        <button class="secondary" type="button" data-load-generator-games="draftkings">Load Games</button>
                         <button id="generate-draftkings">Generate Pick6</button>
                       </div>
                       <div id="draftkings-suggestions-list" class="suggestion-list"></div>
@@ -1024,6 +1049,11 @@
                         <select id="sleeper-generator-legs" aria-label="Sleeper legs">
                           <option value="2">2 Legs</option><option value="3" selected>3 Legs</option><option value="4">4 Legs</option><option value="5">5 Legs</option><option value="6">6 Legs</option><option value="7">7 Legs</option><option value="8">8 Legs</option>
                         </select>
+                        <select id="sleeper-generator-direction" aria-label="Sleeper direction">
+                          <option value="Both">Overs and Unders</option><option value="Over">Only Overs</option><option value="Under">Only Unders</option>
+                        </select>
+                        <details class="generator-games" id="sleeper-generator-game-picker"><summary id="sleeper-generator-game-summary">All games today</summary><div class="generator-game-controls"><select id="sleeper-generator-time" aria-label="Sleeper kickoff time"><option value="">All kickoff times</option></select><div class="button-row"><button type="button" class="secondary" data-select-generator-games="sleeper">Select shown</button><button type="button" class="secondary" data-clear-generator-games="sleeper">Clear</button></div><div id="sleeper-generator-games" class="generator-game-options" role="group" aria-label="Sleeper games today">Load games to choose matchups.</div></div></details>
+                        <button class="secondary" type="button" data-load-generator-games="sleeper">Load Games</button>
                         <button id="generate-sleeper">Generate Sleeper</button>
                       </div>
                       <div id="sleeper-suggestions-list" class="suggestion-list"></div>
@@ -2002,7 +2032,7 @@
         document.write('<script src="js/state.js"><\/script>');
       }
     </script>
-    <script src="/static/js/api.js?v=20260929-briefing-schedule"></script>
+    <script src="/static/js/api.js?v=20261014-copilot-stream"></script>
     <script>
       if (!window.EdgeIQApi) {
         document.write('<script src="js/api.js"><\/script>');
@@ -2016,15 +2046,15 @@
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/model-track-record.js?v=20261007-model-record"></script>
     <script src="/static/js/evidence-lab.js?v=20261004-evidence-lab"></script>
-    <script src="/static/js/source-health.js?v=20261007-source-audits"></script>
+    <script src="/static/js/source-health.js?v=20261018-source-backlog"></script>
     <script src="/static/js/personal-edge.js?v=20261007-personal-edge"></script>
-    <script src="/static/js/recommendation-compare.js?v=20261007-recommendation-compare"></script>
-    <script src="/static/js/forecast-range.js?v=20261013-mission-control-10"></script>
+    <script src="/static/js/recommendation-compare.js?v=20261014-comparison-objectives"></script>
+    <script src="/static/js/forecast-range.js?v=20261018-source-backlog"></script>
     <script>
       if (!window.EdgeIQForecastRange) document.write('<script src="js/forecast-range.js"><\/script>');
     </script>
-    <script src="/static/js/recommendation-disclosure.js?v=20261013-mission-control-10"></script>
-    <script src="/static/js/recommendation-card.js?v=20261013-mission-control-10"></script>
+    <script src="/static/js/recommendation-disclosure.js?v=20261018-source-backlog"></script>
+    <script src="/static/js/recommendation-card.js?v=20261018-source-backlog"></script>
     <script src="/static/js/slate-changes.js?v=20261008-smart-alerts"></script>
     <script src="/static/js/alerts.js?v=20261008-alert-modules"></script>
     <script>
@@ -2032,7 +2062,7 @@
         document.write('<script src="js/alerts.js"><\/script>');
       }
     </script>
-    <script src="/static/js/provider-health.js?v=20261013-mission-control-10"></script>
+    <script src="/static/js/provider-health.js?v=20261018-source-backlog"></script>
     <script>
       if (!window.EdgeIQProviderHealth) {
         document.write('<script src="js/provider-health.js"><\/script>');
@@ -2042,7 +2072,7 @@
     <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261013-mission-control-10"></script>
+    <script src="/static/app.js?v=20261019-handoff-expiry"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

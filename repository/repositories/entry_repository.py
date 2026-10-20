@@ -738,8 +738,7 @@ class EntryRepository:
 
     @staticmethod
     def _recommendation_accuracy(entries: list[dict]) -> dict:
-        recommended = [entry for entry in entries if entry.get("recommended_by_app")]
-        evaluated = [(entry, EntryRepository._evaluated_card_probability(entry)) for entry in recommended]
+        evaluated = [(entry, EntryRepository._evaluated_card_probability(entry)) for entry in entries]
         qualified = [entry for entry, probability in evaluated if probability is not None and probability >= 60.0]
         settled = [entry for entry in qualified if entry.get("status") == "Settled"]
         decisions = [entry for entry in settled if entry.get("result") in {"Win", "Loss"}]

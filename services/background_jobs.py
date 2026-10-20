@@ -99,11 +99,25 @@ class BackgroundJobManager:
                 "_process_id": self._process_id,
                 "_heartbeat_at": _now(),
             }
+            claimed = False
+            if self._repository is not None and hasattr(self._repository, "claim"):
+                try:
+                    external = self._repository.claim(copy.deepcopy(job))
+                except Exception as exc:
+                    _log.exception("Background-job claim failed for %s", key)
+                    raise RuntimeError("The job could not be safely queued. Try again shortly.") from exc
+                if external is not None:
+                    self._remember_external_locked(external)
+                    return {**self._public_job(external), "reused": True, "external": True}
+                claimed = True
             self._jobs[job_id] = job
             self._order.append(job_id)
             self._active_keys[key] = job_id
             self._prune_locked()
-            self._persist_locked(job_id, force=True)
+            if claimed:
+                self._persisted_progress[job_id] = 0
+            else:
+                self._persist_locked(job_id, force=True)
             executor = self._scheduled_executor if kind.startswith("scheduled_") else self._executor
             self._futures[job_id] = executor.submit(self._run, job_id, task)
             return self._public_job(job)

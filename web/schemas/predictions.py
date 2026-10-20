@@ -1,6 +1,17 @@
+from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CopilotFocus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    player: str = Field(min_length=1, max_length=100)
+    sport: str
+    platform: str = Field(max_length=40)
+    stat: str = Field(max_length=100)
+    updated_at: datetime
 
 
 class ProjectionAssistPayload(BaseModel):
@@ -26,6 +37,10 @@ class CopilotQueryPayload(BaseModel):
     sport: str = "All Sports"
     platform: str = "Both"
     line: float | None = None
+    focus: CopilotFocus | None = None
+    selected_snapshot_id: str = Field(default="", max_length=128)
+    selected_recommendation_index: int | None = Field(default=None, ge=0, le=8)
+    selected_recommendation_identity: dict[str, str] = Field(default_factory=dict)
 
 
 class RecommendationExplainPayload(BaseModel):

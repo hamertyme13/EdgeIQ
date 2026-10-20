@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from web.schemas import (
     AiEntryReviewPayload,
@@ -28,7 +31,7 @@ class IntelligenceDependencies:
     game_context: Callable[[str, str, str], dict]
     ev_analysis: Callable[[EvPayload], dict]
     projection_assist: Callable[[ProjectionAssistPayload], dict]
-    copilot_query: Callable[[CopilotQueryPayload], dict]
+    copilot_query: Callable[..., dict]
     explain_recommendation: Callable[[RecommendationExplainPayload], dict]
     evaluate_model: Callable[[ModelEvaluationPayload], dict]
 
@@ -74,6 +77,50 @@ def ai_entry_review(payload: AiEntryReviewPayload, deps: DepsIntel = None) -> di
 def ai_copilot(payload: CopilotQueryPayload, deps: DepsIntel = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, IntelligenceDependencies) else get_deps()
     return _deps.copilot_query(payload)
+
+
+@router.post("/api/ai/copilot/stream")
+async def ai_copilot_stream(payload: CopilotQueryPayload, deps: DepsIntel = None) -> StreamingResponse:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, IntelligenceDependencies) else get_deps()
+
+    async def events():
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
+
+        def send(event: str, data: dict) -> None:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(queue.put_nowait, (event, data))
+
+        def progress(stage: str, label: str) -> None:
+            send("status", {"stage": stage, "label": label})
+
+        def run_query() -> None:
+            try:
+                result = _deps.copilot_query(payload, progress)
+                send("answer", result)
+            except Exception:
+                send("error", {
+                    "message": "EdgeIQ could not finish this research. Please try again shortly.",
+                })
+            finally:
+                send("done", {})
+
+        task = asyncio.create_task(asyncio.to_thread(run_query))
+        try:
+            while True:
+                try:
+                    event, data = await asyncio.wait_for(queue.get(), timeout=15)
+                except TimeoutError:
+                    yield ": waiting\n\n"
+                    continue
+                yield f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+                if event == "done":
+                    break
+        finally:
+            if task.done():
+                await task
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
 
 @router.post("/api/ai/explain-recommendation")
