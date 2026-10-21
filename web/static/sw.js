@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20261019-handoff-expiry";
+const CACHE_NAME = "edgeiq-shell-20261021-integrity-review";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

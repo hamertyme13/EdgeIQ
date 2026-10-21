@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,7 +20,7 @@ from repository.database import Base
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
 from repository.repositories.settlement_audit_repository import SettlementAuditRepository
 from services.data_management import backup_database
-from services.operation_lock import named_operation_lock
+from services.operation_lock import named_database_operation_lock, named_operation_lock
 from web.application.alert_delivery_service import deliver_alert
 
 
@@ -38,6 +42,79 @@ def test_named_operation_lock_allows_only_one_scheduler_instance():
 
     assert outcomes.count(True) == 1
     assert len(entered) == 1
+
+
+@pytest.mark.concurrency
+def test_database_operation_lock_uses_postgres_advisory_session(monkeypatch):
+    import repository.database as database
+
+    class Connection:
+        def __init__(self, acquire):
+            self.acquire = acquire
+            self.commands = []
+            self.commits = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+        def execute(self, statement, parameters):
+            self.commands.append((str(statement), parameters["name"]))
+            return SimpleNamespace(scalar=lambda: self.acquire)
+
+        def commit(self):
+            self.commits += 1
+
+    for acquired in (True, False):
+        connection = Connection(acquired)
+        engine = SimpleNamespace(dialect=SimpleNamespace(name="postgresql"), connect=lambda connection=connection: connection)
+        monkeypatch.setattr(database, "engine", engine)
+        with named_database_operation_lock("board-offer-settlement") as granted:
+            assert granted is acquired
+        assert len(connection.commands) == (2 if acquired else 1)
+        assert "pg_try_advisory_lock" in connection.commands[0][0]
+        if acquired:
+            assert "pg_advisory_unlock" in connection.commands[1][0]
+        assert connection.commits == (2 if acquired else 1)
+
+
+@pytest.mark.concurrency
+def test_postgres_operation_lock_coordinates_separate_processes(monkeypatch):
+    import repository.database as database
+
+    url = os.getenv("EDGEIQ_TEST_POSTGRES_URL", "")
+    if not url:
+        pytest.skip("Set EDGEIQ_TEST_POSTGRES_URL for the disposable PostgreSQL lock test.")
+    engine = create_engine(url)
+    monkeypatch.setattr(database, "engine", engine)
+    monkeypatch.setenv("EDGEIQ_OPERATION_LOCK_NAMESPACE", "advisory-parent")
+    child_env = {
+        **os.environ,
+        "DATABASE_URL": url,
+        "EDGEIQ_OPERATION_LOCK_NAMESPACE": "advisory-child",
+    }
+    child_code = (
+        "from services.operation_lock import named_database_operation_lock; "
+        "lock = named_database_operation_lock('board-offer-settlement'); "
+        "print(lock.__enter__()); lock.__exit__(None, None, None)"
+    )
+
+    def child_attempt() -> str:
+        result = subprocess.run(
+            [sys.executable, "-c", child_code], env=child_env,
+            capture_output=True, text=True, check=True, timeout=15,
+        )
+        return result.stdout.strip()
+
+    try:
+        with named_database_operation_lock("board-offer-settlement") as acquired:
+            assert acquired is True
+            assert child_attempt() == "False"
+        assert child_attempt() == "True"
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.concurrency

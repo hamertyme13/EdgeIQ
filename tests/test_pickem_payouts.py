@@ -59,6 +59,77 @@ def test_flex_settlement_uses_partial_win_multiplier():
     assert multiplier == 1.09
 
 
+def test_flex_settlement_prefers_saved_exact_payout_over_generic_schedule():
+    from repository.repositories.entry_repository import EntryRepository
+
+    result, profit = EntryRepository._settlement_profit(
+        "Loss", 10, 5, 3, platform="PrizePicks", payout_type="flex",
+        leg_results=[{"result": "Win"}, {"result": "Win"}, {"result": "Loss"}],
+        exact_schedule={"3": 5.0, "2": 1.5},
+    )
+    assert (result, profit) == ("Win", 5.0)
+
+
+def test_flex_settlement_does_not_apply_original_exact_table_after_void():
+    multiplier = settlement_return_multiplier(
+        "PrizePicks", "flex",
+        [{"result": "Win"}, {"result": "Win"}, {"result": "DNP"}],
+        exact_schedule={"3": 5.0, "2": 1.5},
+    )
+    assert multiplier == 2.0
+
+
+def test_standard_settlement_rejects_unresolved_leg():
+    from repository.repositories.entry_repository import EntryRepository
+
+    with pytest.raises(ValueError, match="verified final result"):
+        EntryRepository._settlement_profit(
+            "Loss", 10, 3, 2,
+            leg_results=[{"result": "Loss"}, {"result": "Unknown"}],
+        )
+
+
+def test_saved_flex_entry_settles_with_its_exact_payout_table(db_session, monkeypatch):
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from repository.models.entry_model import EntryModel
+    from repository.models.entry_prop_model import EntryPropModel
+    from repository.repositories import entry_repository
+    from repository.repositories.entry_repository import EntryRepository
+
+    monkeypatch.setattr(entry_repository, "SessionLocal", sessionmaker(bind=db_session.connection()))
+    monkeypatch.setattr(EntryRepository, "_ensure_schema", lambda: None)
+    monkeypatch.setattr(EntryRepository, "_sync_entry_to_bet_history", lambda entry: None)
+    entry = EntryModel(
+        platform="PrizePicks", average_confidence=60.0, average_edge=1.5,
+        wager=10.0, multiplier=5.0, payout_type="flex", status="Pending",
+        entry_mode="real", payout_table_snapshot=json.dumps({
+            "source": "user_entered_payout", "payouts": {"3": 5.0, "2": 1.5},
+        }),
+    )
+    db_session.add(entry)
+    db_session.flush()
+    for index in range(3):
+        db_session.add(EntryPropModel(
+            entry_id=entry.id, player_name=f"Flex Test {index}", sport="WNBA",
+            stat="Points", line=15.5, direction="Over", platform="PrizePicks",
+        ))
+    db_session.flush()
+
+    settled = EntryRepository.settle(
+        entry.id, "Loss",
+        leg_results=[
+            {"result": "Win", "actual": 20.0, "source": "espn", "final_status": "played"},
+            {"result": "Win", "actual": 20.0, "source": "espn", "final_status": "played"},
+            {"result": "Loss", "actual": 10.0, "source": "espn", "final_status": "played"},
+        ],
+    )
+    assert settled["result"] == "Win"
+    assert settled["profit"] == 5.0
+
+
 def test_all_winning_pick6_flex_uses_recorded_multiplier():
     assert settlement_return_multiplier("DraftKings Pick6", "flex", [{"result": "Win"}] * 3, 5.0) == 5.0
 

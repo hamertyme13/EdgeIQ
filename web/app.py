@@ -272,7 +272,7 @@ from web.application.schedule_service import (
     scheduled_job_due,
     scheduled_job_overdue,
 )
-from web.application.season_history_service import run_daily_season_updates
+from web.application.season_history_service import daily_source_checks, run_daily_season_updates
 from web.application.shared_recommendations import shared_opportunity_feed
 from web.version import STATIC_ASSET_VERSION
 
@@ -5388,6 +5388,10 @@ def _daily_top_opportunities(command: dict, confirmed: dict) -> list[dict]:
             "player_identity_id": prop.get("player_identity_id"),
             "player_provider": prop.get("player_provider", ""),
             "provider_player_id": prop.get("provider_player_id", ""),
+            "provider_offer_id": prop.get("provider_offer_id") or prop.get("projection_id") or prop.get("offer_id") or "",
+            "provider_event_id": prop.get("provider_event_id") or prop.get("event_id") or prop.get("game_id") or "",
+            "allowed_directions": prop.get("allowed_directions", ["Over", "Under"]),
+            "decision_receipt": prop.get("decision_receipt"),
             "provider_projection_id": prop.get("provider_projection_id") or prop.get("projection_id") or "",
             "projection_id": prop.get("projection_id") or prop.get("provider_projection_id") or "",
             "team": prop.get("team", ""),
@@ -7126,12 +7130,15 @@ def _analyzed_feed_prop(raw: dict, *, persist_evidence: bool = True) -> dict:
         "player_identity_id": raw.get("player_identity_id"),
         "player_provider": raw.get("player_provider") or platform,
         "provider_player_id": raw.get("provider_player_id") or raw.get("player_id") or "",
+        "provider_offer_id": raw.get("provider_offer_id") or raw.get("projection_id") or raw.get("offer_id") or "",
+        "provider_event_id": raw.get("provider_event_id") or raw.get("event_id") or raw.get("game_id") or "",
+        "decision_receipt": raw.get("decision_receipt") if isinstance(raw.get("decision_receipt"), dict) else None,
         "team": raw.get("team", ""),
         "position": raw.get("position", ""),
         "sport": raw.get("league", ""),
         "stat": raw.get("stat", ""),
         "line": line,
-        "baseline_line": baseline_line,
+        "baseline_line": raw.get("baseline_line") or raw.get("standard_line"),
         "standard_line": raw.get("standard_line"),
         "line_offer_type": raw.get("line_offer_type") or raw.get("odds_type") or "standard",
         "adjusted_line": bool(raw.get("adjusted_line") or raw.get("adjusted_odds")),
@@ -7355,6 +7362,16 @@ def _confirmed_prop_candidate(raw: dict, analyzed: dict) -> dict | None:
     }
     return {
         **analyzed,
+        "provider_offer_id": raw.get("provider_offer_id") or raw.get("projection_id") or raw.get("offer_id") or "",
+        "provider_player_id": raw.get("provider_player_id") or raw.get("player_id") or "",
+        "provider_event_id": raw.get("provider_event_id") or raw.get("event_id") or raw.get("game_id") or "",
+        "allowed_directions": raw.get("allowed_directions", ["Over", "Under"]),
+        "line_offer_type": raw.get("line_offer_type") or raw.get("offer_type") or "standard",
+        "standard_line": raw.get("standard_line"),
+        "baseline_line": raw.get("baseline_line"),
+        "adjusted_line": bool(raw.get("adjusted_line")),
+        "is_discounted_line": bool(raw.get("is_discounted_line")),
+        "is_premium_line": bool(raw.get("is_premium_line")),
         "confirmed_score": round(min(100.0, score), 1),
         "confirmation": {
             "provider_current": True,
@@ -12226,7 +12243,9 @@ def _build_runtime_status_payload() -> dict:
     paid_enabled = model_health.get("paid_entry_mode") == "enabled"
     registry = model_registry()
     feature_status = PlayerFeatureRepository.status()
-    model_inputs = model_input_status(feature_status)
+    model_inputs = model_input_status(
+        feature_status, source_checks=daily_source_checks(feature_status.get("sports") or []),
+    )
     deployment = _deploy_readiness_payload()
     active_jobs = [job for job in background_jobs.list(limit=20) if job.get("status") in {"queued", "running", "canceling"}]
     return {
@@ -12700,7 +12719,22 @@ def _cached_briefing_timing_alerts() -> list[dict]:
 
 def _entry_progress_payloads_for_notifications() -> list[dict]:
     try:
-        return [_entry_progress_payload(entry) for entry in EntryRepository.pending()]
+        rows = []
+        for entry in EntryRepository.pending():
+            props = entry.get("props") or []
+            statuses = [
+                str(prop.get("final_result") or "Pending")
+                if str(prop.get("final_status") or "").lower() in {"played", "dnp"}
+                else "Pending"
+                for prop in props
+            ]
+            rows.append({
+                "id": entry["id"],
+                "completed_legs": sum(status in {"Win", "Loss", "Push", "DNP"} for status in statuses),
+                "total_legs": len(props),
+                "live_result": _entry_result_from_leg_statuses(statuses),
+            })
+        return rows
     except Exception:
         _log.warning("Could not build entry progress payloads for notifications", exc_info=True)
         return []
@@ -12819,6 +12853,8 @@ def _serialize_prop(prop: Prop) -> dict:
         "provider_projection_id": prop.provider_projection_id,
         "provider_event_id": prop.provider_event_id,
         "provider_offer_id": prop.provider_offer_id,
+        "allowed_directions": prop.allowed_directions if prop.allowed_directions is not None else ["Over", "Under"],
+        "decision_receipt": prop.decision_receipt,
         "offer_snapshot_id": prop.offer_snapshot_id,
         "recommendation_snapshot_id": prop.recommendation_snapshot_id,
         "leg_recommendation_snapshot_id": prop.leg_recommendation_snapshot_id,

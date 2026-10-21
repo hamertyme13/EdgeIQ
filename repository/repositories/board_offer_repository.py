@@ -15,9 +15,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from analytics.prediction_evidence import offer_key
 from repository.database import SessionLocal, initialize_database
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
+from repository.models.leg_recommendation_snapshot_model import LegRecommendationSnapshotModel
 from repository.models.settings_model import SettingsModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from services.operation_lock import named_database_operation_lock
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
 from utils.time import utc_now
@@ -48,15 +50,39 @@ def _bounded_due_rows(session, cursor_key: str, now: datetime, due_text: str,
                 .filter(*filters, BoardOfferObservationModel.id > start_id)
                 .order_by(BoardOfferObservationModel.id.asc()).limit(scan_limit).all())
 
+    linked_ids = session.query(LegRecommendationSnapshotModel.offer_snapshot_id).filter(
+        LegRecommendationSnapshotModel.offer_snapshot_id != ""
+    ).distinct()
+    linked_rows = session.query(
+        BoardOfferObservationModel.id,
+        BoardOfferObservationModel.market_key,
+        BoardOfferObservationModel.outcome,
+        BoardOfferObservationModel.scheduled_start,
+        BoardOfferObservationModel.next_settlement_retry_at,
+        BoardOfferObservationModel.eligibility_status,
+    ).filter(BoardOfferObservationModel.offer_snapshot_id.in_(linked_ids)).limit(10_000).all()
+    priority = []
+    for row in linked_rows:
+        if row.outcome or (eligible_only and row.eligibility_status not in {"trackable", "paid_eligible", "paper_only"}):
+            continue
+        scheduled = _aware_datetime(row.scheduled_start)
+        retry = _aware_datetime(row.next_settlement_retry_at)
+        if scheduled is not None and scheduled <= now - timedelta(hours=2) and (retry is None or retry <= now):
+            priority.append((row.id, row.market_key))
     candidates = fetch(after_id)
     if not candidates and after_id:
         candidates = fetch(0)
     latest_ids: dict[str, int] = {}
+    for row_id, market_key in priority:
+        if market_key not in latest_ids and len(latest_ids) >= limit:
+            break
+        latest_ids[market_key] = row_id
     last_id = 0
     for row_id, market_key in candidates:
         if market_key not in latest_ids and len(latest_ids) >= limit:
             break
-        latest_ids[market_key] = row_id
+        if market_key not in latest_ids:
+            latest_ids[market_key] = row_id
         last_id = row_id
     if cursor is None:
         cursor = SettingsModel(key=cursor_key, value="0")
@@ -147,12 +173,14 @@ class BoardOfferRepository:
                     row["opening_line"] = openings.get(row["market_key"], row["line"])
                     inserts.append({**row, "captured_at": captured})
                 insert_factory = postgres_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
-                result = session.execute(
-                    insert_factory(BoardOfferObservationModel)
-                    .values(inserts)
-                    .on_conflict_do_nothing(index_elements=["observation_key"])
-                )
-                created = max(0, int(result.rowcount or 0))
+                statement = (insert_factory(BoardOfferObservationModel)
+                             .values(inserts)
+                             .on_conflict_do_nothing(index_elements=["observation_key"]))
+                if session.get_bind().dialect.name == "postgresql":
+                    created = len(session.execute(statement.returning(BoardOfferObservationModel.id)).scalars().all())
+                else:
+                    result = session.execute(statement)
+                    created = max(0, int(result.rowcount or 0))
             links = {
                 row["observation_key"]: row["offer_snapshot_id"]
                 for row in prepared
@@ -252,8 +280,20 @@ class BoardOfferRepository:
     @staticmethod
     def settle_pending(limit: int = 500, now: datetime | None = None) -> dict:
         """Settle each unresolved market once, then update its line history."""
+        with named_database_operation_lock("board-offer-settlement") as acquired:
+            if not acquired:
+                return {
+                    "attempted": 0, "settled": 0, "observations_settled": 0,
+                    "unresolved": 0, "skipped": True,
+                    "message": "A board-offer settlement is already running.",
+                }
+            return BoardOfferRepository._settle_pending_locked(limit=limit, now=now)
+
+    @staticmethod
+    def _settle_pending_locked(limit: int = 500, now: datetime | None = None) -> dict:
         BoardOfferRepository._ensure_schema()
-        current = (now or utc_now()).astimezone(UTC)
+        current = _aware_datetime(now or utc_now())
+        assert current is not None
         due_before = current - timedelta(hours=2)
         due_text = due_before.strftime("%Y-%m-%dT%H:%M:%S")
         with SessionLocal() as session:
@@ -390,7 +430,8 @@ class BoardOfferRepository:
     def settlement_entries(limit: int = 500, now: datetime | None = None) -> list[dict]:
         """Build synthetic entries so complete-board offers trigger official final-stat retrieval."""
         BoardOfferRepository._ensure_schema()
-        current = (now or utc_now()).astimezone(UTC)
+        current = _aware_datetime(now or utc_now())
+        assert current is not None
         due_before = current - timedelta(hours=2)
         due_text = due_before.strftime("%Y-%m-%dT%H:%M:%S")
         with SessionLocal() as session:

@@ -9,6 +9,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from sqlalchemy import text
+
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -48,3 +50,30 @@ def named_operation_lock(name: str) -> Iterator[bool]:
         if handle is not None:
             handle.close()
         thread_lock.release()
+
+
+@contextmanager
+def named_database_operation_lock(name: str) -> Iterator[bool]:
+    """Coordinate locally and, on PostgreSQL, across app replicas."""
+    from repository import database
+
+    with named_operation_lock(name) as local_acquired:
+        if not local_acquired:
+            yield False
+            return
+        if database.engine.dialect.name != "postgresql":
+            yield True
+            return
+        with database.engine.connect() as connection:
+            statement = text("SELECT pg_try_advisory_lock(hashtext('edgeiq'), hashtext(:name))")
+            acquired = bool(connection.execute(statement, {"name": name}).scalar())
+            connection.commit()
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtext('edgeiq'), hashtext(:name))"),
+                        {"name": name},
+                    )
+                    connection.commit()

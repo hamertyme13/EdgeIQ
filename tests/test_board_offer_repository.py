@@ -1,13 +1,19 @@
+import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
+from uuid import uuid4
 
-from sqlalchemy import create_engine
+import pytest
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 import repository.database as database
 from analytics.hierarchical_calibration import calibrate_probability
 from repository.database import Base
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
+from repository.models.leg_recommendation_snapshot_model import LegRecommendationSnapshotModel
 from repository.repositories import board_offer_repository as board_module
 from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
@@ -57,6 +63,40 @@ def test_complete_board_settlement_links_both_directions_to_offer_snapshot(tmp_p
     assert BoardOfferRepository.outcome_for_snapshot(snapshot_id, "Under")["result"] == "Loss"
 
 
+def test_default_board_clock_keeps_naive_utc_in_eastern_timezone(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    BoardOfferRepository.record_many([_offer()], "PrizePicks")
+    monkeypatch.setattr(board_module, "utc_now", lambda: datetime(2026, 8, 23, 12))
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda _: {
+        "actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22",
+    })
+    try:
+        with monkeypatch.context() as clock_env:
+            clock_env.setenv("TZ", "America/New_York")
+            time.tzset()
+            assert BoardOfferRepository.settle_pending()["settled"] == 1
+    finally:
+        time.tzset()
+    with session_local() as session:
+        attempt = session.query(BoardOfferObservationModel.last_settlement_attempt_at).one()[0]
+        assert attempt == datetime(2026, 8, 23, 12)
+
+
+def test_default_retrieval_clock_does_not_start_game_early_in_eastern_timezone(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    BoardOfferRepository.record_many([{
+        **_offer(), "game_time": "2026-08-23T11:00:00Z", "end_to_end_confirmed": True,
+    }], "PrizePicks")
+    monkeypatch.setattr(board_module, "utc_now", lambda: datetime(2026, 8, 23, 12))
+    try:
+        with monkeypatch.context() as clock_env:
+            clock_env.setenv("TZ", "America/New_York")
+            time.tzset()
+            assert BoardOfferRepository.settlement_entries() == []
+    finally:
+        time.tzset()
+
+
 def test_bounded_settlement_cursor_reaches_older_and_newer_markets(tmp_path, monkeypatch):
     session_local = _isolated_database(tmp_path, monkeypatch)
     for index in range(3):
@@ -71,6 +111,60 @@ def test_bounded_settlement_cursor_reaches_older_and_newer_markets(tmp_path, mon
     assert [BoardOfferRepository.settle_pending(limit=1, now=now)["settled"] for _ in range(3)] == [1, 1, 1]
     with session_local() as session:
         assert session.query(BoardOfferObservationModel).filter_by(outcome="Win").count() == 3
+
+
+def test_linked_offer_settles_ahead_of_general_board_cursor(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    for index in range(3):
+        raw = {
+            **_offer(), "id": f"offer-{index}", "player": f"Player {index}",
+            "player_id": f"player-{index}", "game_id": f"game-{index}",
+        }
+        captured = ProviderOfferSnapshotRepository.capture_many([raw])[0]
+        BoardOfferRepository.record_many([captured], "PrizePicks")
+        if index == 2:
+            with session_local() as session:
+                session.add(LegRecommendationSnapshotModel(
+                    snapshot_id="linked-test", feed_snapshot_id="feed-test",
+                    offer_snapshot_id=captured["offer_snapshot_id"], model_version="test",
+                    player=raw["player"], sport="WNBA", stat="Points",
+                    direction="Over", line=20.5, feature_as_of="", evidence="{}",
+                ))
+                session.commit()
+    attempted = []
+
+    def final_result(prop):
+        attempted.append(prop["player"])
+        return {"actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22"}
+
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", final_result)
+    now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    assert BoardOfferRepository.settle_pending(limit=1, now=now)["settled"] == 1
+    assert attempted == ["Player 2"]
+    assert [BoardOfferRepository.settle_pending(limit=1, now=now)["settled"] for _ in range(2)] == [1, 1]
+    assert set(attempted) == {"Player 0", "Player 1", "Player 2"}
+
+
+def test_parallel_board_settlement_skips_duplicate_worker(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    BoardOfferRepository.record_many([_offer()], "PrizePicks")
+    entered = Event()
+    release = Event()
+
+    def slow_final(_):
+        entered.set()
+        assert release.wait(5)
+        return {"actual": 24.0, "status": "played", "source": "ESPN", "game_date": "2026-08-22"}
+
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", slow_final)
+    now = datetime(2026, 8, 23, 12, tzinfo=UTC)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(BoardOfferRepository.settle_pending, 1, now)
+        assert entered.wait(5)
+        second = pool.submit(BoardOfferRepository.settle_pending, 1, now).result(timeout=5)
+        assert second["skipped"] is True
+        release.set()
+        assert first.result(timeout=5)["settled"] == 1
 
 
 def test_bounded_settlement_cursor_wraps_for_due_retry(tmp_path, monkeypatch):
@@ -190,6 +284,39 @@ def test_complete_board_capture_is_idempotent_across_concurrent_writers(tmp_path
     assert sum(created) == 1
     with session_local() as session:
         assert session.query(BoardOfferObservationModel).count() == 1
+
+
+@pytest.mark.concurrency
+def test_postgres_complete_board_capture_is_idempotent(monkeypatch):
+    url = os.getenv("EDGEIQ_TEST_POSTGRES_URL")
+    if not url:
+        pytest.skip("Set EDGEIQ_TEST_POSTGRES_URL for the isolated PostgreSQL test")
+    schema = f"edgeiq_offer_test_{uuid4().hex}"
+    admin_engine = create_engine(url)
+    with admin_engine.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+    engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
+    try:
+        BoardOfferObservationModel.__table__.create(engine)
+        sessions = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+        monkeypatch.setattr(board_module, "SessionLocal", sessions)
+        monkeypatch.setattr(BoardOfferRepository, "_ensure_schema", lambda: None)
+        offer = {**_offer(), "player_identity_id": 42}
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            created = list(executor.map(
+                lambda _index: BoardOfferRepository.record_many([offer], "PrizePicks"), range(6),
+            ))
+
+        with sessions() as session:
+            count = session.query(BoardOfferObservationModel).count()
+        assert count == 1, f"created={created}"
+        assert sum(created) == 1, f"stored={count}, created={created}"
+    finally:
+        engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin_engine.dispose()
 
 
 def test_complete_board_reuses_precaptured_player_identity(tmp_path, monkeypatch):

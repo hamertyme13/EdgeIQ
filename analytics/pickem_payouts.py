@@ -106,6 +106,7 @@ def settlement_return_multiplier(
     payout_type: object,
     leg_results: list[dict],
     displayed_multiplier: float | None = None,
+    exact_schedule: dict[str, float] | dict[int, float] | None = None,
 ) -> float:
     if any(str(row.get("result") or "") not in {"Win", "Loss", "Push", "DNP"} for row in leg_results):
         raise ValueError("Every leg needs a final result before the payout can be calculated.")
@@ -113,6 +114,8 @@ def settlement_return_multiplier(
     if len(active) < 2:
         return 1.0
     wins = sum(1 for row in active if row.get("result") == "Win")
+    if exact_schedule and len(active) == len(leg_results):
+        return round(float(exact_schedule.get(str(wins), exact_schedule.get(wins, 0.0))), 4)
     if wins == len(leg_results) and displayed_multiplier is not None:
         multiplier = float(displayed_multiplier)
         if math.isfinite(multiplier) and multiplier >= 1:

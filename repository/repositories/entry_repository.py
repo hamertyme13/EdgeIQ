@@ -471,6 +471,16 @@ class EntryRepository:
                 .filter(EntryPropModel.entry_id == entry.id)
                 .count()
             )
+            exact_schedule = None
+            if leg_results and len(leg_results) != leg_count:
+                raise ValueError("Every entry leg needs a final result before settlement.")
+            if leg_results:
+                try:
+                    payout_snapshot = json.loads(entry.payout_table_snapshot or "{}")
+                except (TypeError, ValueError):
+                    payout_snapshot = {}
+                if payout_snapshot.get("source") in {"exact_offer_snapshot", "user_entered_payout"}:
+                    exact_schedule = payout_snapshot.get("payouts") or None
             result, profit = EntryRepository._settlement_profit(
                 result,
                 entry.wager or 0.0,
@@ -481,6 +491,7 @@ class EntryRepository:
                 platform=entry.platform,
                 payout_type=getattr(entry, "payout_type", "standard") or "standard",
                 leg_results=leg_results,
+                exact_schedule=exact_schedule,
             )
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
@@ -1091,7 +1102,13 @@ class EntryRepository:
         platform: str = "PrizePicks",
         payout_type: str = "standard",
         leg_results: list[dict] | None = None,
+        exact_schedule: dict[str, float] | dict[int, float] | None = None,
     ) -> tuple[str, float]:
+        if leg_results and (
+            len(leg_results) != leg_count
+            or any(str(leg.get("result") or "") not in {"Win", "Loss", "Push", "DNP"} for leg in leg_results)
+        ):
+            raise ValueError("Every entry leg needs a verified final result before settlement.")
         if leg_results and len(leg_results) == leg_count and all(leg.get("result") == "Win" for leg in leg_results):
             result = "Win"
         if payout_type == "flex" and leg_results:
@@ -1100,6 +1117,7 @@ class EntryRepository:
                 payout_type,
                 leg_results,
                 displayed_multiplier=multiplier,
+                exact_schedule=exact_schedule,
             )
             profit = round(wager * (returned - 1.0), 2)
             settled_result = "Win" if returned > 1.0 else "Push" if returned == 1.0 else "Loss"

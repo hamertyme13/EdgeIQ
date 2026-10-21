@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 import repository.repositories.settlement_audit_repository as audit_module
 from repository.database import Base
 from repository.models.entry_model import EntryModel  # noqa: F401
+from repository.models.entry_prop_model import EntryPropModel
 from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.repositories.settlement_audit_repository import (
     SettlementAuditRepository,
@@ -13,6 +14,47 @@ from repository.repositories.settlement_audit_repository import (
 
 def test_game_time_date_uses_eastern_calendar_day():
     assert str(_game_time_date("2026-07-17T02:00:00Z")) == "2026-07-16"
+
+
+def test_settlement_queue_flags_result_conflicts_without_regrading(monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(audit_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(audit_module, "initialize_database", lambda: None)
+    with session_factory() as session:
+        for entry_id, result, payout_type in ((1, "Loss", "standard"), (2, "Win", "standard"), (3, "Win", "flex")):
+            session.add(EntryModel(
+                id=entry_id, platform="PrizePicks", average_confidence=50.0,
+                average_edge=0.0, wager=10.0, multiplier=3.0,
+                status="Settled", result=result, payout_type=payout_type,
+            ))
+        session.flush()
+        for entry_id, leg_result, actual, status in (
+            (1, "Win", 20.0, "played"), (1, "Win", 21.0, "played"),
+            (2, "Loss", 10.0, "played"), (2, "Unknown", None, "unknown"),
+            (3, "Loss", 10.0, "played"), (3, "Win", 20.0, "played"),
+        ):
+            session.add(EntryPropModel(
+                entry_id=entry_id, player_name="Player", sport="WNBA", stat="Points",
+                line=15.5, final_result=leg_result, actual=actual, final_status=status,
+            ))
+        session.commit()
+
+    result = SettlementAuditRepository.queue()["integrity"]
+
+    assert result["read_only"] is True
+    assert result["affected_entries"] == 2
+    assert result["counts"] == {
+        "all_win_recorded_loss": 1, "win_contains_loss": 1, "settled_with_unresolved_leg": 1,
+    }
+    assert len(result["entries"]) == result["affected_entries"]
+    paid_loss = next(entry for entry in result["entries"] if entry["entry_id"] == 1)
+    assert paid_loss["reasons"] == ["all_win_recorded_loss"]
+    assert len(paid_loss["leg_details"]) == 2
+    assert paid_loss["leg_details"][0]["actual"] == 20.0
+    with session_factory() as session:
+        assert session.get(EntryModel, 1).result == "Loss"
 
 
 def test_settlement_audit_deduplicates_retries(monkeypatch):

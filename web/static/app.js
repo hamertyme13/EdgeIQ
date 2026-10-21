@@ -606,10 +606,10 @@ function setupEntryBuilderSteps() {
       button.classList.toggle("active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
-    sessionStorage.setItem("edgeiq.entryBuilder.step", normalized);
   };
   buttons.forEach((button) => button.addEventListener("click", () => activate(button.dataset.entryStep)));
-  activate(sessionStorage.getItem("edgeiq.entryBuilder.step") || "props");
+  $("entry-settings-next")?.addEventListener("click", () => activate("props"));
+  activate("settings");
 }
 
 function setupPerformanceDetails() {
@@ -5482,6 +5482,35 @@ async function loadGradingReport() {
 async function loadSettlementAudit() {
   if (!$("settlement-audit-list")) return;
   const data = await api("/api/entries/settlement-audit?limit=150");
+  const integrity = data.integrity || {};
+  const integrityWarning = $("settlement-integrity-warning");
+  if (integrityWarning) {
+    const affected = Number(integrity.affected_entries || 0);
+    integrityWarning.hidden = !affected;
+    integrityWarning.innerHTML = affected ? `
+      <strong>${affected} settled entr${affected === 1 ? "y needs" : "ies need"} result review</strong>
+      <p>Stored card results and leg evidence do not fully agree. No result or payout was changed automatically.</p>
+      <p>${Number(integrity.counts?.all_win_recorded_loss || 0)} all-win cards recorded as losses · ${Number(integrity.counts?.win_contains_loss || 0)} standard wins with losing legs · ${Number(integrity.counts?.settled_with_unresolved_leg || 0)} settled cards with unresolved legs</p>
+      <details><summary>Review all ${affected} entries</summary>
+        <div class="settlement-integrity-entries">${(integrity.entries || integrity.examples || []).map((entry) => `
+          <details class="settlement-integrity-entry">
+            <summary>#${Number(entry.entry_id)} · ${escapeHtml(entry.entry_mode === "real" ? "Paid" : "Paper")} · recorded ${escapeHtml(entry.result || "unknown")} · ${Number(entry.wins || 0)} won, ${Number(entry.losses || 0)} lost, ${Number(entry.unresolved || 0)} unresolved</summary>
+            <p>${(entry.reasons || []).map((reason) => escapeHtml({
+              all_win_recorded_loss: "All stored legs won, but the card says loss.",
+              win_contains_loss: "A standard-payout card says win despite a losing leg.",
+              settled_with_unresolved_leg: "The card settled before every leg was verified."
+            }[reason] || reason)).join(" ")}</p>
+            <ul>${(entry.leg_details || []).map((leg) => `<li>
+              <strong>${escapeHtml(leg.player)} · ${escapeHtml(leg.stat)}</strong>
+              ${escapeHtml(leg.direction)} ${leg.line == null ? "?" : escapeHtml(String(leg.line))}
+              · ${escapeHtml(leg.result)}${leg.actual == null ? "" : ` (${escapeHtml(String(leg.actual))})`}
+              · ${escapeHtml(leg.game || "Game unknown")}${leg.game_time ? ` · ${escapeHtml(leg.game_time)}` : ""}
+              · ${escapeHtml(leg.source || "Source unavailable")}
+            </li>`).join("")}</ul>
+          </details>`).join("")}</div>
+      </details>
+    ` : "";
+  }
   $("settlement-audit-status").textContent = `${data.verified || 0} verified · ${data.scheduled || 0} scheduled · ${data.waiting || 0} waiting · ${data.blocked || 0} currently blocked · ${data.historical_review || 0} historical review`;
   $("settlement-audit-list").innerHTML = `
     <div class="stats-grid">
@@ -5919,6 +5948,16 @@ async function loadBets() {
   renderCompletedEntryHistory(entries);
 }
 
+function completedEntryNeedsReview(entry) {
+  const props = entry.props || [];
+  if (!props.length) return false;
+  const resolved = (prop) => ["played", "dnp"].includes(String(prop.status || "").toLowerCase())
+    && (prop.actual != null || String(prop.status || "").toLowerCase() === "dnp");
+  if (props.some((prop) => !resolved(prop) || !["Win", "Loss", "Push", "DNP"].includes(prop.result))) return true;
+  if (entry.result === "Loss" && props.every((prop) => prop.result === "Win")) return true;
+  return entry.result === "Win" && entry.payout_type !== "flex" && props.some((prop) => prop.result === "Loss");
+}
+
 function renderCompletedEntryHistory(entries) {
   const target = $("entry-history-list");
   if (!target) return;
@@ -5926,8 +5965,8 @@ function renderCompletedEntryHistory(entries) {
     ? `${entries.length} completed entries · ${entries.reduce((sum, entry) => sum + Number(entry.calibration_legs || 0), 0)} provider-backed calibration legs`
     : "No completed entries with leg details yet.";
   target.innerHTML = entries.map((entry) => `
-    <div class="suggestion entry-history-card ${entry.result === "Win" ? "winning-entry-card" : ""}">
-      ${entry.result === "Win" ? `<div class="winning-entry-banner">WIN · Entry settled</div>` : ""}
+    <div class="suggestion entry-history-card ${entry.result === "Win" && !completedEntryNeedsReview(entry) ? "winning-entry-card" : ""}">
+      ${completedEntryNeedsReview(entry) ? `<div class="settlement-integrity-inline">Result needs review · stored leg evidence and card result do not fully agree.</div>` : entry.result === "Win" ? `<div class="winning-entry-banner">WIN · Entry settled</div>` : ""}
       <div class="suggestion-top">
         <div>
           <span class="pill">#${entry.id}</span>

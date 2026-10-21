@@ -807,6 +807,9 @@ def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof
                     "game": "AAA@BBB",
                     "game_time": "2026-07-30T00:00:00Z",
                     "platform": "PrizePicks",
+                    "provider_offer_id": "offer-123",
+                    "provider_player_id": "player-456",
+                    "provider_event_id": "event-789",
                     "forecast_snapshot": {"source": "verified_history_distribution", "calibration": {
                         "tier": "sport_stat", "sample_size": 80, "segment_sample_size": 80,
                         "raw_probability": 68.0, "probability": 64.0, "uncertainty_points": 8.0,
@@ -828,6 +831,9 @@ def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof
     assert premium["confidence"] <= 2
     assert standard["confidence"] <= 64
     assert standard["team"] == "AAA"
+    assert standard["provider_offer_id"] == "offer-123"
+    assert standard["provider_player_id"] == "player-456"
+    assert standard["provider_event_id"] == "event-789"
     assert standard["sensitivity"]["current_line"] == 20.5
     assert standard["calibration_presentation"]["status"] == "PARTIAL"
     assert standard["calibration_presentation"]["model_probability"] == 68.0
@@ -844,6 +850,30 @@ def test_daily_top_opportunities_keeps_demon_lines_over_only_and_preserves_proof
     assert standard["trust"]["score"] > 0
     assert standard["trust"]["label"] != "No Data"
     assert any(label["label"] == "Market verified · 4 books" for label in standard["data_strength"])
+
+
+def test_confirmed_prop_preserves_provider_identity_for_snapshot_linking(monkeypatch) -> None:
+    from services.offer_snapshot import offer_fingerprint
+
+    monkeypatch.setattr(web_app, "_end_to_end_prop_eligibility", lambda raw: {"eligible": True, "provider": "ESPN"})
+    monkeypatch.setattr(web_app, "_line_sanity_flags", lambda payload: [])
+    raw = {
+        "player": "Player One", "sport": "WNBA", "stat": "Points", "line": 18.5,
+        "platform": "PrizePicks", "game": "A @ B", "game_time": "2026-10-20T20:00:00Z",
+        "provider_offer_id": "offer-123", "provider_player_id": "player-456",
+        "provider_event_id": "event-789", "allowed_directions": ["Over", "Under"],
+        "line_offer_type": "standard", "standard_line": 18.5, "baseline_line": 18.5,
+    }
+    analyzed = {**raw, "confidence": 62.0, "projection": 21.0, "direction": "Over"}
+
+    candidate = web_app._confirmed_prop_candidate(raw, analyzed)
+
+    assert candidate is not None
+    assert candidate["provider_offer_id"] == "offer-123"
+    assert candidate["provider_player_id"] == "player-456"
+    assert candidate["provider_event_id"] == "event-789"
+    assert candidate["allowed_directions"] == ["Over", "Under"]
+    assert offer_fingerprint(candidate) == offer_fingerprint(raw)
 
 
 def test_prop_risk_profiles_set_clear_user_expectations() -> None:
@@ -2289,6 +2319,54 @@ def test_standard_prop_with_projection_below_line_recommends_under(monkeypatch):
 
     assert analyzed["direction"] == "Under"
     assert analyzed["edge"] == 6.5
+
+
+def test_analyzed_prop_preserves_exact_provider_offer_identity(monkeypatch):
+    from services.offer_snapshot import offer_fingerprint
+
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_versioned_calibration_rows", lambda: [])
+    raw = {
+        "player": "Test Player", "team": "NE", "league": "NFL", "stat": "Receiving Yards",
+        "line": 60.5, "projection": 65.0, "platform": "Underdog", "game": "NE@NYG",
+        "game_time": "2026-08-07T23:00:00Z", "provider_offer_id": "offer-123",
+        "provider_player_id": "player-123", "provider_event_id": "event-123",
+        "allowed_directions": ["Over", "Under"],
+    }
+    analyzed = web_app._analyzed_feed_prop(raw, persist_evidence=False)
+
+    assert analyzed["provider_offer_id"] == "offer-123"
+    assert analyzed["provider_event_id"] == "event-123"
+    assert offer_fingerprint(analyzed) == offer_fingerprint(raw)
+
+
+def test_analyzed_prop_keeps_verifiable_market_receipt(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from services.market_baseline import capture_market_baseline
+
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "_versioned_calibration_rows", lambda: [])
+    now = datetime.now(UTC)
+    game = now + timedelta(hours=2)
+    raw = {
+        "player": "Test Player", "team": "NE", "league": "NFL", "stat": "Receiving Yards",
+        "line": 60.5, "projection": 65.0, "direction": "Over", "platform": "Underdog",
+        "game": "NE@NYG", "game_time": game.isoformat(),
+        "decision_receipt": {"market_consensus": {
+            "available": True, "source_type": "multi_book_no_vig", "stale": False,
+            "book_count": 2, "timestamped_book_count": 2,
+            "market_probability": 53.0, "line": 60.5, "direction": "Over",
+            "oldest_update": (now - timedelta(minutes=5)).isoformat(),
+            "last_update": (now - timedelta(minutes=3)).isoformat(),
+            "event": {"event_id": "event-1", "commence_time": game.isoformat()},
+        }},
+    }
+    analyzed = web_app._analyzed_feed_prop(raw, persist_evidence=False)
+
+    baseline, reason = capture_market_baseline(analyzed, now)
+    assert reason == ""
+    assert baseline["probability"] == 53.0
 
 
 def test_advantage_center_watchlist_boost_and_game_context(monkeypatch):
@@ -7511,6 +7589,20 @@ def test_completed_entry_refresh_uses_existing_loader():
     assert "recommended_by_app: Boolean(state.recommendationOrigin)" in source
     assert "tracking_override_allowed" in source
     assert "You can still press Track Paid Entry after submitting in the sportsbook" in source
+
+
+def test_notifications_use_stored_leg_status_without_full_progress_lookup(monkeypatch):
+    monkeypatch.setattr(web_app.EntryRepository, "pending", lambda: [{
+        "id": 17, "props": [
+            {"final_result": "Win", "final_status": "played"},
+            {"final_result": "Unknown", "final_status": "unknown"},
+        ],
+    }])
+    monkeypatch.setattr(web_app, "_entry_progress_payload", lambda *_args: (_ for _ in ()).throw(AssertionError("slow lookup")))
+
+    assert web_app._entry_progress_payloads_for_notifications() == [{
+        "id": 17, "completed_legs": 1, "total_legs": 2, "live_result": "In Progress",
+    }]
 
 
 def test_notification_timing_alerts_reuse_cached_briefing(monkeypatch):

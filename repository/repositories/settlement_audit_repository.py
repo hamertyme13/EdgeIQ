@@ -15,6 +15,64 @@ from utils.entity_normalization import canonical_matchup_key, canonical_person_k
 from utils.time import utc_now
 
 
+def _settled_entry_integrity(session) -> dict:
+    """Flag stored result contradictions without changing financial history."""
+    rows = (
+        session.query(
+            EntryModel.id, EntryModel.result, EntryModel.entry_mode, EntryModel.payout_type,
+            EntryPropModel.final_result, EntryPropModel.final_status, EntryPropModel.actual,
+            EntryPropModel.player_name, EntryPropModel.sport, EntryPropModel.stat,
+            EntryPropModel.direction, EntryPropModel.line, EntryPropModel.game,
+            EntryPropModel.game_time, EntryPropModel.final_source,
+        )
+        .join(EntryPropModel, EntryPropModel.entry_id == EntryModel.id)
+        .filter(EntryModel.status == "Settled", EntryModel.result.in_(("Win", "Loss", "Push")))
+        .order_by(EntryModel.id.desc(), EntryPropModel.id.asc())
+        .all()
+    )
+    grouped: dict[int, dict] = {}
+    for (entry_id, result, mode, payout_type, leg_result, leg_status, actual,
+         player, sport, stat, direction, line, game, game_time, source) in rows:
+        entry = grouped.setdefault(entry_id, {
+            "entry_id": entry_id, "result": result, "entry_mode": mode,
+            "payout_type": payout_type, "legs": 0, "wins": 0, "losses": 0, "unresolved": 0,
+            "leg_details": [],
+        })
+        entry["legs"] += 1
+        entry["wins"] += leg_result == "Win" and str(leg_status or "").lower() == "played" and actual is not None
+        entry["losses"] += leg_result == "Loss" and str(leg_status or "").lower() == "played" and actual is not None
+        entry["unresolved"] += (
+            leg_result not in {"Win", "Loss", "Push", "DNP"}
+            or str(leg_status or "").lower() not in {"played", "dnp"}
+            or (actual is None and str(leg_status or "").lower() != "dnp")
+        )
+        entry["leg_details"].append({
+            "player": player or "Unknown player", "sport": sport or "", "stat": stat or "",
+            "direction": direction or "", "line": line, "game": game or "",
+            "game_time": game_time or "", "result": leg_result or "Unknown",
+            "status": leg_status or "Unknown", "actual": actual, "source": source or "",
+        })
+    counts = {"all_win_recorded_loss": 0, "win_contains_loss": 0, "settled_with_unresolved_leg": 0}
+    flagged = []
+    for entry in grouped.values():
+        reasons = []
+        if entry["result"] == "Loss" and entry["wins"] == entry["legs"]:
+            reasons.append("all_win_recorded_loss")
+        if entry["result"] == "Win" and entry["losses"] and entry["payout_type"] != "flex":
+            reasons.append("win_contains_loss")
+        if entry["unresolved"]:
+            reasons.append("settled_with_unresolved_leg")
+        for reason in reasons:
+            counts[reason] += 1
+        if reasons:
+            flagged.append({key: value for key, value in entry.items() if key != "payout_type"} | {"reasons": reasons})
+    flagged.sort(key=lambda entry: (entry["entry_mode"] != "real", -entry["entry_id"]))
+    return {
+        "affected_entries": len(flagged), "counts": counts,
+        "examples": flagged[:8], "entries": flagged, "read_only": True,
+    }
+
+
 class SettlementAuditRepository:
     @staticmethod
     def record(payload: dict) -> None:
@@ -116,6 +174,7 @@ class SettlementAuditRepository:
                 )
             )
             items = all_items[:max(1, min(limit, 500))]
+            integrity = _settled_entry_integrity(session)
         counts: dict[str, int] = {}
         current_items = [item for item in all_items if item["scope"] == "current"]
         for item in current_items:
@@ -134,7 +193,9 @@ class SettlementAuditRepository:
             "blocked": counts.get("blocked", 0),
             "historical_review": historical_review,
             "statuses": counts,
+            "integrity": integrity,
         }
+
 
     @staticmethod
     def latest_by_entry_ids(entry_ids: list[int]) -> dict[int, dict[int, dict]]:

@@ -1,6 +1,7 @@
 import analytics.entry_suggestions as suggestions_module
 from analytics.entry_suggestions import prop_exposure_key, suggest_entries
 from models.platform import Platform
+from services.offer_snapshot import offer_fingerprint
 
 
 def test_prefilter_reaches_distinct_prizepicks_players_before_alternate_stats():
@@ -32,6 +33,49 @@ def test_suggest_entries_returns_ranked_sport_specific_entries():
     assert [suggestion.rank for suggestion in suggestions] == [1, 2, 3]
     assert all(prop.player.sport == "WNBA" for suggestion in suggestions for prop in suggestion.entry.props)
     assert suggestions[0].score >= suggestions[-1].score
+
+
+def test_generated_leg_preserves_exact_provider_offer_identity():
+    from web.app import _serialize_prop
+
+    raw = {
+        "player": "Player A", "team": "AAA", "league": "WNBA", "stat": "Points",
+        "line": 20.5, "projection": 23.0, "platform": "PrizePicks", "game": "AAA@BBB",
+        "game_time": "2026-08-09T20:00:00Z", "provider_offer_id": "offer-123",
+        "provider_player_id": "player-123", "provider_event_id": "event-123",
+        "allowed_directions": ["Over"],
+    }
+    generated = suggestions_module._props_from_feed(raw, Platform.PRIZEPICKS)[0]
+
+    assert offer_fingerprint(_serialize_prop(generated)) == offer_fingerprint(raw)
+
+
+def test_generated_leg_keeps_verifiable_market_receipt():
+    from datetime import UTC, datetime, timedelta
+
+    from services.market_baseline import capture_market_baseline
+    from web.app import _serialize_prop
+
+    now = datetime.now(UTC)
+    game = now + timedelta(hours=2)
+    raw = {
+        "player": "Player A", "team": "AAA", "league": "WNBA", "stat": "Points",
+        "line": 20.5, "projection": 23.0, "direction": "Over", "platform": "PrizePicks",
+        "game": "AAA@BBB", "game_time": game.isoformat(),
+        "decision_receipt": {"market_consensus": {
+            "available": True, "source_type": "multi_book_no_vig", "stale": False,
+            "book_count": 2, "timestamped_book_count": 2,
+            "market_probability": 54.0, "line": 20.5, "direction": "Over",
+            "oldest_update": (now - timedelta(minutes=5)).isoformat(),
+            "last_update": (now - timedelta(minutes=3)).isoformat(),
+            "event": {"event_id": "event-1", "commence_time": game.isoformat()},
+        }},
+    }
+    generated = _serialize_prop(suggestions_module._props_from_feed(raw, Platform.PRIZEPICKS)[0])
+
+    baseline, reason = capture_market_baseline(generated, now)
+    assert reason == ""
+    assert baseline["probability"] == 54.0
 
 
 def test_suggest_entries_can_recommend_under_legs_without_explicit_projection():

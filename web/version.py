@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261019-handoff-expiry"
+STATIC_ASSET_VERSION = "20261021-integrity-review"

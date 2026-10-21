@@ -7,6 +7,7 @@ from sqlalchemy.orm import sessionmaker
 import repository.database as database
 from analytics.hierarchical_calibration import calibrate_probability
 from repository.database import Base
+from repository.models.board_offer_observation_model import BoardOfferObservationModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
 from repository.repositories import board_offer_repository as board_module
 from repository.repositories import model_rehabilitation_repository as rehabilitation_module
@@ -14,6 +15,7 @@ from repository.repositories import settings_repository as settings_module
 from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
+from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 
 
 def _isolated_database(tmp_path, monkeypatch):
@@ -175,7 +177,74 @@ def test_settled_board_result_joins_to_immutable_leg_evidence(tmp_path, monkeypa
     assert BoardOfferRepository.settle_pending(now=game + timedelta(hours=5))["settled"] == 1
     linked = LegRecommendationSnapshotRepository.settled_linked_rows()
     assert linked["settled_board_offers"] == 1
+    assert linked["linkage"] == {
+        "recommendation_snapshots": 1, "with_board_offer": 1, "with_settled_board_offer": 1,
+    }
     assert linked["rows"][0]["snapshot_id"] == saved["props"][0]["leg_recommendation_snapshot_id"]
+    assert linked["rows"][0]["actual"] == 22.0
+
+
+def test_large_board_defers_coverage_count_but_keeps_linked_outcome(tmp_path, monkeypatch):
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    monkeypatch.setattr(board_module, "SessionLocal", session_local)
+    game = (datetime.now(UTC) + timedelta(days=2)).replace(hour=20, minute=0, second=0, microsecond=0)
+    saved = ModelRehabilitationRepository.save_feed({"props": [{
+        "player": "Player One", "sport": "WNBA", "stat": "Points",
+        "line": 18.5, "direction": "Over", "platform": "PrizePicks",
+        "game": "A @ B", "game_time": game.isoformat(), "provider_offer_id": "offer-1",
+        "projection": 21.0, "confidence": 61.0,
+    }]}, model_version="edgeiq-test")
+    BoardOfferRepository.record_many(saved["props"], "PrizePicks")
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda prop: {
+        "actual": 22.0, "status": "played", "source": "espn",
+        "game_date": game.date().isoformat(),
+    })
+    assert BoardOfferRepository.settle_pending(now=game + timedelta(hours=5))["settled"] == 1
+    with session_local() as session:
+        observation = session.query(BoardOfferObservationModel).one()
+        observation.id = 100_001
+        session.commit()
+
+    linked = LegRecommendationSnapshotRepository.settled_linked_rows()
+    assert linked["settled_board_offers"] is None
+    assert linked["board_coverage_status"] == "deferred_large_board"
+    assert linked["rows"][0]["actual"] == 22.0
+
+
+def test_verified_today_candidate_links_to_settled_provider_board(tmp_path, monkeypatch):
+    from web import app as web_app
+
+    session_local = _isolated_database(tmp_path, monkeypatch)
+    monkeypatch.setattr(board_module, "SessionLocal", session_local)
+    monkeypatch.setattr(web_app, "_end_to_end_prop_eligibility", lambda raw: {"eligible": True, "provider": "ESPN"})
+    monkeypatch.setattr(web_app, "_line_sanity_flags", lambda payload: [])
+    game = (datetime.now(UTC) + timedelta(days=2)).replace(hour=20, minute=0, second=0, microsecond=0)
+    raw = {
+        "player": "Player One", "sport": "WNBA", "stat": "Points", "line": 18.5,
+        "direction": "Over", "platform": "PrizePicks", "game": "A @ B",
+        "game_time": game.isoformat(), "provider_offer_id": "offer-123",
+        "provider_player_id": "player-456", "provider_event_id": "event-789",
+        "standard_line": 18.5, "baseline_line": 18.5,
+        "end_to_end_confirmed": True,
+    }
+    analyzed = {**raw, "projection": 21.0, "confidence": 61.0}
+    candidate = web_app._confirmed_prop_candidate(raw, analyzed)
+    assert candidate is not None
+    candidate.pop("_raw")
+    saved = ModelRehabilitationRepository.save_feed({
+        "daily_briefing": {"platform": "PrizePicks", "top_opportunities": [candidate]},
+    }, model_version="edgeiq-test")
+    board_rows = ProviderOfferSnapshotRepository.capture_many([raw])
+    assert saved["daily_briefing"]["top_opportunities"][0]["offer_snapshot_id"] == board_rows[0]["offer_snapshot_id"]
+    assert BoardOfferRepository.record_many(board_rows, "PrizePicks") == 1
+    monkeypatch.setattr(board_module.FinalStatsRepository, "find_result", lambda prop: {
+        "actual": 22.0, "status": "played", "source": "espn",
+        "game_date": game.date().isoformat(),
+    })
+    assert BoardOfferRepository.settle_pending(now=game + timedelta(hours=5))["settled"] == 1
+    linked = LegRecommendationSnapshotRepository.settled_linked_rows()
+    assert len(linked["rows"]) == 1
+    assert linked["linkage"]["with_settled_board_offer"] == 1
     assert linked["rows"][0]["actual"] == 22.0
 
 

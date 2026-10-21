@@ -6279,6 +6279,23 @@ td,
   gap: 10px;
 }
 
+.settlement-integrity-warning,
+.settlement-integrity-inline {
+  border: 1px solid var(--warning, #e6ae47);
+  color: var(--text, #f2f4fa);
+  background: rgba(230, 174, 71, 0.1);
+  padding: 12px 14px;
+}
+
+.settlement-integrity-warning { margin: 12px 0; }
+.settlement-integrity-warning p { margin: 6px 0 0; }
+.settlement-integrity-inline { margin-bottom: 10px; font-weight: 700; }
+.settlement-integrity-entries { display: grid; gap: 8px; margin-top: 10px; max-height: 420px; overflow-y: auto; }
+.settlement-integrity-entry { border-top: 1px solid var(--border, #334155); padding: 8px 0; }
+.settlement-integrity-entry summary { cursor: pointer; overflow-wrap: anywhere; }
+.settlement-integrity-entry ul { margin: 8px 0 0; padding-left: 20px; }
+.settlement-integrity-entry li { margin: 5px 0; overflow-wrap: anywhere; }
+
 .compact-details {
   margin-top: 10px;
 }

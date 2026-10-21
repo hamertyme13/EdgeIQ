@@ -42,6 +42,16 @@ def test_duplicate_provider_lines_count_as_one_independent_outcome():
     assert result["exclusions"]["correlated_duplicate"] == 1
 
 
+def test_opposite_directions_on_one_market_are_not_independent_outcomes():
+    over = _row(1, actual=22.0, direction="Over", confidence=70.0)
+    under = _row(1, snapshot_id="under-leg", actual=22.0, direction="Under", confidence=30.0)
+    result = evaluate_linked_offers([over, under])
+
+    assert result["independent_settled_legs"] == 1
+    assert result["versioned_decisions"] == 1
+    assert result["exclusions"]["correlated_duplicate"] == 1
+
+
 def test_same_sporting_outcome_across_versions_is_not_counted_twice():
     result = evaluate_linked_offers([_row(0), _row(0, model_version="v-next", snapshot_id="next")])
     assert result["independent_settled_legs"] == 1
@@ -70,6 +80,27 @@ def test_small_or_truncated_cohort_never_passes_review_gate():
     assert evaluate_linked_offers(rows, truncated=True)["versions"][0]["review_gate_passed"] is False
 
 
+def test_holdout_market_evidence_reports_missing_and_invalid_quotes():
+    rows = [_row(index) for index in range(120)]
+    rows[-2]["market_baseline_exclusion"] = "market_timing_unverified"
+    rows[-1]["market_baseline"] = {
+        "source": "The Odds API exact-line no-vig", "direction": "Over",
+        "event_id": "event-119", "observed_at": rows[-1]["game_start"],
+        "book_count": 2, "line": 20.5, "probability": 54.0,
+    }
+
+    coverage = evaluate_linked_offers(rows)["versions"][0]["market_evidence_coverage"]
+
+    assert coverage == {
+        "samples": 30, "paired_exact_line": 0, "unavailable": 30,
+        "reasons": {
+            "baseline_unavailable": 28,
+            "captured_baseline_invalid_at_evaluation": 1,
+            "market_timing_unverified": 1,
+        },
+    }
+
+
 def test_paired_market_holdout_must_be_beaten_on_same_legs():
     rows = []
     for index in range(120):
@@ -84,6 +115,9 @@ def test_paired_market_holdout_must_be_beaten_on_same_legs():
         rows.append(row)
     result = evaluate_linked_offers(rows)
     comparison = result["versions"][0]["market_comparison"]
+    assert result["versions"][0]["market_evidence_coverage"] == {
+        "samples": 30, "paired_exact_line": 30, "unavailable": 0, "reasons": {},
+    }
     assert comparison == {
         "paired_samples": 30, "model_brier": 0.16, "market_brier": 0.25,
         "ready": True, "passed": True,
@@ -96,8 +130,10 @@ def test_paired_market_holdout_must_be_beaten_on_same_legs():
 def test_read_only_results_endpoint_uses_linked_evidence(monkeypatch):
     monkeypatch.setattr(results_router.LegRecommendationSnapshotRepository, "settled_linked_rows", lambda: {
         "rows": [_row(0)], "settled_board_offers": 2, "truncated": False,
+        "linkage": {"recommendation_snapshots": 3, "with_board_offer": 2, "with_settled_board_offer": 1},
     })
     result = results_router.linked_offer_evaluation()
     assert result["settled_board_offers"] == 2
     assert result["independent_settled_legs"] == 1
+    assert result["linkage"]["with_settled_board_offer"] == 1
     assert result["automatic_promotion"] is False

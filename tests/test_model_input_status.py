@@ -39,3 +39,20 @@ def test_model_input_status_requires_coverage_for_all_cached_segments():
     assert status["status"] == "attention"
     assert status["value"] == "1/10 current"
     assert "8/10 have dated source games" in status["detail"]
+
+
+def test_fresh_cache_requires_daily_source_checks_for_its_sports():
+    now = datetime(2026, 10, 19, 12, tzinfo=UTC)
+    features = {
+        "segments": 2, "current_segments": 2, "sourced_segments": 2,
+        "sports": ["WNBA", "NFL"], "last_materialized_at": now.isoformat(),
+    }
+    missing = model_input_status(features, source_checks={"WNBA": True, "NFL": False}, now=now)
+    checked = model_input_status(features, source_checks={"WNBA": True, "NFL": True}, now=now)
+
+    assert missing["status"] == "attention"
+    assert missing["unchecked_sports"] == ["NFL"]
+    assert "Daily source checks still needed for NFL" in missing["detail"]
+    assert checked["status"] == "ready"
+    assert checked["source_checks"] == "checked"
+    assert "does not prove every final stat" in checked["detail"]

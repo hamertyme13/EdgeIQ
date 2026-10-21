@@ -80,6 +80,10 @@ class Prop:
 
     provider_offer_id: str = ""
 
+    allowed_directions: list[str] | None = None
+
+    decision_receipt: dict | None = None
+
     offer_snapshot_id: str = ""
 
     recommendation_snapshot_id: str = ""

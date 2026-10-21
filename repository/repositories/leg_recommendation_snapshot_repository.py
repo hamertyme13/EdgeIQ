@@ -124,28 +124,43 @@ class LegRecommendationSnapshotRepository:
         database.initialize_database()
         bound = max(1, min(int(limit), 10000))
         with database.SessionLocal() as session:
-            latest = (
-                session.query(func.max(BoardOfferObservationModel.id).label("id"))
+            board = BoardOfferObservationModel
+            leg = LegRecommendationSnapshotModel
+            board_match = session.query(board.id).filter(board.offer_snapshot_id == leg.offer_snapshot_id).exists()
+            settled_match = session.query(board.id).filter(
+                board.offer_snapshot_id == leg.offer_snapshot_id,
+                board.outcome.in_(("Win", "Loss", "Push")),
+                board.final_game_date != "",
+            ).exists()
+            snapshot_count = session.query(func.count(leg.id)).filter(leg.offer_snapshot_id != "").scalar() or 0
+            linked_count = session.query(func.count(leg.id)).filter(leg.offer_snapshot_id != "", board_match).scalar() or 0
+            settled_count = session.query(func.count(leg.id)).filter(leg.offer_snapshot_id != "", settled_match).scalar() or 0
+            latest_id = (
+                session.query(func.max(board.id))
                 .filter(
-                    BoardOfferObservationModel.offer_snapshot_id != "",
-                    BoardOfferObservationModel.outcome.in_(("Win", "Loss", "Push")),
-                    BoardOfferObservationModel.final_game_date != "",
+                    board.offer_snapshot_id == LegRecommendationSnapshotModel.offer_snapshot_id,
+                    board.outcome.in_(("Win", "Loss", "Push")),
+                    board.final_game_date != "",
                 )
-                .group_by(BoardOfferObservationModel.offer_snapshot_id)
-                .subquery()
+                .correlate(LegRecommendationSnapshotModel)
+                .scalar_subquery()
             )
             records = (
-                session.query(LegRecommendationSnapshotModel, BoardOfferObservationModel)
-                .join(
-                    BoardOfferObservationModel,
-                    LegRecommendationSnapshotModel.offer_snapshot_id == BoardOfferObservationModel.offer_snapshot_id,
-                )
-                .join(latest, BoardOfferObservationModel.id == latest.c.id)
-                .order_by(BoardOfferObservationModel.scheduled_start.asc(), LegRecommendationSnapshotModel.id.asc())
+                session.query(LegRecommendationSnapshotModel, board)
+                .join(board, board.id == latest_id)
+                .filter(LegRecommendationSnapshotModel.offer_snapshot_id != "")
+                .order_by(board.scheduled_start.asc(), LegRecommendationSnapshotModel.id.asc())
                 .limit(bound + 1)
                 .all()
             )
-            total_board = session.query(func.count()).select_from(latest).scalar() or 0
+            board_max_id = session.query(func.max(board.id)).scalar() or 0
+            board_count_exact = board_max_id <= 100_000
+            total_board = (
+                session.query(func.count(func.distinct(board.offer_snapshot_id)))
+                .filter(board.offer_snapshot_id != "", board.outcome.in_(("Win", "Loss", "Push")),
+                        board.final_game_date != "")
+                .scalar() or 0
+            ) if board_count_exact else None
             rows = []
             for leg, board in records[:bound]:
                 evidence = json.loads(str(leg.evidence))
@@ -161,4 +176,13 @@ class LegRecommendationSnapshotRepository:
                     "provider": board.provider,
                     "player_key": board.normalized_player_key,
                 })
-            return {"rows": rows, "settled_board_offers": int(total_board), "truncated": len(records) > bound}
+            return {
+                "rows": rows, "settled_board_offers": int(total_board) if total_board is not None else None,
+                "board_coverage_status": "exact" if board_count_exact else "deferred_large_board",
+                "linkage": {
+                    "recommendation_snapshots": int(snapshot_count),
+                    "with_board_offer": int(linked_count),
+                    "with_settled_board_offer": int(settled_count),
+                },
+                "truncated": len(records) > bound,
+            }

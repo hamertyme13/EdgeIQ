@@ -226,12 +226,14 @@ class PlayerFeatureRepository:
                 func.max(PlayerFeatureModel.materialized_at),
                 func.max(PlayerFeatureModel.source_updated_at),
             ).one()
+            sports = [row[0] for row in session.query(PlayerFeatureModel.sport).distinct().all() if row[0]]
             return {
                 "segments": count,
                 "current_segments": current,
                 "sourced_segments": sourced,
                 "last_materialized_at": latest.isoformat() if latest else "",
                 "latest_source_game_date": newest_source or "",
+                "sports": sorted(sports),
             }
 
 
@@ -251,9 +253,9 @@ def _serialize(row: PlayerFeatureModel) -> dict:
     }
 
 
-def _json(value: str, default):
+def _json(value: object, default):
     try:
-        parsed = json.loads(value or "")
+        parsed = json.loads(str(value or ""))
         return parsed if isinstance(parsed, type(default)) else default
     except (TypeError, ValueError):
         return default

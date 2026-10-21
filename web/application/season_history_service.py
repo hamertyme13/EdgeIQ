@@ -10,7 +10,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from data.providers.espn import fetch_final_stats
-from repository.database import engine
+from repository.database import SessionLocal, engine
+from repository.models.settings_model import SettingsModel
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.settings_repository import SettingsRepository
 from services.operation_lock import named_operation_lock
@@ -113,6 +114,22 @@ def season_history_overview() -> dict:
             "completed_at": status.get("completed_at", ""),
         })
     return {"timezone": "America/New_York", "date": today, "leagues": leagues}
+
+
+def daily_source_checks(sports: list[str], *, today: date | None = None) -> dict[str, bool]:
+    """Report successful daily source polls, not final-stat completeness."""
+    selected = {str(sport).upper() for sport in sports if sport}
+    if not selected:
+        return {}
+    keys = {f"season_history:daily_success:{sport}" for sport in selected}
+    current = today or datetime.now(ZoneInfo("America/New_York")).date()
+    with SessionLocal() as session:
+        completed = {
+            row.key for row in session.query(SettingsModel.key, SettingsModel.value)
+            .filter(SettingsModel.key.in_(keys)).all()
+            if row.value == current.isoformat()
+        }
+    return {sport: f"season_history:daily_success:{sport}" in completed for sport in sorted(selected)}
 
 
 def season_window(sport: str, today: date | None = None) -> tuple[date, date]:

@@ -136,6 +136,20 @@ def test_overview_does_not_confuse_manual_success_with_daily_completion(monkeypa
     assert next(row for row in service.season_history_overview()["leagues"] if row["sport"] == "WNBA")["completed_today"] is True
 
 
+def test_daily_source_checks_reads_only_success_markers_for_requested_sports(monkeypatch):
+    session = MagicMock()
+    session.query.return_value.filter.return_value.all.return_value = [
+        SimpleNamespace(key="season_history:daily_success:WNBA", value="2026-10-19"),
+        SimpleNamespace(key="season_history:daily_success:NFL", value="2026-10-18"),
+    ]
+    monkeypatch.setattr(service, "SessionLocal", lambda: nullcontext(session))
+
+    assert service.daily_source_checks(["WNBA", "NFL"], today=date(2026, 10, 19)) == {
+        "NFL": False, "WNBA": True,
+    }
+    assert service.daily_source_checks([], today=date(2026, 10, 19)) == {}
+
+
 def test_stale_status_is_reported_without_changing_worker_state():
     state = {"state": "running", "updated_at": (service.utc_now() - timedelta(hours=1)).isoformat()}
     assert service._visible_status(state)["state"] == "stalled"

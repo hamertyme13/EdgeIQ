@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261019-handoff-expiry" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261021-integrity-review" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -680,10 +680,10 @@
                 </div>
                 <div id="entry-loss-protection" class="entry-protection-card muted-card">Checking Loss Protection...</div>
                 <div class="entry-builder-steps" role="tablist" aria-label="Entry Builder steps">
-                  <button class="entry-step-button active" type="button" data-entry-step="props"><span>1</span>Add Props</button>
-                  <button class="entry-step-button" type="button" data-entry-step="settings"><span>2</span>Card Settings</button>
+                  <button class="entry-step-button active" type="button" data-entry-step="settings"><span>1</span>Card Settings</button>
+                  <button class="entry-step-button" type="button" data-entry-step="props"><span>2</span>Add Props</button>
                 </div>
-                <form id="prop-form" class="form-grid" data-active-step="props">
+                <form id="prop-form" class="form-grid" data-active-step="settings">
                   <label class="field-label entry-prop-field">Sport
                     <select id="prop-sport">
                       <option value="" selected>Select sport</option>
@@ -857,6 +857,7 @@
                       <option value="flex">Flex</option>
                     </select>
                   </label>
+                  <button id="entry-settings-next" type="button" class="entry-config-field">Continue to Props</button>
                   <button id="toggle-entry-options" type="button" class="secondary entry-options-toggle" aria-expanded="false">More Options</button>
                   <button type="submit" class="add-prop-submit entry-prop-field">Add Prop</button>
                 </form>
@@ -1834,6 +1835,7 @@
               </div>
             </div>
             <div id="settlement-repair-preview" class="suggestion-list" hidden></div>
+            <div id="settlement-integrity-warning" class="settlement-integrity-warning" role="status" hidden></div>
             <div id="settlement-audit-list" class="suggestion-list"></div>
           </div>
           <div class="panel" data-workspace-pane="performance">
@@ -2072,7 +2074,7 @@
     <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/player-workspace.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/app.js?v=20261019-handoff-expiry"></script>
+    <script src="/static/app.js?v=20261021-integrity-review"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

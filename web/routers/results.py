@@ -18,11 +18,13 @@ router = APIRouter(tags=["results"])
 @router.get("/api/analytics/linked-offer-evaluation")
 def linked_offer_evaluation() -> dict:
     evidence = LegRecommendationSnapshotRepository.settled_linked_rows()
-    return evaluate_linked_offers(
+    evaluation = evaluate_linked_offers(
         evidence["rows"],
         settled_board_offers=evidence["settled_board_offers"],
         truncated=evidence["truncated"],
     )
+    evaluation["linkage"] = evidence["linkage"]
+    return evaluation
 
 
 @router.get("/api/analytics/complete-board-evidence")

@@ -97,7 +97,24 @@ def _metrics(rows: list[dict]) -> dict:
     }
 
 
-def evaluate_linked_offers(rows: list[dict], *, settled_board_offers: int = 0, truncated: bool = False) -> dict:
+def _market_evidence_coverage(rows: list[dict]) -> dict:
+    reasons: Counter[str] = Counter()
+    eligible = 0
+    for row in rows:
+        if row["market_probability"] is not None:
+            eligible += 1
+            continue
+        reason = str(row.get("market_baseline_exclusion") or "").strip()
+        if not reason:
+            reason = "captured_baseline_invalid_at_evaluation" if row.get("market_baseline") else "baseline_unavailable"
+        reasons[reason] += 1
+    return {
+        "samples": len(rows), "paired_exact_line": eligible,
+        "unavailable": len(rows) - eligible, "reasons": dict(sorted(reasons.items())),
+    }
+
+
+def evaluate_linked_offers(rows: list[dict], *, settled_board_offers: int | None = 0, truncated: bool = False) -> dict:
     exclusions: Counter[str] = Counter()
     qualified = []
     for row in rows:
@@ -111,7 +128,7 @@ def evaluate_linked_offers(rows: list[dict], *, settled_board_offers: int = 0, t
     for row in qualified:
         key = (
             row["model_version"], row["player_key"], row.get("sport"),
-            row["final_game_date"], row.get("game"), row["stat"], row["direction"],
+            row["final_game_date"], row.get("game"), row["stat"],
         )
         if key in unique:
             exclusions["correlated_duplicate"] += 1
@@ -160,6 +177,7 @@ def evaluate_linked_offers(rows: list[dict], *, settled_board_offers: int = 0, t
                 "market_brier": round(market_brier, 4) if market_brier is not None else None,
                 "ready": market_ready, "passed": market_passed,
             },
+            "market_evidence_coverage": _market_evidence_coverage(holdout),
             "review_gate_passed": neutral_passed and market_passed,
             "paid_release_approved": False,
             "segments": [
@@ -172,7 +190,12 @@ def evaluate_linked_offers(rows: list[dict], *, settled_board_offers: int = 0, t
         "method": "linked_offer_chronological_holdout", "rows_examined": len(rows),
         "independent_settled_legs": len(sporting_outcomes),
         "versioned_decisions": len(unique), "settled_board_offers": settled_board_offers,
-        "coverage_note": "Board count includes recommended and rejected offers; only pregame scored recommendations enter Brier metrics.",
+        "coverage_note": (
+            "Complete-board distinct count deferred because the board is large; only pregame scored recommendations enter Brier metrics."
+            if settled_board_offers is None else
+            "Board count includes recommended and rejected offers; only pregame scored recommendations enter Brier metrics."
+        ),
+        "independence_note": "Opposite directions and provider copies of one player/game/stat count once per model version. Different stats in the same game may still be correlated.",
         "baseline_note": "Neutral 50% and captured exact-line no-vig prices are separate; market comparison uses only paired pregame evidence.",
         "exclusions": dict(sorted(exclusions.items())), "truncated": truncated,
         "versions": versions, "automatic_promotion": False,
