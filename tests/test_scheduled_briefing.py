@@ -27,6 +27,17 @@ def test_briefing_schedule_update_preserves_other_jobs():
     assert json.loads(saved["refresh_schedule"]) == result["schedule"]
     with pytest.raises(ValidationError):
         RefreshSchedulePayload(daily_briefing="25:99")
+    with pytest.raises(ValidationError):
+        RefreshSchedulePayload(nba_team_history="25:99")
+
+
+def test_nba_team_history_is_visible_on_daily_schedule(monkeypatch):
+    monkeypatch.setattr(web_app.SettingsRepository, "get", lambda _key, default="": default)
+    payload = web_app._refresh_schedule_payload()
+
+    assert payload["schedule"]["nba_team_history"] == "05:30"
+    assert next(job for job in payload["jobs"] if job["key"] == "nba_team_history")["time"] == "05:30"
+    assert retry_minutes("nba_team_history") == 60
 
 
 def test_maintenance_runner_waits_for_its_own_jobs():

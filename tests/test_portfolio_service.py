@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 from web.application.portfolio_service import (
     active_portfolio_monitor_payload,
+    diversified_card_batch,
     portfolio_intelligence_payload,
     portfolio_ranked_suggestions,
     refresh_portfolio_market_payload,
@@ -22,6 +23,30 @@ def _prop(player: str, game: str, confidence: float = 70.0) -> dict:
         "game": game,
         "game_time": "2026-10-07T19:00:00Z",
     }
+
+
+def test_diversified_batch_maximizes_cards_before_value():
+    cards = [
+        {"entry": {"props": [_prop("A", "A @ B"), _prop("B", "A @ B")]}, "score": 99},
+        {"entry": {"props": [_prop("A", "A @ B"), _prop("C", "A @ B")]}, "score": 98},
+        {"entry": {"props": [_prop("D", "C @ D"), _prop("E", "C @ D")]}, "score": 80},
+        {"entry": {"props": [_prop("F", "E @ F"), _prop("G", "E @ F")]}, "score": 79},
+        {"entry": {"props": [_prop("H", "G @ H"), _prop("I", "G @ H")]}, "score": 78},
+        {"entry": {"props": [_prop("J", "I @ J"), _prop("K", "I @ J")]}, "score": 77},
+    ]
+    batch = diversified_card_batch(cards)
+    players = [prop["player"] for card in batch for prop in card["entry"]["props"]]
+    assert len(batch) == 5
+    assert len(players) == len(set(players))
+    assert [card["rank"] for card in batch] == [1, 2, 3, 4, 5]
+
+
+def test_diversified_batch_returns_fewer_when_players_overlap():
+    cards = [
+        {"entry": {"props": [_prop("A", "A @ B"), _prop("B", "A @ B")]}, "score": score}
+        for score in (90, 80, 70)
+    ]
+    assert len(diversified_card_batch(cards)) == 1
 
 
 def test_portfolio_intelligence_reports_player_game_and_market_concentration():

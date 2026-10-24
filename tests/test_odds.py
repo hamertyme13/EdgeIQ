@@ -1,5 +1,6 @@
 from services.betting import implied_probability
 from services.odds import (
+    find_event,
     find_game_odds,
     format_consensus_line,
     get_games,
@@ -8,6 +9,43 @@ from services.odds import (
     summarize_game_odds,
     summarize_player_prop_market,
 )
+
+
+def test_exact_player_odds_match_the_scheduled_game_not_first_same_team_event(monkeypatch):
+    events = [
+        {"id": "early", "away_team": "Indiana Fever", "home_team": "Seattle Storm",
+         "commence_time": "2026-10-21T16:00:00Z"},
+        {"id": "late", "away_team": "Indiana Fever", "home_team": "Seattle Storm",
+         "commence_time": "2026-10-21T23:00:00Z"},
+    ]
+    assert find_event("IND @ SEA", "WNBA", events) is None
+    assert find_event("IND @ SEA", "WNBA", events, game_time="2026-10-21T23:00:00Z") == events[1]
+    assert find_event("IND @ SEA", "WNBA", events, game_time="2026-10-22T23:00:00Z") is None
+    monkeypatch.setenv("ODDS_API_KEY", "test-key")
+    monkeypatch.setattr("services.odds.get_events", lambda sport: events)
+    monkeypatch.setattr("services.odds._interactive_json", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("No event odds should be requested without an exact event match")
+    ))
+    result = get_player_prop_consensus(
+        "Kelsey Mitchell", "Points", "WNBA", "IND @ SEA", 20.5,
+        game_time="2026-10-22T23:00:00Z",
+    )
+    assert result["available"] is False
+    assert "scheduled start" in result["reason"]
+
+    class Response:
+        data = {**events[1], "bookmakers": []}
+        stale = False
+        age_seconds = 0
+
+    requested = []
+    monkeypatch.setattr("services.odds._interactive_json", lambda url, **kwargs: requested.append(url) or Response())
+    get_player_prop_consensus(
+        "Kelsey Mitchell", "Points", "WNBA", "IND @ SEA", 20.5,
+        game_time="2026-10-21T23:00:00Z",
+    )
+    assert len(requested) == 1
+    assert "/events/late/odds?" in requested[0]
 
 
 def test_positive_odds():

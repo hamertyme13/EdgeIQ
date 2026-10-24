@@ -728,9 +728,10 @@ def optimized_entries_payload(
     max_same_team: int,
     exclude_correlated: bool,
     apply_feedback: bool,
+    batch: bool = False,
     *,
     optimize: Callable[..., list],
-    value_rank: Callable[[list, str], list[dict]],
+    value_rank: Callable[[list, str, int], list[dict]],
     obstacles: Callable[[list[dict]], list],
 ) -> dict:
     maximum_legs = _maximum_legs(platform)
@@ -738,19 +739,24 @@ def optimized_entries_payload(
         raise RecommendationRequestError(
             f"Use a {platform} leg range between 2 and {maximum_legs}."
         )
+    candidate_limit = min(15, max(limit * 3, limit)) if batch else limit
     suggestions = optimize(
         platform,
         _sport_filter(sport),
         min_legs,
         max_legs,
-        limit,
+        candidate_limit,
         min_confidence,
         min_edge,
         max_same_team,
         exclude_correlated,
         apply_feedback,
     )
-    serialized = value_rank(suggestions, platform)
+    serialized = value_rank(suggestions, platform, candidate_limit)
+    if batch:
+        from web.application.portfolio_service import diversified_card_batch
+
+        serialized = diversified_card_batch(serialized, limit)
     portfolio_ready = [
         suggestion for suggestion in serialized
         if not (suggestion.get("portfolio") or {}).get("conflicts")
@@ -764,6 +770,20 @@ def optimized_entries_payload(
         "portfolio_ready_count": len(portfolio_ready),
         "best_value_pick": serialized[0] if serialized else None,
         "obstacles": obstacles(serialized),
+        "batch": {
+            "requested": limit,
+            "produced": len(serialized),
+            "candidates": len(suggestions),
+            "message": (
+                "No same-day provider cards are available for this sport and platform. Refresh provider lines or check the next slate."
+                if batch and not suggestions else
+                f"Built {len(serialized)} of {limit} cards without repeating a player. "
+                "More same-day eligible props or looser filters are needed for five."
+                if batch and len(serialized) < limit else
+                f"Built {len(serialized)} cards with no player repeated across the batch."
+                if batch else ""
+            ),
+        } if batch else None,
         "platform": platform,
         "sport": sport,
         "min_legs": min_legs,

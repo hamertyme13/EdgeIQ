@@ -51,6 +51,7 @@ def suggest_entries(
     avoid_prop_keys: set[str] | None = None,
     candidate_cache: dict[tuple[int, str], list[Prop]] | None = None,
     direction_filter: str = "Both",
+    candidate_pool_limit: int | None = None,
 ) -> list[SuggestedEntry]:
     if leg_count < 2:
         raise ValueError("Suggested entries need at least two legs.")
@@ -58,7 +59,7 @@ def suggest_entries(
     recommendation_props = _prefilter_raw_markets(
         [prop for prop in raw_props if _recommendation_offer_allowed(prop, platform)],
         sport,
-        limit=max(32, leg_count * 4) if direction_filter in {"Over", "Under"} else max(8, leg_count * 2),
+        limit=candidate_pool_limit or (max(32, leg_count * 4) if direction_filter in {"Over", "Under"} else max(8, leg_count * 2)),
     )
     candidates = []
     eligible_props = []

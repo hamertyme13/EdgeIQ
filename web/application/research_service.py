@@ -1,6 +1,21 @@
 from __future__ import annotations
 
 from repository.repositories.research_evidence_repository import ResearchEvidenceRepository
+from repository.repositories.team_history_repository import TeamHistoryRepository
+from utils.ttl_cache import TTLMap
+
+_NBA_TEAM_GAMES: TTLMap[str, list[dict]] = TTLMap(max_size=32)
+
+
+def nba_team_games_before(game_time: str, opponent: str) -> list[dict]:
+    if not game_time or not opponent:
+        return []
+    cached = _NBA_TEAM_GAMES.get(game_time)
+    if cached is not None:
+        return cached
+    games = TeamHistoryRepository.before("NBA", game_time)
+    _NBA_TEAM_GAMES.set(game_time, games, ttl=300)
+    return games
 
 SOURCE_URLS = {
     "ESPN": "https://www.espn.com/",
@@ -46,6 +61,27 @@ def persist_player_research(
         facts.append(_fact(
             player, sport, stat, platform, game, "probability_forecast", "EdgeIQ forecast",
             payload["forecast"], 240, source_kind="model",
+        ))
+    if payload.get("nba_points_intelligence"):
+        intelligence = payload["nba_points_intelligence"]
+        facts.append(_fact(
+            player, sport, stat, platform, game, "nba_points_history", "EdgeIQ verified history",
+            {
+                "line": payload.get("line"),
+                "thresholds": {
+                    key: intelligence["thresholds"][key]
+                    for key in ("last_5", "last_10", "last_20", "season", "verified_season", "opponent")
+                },
+                "matchup": intelligence["matchup"],
+                "consistency": intelligence["consistency"],
+                "market": intelligence["market"],
+                "data_reliability": intelligence.get("data_reliability") or {},
+                "research_projection_note": (intelligence.get("projection") or {}).get("note"),
+                "historical_only": True,
+                "season_type_unavailable": intelligence["season_provenance"]["unverified_games"] > 0,
+                "season_provenance": intelligence["season_provenance"],
+            },
+            240, source_kind="derived_verified_history",
         ))
     role_payload = {
         "starter_split": (payload.get("splits") or {}).get("starter"),

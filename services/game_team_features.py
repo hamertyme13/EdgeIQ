@@ -41,6 +41,56 @@ def team_history_features(
     }
 
 
+def opponent_points_allowed_context(opponent: str, game_start: str, settled_games: list[dict]) -> dict:
+    """Descriptive NBA defense from unique, completed games known before tipoff."""
+    unavailable = {
+        "sample_size": 0, "last_5": None, "last_10": None, "last_20": None,
+        "league_average": None, "difference_from_league": None, "defensive_rank": None,
+        "advantage_score": None, "source": "unavailable", "source_games": [],
+        "status": "Verified opponent team finals are unavailable.",
+    }
+    if not opponent or not game_start:
+        return unavailable
+    try:
+        target = datetime.fromisoformat(game_start.replace("Z", "+00:00"))
+    except ValueError:
+        return unavailable
+    season_year = target.year if target.month >= 9 else target.year - 1
+    season_start = datetime(season_year, 9, 15, tzinfo=UTC)
+    games = []
+    for row in _prior_games(settled_games, game_start):
+        if row.get("source") != "espn_official_scoreboard" or row.get("season_type") != "regular":
+            continue
+        started = datetime.fromisoformat(str(row["game_start"]).replace("Z", "+00:00"))
+        started = started.replace(tzinfo=UTC) if started.tzinfo is None else started.astimezone(UTC)
+        if started >= season_start:
+            games.append(row)
+    rows = _team_rows(opponent, games)
+    if not rows:
+        return unavailable
+    allowed = [_points_against(row, opponent) for row in rows]
+    league_scores = [float(score) for row in games for score in (row["actual_home_points"], row["actual_away_points"])]
+    league_average = round(mean(league_scores), 1) if league_scores else None
+    recent = round(mean(allowed[:10]), 1)
+    return {
+        "sample_size": len(rows),
+        "last_5": round(mean(allowed[:5]), 1),
+        "last_10": recent,
+        "last_20": round(mean(allowed[:20]), 1),
+        "league_average": league_average,
+        "difference_from_league": round(recent - league_average, 1) if league_average is not None else None,
+        "defensive_rank": None,
+        "advantage_score": None,
+        "source": "espn_official_scoreboard",
+        "source_games": [
+            {"game_start": row["game_start"], "url": f"https://www.espn.com/game/_/gameId/{row['game_id']}"}
+            for row in rows[:10] if row.get("game_id")
+        ],
+        "status": ("Small opponent team sample; descriptive only." if len(rows) < 5
+                   else "Opponent team points allowed are descriptive, not a player points probability."),
+    }
+
+
 def _team_rows(team: str, rows: list[dict]) -> list[dict]:
     target = _team_key(team)
     matched = []
@@ -190,4 +240,5 @@ def _difference(left: list[float], right: list[float]) -> float | None:
 
 
 def _team_key(team: str) -> str:
-    return canonical_person_key(team)
+    key = canonical_person_key(team)
+    return {"nyk": "ny", "sas": "sa"}.get(key, key)

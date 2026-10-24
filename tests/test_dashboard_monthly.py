@@ -47,6 +47,21 @@ def test_today_performance_resets_on_month_boundary_without_losing_history():
     assert previous["recommendation_accuracy"]["accuracy"] == 100.0
 
 
+def test_monthly_accuracy_keeps_all_evaluated_and_sixty_plus_separate():
+    september = datetime(2026, 9, 30, 23, 0, tzinfo=UTC)
+    october = datetime(2026, 10, 1, 5, 0, tzinfo=UTC)
+    low_loss = _entry("Loss", october, mode="paper")
+    low_loss["audit_snapshot"] = {"model_payout_analysis": {"all_hit_probability": 45.0}}
+    entries = [_entry("Loss", september), _entry("Win", october), low_loss]
+
+    current = monthly_dashboard_performance([], entries, "2026-10")["recommendation_accuracy"]
+    previous = monthly_dashboard_performance([], entries, "2026-09")["recommendation_accuracy"]
+
+    assert (current["accuracy"], current["decisions"]) == (100.0, 1)
+    assert (current["all_evaluated"]["accuracy"], current["all_evaluated"]["decisions"]) == (50.0, 2)
+    assert (previous["accuracy"], previous["all_evaluated"]["accuracy"]) == (0.0, 0.0)
+
+
 def test_month_rollover_uses_eastern_calendar_day():
     assert _month_key("2026-10-01T01:00:00Z") == "2026-09"
     assert _month_key("2026-10-01T05:00:00Z") == "2026-10"

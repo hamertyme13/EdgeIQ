@@ -180,6 +180,7 @@ def fetch_final_game_outcomes(sport: str, game_date: date, *, include_team_stats
             "sport": sport_key,
             "game": _event_matchup(event),
             "game_date": game_date.isoformat(),
+            "season_type": _event_season_type(event),
             "home_points": home_score,
             "away_points": away_score,
             "game_start": str(event.get("date") or competition.get("date") or ""),
@@ -285,8 +286,25 @@ def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
         if not event_id:
             continue
         summary = _summary(path, event_id, cache_variant="final")
-        rows.extend(_parse_summary(summary, sport_key, game_date))
+        event_rows = _parse_summary(summary, sport_key, game_date)
+        season_type = _event_season_type(event)
+        for row in event_rows:
+            row["season_type"] = season_type
+        rows.extend(event_rows)
     return rows
+
+
+def _event_season_type(event: dict) -> str | None:
+    season = event.get("season") or {}
+    for candidate in (season.get("slug"), season.get("displayName"), season.get("name")):
+        label = str(candidate or "").lower().replace("_", "-").replace(" ", "-")
+        if "preseason" in label or "pre-season" in label:
+            return "preseason"
+        if "regular" in label:
+            return "regular"
+        if "postseason" in label or "playoff" in label:
+            return "postseason"
+    return None
 
 
 def fetch_unplayed_entry_stats(entries: list[dict], sport: str, game_date: date) -> list[dict]:

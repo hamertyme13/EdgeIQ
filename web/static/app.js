@@ -302,11 +302,12 @@ function optimizerSummaryBlock(data) {
   return `
     <div class="suggestion compact-suggestion ${paidReady ? "grade-b" : "grade-f"}">
       <div class="suggestion-top">
-        <span class="pill">Best 3-Leg Path</span>
+        <span class="pill">${data.batch ? "Diversified Card Batch" : "Best Entry Path"}</span>
         <strong>${paidReady ? `${paidReady}/${total} paid-ready` : "No paid-ready slip yet"}</strong>
         ${best ? `<span class="subtle">Value score ${Number(best.value_adjusted_score || best.score || 0).toFixed(1)}</span>` : ""}
       </div>
       <p class="subtle">${portfolioReady}/${total} stay within pending player, game, and market limits.</p>
+      ${data.batch ? `<p class="subtle">${escapeHtml(data.batch.message || "")}</p>` : ""}
       ${best?.platform_value ? platformValueBlock(best.platform_value) : ""}
       ${obstacles.length ? `<p class="warning">${obstacles.map(escapeHtml).join(" · ")}</p>` : `<p class="subtle">At least one optimized slip cleared the paid-entry release checks.</p>`}
     </div>
@@ -660,7 +661,9 @@ function setupProviderGeneratorFilters() {
     const gameList = $(`${key}-generator-games`);
     const gameSummary = $(`${key}-generator-game-summary`);
     if (!sportSelect || !timeSelect || !gameList || !gameSummary) return;
+    const picker = $(`${key}-generator-game-picker`);
     let games = [];
+    let loaded = false;
     const selected = new Set();
     const kickoff = (value) => {
       const date = new Date(value);
@@ -669,7 +672,8 @@ function setupProviderGeneratorFilters() {
       }).format(date) + " ET";
     };
     const updateSummary = () => {
-      gameSummary.textContent = selected.size ? `${selected.size} game${selected.size === 1 ? "" : "s"} selected` : "All games today";
+      gameSummary.textContent = selected.size ? `${selected.size} game${selected.size === 1 ? "" : "s"} selected` :
+        loaded ? `${games.length} game${games.length === 1 ? "" : "s"} today` : "All games today";
       gameList.dataset.selectedGames = [...selected].sort().join(",");
     };
     const renderGames = () => {
@@ -678,7 +682,7 @@ function setupProviderGeneratorFilters() {
         const label = sportSelect.value === "All Sports" ? `${game.sport} · ${game.game}` : game.game;
         const players = Number(game.player_count || 0);
         return `<label class="generator-game-option"><input type="checkbox" value="${escapeHtml(game.key)}" ${selected.has(game.key) ? "checked" : ""}><span>${escapeHtml(label)}<small>${escapeHtml(game.kickoff)} · ${players} player${players === 1 ? "" : "s"}</small></span></label>`;
-      }).join("") || '<p class="subtle">No games at this kickoff time.</p>';
+      }).join("") || `<p class="subtle">${games.length ? "No games at this kickoff time." : "No same-day games in the current provider snapshot. Refresh Providers, then try again."}</p>`;
       gameList.querySelectorAll('input[type="checkbox"]').forEach((checkbox) => checkbox.addEventListener("change", () => {
         if (checkbox.checked && selected.size >= 64) {
           checkbox.checked = false;
@@ -691,6 +695,7 @@ function setupProviderGeneratorFilters() {
     };
     sportSelect.addEventListener("change", () => {
       games = [];
+      loaded = false;
       selected.clear();
       timeSelect.innerHTML = '<option value="">All kickoff times</option>';
       gameList.textContent = "Load games to choose matchups.";
@@ -724,6 +729,7 @@ function setupProviderGeneratorFilters() {
         const data = await api(`/api/entries/generator-games?platform=${encodeURIComponent(platforms[key])}&sport=${encodeURIComponent(sport)}`, { timeoutMs: 30000 });
         if (sportSelect.value !== sport) return;
         games = (data.games || []).map((game) => ({ ...game, kickoff: kickoff(game.game_time) }));
+        loaded = true;
         const available = new Set(games.map((game) => game.key));
         [...selected].forEach((gameKey) => { if (!available.has(gameKey)) selected.delete(gameKey); });
         const times = [...new Set(games.map((game) => game.kickoff))];
@@ -734,10 +740,16 @@ function setupProviderGeneratorFilters() {
         if (times.includes(previousTime)) timeSelect.value = previousTime;
         updateSummary();
         renderGames();
+        if (picker) picker.open = true;
         if (!games.length) $(`${key}-suggestions-list`).innerHTML =
           '<div class="suggestion">No same-day games are in the current provider snapshot. Refresh Providers, then load games again.</div>';
       } catch (error) {
-        $(`${key}-suggestions-list`).innerHTML = `<div class="suggestion">Could not load today’s games: ${escapeHtml(humanizeErrorText(error.message))}</div>`;
+        games = [];
+        loaded = false;
+        selected.clear();
+        updateSummary();
+        gameList.innerHTML = `<p class="subtle">Could not load today’s games: ${escapeHtml(humanizeErrorText(error.message))}</p>`;
+        if (picker) picker.open = true;
       } finally {
         button.disabled = false;
         button.textContent = "Load Games";
@@ -944,8 +956,8 @@ function loadViewData(viewId) {
 function renderStats(stats) {
   const monthly = stats.monthly_performance || stats;
   const accuracy = monthly.recommendation_accuracy || {};
+  const allAccuracy = accuracy.all_evaluated || {};
   const paper = monthly.paper || {};
-  const qualifiedDecisions = Number(accuracy.decisions || 0);
   if ($("today-performance-period")) {
     $("today-performance-period").textContent = `${monthly.label || "This month"} results · live bankroll and exposure`;
   }
@@ -981,18 +993,30 @@ function renderStats(stats) {
     <div class="recommendation-accuracy-header">
       <div>
         <h2>EdgeIQ Recommendation Accuracy</h2>
-        <p>${escapeHtml(monthly.label || "This month")} · Entry Builder and generated cards evaluated at 60%+ complete-card probability</p>
+        <p>${escapeHtml(monthly.label || "This month")} · Entry Builder and generated cards</p>
       </div>
-      <div class="grade">${qualifiedDecisions ? pct(accuracy.accuracy || 0) : "Not enough results"}</div>
     </div>
-    <div class="accuracy-grid">
-      <div><strong>${accuracy.wins || 0}-${accuracy.losses || 0}</strong><span>Win/Loss</span></div>
-      <div><strong>${accuracy.pending || 0}</strong><span>Pending</span></div>
-      <div><strong>${accuracy.pushes || 0}</strong><span>Pushes</span></div>
-      <div><strong>${accuracy.tracked || 0}</strong><span>60%+ tracked</span></div>
-      <div><strong>${pct(paper.accuracy || 0)}</strong><span>Paper · All Buckets</span></div>
+    <div class="recommendation-accuracy-cohorts">
+      <section class="recommendation-accuracy-cohort" aria-label="All evaluated recommendations this month">
+        <div class="recommendation-cohort-heading"><h3>All evaluated</h3><strong>${Number(allAccuracy.decisions || 0) ? pct(allAccuracy.accuracy || 0) : "No results yet"}</strong></div>
+        <div class="accuracy-grid">
+          <div><strong>${allAccuracy.wins || 0}-${allAccuracy.losses || 0}</strong><span>Win/Loss</span></div>
+          <div><strong>${allAccuracy.pending || 0}</strong><span>Pending</span></div>
+          <div><strong>${allAccuracy.pushes || 0}</strong><span>Pushes</span></div>
+          <div><strong>${allAccuracy.tracked || 0}</strong><span>Tracked</span></div>
+        </div>
+      </section>
+      <section class="recommendation-accuracy-cohort" aria-label="60 percent or higher recommendations this month">
+        <div class="recommendation-cohort-heading"><h3>60%+ complete-card probability</h3><strong>${Number(accuracy.decisions || 0) ? pct(accuracy.accuracy || 0) : "No results yet"}</strong></div>
+        <div class="accuracy-grid">
+          <div><strong>${accuracy.wins || 0}-${accuracy.losses || 0}</strong><span>Win/Loss</span></div>
+          <div><strong>${accuracy.pending || 0}</strong><span>Pending</span></div>
+          <div><strong>${accuracy.pushes || 0}</strong><span>Pushes</span></div>
+          <div><strong>${accuracy.tracked || 0}</strong><span>Tracked</span></div>
+        </div>
+      </section>
     </div>
-    <p class="subtle">${accuracy.calibration_only || 0} lower-probability cards remain in calibration records. ${accuracy.probability_unavailable || 0} legacy cards lack a saved complete-card probability.</p>
+    <p class="subtle">All evaluated includes ${accuracy.calibration_only || 0} cards below 60%. ${accuracy.probability_unavailable || 0} legacy cards lack a saved complete-card probability. Paper calibration across all buckets: ${pct(paper.accuracy || 0)} from ${paper.decisions || 0} settled decisions.</p>
   `;
 }
 
@@ -4938,7 +4962,6 @@ async function loadConfirmedEntries() {
 
 async function runOptimizer(portfolioBatch = false) {
   $("optimizer-list").innerHTML = `<div class="suggestion">${portfolioBatch ? "Building five diversified cards..." : "Optimizing slips..."}</div>`;
-  await loadPortfolioIntelligence();
   const [minLegs, maxLegs] = $("optimizer-legs").value.split("-").map(Number);
   const platform = $("optimizer-platform").value;
   const sport = $("optimizer-sport").value;
@@ -4952,11 +4975,16 @@ async function runOptimizer(portfolioBatch = false) {
     max_same_team: $("optimizer-max-same-team").value || "5",
     exclude_correlated: $("optimizer-exclude-correlated").checked ? "true" : "false",
     apply_feedback: $("optimizer-apply-feedback").checked ? "true" : "false",
-    limit: portfolioBatch ? "5" : "5",
+    limit: "5",
+    batch: portfolioBatch ? "true" : "false",
   });
   const data = await api(`/api/entries/optimizer?${params.toString()}`, {
     timeoutMs: sport === "All Sports" ? 60000 : 30000,
+  }).catch((error) => {
+    $("optimizer-list").innerHTML = `<div class="suggestion"><strong>Cards could not be generated.</strong><p>${escapeHtml(humanizeErrorText(error.message))}</p><p class="subtle">Your entries have not changed. Try one sport, fewer legs, or refresh provider lines.</p></div>`;
+    return null;
   });
+  if (!data) return;
   const suggestionsHtml = data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
@@ -4977,8 +5005,9 @@ async function runOptimizer(portfolioBatch = false) {
         <button class="secondary" data-explain-optimized="${index}">Why?</button>
       </div>
     </div>
-  `).join("") || `<div class="suggestion">No optimized slips available.</div>`;
+  `).join("") || `<div class="suggestion"><strong>No matching cards yet.</strong><p>${data.batch?.candidates === 0 ? "No same-day provider cards are available for this selection. Refresh provider lines or check the next slate." : "Try All Sports, fewer legs, or a lower minimum confidence. Only same-day provider lines can be used."}</p></div>`;
   $("optimizer-list").innerHTML = optimizerSummaryBlock(data) + suggestionsHtml;
+  loadPortfolioIntelligence().catch(() => {});
   document.querySelectorAll("[data-load-optimized]").forEach((button) => {
     button.addEventListener("click", () => {
       const suggestion = data.suggestions[Number(button.dataset.loadOptimized)];
@@ -5297,7 +5326,7 @@ async function loadPlayerResearch(event) {
     </details>
   `;
   $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
-  window.EdgeIQPlayerWorkspace?.mount($("player-research-result"), data, { escapeHtml, pct, formatDateTime });
+  window.EdgeIQPlayerWorkspace?.mount($("player-research-result"), data, { escapeHtml, pct, formatDateTime, api });
   $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 

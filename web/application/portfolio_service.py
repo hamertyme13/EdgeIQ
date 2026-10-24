@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from itertools import combinations
 
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 from utils.stat_normalization import stat_type_from_text
@@ -404,6 +405,40 @@ def portfolio_ranked_suggestions(
     for rank, suggestion in enumerate(ranked, start=1):
         suggestion["rank"] = rank
     return ranked
+
+
+def diversified_card_batch(suggestions: list[dict], limit: int = 5) -> list[dict]:
+    """Maximize card count, then value, without sharing a player across cards."""
+    candidates = suggestions[:15]
+    player_sets = [
+        {canonical_person_key(prop.get("player")) for prop in (row.get("entry") or {}).get("props", [])}
+        for row in candidates
+    ]
+    best: tuple[int, ...] = ()
+    best_score = float("-inf")
+    for count in range(min(limit, len(candidates)), 0, -1):
+        for indices in combinations(range(len(candidates)), count):
+            players: set[str] = set()
+            for index in indices:
+                current = player_sets[index]
+                if not current or "" in current or players & current:
+                    break
+                players.update(current)
+            else:
+                score = sum(
+                    float(candidates[index].get("portfolio", {}).get("adjusted_score")
+                          or candidates[index].get("value_adjusted_score")
+                          or candidates[index].get("score") or 0)
+                    for index in indices
+                )
+                if score > best_score:
+                    best, best_score = indices, score
+        if best:
+            break
+    selected = [candidates[index] for index in best]
+    for rank, row in enumerate(selected, start=1):
+        row["rank"] = rank
+    return selected
 
 
 def _portfolio_card_assessment(suggestion: dict, counts: dict, limits: dict) -> dict:

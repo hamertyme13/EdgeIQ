@@ -1,4 +1,38 @@
-from web.application.recommendation_service import trending_props_payload
+from web.application.recommendation_service import optimized_entries_payload, trending_props_payload
+
+
+def test_optimizer_batch_requests_wider_pool_and_reports_shortfall():
+    calls = []
+    cards = [
+        {"entry": {"props": [{"player": "A"}, {"player": "B"}]}, "score": score,
+         "release_status": {"ok": False}, "portfolio": {"conflicts": []}}
+        for score in (70, 69, 68)
+    ]
+
+    def optimize(*args):
+        calls.append(args)
+        return cards
+
+    payload = optimized_entries_payload(
+        "PrizePicks", "NBA", 2, 3, 5, 62, 0, 1, True, True, True,
+        optimize=optimize, value_rank=lambda rows, _platform, _limit: rows,
+        obstacles=lambda rows: [] if rows else ["No eligible cards."],
+    )
+
+    assert calls[0][4] == 15
+    assert payload["batch"]["requested"] == 5
+    assert payload["batch"]["produced"] == 1
+    assert "More same-day eligible props" in payload["batch"]["message"]
+
+
+def test_optimizer_batch_explains_empty_same_day_board():
+    payload = optimized_entries_payload(
+        "PrizePicks", "NBA", 2, 3, 5, 62, 0, 1, True, True, True,
+        optimize=lambda *args: [], value_rank=lambda rows, _platform, _limit: rows,
+        obstacles=lambda rows: ["No matching entries."],
+    )
+    assert payload["batch"]["produced"] == 0
+    assert "No same-day provider cards" in payload["batch"]["message"]
 
 
 def test_trending_props_selects_best_scored_line_per_market() -> None:

@@ -51,12 +51,19 @@ def attach_opportunity_context(session, history: list[dict], identity: dict | No
         query = query.filter(FinalPlayerStatModel.game_date.in_(game_dates))
 
     context: dict[tuple[str, str], dict[str, float]] = {}
+    verified_minutes: dict[tuple[str, str], float] = {}
     for row in query.limit(context_limit).all():
-        context.setdefault((str(row.game_date or ""), _game_key(row.game)), {})[row.stat] = float(row.actual)
+        key = (str(row.game_date or ""), _game_key(row.game))
+        context.setdefault(key, {})[row.stat] = float(row.actual)
+        if row.stat == "Minutes" and str(row.source or "").lower().startswith(("espn", "nba_api", "balldontlie", "statshawk")):
+            verified_minutes[key] = float(row.actual)
     for row in history:
-        values = context.get((str(row.get("game_date") or ""), _game_key(row.get("game"))), {})
+        key = (str(row.get("game_date") or ""), _game_key(row.get("game")))
+        values = context.get(key, {})
         if "Minutes" in values:
             row["minutes"] = values["Minutes"]
+        if key in verified_minutes:
+            row["verified_minutes"] = verified_minutes[key]
         opportunities = role_opportunities(str(row.get("sport") or sport or ""), str(row.get("stat") or ""), values)
         if opportunities is not None:
             row["opportunities"] = opportunities

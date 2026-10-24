@@ -358,6 +358,8 @@ def _grounded_answer(
                 "claims, and final-stat or history evidence for historical claims. "
                 "Do not describe a player as out, active, or starting from a risk score or an unconfirmed lineup. "
                 "Matchup history describes the player's results, never opponent defense. "
+                "NBA scoring threshold hit rates are historical observations, not a forecast probability; "
+                "do not claim a defensive rank, matchup advantage score, or positive EV when unavailable. "
                 "Write for a bettor, not a developer: use short plain-English sentences, never JSON field names, "
                 "underscores, raw object dumps, or unexplained model jargon. Lead with the decision and state uncertainty plainly. "
                 "Return only the requested JSON schema."

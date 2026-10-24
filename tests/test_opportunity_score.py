@@ -141,7 +141,7 @@ def test_player_research_score_is_not_applied_to_a_different_line():
     payload = {"recommendation": prop, "line": 21.5}
     deps = PlayerDependencies(
         availability=lambda *args: {}, detail=lambda *args: {}, identity=lambda *args: {},
-        research=lambda *args: payload, research_evidence=lambda *args: {},
+        research=lambda *args: payload, points_market=lambda *args: {}, points_explanation=lambda *args: {}, research_evidence=lambda *args: {},
         line_movement=lambda *args: {}, hit_rate=lambda *args: {},
     )
     result = player_research("Player", "Points", line=21.5, deps=deps)

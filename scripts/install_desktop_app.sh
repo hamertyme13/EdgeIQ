@@ -9,6 +9,9 @@ PLIST="$APP_BUNDLE/Contents/Info.plist"
 MACOS_DIR="$APP_BUNDLE/Contents/MacOS"
 RESOURCES_DIR="$APP_BUNDLE/Contents/Resources"
 APP_EXECUTABLE="$MACOS_DIR/EdgeIQ"
+LAUNCHER_SOURCE="$APP_DIR/scripts/desktop_launcher.c"
+SDK_ROOT="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+CLANG_BIN="$(/usr/bin/xcrun --find clang)"
 
 cd "$APP_DIR"
 
@@ -44,16 +47,9 @@ fi
 /bin/rm -rf "$APP_BUNDLE"
 /bin/mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-/bin/cat >"$APP_EXECUTABLE" <<LAUNCHER_SCRIPT
-#!/usr/bin/env bash
-/usr/bin/osascript <<'APPLESCRIPT'
-tell application "Terminal"
-	activate
-	do script quoted form of "$LAUNCHER"
-end tell
-APPLESCRIPT
-LAUNCHER_SCRIPT
-/bin/chmod +x "$APP_EXECUTABLE"
+"$CLANG_BIN" -isysroot "$SDK_ROOT" -std=c11 -Wall -Wextra -Werror \
+  -DEDGEIQ_LAUNCHER_PATH="\"$LAUNCHER\"" \
+  "$LAUNCHER_SOURCE" -o "$APP_EXECUTABLE"
 
 /bin/cat >"$PLIST" <<PLIST_XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -88,6 +84,8 @@ PLIST_XML
 
 /bin/cp "$ICON_PATH" "$APP_BUNDLE/Contents/Resources/EdgeIQ.icns"
 /usr/bin/plutil -lint "$PLIST" >/dev/null
+/usr/bin/xattr -cr "$APP_BUNDLE"
+/usr/bin/codesign --force --sign - "$APP_BUNDLE"
 
 /usr/bin/touch "$APP_BUNDLE"
 

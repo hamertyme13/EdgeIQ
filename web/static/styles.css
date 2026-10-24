@@ -417,6 +417,26 @@ p { color: var(--muted); margin: 5px 0 0; }
 .recommendation-accuracy-header .grade {
   font-size: 38px;
 }
+.recommendation-accuracy-cohorts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+.recommendation-accuracy-cohort {
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.recommendation-cohort-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.recommendation-cohort-heading h3 { margin: 0; font-size: 16px; }
+.recommendation-cohort-heading strong { color: var(--primary); font-size: 23px; white-space: nowrap; }
+.recommendation-accuracy-cohort .accuracy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .accuracy-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -4336,6 +4356,7 @@ tr:hover td {
   .tool-group summary { align-items: flex-start; }
   .tool-group summary small { display: none; }
   .accuracy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recommendation-accuracy-cohorts { grid-template-columns: 1fr; }
   .recommendation-accuracy-header { align-items: flex-start; }
   .mobile-slip { display: block; }
   .main { padding-bottom: 96px; }
@@ -7076,6 +7097,22 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
 .player-model-record dd { margin: 4px 0; overflow-wrap: anywhere; }
 .player-workspace-overview h3 { font-size: 20px; }
 .player-workspace-overview small { color: var(--muted); font-size: 14px; }
+.nba-points-content { display: grid; gap: 14px; padding: 12px 0 18px; }
+.nba-points-intelligence { width: min(100%, calc(100vw - 240px)); min-width: 0; }
+.nba-points-content p { margin: 0; overflow-wrap: anywhere; }
+.nba-points-window { display: flex; flex-wrap: wrap; gap: 8px; }
+.nba-points-window button { min-height: 40px; padding: 8px 12px; }
+.nba-points-window button[aria-pressed="true"] { outline: 2px solid #d9fff1; outline-offset: 1px; }
+.nba-points-window-results { min-width: 0; }
+.nba-points-thresholds { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px; }
+.nba-points-threshold { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.nba-points-threshold span { color: var(--muted); font-size: 13px; }
+.nba-points-threshold .nba-points-meter { height: 5px; background: var(--border); overflow: hidden; border-radius: 3px; }
+.nba-points-meter i { display: block; height: 100%; background: #21d39a; }
+.nba-points-evidence { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+@media (max-width: 800px) {
+  .nba-points-intelligence { width: min(100%, calc(100vw - 32px)); }
+}
 [id^="player-workspace-section-"] { scroll-margin-top: 90px; }
 .game-intelligence-grid {
   display: grid;

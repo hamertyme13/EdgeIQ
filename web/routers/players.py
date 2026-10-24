@@ -6,8 +6,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.nba_points_validation import evaluate_nba_points_predictions
 from analytics.opportunity_score import score_source_freshness
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from web.application.opportunity_presentation import presented_score
 from web.application.player_performance import player_performance
 from web.application.player_service import PlayerLookupError
@@ -27,6 +29,8 @@ class PlayerDependencies:
     detail: Callable[[str, str, str], dict]
     identity: Callable[[str, str, str], dict]
     research: Callable[[str, str, str, str, float | None], dict]
+    points_market: Callable[[str, float, str], dict]
+    points_explanation: Callable[[str, float, str, str], dict]
     research_evidence: Callable[[str, str, str, str, str, bool], dict]
     line_movement: Callable[[str, str, str], dict]
     hit_rate: Callable[[str, str, float, float | None, int, str | None], dict]
@@ -111,6 +115,20 @@ def player_research(
     }
 
 
+@router.get("/api/players/{player_name}/points-market")
+def nba_points_market(player_name: str, line: float, platform: str = "Both", deps: DepsPlayer = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
+    return _deps.points_market(player_name, line, platform)
+
+
+@router.post("/api/players/{player_name}/points-explanation")
+def nba_points_explanation(player_name: str, line: float, platform: str = "Both", detail: str = "concise", deps: DepsPlayer = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
+    if detail not in {"concise", "detailed"}:
+        raise HTTPException(status_code=400, detail="Choose a concise or detailed explanation.")
+    return _deps.points_explanation(player_name, line, platform, detail)
+
+
 @router.post("/api/players/season-history/sync")
 def sync_season_history(sport: str, full_history: bool = False) -> dict:
     return start_season_history_sync(sport, full_history=full_history)
@@ -138,6 +156,11 @@ def research_evidence(
 ) -> dict:
     _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
     return _deps.research_evidence(player, stat, sport, platform, game, include_expired)
+
+
+@router.get("/api/research/nba-points-validation")
+def nba_points_validation() -> dict:
+    return evaluate_nba_points_predictions(PredictionLedgerRepository.nba_points_validation_rows())
 
 
 @router.get("/api/players/{player_name}/line-movement")

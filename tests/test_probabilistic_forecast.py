@@ -68,6 +68,32 @@ def test_forecast_routes_thin_history_to_market_prior_and_paper() -> None:
     assert result.distribution["median"] == 1
 
 
+def test_nba_points_preseason_and_unlabeled_games_do_not_create_paid_forecast() -> None:
+    history = [
+        {
+            "actual": 24,
+            "status": "played",
+            "game_date": f"2026-10-{22 - index:02d}",
+            "game": f"A@B-{index}",
+            "season_type": "regular" if index < 2 else "preseason" if index < 7 else None,
+        }
+        for index in range(10)
+    ]
+
+    result = forecast_prop("Player", "NBA", "Points", 20.5, history=history, game_time="2026-10-23")
+
+    assert result.source == "market_prior"
+    assert result.sample_size == 2
+    assert result.features["verified_games"] == 2
+    assert result.paid_eligible is False
+
+    from web.app import _season_assessment
+
+    assessment = _season_assessment(result, "")
+    assert assessment["headline"] == "Forecast unavailable: more verified games needed"
+    assert "not an independent EdgeIQ projection" in assessment["summary"]
+
+
 def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them() -> None:
     history = _history([20, 21, 22, 23, 24] * 4)
     for index, row in enumerate(history):

@@ -2,7 +2,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import median
 from typing import Any
 from urllib.parse import urlencode
@@ -199,6 +199,7 @@ def get_player_prop_consensus(
     line: float,
     direction: str = "Over",
     team: str = "",
+    game_time: str = "",
 ) -> dict:
     api_key = os.getenv("ODDS_API_KEY", "").strip()
     if not api_key:
@@ -237,14 +238,14 @@ def get_player_prop_consensus(
             reason="A complete matchup is required to retrieve exact player odds.",
             market_key=market_key,
         )
-    event = find_event(matchup, sport, get_events(sport))
+    event = find_event(matchup, sport, get_events(sport), game_time=game_time)
     if event is None:
         return _unavailable_prop_market(
             player,
             stat,
             line,
             configured=True,
-            reason="The matchup could not be matched to a current sportsbook event.",
+            reason="The matchup and scheduled start could not be matched to one current sportsbook event.",
         )
     bookmakers = _prop_bookmakers()
     query = urlencode({
@@ -306,19 +307,28 @@ def prop_market_key(stat: object) -> str:
     return PROP_MARKETS.get(_stat_key(stat), "")
 
 
-def find_event(game: str, sport: str, events: list[dict] | None = None) -> dict | None:
+def find_event(game: str, sport: str, events: list[dict] | None = None, *, game_time: str = "") -> dict | None:
     candidates = events if events is not None else get_events(sport)
     requested = _matchup_team_tokens(game)
     if len(requested) < 2:
         return None
+    matches = []
     for row in candidates:
         away = _team_tokens(row.get("away_team", ""))
         home = _team_tokens(row.get("home_team", ""))
         if (requested[0] & away and requested[1] & home) or (
             requested[0] & home and requested[1] & away
         ):
-            return row
-    return None
+            matches.append(row)
+    if game_time:
+        start = parsed_utc(game_time)
+        if start is None:
+            return None
+        matches = [row for row in matches if (
+            (event_start := parsed_utc(row.get("commence_time"))) is not None
+            and abs(event_start - start) <= timedelta(minutes=30)
+        )]
+    return matches[0] if len(matches) == 1 else None
 
 
 def summarize_player_prop_market(

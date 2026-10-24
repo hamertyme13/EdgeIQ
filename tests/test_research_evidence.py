@@ -36,6 +36,66 @@ def test_research_evidence_is_cached_and_citable():
     assert all(row["captured_at"] and row["expires_at"] for row in first["evidence_citations"])
 
 
+def test_nba_points_history_is_citable_without_invented_matchup_or_ev():
+    from web.application.nba_points_intelligence import build_nba_points_intelligence
+
+    intelligence = build_nba_points_intelligence(
+        [{"game_date": "2026-10-20", "actual": 22, "status": "played", "source": "espn",
+          "game": "BOS @ NYK", "team": "BOS"}],
+        line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+    payload = persist_player_research({
+        "player": "Evidence Guard", "sport": "NBA", "stat": "Points",
+        "platform": "PrizePicks", "line": 19.5, "nba_points_intelligence": intelligence,
+    })
+    facts = [row for row in payload["evidence"] if row["type"] == "nba_points_history"]
+    assert len(facts) == 1
+    assert facts[0]["payload"]["thresholds"]["season"]["custom_line"]["hits"] == 1
+    assert facts[0]["payload"]["matchup"]["advantage_score"] is None
+    assert facts[0]["payload"]["market"]["ev"] is None
+    assert facts[0]["payload"]["season_type_unavailable"] is True
+    assert facts[0]["payload"]["thresholds"]["verified_season"]["games"] == 0
+
+
+def test_nba_points_fact_uses_confirmed_season_provenance():
+    from web.application.nba_points_intelligence import build_nba_points_intelligence
+
+    intelligence = build_nba_points_intelligence(
+        [{"game_date": "2026-10-20", "actual": 22, "status": "played", "source": "espn",
+          "season_type": "regular", "game": "BOS @ NYK", "team": "BOS"}],
+        line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+    payload = persist_player_research({
+        "player": "Verified Guard", "sport": "NBA", "stat": "Points",
+        "platform": "PrizePicks", "line": 19.5, "nba_points_intelligence": intelligence,
+    })
+    fact = next(row for row in payload["evidence"] if row["type"] == "nba_points_history")
+    assert fact["payload"]["season_type_unavailable"] is False
+    assert fact["payload"]["thresholds"]["verified_season"]["games"] == 1
+
+
+def test_nba_points_fact_retains_conflict_diagnostics_for_grounding():
+    from web.application.nba_points_intelligence import build_nba_points_intelligence
+
+    rows = [
+        {"game_date": "2026-10-20", "actual": points, "status": "played",
+         "source": source, "season_type": "regular", "game": "BOS @ NYK", "team": "BOS"}
+        for points, source in ((22, "espn"), (26, "nba_api"))
+    ]
+    intelligence = build_nba_points_intelligence(
+        rows, line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+    payload = persist_player_research({
+        "player": "Conflict Guard", "sport": "NBA", "stat": "Points",
+        "platform": "PrizePicks", "line": 19.5, "nba_points_intelligence": intelligence,
+    })
+
+    fact = next(row for row in payload["evidence"] if row["type"] == "nba_points_history")
+    assert fact["payload"]["data_reliability"]["excluded"]["conflicting_final"] == 2
+    assert fact["payload"]["thresholds"]["season"]["games"] == 0
+    assert "stored finals disagree" in fact["payload"]["research_projection_note"]
+
+
 def test_settled_outcome_updates_research_usefulness():
     ResearchEvidenceRepository.record_many([{
         "player": "Outcome Player", "sport": "NFL", "stat": "Receiving Yards",

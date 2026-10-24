@@ -253,6 +253,49 @@ class PredictionLedgerRepository:
             ]
 
     @staticmethod
+    def nba_points_validation_rows(limit: int = 5000) -> list[dict]:
+        """Bounded, read-only locked forecasts for chronological NBA points review."""
+        PredictionLedgerRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(PredictionRecordModel)
+                .filter(
+                    PredictionRecordModel.sport == "NBA",
+                    PredictionRecordModel.stat.in_(("Points", "PTS")),
+                    PredictionRecordModel.legacy_quarantined.is_(False),
+                    PredictionRecordModel.outcome.in_(("Win", "Loss", "Push")),
+                )
+                .order_by(PredictionRecordModel.predicted_at.desc(), PredictionRecordModel.id.desc())
+                .limit(max(1, min(int(limit), 5000)))
+                .all()
+            )
+            return [
+                {
+                    "id": row.id,
+                    "independent_market_key": row.independent_market_key,
+                    "player_identity_id": row.player_identity_id,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                    "platform": row.platform,
+                    "line": row.line,
+                    "direction": row.direction,
+                    "projection": row.projection,
+                    "projection_source": row.projection_source,
+                    "probability": row.probability,
+                    "model_version": row.model_version,
+                    "feature_as_of": row.feature_as_of,
+                    "feature_snapshot": _json_dict(row.feature_snapshot),
+                    "predicted_at": row.predicted_at,
+                    "game_time": row.game_time,
+                    "settled_at": row.settled_at,
+                    "result": row.outcome,
+                    "actual": row.actual,
+                    "outcome_source": row.outcome_source,
+                }
+                for row in rows
+            ]
+
+    @staticmethod
     def summary() -> dict:
         rows = PredictionLedgerRepository.evidence_rows(include_legacy=True)
         unique = {row["independent_market_key"] for row in rows if row["result"] in {"Win", "Loss", "Push"}}

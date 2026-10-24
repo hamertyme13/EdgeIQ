@@ -180,6 +180,7 @@ def optimize_entries(
     max_same_team: int = 5,
     exclude_correlated: bool = False,
     apply_feedback: bool = True,
+    batch: bool = False,
     deps: DepsRec = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
@@ -195,5 +196,6 @@ def optimize_entries(
             max_same_team,
             exclude_correlated,
             apply_feedback,
+            batch,
         )
     )

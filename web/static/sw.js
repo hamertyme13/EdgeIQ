@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20261021-integrity-review";
+const CACHE_NAME = "edgeiq-shell-20261023-nba-points-trust";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",

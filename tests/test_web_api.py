@@ -279,7 +279,7 @@ def test_automatic_final_refresh_only_includes_due_recent_games(monkeypatch):
         "props": [
             {"player": "Due", "sport": "WNBA", "game_time": "2026-07-28T12:00:00Z"},
             {"player": "Scheduled", "sport": "WNBA", "game_time": "2026-07-28T20:00:00Z"},
-            {"player": "Expired", "sport": "WNBA", "game_time": "2026-07-27T12:00:00Z"},
+            {"player": "Prior Day", "sport": "WNBA", "game_time": "2026-07-27T12:00:00Z"},
             {
                 "player": "Final",
                 "sport": "WNBA",
@@ -292,7 +292,7 @@ def test_automatic_final_refresh_only_includes_due_recent_games(monkeypatch):
 
     due = web_app._entries_due_for_automatic_final_refresh(entries, now=now)
 
-    assert [prop["player"] for prop in due[0]["props"]] == ["Due"]
+    assert [prop["player"] for prop in due[0]["props"]] == ["Due", "Prior Day"]
 
 
 def test_settlement_audit_blocks_expired_automatic_retry(monkeypatch):
@@ -317,7 +317,7 @@ def test_settlement_audit_blocks_expired_automatic_retry(monkeypatch):
             "sport": "WNBA",
             "stat": "Points",
             "line": 10.5,
-            "game_time": "2026-07-27T12:00:00Z",
+            "game_time": "2026-07-25T12:00:00Z",
         },
         None,
         None,
@@ -1079,7 +1079,7 @@ def test_daily_opportunities_only_request_market_odds_for_visible_top_options(mo
     monkeypatch.setattr(
         web_app.sportsbook_odds,
         "get_player_prop_consensus",
-        lambda player, *args, **kwargs: calls.append(player) or {
+        lambda player, *args, **kwargs: calls.append((player, kwargs.get("game_time"))) or {
             "available": False,
             "book_count": 0,
             "reason": "No exact-line market.",
@@ -1097,6 +1097,7 @@ def test_daily_opportunities_only_request_market_odds_for_visible_top_options(mo
             "confidence": 50 + index,
             "edge": index / 10,
             "game": "AAA@BBB",
+            "game_time": "2026-10-21T23:00:00Z",
             "platform": "PrizePicks",
         }
         for index in range(8)
@@ -1106,7 +1107,7 @@ def test_daily_opportunities_only_request_market_odds_for_visible_top_options(mo
 
     assert len(rows) == 8
     assert len(calls) == 8
-    assert set(calls) == {row["player"] for row in rows}
+    assert set(calls) == {(row["player"], row["game_time"]) for row in rows}
 
 
 def test_pending_portfolio_exposure_blocks_duplicate_paid_market(monkeypatch):
@@ -4586,6 +4587,8 @@ def test_recommendation_accuracy_counts_qualified_builder_and_generated_decision
     assert stats["pending"] == 1
     assert stats["tracked"] == 5
     assert stats["minimum_card_probability"] == 60.0
+    assert stats["all_evaluated"]["tracked"] == 5
+    assert stats["all_evaluated"]["accuracy"] == 66.7
 
 
 def test_recommendation_accuracy_excludes_lower_and_unscored_cards_without_losing_calibration_records():
@@ -4605,9 +4608,30 @@ def test_recommendation_accuracy_excludes_lower_and_unscored_cards_without_losin
     assert stats["wins"] == 1
     assert stats["decisions"] == 1
     assert stats["tracked"] == 1
+    assert stats["all_evaluated"] == {
+        "accuracy": 100.0, "wins": 2, "losses": 0, "pushes": 0,
+        "pending": 0, "tracked": 2, "settled": 2, "decisions": 2,
+    }
     assert stats["calibration_only"] == 1
     assert stats["probability_unavailable"] == 1
     assert EntryRepository._paper_stats(entries[:1], entries[:1], [])["decisions"] == 1
+
+
+def test_recommendation_accuracy_keeps_monthly_all_and_qualified_rates_distinct():
+    entries = [
+        {"status": "Settled", "result": "Loss", "audit_snapshot": {
+            "model_payout_analysis": {"all_hit_probability": 48.0}}},
+        {"status": "Settled", "result": "Win", "audit_snapshot": {
+            "model_payout_analysis": {"all_hit_probability": 70.0}}},
+        {"status": "Pending", "result": "", "audit_snapshot": {
+            "model_payout_analysis": {"all_hit_probability": 40.0}}},
+    ]
+    stats = EntryRepository._recommendation_accuracy(entries)
+    assert (stats["accuracy"], stats["wins"], stats["losses"], stats["pending"]) == (100.0, 1, 0, 0)
+    assert stats["all_evaluated"] == {
+        "accuracy": 50.0, "wins": 1, "losses": 1, "pushes": 0,
+        "pending": 1, "tracked": 3, "settled": 2, "decisions": 2,
+    }
 
 
 def test_recommendation_accuracy_rejects_invalid_historical_probabilities():
@@ -5088,6 +5112,85 @@ def test_player_research_combines_active_props_and_final_history(monkeypatch):
     assert recent["splits"]["last_10"]["sample"] == 10
     assert recent["splits"]["last_15"]["sample"] == 15
     assert [row["actual"] for row in recent["chart"]] == list(reversed(range(15)))
+
+
+def test_nba_points_research_keeps_history_separate_from_model_probability(monkeypatch):
+    offers = [{
+        "player": "Research Guard", "team": "BOS", "league": "NBA", "stat": "Points",
+        "line": 19.5, "platform": "PrizePicks", "game": "BOS @ NYK",
+        "game_time": "2026-10-22T23:00:00Z", "trending_count": 10,
+    }]
+    history = [
+        {"player": "Research Guard", "team": "BOS", "sport": "NBA", "stat": "Points",
+         "game": "BOS @ NYK", "game_date": "2026-10-20", "actual": 22,
+         "status": "played", "source": "espn"},
+    ]
+    monkeypatch.setattr(web_app, "_cached_research_props", lambda platform, sport: offers)
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: history)
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "nba_team_games_before", lambda *args: [{
+        "game_id": "official-1", "game_start": "2026-10-20T23:00:00Z",
+        "home_team": "NYK", "away_team": "BOS", "home_aliases": ["NYK"], "away_aliases": ["BOS"],
+        "actual_home_points": 100.0, "actual_away_points": 90.0, "actual_home_win": 1.0,
+        "source": "espn_official_scoreboard",
+        "season_type": "regular",
+    }])
+
+    body = player_research("Research Guard", "Points", sport="NBA", platform="PrizePicks", line=19.5)
+
+    points = body["nba_points_intelligence"]
+    assert points["thresholds"]["season"]["custom_line"]["hits"] == 1
+    assert points["projection"]["over_probability"] is None
+    assert points["market"]["ev"] is None
+    assert points["matchup"]["advantage_score"] is None
+    assert points["matchup"]["team_points_allowed"]["last_10"] == 90.0
+    assert points["matchup"]["team_points_allowed"]["source_games"][0]["url"].endswith("/official-1")
+
+
+def test_nba_points_research_api_screens_raw_conflicting_finals(monkeypatch):
+    calls = []
+    raw_history = [
+        {"player": "Research Guard", "team": "BOS", "sport": "NBA", "stat": "Points",
+         "game": "BOS @ NYK", "game_date": "2026-10-20", "actual": 22,
+         "status": "played", "source": "espn", "season_type": "regular"},
+        {"player": "Research Guard", "team": "BOS", "sport": "NBA", "stat": "Points",
+         "game": "NYK vs BOS", "game_date": "2026-10-20", "actual": 26,
+         "status": "played", "source": "nba_api", "season_type": "regular"},
+    ]
+
+    def history(*args, **kwargs):
+        calls.append(kwargs)
+        return raw_history if kwargs.get("deduplicate") is False else raw_history[:1]
+
+    monkeypatch.setattr(web_app, "_cached_research_props", lambda platform, sport: [])
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", history)
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+    monkeypatch.setattr(web_app, "nba_team_games_before", lambda *args: [])
+
+    body = player_research("Research Guard", "Points", sport="NBA", platform="PrizePicks", line=19.5)
+
+    assert any(call.get("deduplicate") is False and call.get("include_entry_history") is False for call in calls)
+    assert body["nba_points_intelligence"]["sample_size"] == 0
+    assert body["nba_points_intelligence"]["data_reliability"]["excluded"]["conflicting_final"] == 2
+    assert body["nba_points_intelligence"]["projection"]["over_probability"] is None
+
+
+def test_player_research_without_active_offer_excludes_same_day_final(monkeypatch):
+    today = datetime.now(UTC).date()
+    history = [
+        {"player": "Cutoff Guard", "team": "BOS", "sport": "NBA", "stat": "Points",
+         "game": f"BOS @ OPP{index}", "game_date": (today - timedelta(days=index)).isoformat(),
+             "actual": 50 if index == 0 else 20, "status": "played", "source": "espn", "season_type": "regular"}
+        for index in range(6)
+    ]
+    monkeypatch.setattr(web_app, "_cached_research_props", lambda platform, sport: [])
+    monkeypatch.setattr(web_app.FinalStatsRepository, "history", lambda *args, **kwargs: history)
+    monkeypatch.setattr(web_app.LineHistoryRepository, "get_history", lambda *args, **kwargs: [])
+
+    body = player_research("Cutoff Guard", "Points", sport="NBA", platform="Both", line=19.5)
+
+    assert body["nba_points_intelligence"]["sample_size"] == 5
+    assert body["forecast"]["sample_size"] == 5
 
 
 def test_sharp_consensus_returns_fair_line_and_market_width(monkeypatch):
@@ -5956,6 +6059,25 @@ def test_web_optimizer_applies_filters(monkeypatch):
     assert isinstance(body["obstacles"], list)
 
 
+def test_web_portfolio_batch_returns_disjoint_players(monkeypatch):
+    raw_props = [
+        {"player": f"Player {index}", "team": f"Team {index}", "league": "MLB",
+         "stat": "Hits", "line": 0.5, "trending_count": 100000 - index}
+        for index in range(12)
+    ]
+    monkeypatch.setattr(web_app.prizepicks, "fetch_projections", lambda limit=1000: _verified_rows(raw_props))
+
+    body = optimize_entries(platform="PrizePicks", sport="MLB", min_legs=2, max_legs=2, batch=True)
+
+    players = [
+        prop["player"] for card in body["suggestions"] for prop in card["entry"]["props"]
+    ]
+    assert body["batch"]["requested"] == 5
+    assert body["batch"]["produced"] == len(body["suggestions"])
+    assert len(body["suggestions"]) == 5
+    assert len(players) == len(set(players))
+
+
 def test_auto_check_result_can_settle_with_projection_estimates(monkeypatch):
     settled = {}
     monkeypatch.setattr(web_app.EntryRepository, "settle", lambda entry_id, result, **kwargs: settled.update({entry_id: result}))
@@ -6386,6 +6508,19 @@ def test_auto_check_does_not_settle_from_live_stats(monkeypatch):
     assert body["settled"] is False
     assert body["legs"][0]["actual"] is None
     assert settled == {}
+
+
+def test_recent_final_stat_remains_due_after_one_day():
+    from datetime import timedelta
+
+    now = web_app.utc_now().replace(tzinfo=web_app.UTC)
+    prop = {
+        "sport": "NBA", "stat": "Rebounds", "player": "Victor Wembanyama",
+        "game_time": web_app.iso_utc(now - timedelta(hours=48)),
+        "actual": None, "final_status": "",
+    }
+
+    assert web_app._prop_due_for_automatic_final_refresh(prop, now)
 
 
 def test_recent_partial_loss_is_reopened_before_final_stat_check(monkeypatch):
@@ -6893,6 +7028,26 @@ def test_final_stats_missing_game_can_match_exact_game_time_date():
     ]
 
     assert _best_matching_row(rows, "", target_date="2026-07-14").game == "SEA@PHX"
+
+
+def test_final_stats_missing_game_uses_unique_placed_day_not_later_game():
+    rows = [
+        SimpleNamespace(game="WSH@TOR", game_date="2026-07-14", actual=1.0, status="played", id=1),
+        SimpleNamespace(game="POR@WSH", game_date="2026-07-16", actual=3.0, status="played", id=2),
+    ]
+
+    assert _best_matching_row(rows, "", "WAS", placed_date="2026-07-14").actual == 1.0
+    assert _best_matching_row(rows, "", "WAS", placed_date="2026-07-15") is None
+    assert _best_matching_row(rows, "", "TOR", placed_date="2026-07-16") is None
+
+
+def test_final_stats_missing_game_rejects_conflicting_same_day_values():
+    rows = [
+        SimpleNamespace(game="WSH@TOR", game_date="2026-07-14", actual=1.0, status="played", id=1),
+        SimpleNamespace(game="WSH@TOR", game_date="2026-07-14", actual=3.0, status="played", id=2),
+    ]
+
+    assert _best_matching_row(rows, "", "WAS", placed_date="2026-07-14") is None
 
 
 def test_final_stats_match_short_opponent_with_team_context():

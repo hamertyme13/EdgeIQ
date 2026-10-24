@@ -16,7 +16,8 @@ FIELD_TYPES = {
     "projection": "projection", "projected": "projection", "expected_result": "projection",
     "median": "projection", "forecast": "projection",
     "confidence": "probability", "probability": "probability", "model_probability": "probability",
-    "calibrated_probability": "probability", "hit_rate": "probability", "win_probability": "probability",
+    "calibrated_probability": "probability", "calibrated_confidence": "probability",
+    "hit_rate": "probability", "win_probability": "probability",
     "sample_size": "sample", "segment_sample_size": "sample", "history_count": "sample",
     "actual": "result", "result": "result", "final_result": "result",
     "expected_value": "value", "ev": "value", "edge": "value",
@@ -40,6 +41,7 @@ STATUS_ASSERTION_RE = re.compile(
 )
 STATUS_CONTEXT_RE = re.compile(r"\b(?:if|whether|no evidence|not confirmed|unknown if)\b", re.I)
 NONPLAYER_SUBJECT_RE = re.compile(r"\b(?:model|game|market|entry|analysis|sample|line|offer|season)\s+$", re.I)
+CALIBRATED_CLAIM_RE = re.compile(r"\bcalibrated\s+(?:probability|confidence|chance)\b|\bprobability\s+after\s+calibration\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class Fact:
     value: float
     player_key: str
     player_name: str
+    source_field: str = ""
 
 
 def cited_facts(bundle: dict, cited_ids: set[str]) -> list[Fact]:
@@ -73,7 +76,8 @@ def cited_facts(bundle: dict, cited_ids: set[str]) -> list[Fact]:
             if math.isfinite(number):
                 kind = FIELD_TYPES.get(path.rsplit(".", 1)[-1])
                 if kind:
-                    facts.append(Fact(f"fact:{citation_id}:{path}", citation_id, kind, number, player_key, player_name))
+                    facts.append(Fact(f"fact:{citation_id}:{path}", citation_id, kind, number, player_key, player_name,
+                                      path.rsplit(".", 1)[-1]))
 
     for citation in bundle.get("citations") or []:
         citation_id = str(citation.get("id") or "")
@@ -115,9 +119,11 @@ def claim_fact_references(answer: dict, bundle: dict) -> tuple[list[dict], bool]
                     and _same(number, requested_line)):
                 continue  # A user-entered line is context, not a current provider quote.
             named_players = _nearest_players(text, match.start(), facts)
+            calibrated_claim = bool(CALIBRATED_CLAIM_RE.search(text[max(0, match.start() - 45):match.end() + 35]))
             matching = [fact for fact in facts if
                 (_same(number, fact.value) or (fact.kind == "probability" and 0 <= fact.value <= 1 and _same(number, fact.value * 100)))
                 and (kind is None or fact.kind == kind)
+                and (not calibrated_claim or fact.source_field in {"calibrated_probability", "calibrated_confidence"})
                 and (not named_players or fact.player_key in named_players)
             ]
             if not matching:

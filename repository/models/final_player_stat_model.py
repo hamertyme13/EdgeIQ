@@ -18,6 +18,7 @@ class FinalPlayerStatModel(Base):
     stat = Column(String, nullable=False, index=True)
     game = Column(String, default="")
     game_date = Column(String, default="")
+    season_type = Column(String, nullable=True)
     actual = Column(Float, nullable=False)
     status = Column(String, default="played")
     source = Column(String, default="import")

@@ -5,7 +5,25 @@ from sqlalchemy.orm import Session
 
 from repository.models.entry_model import EntryModel
 from repository.models.entry_prop_model import EntryPropModel
-from repository.repositories.final_stats_repository import _deduplicate_history, _entry_prop_history
+from repository.repositories.final_stats_repository import _best_matching_row, _deduplicate_history, _entry_prop_history
+
+
+def test_spurs_provider_abbreviation_matches_saved_entry_game() -> None:
+    row = type("FinalRow", (), {
+        "game": "OKC@SA", "game_date": "2026-10-20", "status": "played", "actual": 13.0, "id": 1,
+    })()
+
+    assert _best_matching_row(
+        [row], "OKC @ SAS", "SAS", target_date="2026-10-20", placed_date="2026-10-20",
+    ) is row
+
+
+def test_missouri_state_provider_abbreviation_recovers_unique_placed_day() -> None:
+    row = type("FinalRow", (), {
+        "game": "MOST@DEL", "game_date": "2026-10-20", "status": "played", "actual": 2.0, "id": 1,
+    })()
+
+    assert _best_matching_row([row], "", "MOSU", placed_date="2026-10-20") is row
 
 
 def test_history_deduplicates_same_game_across_sources() -> None:

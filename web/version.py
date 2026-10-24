@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261021-integrity-review"
+STATIC_ASSET_VERSION = "20261023-nba-points-trust"

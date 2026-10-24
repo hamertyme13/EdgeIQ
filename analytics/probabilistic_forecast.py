@@ -72,6 +72,9 @@ def forecast_prop(
         else PlayerFeatureRepository.history(player, sport, stat, limit=40, team=team)
     )
     trailing_rows = _eligible_history(rows, game_time)
+    if str(sport).upper() == "NBA" and canonical_stat_label(stat) == "Points":
+        # Preseason and unlabeled finals cannot establish regular-season scoring form.
+        trailing_rows = [row for row in trailing_rows if str(row.get("season_type") or "").lower() == "regular"]
     season_rows = _current_season_history(trailing_rows, sport, game_time)
     rows = season_rows[:RECENT_GAME_WINDOW]
     actuals = [float(row["actual"]) for row in rows]

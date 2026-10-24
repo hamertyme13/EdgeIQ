@@ -129,6 +129,17 @@ def test_saved_flex_entry_settles_with_its_exact_payout_table(db_session, monkey
     assert settled["result"] == "Win"
     assert settled["profit"] == 5.0
 
+    EntryRepository.settle(
+        entry.id, "Win", correction_reason="Same-day final-stat correction",
+        leg_results=[
+            {"result": "Win", "actual": 20.0, "source": "espn", "final_status": "played"},
+            {"result": "Win", "actual": 20.0, "source": "espn", "final_status": "played"},
+            {"result": "Loss", "actual": 10.0, "source": "espn", "final_status": "played"},
+        ],
+    )
+    assert EntryRepository.get_by_id(entry.id)["audit_snapshot"]
+    assert "Same-day final-stat correction" in EntryRepository.get_by_id(entry.id)["audit_snapshot"]
+
 
 def test_all_winning_pick6_flex_uses_recorded_multiplier():
     assert settlement_return_multiplier("DraftKings Pick6", "flex", [{"result": "Win"}] * 3, 5.0) == 5.0

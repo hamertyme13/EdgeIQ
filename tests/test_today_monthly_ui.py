@@ -21,14 +21,18 @@ eval(source.slice(source.indexOf('function renderStats('),source.indexOf('async 
 renderStats({record:'7-2',wins:7,losses:2,profit:120,bankroll:220,pending_entry_exposure:10,
   bankroll_transactions:{deposits:100,withdrawals:0},monthly_performance:{label:'October 2026',record:'0-1',
   wins:0,losses:1,profit:-10,roi:-100,wagered:10,current_streak:-1,max_drawdown:10,
-  paper:{accuracy:100,decisions:1},recommendation_accuracy:{wins:0,losses:1,accuracy:0,tracked:1,decisions:1,pending:0,pushes:0,calibration_only:2,probability_unavailable:1}}});
+  paper:{accuracy:100,decisions:1},recommendation_accuracy:{wins:0,losses:1,accuracy:0,tracked:1,decisions:1,pending:0,pushes:0,calibration_only:2,probability_unavailable:1,
+  all_evaluated:{wins:2,losses:1,accuracy:66.7,tracked:3,decisions:3,pending:0,pushes:0}}}});
 assert.match($('dashboard-stats').innerHTML,/0-1/);
 assert.doesNotMatch($('dashboard-stats').innerHTML,/7-2/);
 assert.match($('today-performance-period').textContent,/October 2026/);
 assert.match($('recommendation-accuracy').innerHTML,/0-1/);
+assert.match($('recommendation-accuracy').innerHTML,/All evaluated/);
+assert.match($('recommendation-accuracy').innerHTML,/66.7%/);
+assert.match($('recommendation-accuracy').innerHTML,/2-1/);
 assert.match($('recommendation-accuracy').innerHTML,/60%\+ complete-card probability/);
-assert.match($('recommendation-accuracy').innerHTML,/2 lower-probability cards remain in calibration records/);
-assert.match($('recommendation-accuracy').innerHTML,/Paper · All Buckets/);
+assert.match($('recommendation-accuracy').innerHTML,/All evaluated includes 2 cards below 60%/);
+assert.match($('recommendation-accuracy').innerHTML,/Paper calibration across all buckets/);
 
 const queued=[];
 global.window={clearTimeout:()=>{},setTimeout:fn=>(queued.push(fn),queued.length)};

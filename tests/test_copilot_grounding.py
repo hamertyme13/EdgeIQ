@@ -57,6 +57,16 @@ def test_probability_fraction_supports_spoken_percent():
     )
 
 
+def test_raw_model_probability_cannot_be_described_as_calibrated():
+    bundle = {"citations": [{"id": "forecast", "data": {
+        "player": "Paige Bueckers", "model_probability": 0.61,
+    }}]}
+    answer = {"answer": "Paige Bueckers has a 61% calibrated probability.", "citations": ["forecast"]}
+    assert unsupported_fact_claim(answer, bundle)
+    bundle["citations"][0]["data"]["calibrated_probability"] = 0.61
+    assert not unsupported_fact_claim(answer, bundle)
+
+
 def test_negative_expected_value_keeps_its_sign():
     bundle = {"citations": [{"id": "economics", "data": {"expected_value": -11.0}}]}
     assert not unsupported_fact_claim(

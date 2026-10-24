@@ -94,6 +94,8 @@ class FinalStatsRepository:
                         existing.player_identity_id = normalized["player_identity_id"]
                         existing.player_provider = normalized["player_provider"]
                         existing.provider_player_id = normalized["provider_player_id"]
+                        if normalized["season_type"]:
+                            existing.season_type = normalized["season_type"]
                         updated += 1
                 else:
                     existing = FinalPlayerStatModel(**normalized)
@@ -225,6 +227,8 @@ class FinalStatsRepository:
         team: str = "",
         *,
         include_opportunity_context: bool = True,
+        deduplicate: bool = True,
+        include_entry_history: bool = True,
     ) -> list[dict]:
         try:
             identity = PlayerIdentityRepository.resolve(player, sport or "", create=False)
@@ -267,13 +271,16 @@ class FinalStatsRepository:
                         "actual": row.actual,
                         "status": row.status or "played",
                         "source": row.source,
+                        "season_type": row.season_type,
+                        "imported_at": row.imported_at.isoformat() if row.imported_at else None,
                     }
                     for row in rows
                 ]
                 if include_opportunity_context:
                     attach_opportunity_context(session, history, identity, player, sport, team)
-                entry_history = _entry_prop_history(session, player, stat, sport, limit)
-                return _deduplicate_history(history + entry_history)[:limit]
+                entry_history = _entry_prop_history(session, player, stat, sport, limit) if include_entry_history else []
+                combined = history + entry_history
+                return (_deduplicate_history(combined) if deduplicate else combined)[:limit]
         except SQLAlchemyError:
             return []
 
@@ -317,6 +324,7 @@ def _normalize_row(row: dict) -> dict | None:
         "source": str(row.get("source", "import")).strip() or "import",
         "player_provider": str(row.get("player_provider") or row.get("provider") or row.get("source") or "").strip(),
         "provider_player_id": str(row.get("provider_player_id") or row.get("player_id") or "").strip(),
+        "season_type": str(row.get("season_type") or "").strip() or None,
     }
 
 
@@ -350,6 +358,17 @@ def _best_matching_row(
     )
     requested_game = str(game or "").strip()
     if not requested_game:
+        if placed_date and not target_date:
+            same_day = [row for row in rows if str(row.game_date or "") == placed_date]
+            team_key = _game_key(team)
+            if team_key:
+                same_day = [row for row in same_day if team_key in _game_key(row.game)]
+            game_keys = {_game_key(row.game) for row in same_day if _game_key(row.game)}
+            outcomes = {
+                (getattr(row, "actual", None), str(getattr(row, "status", "played") or "played").lower())
+                for row in same_day
+            }
+            return same_day[0] if len(game_keys) == 1 and len(outcomes) == 1 else None
         rows = _rows_near_target_date(rows, target_date)
         if not rows:
             return None
@@ -586,6 +605,8 @@ def _prefer_stored_result(candidate: object, current: object) -> bool:
 
 
 _TEAM_ALIASES = {
+    "SAS": "SA",
+    "MOSU": "MOST",
     "NYL": "NY",
     "LVA": "LV",
     "LAS": "LA",

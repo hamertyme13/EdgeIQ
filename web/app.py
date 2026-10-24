@@ -108,6 +108,7 @@ from services.betting import potential_profit
 from services.dashboard import get_dashboard, get_starting_bankroll, set_starting_bankroll
 from services.data_management import backup_database, compact_board_history, export_database
 from services.final_stats_archive import archive_final_stats
+from services.game_history_collection import collect_nba_team_history
 from services.game_intelligence import prediction_for_matchup, settle_recent_predictions
 from services.ollama_client import (
     ollama_chat,
@@ -218,6 +219,9 @@ from web.application.intelligence_service import projection_assist_payload as bu
 from web.application.intelligence_service import trending_games_response as build_trending_games_response
 from web.application.manual_handoff import review_stake
 from web.application.model_input_status import model_input_status
+from web.application.nba_points_explanation import build_nba_points_explanation
+from web.application.nba_points_intelligence import build_nba_points_intelligence
+from web.application.nba_points_market import build_nba_points_market
 from web.application.offer_evidence import (
     game_start_status,
     handoff_blocking_reason,
@@ -297,7 +301,7 @@ from web.application.recommendation_service import (
 )
 from web.application.recommendation_service import top_props_payload as build_top_props_payload
 from web.application.recommendation_service import trending_props_payload as build_trending_props_payload
-from web.application.research_service import persist_player_research, research_evidence_payload
+from web.application.research_service import nba_team_games_before, persist_player_research, research_evidence_payload
 from web.application.results_service import (
     accuracy_lab_payload as build_accuracy_lab_payload,
 )
@@ -566,7 +570,7 @@ SETTLEMENT_REFRESH_SECONDS = max(900, int(os.getenv("EDGEIQ_SETTLEMENT_REFRESH_S
 SETTLEMENT_INITIAL_REFRESH_SECONDS = max(15, int(os.getenv("EDGEIQ_SETTLEMENT_INITIAL_REFRESH_SECONDS", "30")))
 SETTLEMENT_AUTOMATIC_RETRY_HOURS = max(
     6.0,
-    float(os.getenv("EDGEIQ_SETTLEMENT_AUTOMATIC_RETRY_HOURS", "24")),
+    float(os.getenv("EDGEIQ_SETTLEMENT_AUTOMATIC_RETRY_HOURS", "72")),
 )
 COMMAND_CENTER_CACHE_SECONDS = max(30, int(os.getenv("EDGEIQ_COMMAND_CENTER_CACHE_SECONDS", "120")))
 BACKTEST_CACHE_SECONDS = max(15, int(os.getenv("EDGEIQ_BACKTEST_CACHE_SECONDS", "30")))
@@ -5561,6 +5565,7 @@ def _opportunity_decision_receipt(
         float(prop.get("line") or 0.0),
         str(prop.get("direction") or "Over"),
         str(prop.get("team") or ""),
+        game_time=str(prop.get("game_time") or ""),
     )
     market_probability = market.get("market_probability") if market.get("available") else None
     model_market_edge = (
@@ -6738,6 +6743,8 @@ def _optimized_entries(
     candidate_cache: dict | None = None,
 ) -> list:
     ranked = []
+    if candidate_cache is None:
+        candidate_cache = {}
     for platform_model, props in (platform_props if platform_props is not None else _props_by_platform(platform)):
         props = [prop for prop in props if _is_prop_on_entry_day(prop)]
         sports = [sport_filter] if sport_filter else sorted({prop.get("league", "").upper() for prop in props if prop.get("league")})
@@ -6765,6 +6772,8 @@ def _optimized_entries(
                         exclude_correlated=exclude_correlated,
                         apply_feedback=apply_feedback,
                         candidate_cache=candidate_cache,
+                        diversify=limit > 5,
+                        candidate_pool_limit=max(16, leg_count * 4) if limit > 5 else None,
                     )
                 )
 
@@ -6829,16 +6838,16 @@ def _entry_payload_from_serialized(entry: dict, selected_platform: str) -> Entry
 
 def _optimizer_obstacles(serialized: list[dict]) -> list[str]:
     if not serialized:
-        return ["No 3-leg combinations matched the current filters."]
+        return ["No entry combinations matched the current filters or same-day provider lines."]
     obstacles: list[str] = []
     paid_ready = [row for row in serialized if (row.get("release_status") or {}).get("ok")]
     if not paid_ready:
-        obstacles.append("No 3-leg parlay cleared paid-entry release gates.")
+        obstacles.append("No entry cleared paid-entry release gates.")
     first = serialized[0]
     release = first.get("release_status") or {}
     obstacles.extend((release.get("blocks") or [])[:3])
     if first.get("grade") == "F" or "Pass" in str(first.get("action") or ""):
-        obstacles.append("The highest value 3-leg is still graded Pass by entry analysis.")
+        obstacles.append("The highest-value entry is still graded Pass by entry analysis.")
     value = first.get("platform_value") or {}
     if value.get("recommended_platform") and not value.get("complete_on_recommended_platform"):
         obstacles.append("The best-value platform did not match every leg in the entry.")
@@ -7587,6 +7596,15 @@ def _player_research_payload(
         limit=120,
         team=str((active_props[0] if active_props else {}).get("team") or ""),
     )
+    nba_points_history = (
+        FinalStatsRepository.history(
+            player, stat, sport="NBA", limit=360,
+            team=str((active_props[0] if active_props else {}).get("team") or ""),
+            deduplicate=False, include_entry_history=False,
+        )
+        if (sport_filter or "").upper() == "NBA" and canonical_stat_label(stat) == "Points"
+        else None
+    )
     chart_rows = []
     for row in reversed(history[:15]):
         actual = float(row.get("actual") or 0)
@@ -7604,6 +7622,7 @@ def _player_research_payload(
         default=None,
     )
     direction = str((recommendation or {}).get("direction") or "Over")
+    research_game_time = (recommendation or {}).get("game_time") or datetime.now(UTC)
     for row in chart_rows:
         row["hit"] = _history_hit(row["actual"], target_line, direction)
         row["direction"] = direction
@@ -7615,7 +7634,7 @@ def _player_research_payload(
             float(target_line),
             direction,
             history=history,
-            game_time=(recommendation or {}).get("game_time"),
+            game_time=research_game_time,
             team=str((recommendation or {}).get("team") or ""),
             game=str((recommendation or {}).get("game") or ""),
             game_prediction=prediction_for_matchup(
@@ -7678,6 +7697,14 @@ def _player_research_payload(
         "teammate_splits": _research_teammate_splits(history, target_line),
         "opponent": current_opponent,
         "season_assessment": _season_assessment(forecast, current_opponent),
+        "nba_points_intelligence": build_nba_points_intelligence(
+            nba_points_history if nba_points_history is not None else history,
+            line=target_line,
+            forecast=forecast,
+            opponent=current_opponent,
+            game_time=research_game_time,
+            team_games=nba_team_games_before(research_game_time, current_opponent),
+        ) if (sport_filter or "").upper() == "NBA" and canonical_stat_label(stat) == "Points" else None,
         "best_hitting_stats": _player_stat_hit_leaderboard(
             player,
             [
@@ -7749,6 +7776,20 @@ def _season_assessment(forecast, opponent: str) -> dict:
         }
     features = forecast.features
     games = int(features.get("verified_games") or 0)
+    if forecast.source == "market_prior":
+        return {
+            "headline": "Forecast unavailable: more verified games needed",
+            "summary": (
+                f"Only {games} verified season games are available. The displayed line is a market reference, "
+                "not an independent EdgeIQ projection."
+            ),
+            "strength": "Thin history",
+            "verified_games": games,
+            "opponent_games": 0,
+            "season_average": None,
+            "opponent_average": None,
+            "last_10_average": None,
+        }
     opponent_games = int(features.get("opponent_sample") or 0)
     season_average = features.get("season_average")
     opponent_average = features.get("opponent_mean")
@@ -12326,6 +12367,7 @@ def _refresh_schedule_payload() -> dict:
         "auto_paper_samples": "08:30",
         "player_features": "03:15",
         "season_history": "06:00",
+        "nba_team_history": "05:30",
         "enabled": True,
     }
     schedule = {**defaults, **_safe_json_loads(SettingsRepository.get("refresh_schedule", ""))}
@@ -12340,9 +12382,10 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
         {"name": "Player feature store", "time": schedule["player_features"], "action": "Materialize season, recent-form, role, and opponent features for active props."},
         {"name": "Season history", "time": schedule["season_history"], "action": "Update recent official results across supported leagues using saved checkpoints."},
+        {"name": "NBA team finals", "time": schedule["nba_team_history"], "action": "Collect official completed-game scores and pace for matchup research."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "daily_briefing", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history")
+    job_keys = ("morning_scan", "daily_briefing", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history", "nba_team_history")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -12556,6 +12599,7 @@ def _run_due_daily_operations_locked() -> dict:
         "auto_paper_samples": _run_automatic_paper_samples,
         "player_features": _materialize_player_features,
         "season_history": run_daily_season_updates,
+        "nba_team_history": collect_nba_team_history,
     }
     for name, callback in timed_jobs.items():
         if name == "morning_scan" and schedule.get("daily_briefing"):
@@ -13182,6 +13226,15 @@ configure_player_router(
             platform,
             line,
         ),
+        points_market=lambda player, line, platform: build_nba_points_market(
+            player, line, platform,
+            research=lambda name, stat, sport, selected, exact: _player_research_payload(name, stat, sport, selected, exact),
+            market_lookup=sportsbook_odds.get_player_prop_consensus,
+        ),
+        points_explanation=lambda player, line, platform, detail: build_nba_points_explanation(
+            player, line, platform, detail,
+            research=lambda name, stat, sport, selected, exact: _player_research_payload(name, stat, sport, selected, exact),
+        ),
         research_evidence=lambda player, stat, sport, platform, game, include_expired: research_evidence_payload(
             player, stat, sport, platform, game, include_expired,
         ),
@@ -13657,7 +13710,7 @@ configure_recommendation_router(
             end_to_end_eligibility=lambda prop: _end_to_end_prop_eligibility(prop),
             parse_game_time=lambda value: _parse_game_time(value),
         ),
-        optimizer=lambda platform, sport, min_legs, max_legs, limit, min_confidence, min_edge, max_same_team, exclude_correlated, apply_feedback: build_optimized_entries_payload(
+        optimizer=lambda platform, sport, min_legs, max_legs, limit, min_confidence, min_edge, max_same_team, exclude_correlated, apply_feedback, batch: build_optimized_entries_payload(
             platform,
             sport,
             min_legs,
@@ -13668,12 +13721,13 @@ configure_recommendation_router(
             max_same_team,
             exclude_correlated,
             apply_feedback,
+            batch,
             optimize=lambda *args: _optimized_entries(*args),
-            value_rank=lambda suggestions, selected_platform: build_portfolio_ranked_suggestions(
+            value_rank=lambda suggestions, selected_platform, candidate_limit: build_portfolio_ranked_suggestions(
                 _value_ranked_suggestions(suggestions, selected_platform),
                 pending_entries=EntryRepository.pending(),
                 strategy=_bankroll_strategy(),
-                limit=limit,
+                limit=candidate_limit,
             ),
             obstacles=lambda suggestions: _optimizer_obstacles(suggestions),
         ),

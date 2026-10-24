@@ -496,7 +496,7 @@ class EntryRepository:
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
 
-            if was_settled and entry.result != result:
+            if was_settled and (entry.result != result or correction_reason):
                 try:
                     audit = json.loads(entry.audit_snapshot or "{}")
                 except (TypeError, ValueError):
@@ -750,23 +750,28 @@ class EntryRepository:
     @staticmethod
     def _recommendation_accuracy(entries: list[dict]) -> dict:
         evaluated = [(entry, EntryRepository._evaluated_card_probability(entry)) for entry in entries]
+        all_scored = [entry for entry, probability in evaluated if probability is not None]
         qualified = [entry for entry, probability in evaluated if probability is not None and probability >= 60.0]
-        settled = [entry for entry in qualified if entry.get("status") == "Settled"]
-        decisions = [entry for entry in settled if entry.get("result") in {"Win", "Loss"}]
-        wins = sum(1 for entry in decisions if entry.get("result") == "Win")
-        losses = sum(1 for entry in decisions if entry.get("result") == "Loss")
-        pushes = sum(1 for entry in settled if entry.get("result") == "Push")
-        pending = sum(1 for entry in qualified if entry.get("status") == "Pending")
-        total = wins + losses
+
+        def cohort(rows: list[dict]) -> dict:
+            settled = [entry for entry in rows if entry.get("status") == "Settled"]
+            wins = sum(1 for entry in settled if entry.get("result") == "Win")
+            losses = sum(1 for entry in settled if entry.get("result") == "Loss")
+            decisions = wins + losses
+            return {
+                "accuracy": round((wins / decisions * 100) if decisions else 0.0, 1),
+                "wins": wins,
+                "losses": losses,
+                "pushes": sum(1 for entry in settled if entry.get("result") == "Push"),
+                "pending": sum(1 for entry in rows if entry.get("status") == "Pending"),
+                "tracked": len(rows),
+                "settled": len(settled),
+                "decisions": decisions,
+            }
+
         return {
-            "accuracy": round((wins / total * 100) if total else 0.0, 1),
-            "wins": wins,
-            "losses": losses,
-            "pushes": pushes,
-            "pending": pending,
-            "tracked": len(qualified),
-            "settled": len(settled),
-            "decisions": total,
+            **cohort(qualified),
+            "all_evaluated": cohort(all_scored),
             "minimum_card_probability": 60.0,
             "calibration_only": sum(1 for _, probability in evaluated if probability is not None and probability < 60.0),
             "probability_unavailable": sum(1 for _, probability in evaluated if probability is None),
