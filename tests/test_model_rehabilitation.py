@@ -6,9 +6,11 @@ from sqlalchemy.orm import sessionmaker
 
 import repository.database as database
 from analytics.hierarchical_calibration import calibrate_probability
+from analytics.nba_points_validation import evaluate_nba_points_predictions
 from repository.database import Base
 from repository.models.board_offer_observation_model import BoardOfferObservationModel
 from repository.models.recommendation_snapshot_model import RecommendationSnapshotModel
+from repository.models.shadow_prediction_model import ShadowPredictionModel
 from repository.repositories import board_offer_repository as board_module
 from repository.repositories import model_rehabilitation_repository as rehabilitation_module
 from repository.repositories import settings_repository as settings_module
@@ -61,6 +63,26 @@ def test_shadow_queue_deduplicates_repeated_provider_markets(tmp_path, monkeypat
     assert second["queued"] == 1
 
 
+def test_shadow_queue_uses_explicit_utc_lock_time_not_database_wall_clock(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2030, 1, 2, 3, 4, 5, 123456, tzinfo=tz)
+
+    monkeypatch.setattr(rehabilitation_module, "datetime", FixedDateTime)
+    ModelRehabilitationRepository.queue_shadow([{
+        "player": "Clock Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+        "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
+        "game_time": "2030-01-02T23:00:00Z", "probability": 60,
+    }], model_version="nba-points-board/clock-test", target=None, cohort_date="2030-01-02")
+
+    with sessions() as session:
+        row = session.query(ShadowPredictionModel).one()
+        assert row.predicted_at == datetime(2030, 1, 2, 3, 4, 5, 123456)
+
+
 def test_shadow_queue_respects_full_cohort_target(tmp_path, monkeypatch):
     _isolated_database(tmp_path, monkeypatch)
     props = [
@@ -78,6 +100,39 @@ def test_shadow_queue_respects_full_cohort_target(tmp_path, monkeypatch):
     assert first["created"] == 2
     assert second["created"] == 0
     assert second["queued"] == 2
+
+
+def test_nba_points_board_reader_keeps_locked_forecast_and_outcome(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    snapshot = {
+        "source": "verified_history_distribution",
+        "feature_as_of": "2026-10-24T11:00:00Z",
+        "features": {"season_end": "2026-10-23", "verified_games": 10},
+    }
+    ModelRehabilitationRepository.queue_shadow([{
+        "player": "NBA Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+        "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
+        "game_time": "2026-10-24T23:00:00Z", "projection": 22,
+        "probability": 60, "forecast_snapshot": snapshot,
+    }], model_version="nba-points-board/champion-v1", target=None, cohort_date="2026-10-24")
+    with sessions() as session:
+        row = session.query(ShadowPredictionModel).one()
+        row.status = "Win"
+        row.actual = 24
+        row.outcome_source = "espn"
+        row.predicted_at = datetime(2026, 10, 24, 12, tzinfo=UTC)
+        row.settled_at = datetime(2026, 10, 25, 2, tzinfo=UTC)
+        session.commit()
+
+    evidence = ModelRehabilitationRepository.nba_points_board_validation_rows()
+
+    assert len(evidence) == 1
+    assert evidence[0]["feature_snapshot"] == snapshot
+    assert evidence[0]["feature_as_of"] == snapshot["feature_as_of"]
+    assert evidence[0]["evidence_origin"] == "prospective_board"
+    report = evaluate_nba_points_predictions(evidence)
+    assert report["eligible_independent"] == 1
+    assert report["evidence_origins"] == {"prospective_board": 1}
 
 
 def test_recommendation_snapshots_are_immutable(tmp_path, monkeypatch):
@@ -343,3 +398,31 @@ def test_shadow_settlement_uses_verified_result_evidence(tmp_path, monkeypatch):
     result = ModelRehabilitationRepository.settle_pending()
     assert result["settled"] == 1
     assert ModelRehabilitationRepository.shadow_rows()[0]["result"] == "Win"
+
+
+def test_nba_board_settlement_is_not_starved_by_older_shadow_rows(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    ModelRehabilitationRepository._legacy_migrated = True
+    old = {"player": "Older Player", "sport": "WNBA", "stat": "Points", "line": 20.5,
+           "direction": "Over", "platform": "PrizePicks", "game": "A @ B",
+           "game_time": "2026-08-08T20:00:00Z"}
+    nba = {"player": "NBA Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+           "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
+           "game_time": "2026-10-08T20:00:00Z"}
+    ModelRehabilitationRepository.queue_shadow([old], model_version="old-shadow", target=None)
+    ModelRehabilitationRepository.queue_shadow([nba], model_version="nba-points-board/champion", target=None)
+    monkeypatch.setattr(
+        "repository.repositories.model_rehabilitation_repository.FinalStatsRepository.find_result",
+        lambda prop: {"actual": 24.0, "status": "played", "source": "ESPN public"}
+        if prop["sport"] == "NBA" else None,
+    )
+
+    result = ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")
+
+    assert result["settled"] == 1
+    with sessions() as session:
+        rows = {row.model_version: row for row in session.query(ShadowPredictionModel).all()}
+        assert rows["old-shadow"].status == "shadow_pending"
+        assert rows["old-shadow"].settlement_attempts == 0
+        assert rows["nba-points-board/champion"].status == "Win"
+    assert ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")["settled"] == 0

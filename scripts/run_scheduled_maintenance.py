@@ -32,6 +32,9 @@ def wait_for_queued_jobs(result: dict, *, get_job=background_jobs.get, pause=tim
 
 
 def main() -> int:
+    from scripts.ensure_local_postgres import ensure_local_postgres
+
+    ensure_local_postgres()
     if "--worker" not in sys.argv:
         timeout = max(60, int(os.getenv("EDGEIQ_MAINTENANCE_TIMEOUT_SECONDS", "180")))
         try:

@@ -1,3 +1,4 @@
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -8,6 +9,49 @@ from repository.models.final_player_stat_model import FinalPlayerStatModel
 from repository.models.player_feature_model import PlayerFeatureModel  # noqa: F401
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
+
+
+@pytest.mark.parametrize(
+    ("sport", "player", "team", "stat", "saved_game", "final_game", "game_time", "actual"),
+    [
+        ("NBA", "Jalen Brunson", "NYK", "Points", "NYK @ BOS", "NY@BOS", "2026-10-23T19:00:00-04:00", 19),
+        ("NBA", "Dejounte Murray", "NOP", "Points + Assists", "NOP @ UTA", "NO@UTAH", "2026-10-23T21:30:00-04:00", 22),
+        ("NBA", "Jalen Brunson", "NYK", "Rebounds", "ORL @ NYK", "ORL@NY", "2026-10-25T19:00:00-04:00", 3),
+        ("NCAAF", "CJ Bailey", "NCST", "Passing Yards", "NCST @ STAN", "NCSU@STAN", "2026-10-23T23:00:00Z", 256),
+    ],
+)
+def test_settlement_matches_provider_and_final_team_abbreviations(
+    tmp_path, monkeypatch, sport, player, team, stat, saved_game, final_game, game_time, actual,
+):
+    _isolated_database(tmp_path, monkeypatch)
+    FinalStatsRepository.upsert_many([{
+        "player": player, "team": team, "sport": sport, "stat": stat,
+        "game": final_game, "game_date": game_time[:10], "actual": actual,
+        "status": "played", "source": "espn",
+    }])
+    matched = FinalStatsRepository.find_result({
+        "player": player, "team": team, "sport": sport, "stat": stat,
+        "game": saved_game, "game_time": game_time,
+    })
+    assert matched is not None
+    assert matched["actual"] == actual
+
+
+def test_exact_name_and_game_recovers_stale_identity_without_cross_game_match(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    stale = PlayerIdentityRepository.resolve("Jabari Smith", "NBA", "HOU")
+    FinalStatsRepository.upsert_many([{
+        "player": "Jabari Smith Jr.", "team": "HOU", "sport": "NBA", "stat": "Points",
+        "game": "HOU@SA", "game_date": "2026-10-23", "actual": 7,
+        "status": "played", "source": "espn",
+    }])
+    prop = {
+        "player": "Jabari Smith Jr.", "player_identity_id": stale["id"],
+        "team": "HOU", "sport": "NBA", "stat": "Points",
+        "game": "HOU @ SAS", "game_time": "2026-10-23T21:30:00-04:00",
+    }
+    assert FinalStatsRepository.find_result(prop)["actual"] == 7
+    assert FinalStatsRepository.find_result({**prop, "game": "HOU @ NYK"}) is None
 
 
 def _isolated_database(tmp_path, monkeypatch):

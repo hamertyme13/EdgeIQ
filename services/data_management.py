@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import shutil
 import sqlite3
+import subprocess
 from datetime import UTC, date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,7 +34,10 @@ def _backup_database_unlocked(
     *,
     database_url: str | None = None,
 ) -> dict:
-    source_path = _sqlite_path(database_url or DATABASE_URL)
+    resolved_url = database_url or DATABASE_URL
+    if make_url(resolved_url).get_backend_name() == "postgresql":
+        return _backup_postgres(destination_dir, resolved_url)
+    source_path = _sqlite_path(resolved_url)
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
     _require_backup_space(source_path, destination)
@@ -47,6 +52,47 @@ def _backup_database_unlocked(
         "path": str(backup_path.resolve()),
         "bytes": backup_path.stat().st_size,
         "format": "sqlite",
+    }
+
+
+def _backup_postgres(destination_dir: str | Path, database_url: str) -> dict:
+    url = make_url(database_url)
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now(UTC)
+    suffix = created_at.strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = destination / f"edgeiq-{suffix}.dump"
+    partial_path = destination / f".edgeiq-{suffix}.partial"
+    pg_dump = Path("/opt/homebrew/opt/postgresql@17/bin/pg_dump")
+    executable = str(pg_dump) if pg_dump.is_file() else shutil.which("pg_dump")
+    if not executable:
+        raise RuntimeError("PostgreSQL backup needs pg_dump installed.")
+    if not url.database:
+        raise ValueError("PostgreSQL backup needs a database name.")
+    command = [executable, "--format=custom", "--compress=6", "--no-owner", "--no-acl",
+               "--file", str(partial_path)]
+    if url.host:
+        command.extend(["--host", url.host])
+    if url.port:
+        command.extend(["--port", str(url.port)])
+    if url.username:
+        command.extend(["--username", url.username])
+    command.extend(["--dbname", url.database])
+    environment = os.environ.copy()
+    if url.password:
+        environment["PGPASSWORD"] = url.password
+    try:
+        subprocess.run(command, env=environment, check=True, capture_output=True)
+        if not partial_path.is_file() or partial_path.stat().st_size == 0:
+            raise RuntimeError("PostgreSQL backup did not produce a dump.")
+        partial_path.replace(backup_path)
+    finally:
+        partial_path.unlink(missing_ok=True)
+    return {
+        "created_at": created_at.isoformat(),
+        "path": str(backup_path.resolve()),
+        "bytes": backup_path.stat().st_size,
+        "format": "postgresql-custom",
     }
 
 
@@ -66,7 +112,10 @@ def _export_database_unlocked(
     *,
     database_url: str | None = None,
 ) -> dict:
-    source_path = _sqlite_path(database_url or DATABASE_URL)
+    resolved_url = database_url or DATABASE_URL
+    if make_url(resolved_url).get_backend_name() == "postgresql":
+        return _backup_postgres(destination_dir, resolved_url)
+    source_path = _sqlite_path(resolved_url)
     destination = Path(destination_dir)
     destination.mkdir(parents=True, exist_ok=True)
     _require_export_space(source_path, destination)

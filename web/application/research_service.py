@@ -5,6 +5,28 @@ from repository.repositories.team_history_repository import TeamHistoryRepositor
 from utils.ttl_cache import TTLMap
 
 _NBA_TEAM_GAMES: TTLMap[str, list[dict]] = TTLMap(max_size=32)
+VERIFIED_FINAL_SOURCES = ("espn", "nba_api", "balldontlie", "statshawk")
+
+
+def player_team_context(history: list[dict], recommendation: dict | None) -> dict:
+    """Distinguish a current offer's team from the last team in verified finals."""
+    offer = recommendation or {}
+    if offer.get("team"):
+        return {
+            "team": str(offer["team"]),
+            "source": "current_provider_offer",
+            "as_of": offer.get("game_time"),
+        }
+    for row in sorted(history, key=lambda item: str(item.get("game_date") or ""), reverse=True):
+        if (row.get("team") and row.get("game_date")
+                and str(row.get("status") or "played").lower() == "played"
+                and str(row.get("source") or "").lower().startswith(VERIFIED_FINAL_SOURCES)):
+            return {
+                "team": str(row["team"]),
+                "source": "latest_verified_final",
+                "as_of": str(row["game_date"])[:10],
+            }
+    return {"team": None, "source": "unavailable", "as_of": None}
 
 
 def nba_team_games_before(game_time: str, opponent: str) -> list[dict]:

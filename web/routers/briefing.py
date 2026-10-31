@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from web.application.market_disagreement import market_disagreement_payload
-from web.application.opportunity_presentation import scored_opportunities
+from web.application.opportunity_presentation import mark_expired_briefing_for_refresh, scored_opportunities
 
 router = APIRouter(tags=["briefing"])
 
@@ -53,9 +53,9 @@ def daily_briefing(
     deps: DepsBriefing = None,  # type: ignore[assignment]
 ) -> dict:
     _deps = deps if isinstance(deps, BriefingDependencies) else get_deps()
-    return scored_opportunities(
+    return mark_expired_briefing_for_refresh(scored_opportunities(
         _deps.briefing(platform, _sport_filter(sport), refresh, cached_only), "top_opportunities",
-    )
+    ))
 
 
 @router.get("/api/analytics/market-disagreement")

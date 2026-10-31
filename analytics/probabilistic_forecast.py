@@ -13,6 +13,9 @@ from analytics.model_registry import (
     PRODUCT_MODEL_VERSION,
 )
 from analytics.model_selection import select_projection_champion
+from analytics.nba_points_minutes import minutes_challenger
+from analytics.nba_points_participation import nba_points_participation_confirmed
+from analytics.nba_points_shot_volume import shot_volume_challenger
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
 from utils.stat_normalization import canonical_stat_label
@@ -72,10 +75,25 @@ def forecast_prop(
         else PlayerFeatureRepository.history(player, sport, stat, limit=40, team=team)
     )
     trailing_rows = _eligible_history(rows, game_time)
-    if str(sport).upper() == "NBA" and canonical_stat_label(stat) == "Points":
+    is_nba_points = str(sport).upper() == "NBA" and canonical_stat_label(stat) == "Points"
+    unconfirmed_zero_games = 0
+    if is_nba_points:
+        unconfirmed_zero_games = sum(
+            str(row.get("season_type") or "").lower() == "regular"
+            and not nba_points_participation_confirmed(row)
+            for row in trailing_rows
+        )
         # Preseason and unlabeled finals cannot establish regular-season scoring form.
-        trailing_rows = [row for row in trailing_rows if str(row.get("season_type") or "").lower() == "regular"]
-    season_rows = _current_season_history(trailing_rows, sport, game_time)
+        trailing_rows = [
+            row for row in trailing_rows
+            if str(row.get("season_type") or "").lower() == "regular" and row.get("game_date")
+            and nba_points_participation_confirmed(row)
+        ]
+    season_rows = _current_season_history(trailing_rows, sport, game_time, fallback=not is_nba_points)
+    shadow_features = {
+        "nba_points_minutes_shadow": minutes_challenger(season_rows),
+        "nba_points_shot_volume_shadow": shot_volume_challenger(season_rows),
+    } if is_nba_points else {}
     rows = season_rows[:RECENT_GAME_WINDOW]
     actuals = [float(row["actual"]) for row in rows]
     season_actuals = [float(row["actual"]) for row in season_rows]
@@ -99,9 +117,11 @@ def forecast_prop(
                 "sport": sport.upper(),
                 "stat": canonical_stat_label(stat),
                 "verified_games": len(season_actuals),
+                "unconfirmed_zero_games_excluded": unconfirmed_zero_games,
                 "recent_game_window": len(actuals),
                 "market_line_used_as_prior": True,
                 "history_filter_comparison": _history_filter_comparison(actuals, trailing_actuals, float(line), direction, stat),
+                **shadow_features,
             },
             distribution={
                 "expected_result": round(float(line), 2),
@@ -266,6 +286,7 @@ def forecast_prop(
             "league_stat_policy": policy["name"],
             "opportunity_metric": policy["opportunity_metric"],
             "verified_games": len(season_actuals),
+            "unconfirmed_zero_games_excluded": unconfirmed_zero_games,
             "recent_game_window": len(actuals),
             "effective_sample_size": round(effective_n, 2),
             "weighted_mean": round(weighted_mean, 3),
@@ -320,6 +341,7 @@ def forecast_prop(
             },
             "game_intelligence": game_context,
             "game_aware_shadow_projection": round(game_aware_shadow_projection, 3),
+            **shadow_features,
         },
         distribution={
             "expected_result": round(contextual_mean, 2),
@@ -653,12 +675,12 @@ def _eligible_history(rows: list[dict], game_time: object) -> list[dict]:
     return deduplicated
 
 
-def _current_season_history(rows: list[dict], sport: str, game_time: object) -> list[dict]:
+def _current_season_history(rows: list[dict], sport: str, game_time: object, *, fallback: bool = True) -> list[dict]:
     target_text = _date_text(game_time) or datetime.now(UTC).date().isoformat()
     try:
         target = datetime.fromisoformat(target_text).date()
     except ValueError:
-        return rows
+        return rows if fallback else []
     sport_key = str(sport or "").upper()
     if sport_key in {"NBA", "NHL"}:
         season_year = target.year if target.month >= 9 else target.year - 1
@@ -672,7 +694,7 @@ def _current_season_history(rows: list[dict], sport: str, game_time: object) -> 
     else:
         return rows
     season_rows = [row for row in rows if not row.get("game_date") or start <= str(row["game_date"])[:10] <= target.isoformat()]
-    return season_rows or rows
+    return season_rows or (rows if fallback else [])
 
 
 def _value_hits_line(value: float, line: float, direction: str) -> bool:

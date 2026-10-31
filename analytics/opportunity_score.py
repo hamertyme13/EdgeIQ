@@ -46,7 +46,17 @@ def score_source_freshness(prop: dict, *, now: datetime | None = None) -> dict:
         pass
     source_status = (prop.get("recommendation_freshness") or {}).get("status")
     market_stale = ((prop.get("decision_receipt") or {}).get("market_consensus") or {}).get("stale")
-    if age is None or age < 0 or source_status == "unknown":
+    deadline_passed = False
+    try:
+        deadline = datetime.fromisoformat(str(
+            (prop.get("decision_receipt") or {}).get("valid_until") or ""
+        ).replace("Z", "+00:00"))
+        deadline_passed = deadline.tzinfo is not None and current >= deadline.astimezone(UTC)
+    except ValueError:
+        pass
+    if deadline_passed:
+        status = "expired"
+    elif age is None or age < 0 or source_status == "unknown":
         status = "unknown"
     elif age > 30 or source_status in {"expired", "stale"} or market_stale or prop.get("stale"):
         status = "expired"

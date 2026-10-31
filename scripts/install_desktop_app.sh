@@ -2,7 +2,10 @@
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_BUNDLE="${1:-$HOME/Desktop/EdgeIQ.app}"
+TARGET_APP_BUNDLE="${1:-$HOME/Desktop/EdgeIQ.app}"
+STAGING_ROOT="$(/usr/bin/mktemp -d /private/tmp/edgeiq-app.XXXXXX)"
+trap '/bin/rm -rf "$STAGING_ROOT"' EXIT
+APP_BUNDLE="$STAGING_ROOT/EdgeIQ.app"
 ICON_PATH="$APP_DIR/assets/EdgeIQ.icns"
 LAUNCHER="$APP_DIR/scripts/launch_edgeiq.sh"
 PLIST="$APP_BUNDLE/Contents/Info.plist"
@@ -24,7 +27,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
     "/usr/local/bin/python3" \
     "/usr/bin/python3"
   do
-    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn" >/dev/null 2>&1; then
+    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
       PYTHON_BIN="$candidate"
       break
     fi
@@ -33,6 +36,10 @@ fi
 
 if [[ -z "$PYTHON_BIN" ]]; then
   echo "No Python runtime with EdgeIQ dependencies was found." >&2
+  exit 1
+fi
+if ! "$PYTHON_BIN" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
+  echo "Selected Python is missing EdgeIQ runtime dependencies: $PYTHON_BIN" >&2
   exit 1
 fi
 
@@ -44,7 +51,6 @@ if [[ ! -s "$ICON_PATH" ]]; then
   "$PYTHON_BIN" "$APP_DIR/scripts/generate_desktop_icon.py" >/dev/null
 fi
 
-/bin/rm -rf "$APP_BUNDLE"
 /bin/mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 "$CLANG_BIN" -isysroot "$SDK_ROOT" -std=c11 -Wall -Wextra -Werror \
@@ -87,8 +93,18 @@ PLIST_XML
 /usr/bin/xattr -cr "$APP_BUNDLE"
 /usr/bin/codesign --force --sign - "$APP_BUNDLE"
 
-/usr/bin/touch "$APP_BUNDLE"
+BACKUP_BUNDLE="$STAGING_ROOT/Previous-EdgeIQ.app"
+if [[ -e "$TARGET_APP_BUNDLE" ]]; then
+  /bin/mv "$TARGET_APP_BUNDLE" "$BACKUP_BUNDLE"
+fi
+if ! /bin/mv "$APP_BUNDLE" "$TARGET_APP_BUNDLE"; then
+  if [[ -e "$BACKUP_BUNDLE" ]]; then
+    /bin/mv "$BACKUP_BUNDLE" "$TARGET_APP_BUNDLE"
+  fi
+  exit 1
+fi
+/usr/bin/touch "$TARGET_APP_BUNDLE"
 
-echo "Installed EdgeIQ desktop app at $APP_BUNDLE"
+echo "Installed EdgeIQ desktop app at $TARGET_APP_BUNDLE"
 PYTHON_BIN="$PYTHON_BIN" "$APP_DIR/scripts/install_background_scheduler.sh"
 echo "Launch it by double-clicking the app. EdgeIQ will open in your browser."

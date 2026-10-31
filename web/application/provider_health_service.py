@@ -121,6 +121,9 @@ def build_data_health_payload(
     schedule = operational_health.get("schedule") or {}
     shadow = operational_health.get("shadow_evaluation") or {}
     settlement = operational_health.get("shadow_settlement") or {}
+    nba_points_settlement = operational_health.get("nba_points_shadow_settlement") or {}
+    nba_points_cohort = operational_health.get("nba_points_board_cohort") or {}
+    nba_points_quotes = operational_health.get("nba_points_market_quotes") or {}
     research_memory = operational_health.get("research_memory") or {}
     complete_board = operational_health.get("complete_board") or {}
     plausibility_rejections = operational_health.get("plausibility_rejections") or []
@@ -159,7 +162,10 @@ def build_data_health_payload(
             "scheduler": scheduler,
             "schedule": schedule,
             "shadow_settlement": settlement,
+            "nba_points_shadow_settlement": nba_points_settlement,
             "shadow_evaluation": shadow,
+            "nba_points_board_cohort": nba_points_cohort,
+            "nba_points_market_quotes": nba_points_quotes,
             "research_memory": research_memory,
             "complete_board": complete_board,
             "plausibility_rejections": plausibility_rejections,

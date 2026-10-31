@@ -64,3 +64,17 @@ def scored_opportunities(payload: dict, field: str) -> dict:
         {**prop, "edgeiq_score": presented_score(prop),
          "edgeiq_score_freshness": score_source_freshness(prop)} for prop in payload.get(field) or []
     ]}
+
+
+def mark_expired_briefing_for_refresh(payload: dict) -> dict:
+    """Keep a cached board visible while requesting a new scan when every card expires."""
+    opportunities = payload.get("top_opportunities") or []
+    cache = payload.get("cache") or {}
+    if not cache.get("hit") or not opportunities:
+        return payload
+    if any((prop.get("edgeiq_score_freshness") or {}).get("status") == "fresh" for prop in opportunities):
+        return payload
+    return {**payload, "cache": {
+        **cache, "stale": True, "requires_refresh": True,
+        "reason": "All saved prop recommendations need fresh provider evidence.",
+    }}

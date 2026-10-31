@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from math import isfinite
 from statistics import mean
 
 from utils.entity_normalization import canonical_person_key
+
+NBA_DEFENSE_CONTEXT_VERSION = "nba-team-defense-rank-v1"
 
 
 def team_history_features(
@@ -43,10 +46,12 @@ def team_history_features(
 
 def opponent_points_allowed_context(opponent: str, game_start: str, settled_games: list[dict]) -> dict:
     """Descriptive NBA defense from unique, completed games known before tipoff."""
-    unavailable = {
+    unavailable: dict[str, object] = {
         "sample_size": 0, "last_5": None, "last_10": None, "last_20": None,
+        "pace_last_5": None, "pace_sample_size": 0, "pace_source": "unavailable",
         "league_average": None, "difference_from_league": None, "defensive_rank": None,
-        "advantage_score": None, "source": "unavailable", "source_games": [],
+        "advantage_score": None, "ranked_teams": 0, "minimum_team_games": 5,
+        "source": "unavailable", "source_games": [],
         "status": "Verified opponent team finals are unavailable.",
     }
     if not opponent or not game_start:
@@ -69,26 +74,65 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
     if not rows:
         return unavailable
     allowed = [_points_against(row, opponent) for row in rows]
+    pace = []
+    for row in rows[:10]:
+        try:
+            value = float(str(row.get("pace")))
+        except (TypeError, ValueError):
+            continue
+        if isfinite(value) and 40 <= value <= 150:
+            pace.append(value)
     league_scores = [float(score) for row in games for score in (row["actual_home_points"], row["actual_away_points"])]
     league_average = round(mean(league_scores), 1) if league_scores else None
     recent = round(mean(allowed[:10]), 1)
+    comparison = _nba_defense_comparison(opponent, games)
     return {
         "sample_size": len(rows),
         "last_5": round(mean(allowed[:5]), 1),
         "last_10": recent,
         "last_20": round(mean(allowed[:20]), 1),
+        "pace_last_5": round(mean(pace[:5]), 1) if pace else None,
+        "pace_sample_size": len(pace),
+        "pace_source": "espn_box_score_possessions" if pace else "unavailable",
         "league_average": league_average,
         "difference_from_league": round(recent - league_average, 1) if league_average is not None else None,
-        "defensive_rank": None,
-        "advantage_score": None,
+        **comparison,
         "source": "espn_official_scoreboard",
         "source_games": [
-            {"game_start": row["game_start"], "url": f"https://www.espn.com/game/_/gameId/{row['game_id']}"}
+            {"game_start": row["game_start"], "captured_at": row.get("captured_at"),
+             "url": f"https://www.espn.com/game/_/gameId/{row['game_id']}"}
             for row in rows[:10] if row.get("game_id")
         ],
         "status": ("Small opponent team sample; descriptive only." if len(rows) < 5
-                   else "Opponent team points allowed are descriptive, not a player points probability."),
+                   else "Team defense comparison is descriptive, not a player points probability."),
     }
+
+
+def _nba_defense_comparison(opponent: str, games: list[dict]) -> dict:
+    """Rank recent points allowed only when enough teams have comparable evidence."""
+    teams = {
+        _team_key(str(row.get(f"{side}_team") or ""))
+        for row in games for side in ("home", "away")
+    }
+    teams.discard("")
+    averages = {}
+    for team in teams:
+        rows = _team_rows(team, games)
+        if len(rows) >= 5:
+            averages[team] = mean(_points_against(row, team) for row in rows[:10])
+    result = {
+        "defensive_rank": None, "advantage_score": None,
+        "ranked_teams": len(averages), "minimum_team_games": 5,
+    }
+    target = _team_key(opponent)
+    if target not in averages or len(averages) < 10:
+        return result
+    value = averages[target]
+    lower = sum(other < value for other in averages.values())
+    equal = sum(other == value for other in averages.values())
+    result["defensive_rank"] = lower + 1  # Rank 1 allows the fewest points.
+    result["advantage_score"] = round(100 * (lower + (equal - 1) / 2) / (len(averages) - 1))
+    return result
 
 
 def _team_rows(team: str, rows: list[dict]) -> list[dict]:

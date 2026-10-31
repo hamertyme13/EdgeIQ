@@ -17,7 +17,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
     "/usr/local/bin/python3" \
     "/usr/bin/python3"
   do
-    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn" >/dev/null 2>&1; then
+    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
       PYTHON_BIN="$candidate"
       break
     fi
@@ -25,11 +25,29 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 if [[ -z "$PYTHON_BIN" ]]; then
-  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "No Python runtime with uvicorn was found. Install requirements or run pip install -r requirements.txt."'
+  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "No Python runtime with EdgeIQ dependencies was found. Install requirements.txt in the project environment."'
+  exit 1
+fi
+if ! "$PYTHON_BIN" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
+  echo "Selected Python is missing required EdgeIQ runtime dependencies: ${PYTHON_BIN}" >>"$LOG_FILE"
+  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "The selected Python environment is incomplete. Install requirements.txt and try again."'
+  exit 1
+fi
+if ! "$PYTHON_BIN" scripts/ensure_local_postgres.py >>"$LOG_FILE" 2>&1; then
+  /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "The local PostgreSQL database is unavailable. Your data was not replaced. Check /tmp/edgeiq.log."'
   exit 1
 fi
 REQUIRED_UI_VERSION="$(
   "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+)"
+REQUIRED_SOURCE_BUILD_ID="$(
+  "$PYTHON_BIN" -c 'from web.build_identity import source_build_id; print(source_build_id())'
+)"
+REQUIRED_PYTHON_RUNTIME_ID="$(
+  "$PYTHON_BIN" -c 'from web.build_identity import python_runtime_id; print(python_runtime_id())'
+)"
+REQUIRED_DATABASE_BACKEND="$(
+  "$PYTHON_BIN" -c 'from repository.database import engine; print(engine.url.get_backend_name())'
 )"
 
 health_ok() {
@@ -44,13 +62,18 @@ current_app_ok() {
     return 1
   fi
   version="$(/usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null)" || return 1
-  [[ "$version" == *"\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""* && "$version" == *'"desktop_instance":true'* ]]
+  [[ "$version" == *"\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""* && "$version" == *"\"source_build_id\":\"${REQUIRED_SOURCE_BUILD_ID}\""* && "$version" == *"\"python_runtime_id\":\"${REQUIRED_PYTHON_RUNTIME_ID}\""* && "$version" == *"\"database_backend\":\"${REQUIRED_DATABASE_BACKEND}\""* && "$version" == *'"desktop_instance":true'* ]]
 }
 
 desktop_edgeiq_server() {
   local port="$1"
+  local pid
   /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null |
-    /usr/bin/grep -q '"desktop_instance":true'
+    /usr/bin/grep -q '"desktop_instance":true' || return 1
+  pid="$(/usr/sbin/lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null)" || return 1
+  [[ -n "$pid" && "$pid" != *$'\n'* ]] || return 1
+  /usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null |
+    /usr/bin/grep -Fxq "n$APP_DIR"
 }
 
 stop_stale_edgeiq_servers() {
@@ -104,29 +127,28 @@ if [[ -z "${PORT:-}" ]]; then
 fi
 
 if ! health_ok "$PORT"; then
-  if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
-    if ! "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1; then
-      # This index-only migration may be retried when the database is quiet.
-      current_revision="$($PYTHON_BIN -c 'import sqlite3; from repository.database import DATABASE_URL; path=DATABASE_URL.removeprefix("sqlite:///"); assert DATABASE_URL.startswith("sqlite:///"); db=sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5); print(db.execute("SELECT version_num FROM alembic_version").fetchone()[0])' 2>>"$LOG_FILE" || true)"
-      if [[ "$current_revision" != "q10a6b9d3e75" ]]; then
-        echo "Database migration failed; refusing to start against an unknown schema revision." >>"$LOG_FILE"
-        exit 1
-      fi
-      echo "Optional final-stat indexes are pending; starting EdgeIQ without them." >>"$LOG_FILE"
-    fi
+  if ! "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+    echo "Alembic is missing from ${PYTHON_BIN}; refusing to start without schema validation." >>"$LOG_FILE"
+    /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "The selected Python environment is missing database migrations. Check /tmp/edgeiq.log."'
+    exit 1
+  fi
+  if ! "$PYTHON_BIN" -m alembic upgrade head >>"$LOG_FILE" 2>&1; then
+    echo "Database migration failed; refusing to start against an incompatible schema." >>"$LOG_FILE"
+    /usr/bin/osascript -e 'display alert "EdgeIQ could not launch" message "The database update did not complete. Your data was not replaced. Check /tmp/edgeiq.log."'
+    exit 1
   fi
   echo "Starting EdgeIQ on ${HOST}:${PORT} at $(date) with ${PYTHON_BIN}" >>"$LOG_FILE"
   EDGEIQ_DESKTOP_INSTANCE=1 /usr/bin/nohup "$PYTHON_BIN" -m uvicorn web.app:app --host "$HOST" --port "$PORT" >>"$LOG_FILE" 2>&1 &
 
   for _ in {1..30}; do
-    if health_ok "$PORT"; then
+    if current_app_ok "$PORT"; then
       break
     fi
     /bin/sleep 0.5
   done
 fi
 
-if health_ok "$PORT"; then
+if current_app_ok "$PORT"; then
   /usr/bin/open "http://${HOST}:${PORT}"
 else
   /usr/bin/osascript -e 'display alert "EdgeIQ did not finish launching" message "Check /tmp/edgeiq.log for details."'

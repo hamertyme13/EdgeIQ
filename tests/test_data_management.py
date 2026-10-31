@@ -65,6 +65,39 @@ def test_backup_database_rejects_overlapping_maintenance(tmp_path: Path, monkeyp
         backup_database(tmp_path / "backups", database_url=database_url)
 
 
+def test_postgres_backup_uses_pg_dump_without_exposing_password(tmp_path: Path, monkeypatch) -> None:
+    observed = {}
+
+    def fake_run(command, *, env, check, capture_output):
+        observed.update(command=command, env=env, check=check, capture_output=capture_output)
+        Path(command[command.index("--file") + 1]).write_bytes(b"PGDMP")
+
+    monkeypatch.setattr(data_management.subprocess, "run", fake_run)
+    result = backup_database(
+        tmp_path / "backups",
+        database_url="postgresql+psycopg2://edgeiq:secret@127.0.0.1:55432/edgeiq_staging",
+    )
+
+    assert result["format"] == "postgresql-custom"
+    assert Path(result["path"]).read_bytes() == b"PGDMP"
+    assert "secret" not in " ".join(observed["command"])
+    assert observed["env"]["PGPASSWORD"] == "secret"
+    assert list((tmp_path / "backups").glob("*.partial")) == []
+
+
+def test_postgres_export_uses_native_dump(tmp_path: Path, monkeypatch) -> None:
+    def fake_run(command, **_kwargs):
+        Path(command[command.index("--file") + 1]).write_bytes(b"PGDMP")
+
+    monkeypatch.setattr(data_management.subprocess, "run", fake_run)
+    result = export_database(
+        tmp_path / "exports",
+        database_url="postgresql+psycopg2://edgeiq@127.0.0.1:55432/edgeiq_staging",
+    )
+    assert result["format"] == "postgresql-custom"
+    assert Path(result["path"]).read_bytes() == b"PGDMP"
+
+
 def test_export_database_writes_versioned_json(tmp_path: Path) -> None:
     _, database_url = _database(tmp_path)
 

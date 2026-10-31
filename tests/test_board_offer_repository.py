@@ -49,6 +49,38 @@ def _offer(line=20.5):
     }
 
 
+def test_nba_points_shadow_candidates_use_fresh_trackable_standard_offers(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 24, 12, tzinfo=UTC)
+    base = {
+        **_offer(), "league": "NBA", "player": "NBA Player", "game": "BOS @ NYK",
+        "game_time": "2026-10-24T23:00:00Z", "end_to_end_confirmed": True,
+    }
+    BoardOfferRepository.record_many([base], "PrizePicks", captured_at=now)
+    BoardOfferRepository.record_many([
+        {**base, "line": 21.5, "line_offer_type": "discounted"},
+        {**base, "player": "Unverified Player", "end_to_end_confirmed": False},
+        {**base, "player": "Tomorrow Player", "game_time": "2026-10-25T23:00:00Z"},
+    ], "PrizePicks", captured_at=now)
+
+    result = BoardOfferRepository.nba_points_shadow_candidates(now=now)
+
+    assert result["day"] == "2026-10-24"
+    assert len(result["candidates"]) == 1
+    assert result["candidates"][0]["player"] == "NBA Player"
+    assert result["candidates"][0]["direction"] == "Over"
+    assert result["candidates"][0]["line"] == 20.5
+    monkeypatch.setattr(board_module, "utc_now", lambda: now.replace(tzinfo=None))
+    default_clock = BoardOfferRepository.nba_points_shadow_candidates()
+    assert default_clock["day"] == "2026-10-24"
+    assert len(default_clock["candidates"]) == 1
+    with sessions() as session:
+        row = session.query(BoardOfferObservationModel).filter_by(player="NBA Player", offer_type="standard").one()
+        row.eligibility_status = "paid_eligible"
+        session.commit()
+    assert len(BoardOfferRepository.nba_points_shadow_candidates(now=now)["candidates"]) == 1
+
+
 def test_complete_board_settlement_links_both_directions_to_offer_snapshot(tmp_path, monkeypatch):
     _isolated_database(tmp_path, monkeypatch)
     offer = ProviderOfferSnapshotRepository.capture_many([_offer()])[0]

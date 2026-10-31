@@ -93,6 +93,7 @@ from repository.repositories.board_offer_repository import BoardOfferRepository
 from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.final_stats_repository import FinalStatsRepository
 from repository.repositories.line_history_repository import LineHistoryRepository
+from repository.repositories.market_quote_repository import MarketQuoteRepository
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.plausibility_rejection_repository import PlausibilityRejectionRepository
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
@@ -278,6 +279,7 @@ from web.application.schedule_service import (
 )
 from web.application.season_history_service import daily_source_checks, run_daily_season_updates
 from web.application.shared_recommendations import shared_opportunity_feed
+from web.build_identity import python_runtime_id, source_build_id
 from web.version import STATIC_ASSET_VERSION
 
 _elapsed_job_due = elapsed_job_due
@@ -301,7 +303,12 @@ from web.application.recommendation_service import (
 )
 from web.application.recommendation_service import top_props_payload as build_top_props_payload
 from web.application.recommendation_service import trending_props_payload as build_trending_props_payload
-from web.application.research_service import nba_team_games_before, persist_player_research, research_evidence_payload
+from web.application.research_service import (
+    nba_team_games_before,
+    persist_player_research,
+    player_team_context,
+    research_evidence_payload,
+)
 from web.application.results_service import (
     accuracy_lab_payload as build_accuracy_lab_payload,
 )
@@ -719,6 +726,7 @@ async def _daily_operations_scheduler_loop() -> None:
         await asyncio.sleep(60)
 
 
+SOURCE_BUILD_ID = source_build_id()
 app = FastAPI(title="EdgeIQ Web", version=APP_VERSION, lifespan=lifespan)
 _DEFAULT_ORIGINS = "http://127.0.0.1:8000,http://localhost:8000"
 allowed_origins = [
@@ -837,9 +845,14 @@ def health() -> dict:
 
 @app.get("/api/version")
 def version() -> dict:
+    from repository.database import engine
+
     return {
         "app": "EdgeIQ Web",
         "ui_asset_version": STATIC_ASSET_VERSION,
+        "source_build_id": SOURCE_BUILD_ID,
+        "python_runtime_id": python_runtime_id(),
+        "database_backend": engine.url.get_backend_name(),
         "desktop_instance": os.getenv("EDGEIQ_DESKTOP_INSTANCE") == "1",
         "capabilities": [
             "advantage_center",
@@ -6976,20 +6989,29 @@ def _generator_game_cached_props(platform: str, sport_filter: str | None) -> lis
             if cached and cached[0] > now:
                 rows.extend(dict(prop) for prop in cached[1])
     if rows:
-        return [
+        rows = [
             prop for prop in rows
             if not sport_filter or str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter.upper()
         ]
+        if rows:
+            return rows
     briefing = _cached_daily_briefing_payload(platform, sport_filter, cached_only=True)
-    if (briefing.get("cache") or {}).get("stale"):
-        return []
     selected = {_canonical_platform(name) for name in _selected_entry_platforms(platform)}
-    return [
-        {**prop, "league": prop.get("league") or prop.get("sport") or ""}
-        for prop in briefing.get("top_opportunities") or []
-        if _canonical_platform(prop.get("platform") or briefing.get("platform") or "") in selected
-        and (not sport_filter or str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter.upper())
-    ]
+
+    def matching_rows(snapshot: dict) -> list[dict]:
+        if (snapshot.get("cache") or {}).get("stale"):
+            return []
+        return [
+            {**prop, "league": prop.get("league") or prop.get("sport") or ""}
+            for prop in snapshot.get("top_opportunities") or []
+            if _canonical_platform(prop.get("platform") or snapshot.get("platform") or "") in selected
+            and (not sport_filter or str(prop.get("league") or prop.get("sport") or "").upper() == sport_filter.upper())
+        ]
+
+    matches = matching_rows(briefing)
+    if not matches and sport_filter:
+        matches = matching_rows(_cached_daily_briefing_payload(platform, None, cached_only=True))
+    return matches
 
 
 def _prefer_standard_provider_offers(props: list[dict]) -> list[dict]:
@@ -7681,6 +7703,9 @@ def _player_research_payload(
         "stat": stat,
         "sport": sport_filter or "All Sports",
         "platform": platform,
+        "team_context": player_team_context(
+            nba_points_history if nba_points_history is not None else history, recommendation,
+        ),
         "line": target_line,
         "history_count": len(history),
         "splits": splits,
@@ -12220,8 +12245,11 @@ def _data_health_payload(compact: bool = False) -> dict:
         if not compact:
             operations.update({
                 "shadow_settlement": _safe_json_loads(SettingsRepository.get("shadow_settlement_status", "")),
+                "nba_points_shadow_settlement": _safe_json_loads(SettingsRepository.get("nba_points_shadow_settlement_status", "")),
                 "shadow_evaluation": ModelRehabilitationRepository.shadow_status(),
+                "nba_points_board_cohort": _safe_json_loads(SettingsRepository.get("nba_points_board_cohort_status", "")),
                 "research_memory": ResearchEvidenceRepository.summary(),
+                "nba_points_market_quotes": MarketQuoteRepository.summary(),
                 "complete_board": BoardOfferRepository.summary(),
                 "plausibility_rejections": PlausibilityRejectionRepository.recent(limit=25),
                 "deployment": _deploy_readiness_payload(),
@@ -12362,6 +12390,7 @@ def _refresh_schedule_payload() -> dict:
         "injury_refresh": "11:00",
         "line_snapshots": "*/30",
         "result_check": "23:30",
+        "nba_points_shadow_settlement": "*/60",
         "nightly_calibration": "02:00",
         "shadow_cohort": "08:15",
         "auto_paper_samples": "08:30",
@@ -12377,6 +12406,7 @@ def _refresh_schedule_payload() -> dict:
         {"name": "Injury/news refresh", "time": schedule["injury_refresh"], "action": "Update availability, injuries, news context."},
         {"name": "Line movement snapshots", "time": schedule["line_snapshots"], "action": "Record prop lines for CLV and timing alerts."},
         {"name": "Post-game result check", "time": schedule["result_check"], "action": "Auto-check pending entries against final stats."},
+        {"name": "NBA points shadow results", "time": schedule["nba_points_shadow_settlement"], "action": "Check prospective NBA points forecasts against verified final stats."},
         {"name": "Nightly calibration", "time": schedule["nightly_calibration"], "action": "Rebuild model health and confidence calibration."},
         {"name": "Daily shadow cohort", "time": schedule["shadow_cohort"], "action": "Store prospective model-versioned recommendations for verified evaluation."},
         {"name": "Automatic paper samples", "time": schedule["auto_paper_samples"], "action": "Create zero-wager cards for weak calibration segments."},
@@ -12385,7 +12415,7 @@ def _refresh_schedule_payload() -> dict:
         {"name": "NBA team finals", "time": schedule["nba_team_history"], "action": "Collect official completed-game scores and pace for matchup research."},
     ]
     now = datetime.now(ENTRY_DAY_TIME_ZONE)
-    job_keys = ("morning_scan", "daily_briefing", "injury_refresh", "line_snapshots", "result_check", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history", "nba_team_history")
+    job_keys = ("morning_scan", "daily_briefing", "injury_refresh", "line_snapshots", "result_check", "nba_points_shadow_settlement", "nightly_calibration", "shadow_cohort", "auto_paper_samples", "player_features", "season_history", "nba_team_history")
     for job, key in zip(jobs, job_keys, strict=True):
         last_run = SettingsRepository.get(f"daily_scheduler_run:{key}", "")
         job["key"] = key
@@ -12623,6 +12653,18 @@ def _run_due_daily_operations_locked() -> dict:
                 }))
         except ValueError:
             pass
+    nba_shadow_rule = str(schedule.get("nba_points_shadow_settlement") or "")
+    if nba_shadow_rule.startswith("*/"):
+        try:
+            interval = max(15, int(nba_shadow_rule[2:]))
+            last_run = SettingsRepository.get("daily_scheduler_run:nba_points_shadow_settlement", "")
+            last_attempt = SettingsRepository.get("daily_scheduler_attempt:nba_points_shadow_settlement", "")
+            if elapsed_job_due(last_run, now, interval) and elapsed_job_due(last_attempt, now, 15):
+                due.append(("nba_points_shadow_settlement", lambda: ModelRehabilitationRepository.settle_pending(
+                    limit=250, model_version_prefix="nba-points-board/",
+                )))
+        except ValueError:
+            pass
     if _odds_provider_recovery_due(now):
         due.append(("odds_provider_recovery", _verify_odds_provider))
     scheduled = []
@@ -12680,15 +12722,33 @@ def _odds_provider_recovery_due(now: datetime) -> bool:
 
 
 def _queue_daily_shadow_cohort() -> dict:
+    from services.nba_points_shadow_collection import collect_nba_points_shadow, needs_pregame_retry
+
+    nba_points = collect_nba_points_shadow()
+    SettingsRepository.set("nba_points_board_cohort_status", json.dumps({
+        **nba_points, "ran_at": iso_utc(utc_now()),
+    }))
     feed = ModelRehabilitationRepository.load_feed()
     rows = feed.get("opportunity_feed", {}).get("opportunities") or feed.get("props") or []
     if not rows:
         rows = _fetch_props("All Platforms", None)
-    return ModelRehabilitationRepository.queue_shadow(
+    result = ModelRehabilitationRepository.queue_shadow(
         rows,
         model_version=OPPORTUNITY_CHALLENGER_VERSION,
         target=227,
     )
+    retry_needed = needs_pregame_retry(nba_points, datetime.now(ENTRY_DAY_TIME_ZONE).hour)
+    return {
+        **result,
+        "nba_points_board": nba_points,
+        "retry_needed": retry_needed,
+        "retry_reason": "Waiting for a complete, fresh NBA Points board cohort. EdgeIQ will retry in about an hour." if retry_needed else "",
+        "completion_message": (
+            "Shadow recommendations saved; NBA Points board cohort captured."
+            if nba_points["complete"] else
+            "Shadow recommendations saved, but no complete NBA Points board cohort was available today."
+        ),
+    }
 
 
 def _notification_payload() -> dict:
@@ -13230,6 +13290,8 @@ configure_player_router(
             player, line, platform,
             research=lambda name, stat, sport, selected, exact: _player_research_payload(name, stat, sport, selected, exact),
             market_lookup=sportsbook_odds.get_player_prop_consensus,
+            capture_quote=MarketQuoteRepository.record,
+            quote_history=MarketQuoteRepository.history,
         ),
         points_explanation=lambda player, line, platform, detail: build_nba_points_explanation(
             player, line, platform, detail,

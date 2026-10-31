@@ -18,6 +18,65 @@ def test_espn_basketball_rows_include_provider_fantasy_score() -> None:
     assert fantasy["actual"] == 40.0
 
 
+def test_espn_nba_summary_does_not_create_zero_final_without_participation() -> None:
+    summary = {
+        "header": {"competitions": [{"competitors": [
+            {"homeAway": "away", "team": {"abbreviation": "BKN"}},
+            {"homeAway": "home", "team": {"abbreviation": "BOS"}},
+        ]}]},
+        "boxscore": {"players": [{"team": {"abbreviation": "BOS"}, "statistics": [{
+            "names": ["MIN", "PTS", "FG", "FT"],
+            "athletes": [
+                {"athlete": {"displayName": "Unused"}, "stats": ["0", "0", "0-0", "0-0"]},
+                {"athlete": {"displayName": "Zero With Shot"}, "stats": ["0", "0", "0-1", "0-0"]},
+                {"athlete": {"displayName": "Zero With Minutes"}, "stats": ["5", "0", "0-0", "0-0"]},
+                {"athlete": {"displayName": "Explicit DNP"}, "didNotPlay": True, "stats": []},
+            ],
+        }]}]},
+    }
+
+    rejections = []
+    rows = espn._parse_basketball_summary(summary, "NBA", date(2026, 10, 27), rejections=rejections)
+    point_rows = {row["player"]: row for row in rows if row["stat"] == "Points"}
+
+    assert "Unused" not in point_rows
+    assert point_rows["Zero With Shot"]["status"] == "played"
+    assert point_rows["Zero With Minutes"]["status"] == "played"
+    assert point_rows["Explicit DNP"]["status"] == "dnp"
+    assert len(rejections) == 1
+    payload, diagnostic, provider = rejections[0]
+    assert provider == "ESPN"
+    assert payload["original_athlete_row"] == summary["boxscore"]["players"][0]["statistics"][0]["athletes"][0]
+    assert payload["game"] == "BKN@BOS"
+    assert diagnostic.reason.startswith("NBA box score has no positive minutes")
+
+
+def test_espn_nba_final_fetch_persists_participation_diagnostics(monkeypatch) -> None:
+    event = {"id": "nba-game-1", "competitions": [{"status": {"type": {"completed": True}}}],
+             "season": {"slug": "regular-season"}}
+    summary = {
+        "header": {"competitions": [{"competitors": [
+            {"homeAway": "away", "team": {"abbreviation": "BKN"}},
+            {"homeAway": "home", "team": {"abbreviation": "BOS"}},
+        ]}]},
+        "boxscore": {"players": [{"team": {"abbreviation": "BOS"}, "statistics": [{
+            "names": ["MIN", "PTS"],
+            "athletes": [{"athlete": {"displayName": "Unused", "id": "nba-1"}, "stats": ["0", "0"]}],
+        }]}]},
+    }
+    monkeypatch.setattr(espn, "_scoreboard", lambda *_args: {"events": [event]})
+    monkeypatch.setattr(espn, "_summary", lambda *_args, **_kwargs: summary)
+    recorded = []
+    monkeypatch.setattr(espn.PlausibilityRejectionRepository, "record_many", lambda items: recorded.extend(items))
+
+    rows = espn.fetch_final_stats("NBA", date(2026, 10, 27))
+
+    assert rows == []
+    assert len(recorded) == 1
+    assert recorded[0][0]["provider_player_id"] == "nba-1"
+    assert recorded[0][0]["game_date"] == "2026-10-27"
+
+
 def test_espn_baseball_rows_preserve_settleable_market_components() -> None:
     hitting = espn._baseball_hitting_rows(
         "Test Hitter", "ATL", "ATL@NYM", date(2026, 8, 21),
@@ -265,6 +324,8 @@ def test_underdog_team_uuid_is_normalized_from_matchup() -> None:
 
     assert underdog._team_abbreviation("team-indiana-uuid", "IND @ SEA", game) == "IND"
     assert underdog._team_abbreviation("team-seattle-uuid", "IND @ SEA", game) == "SEA"
+    assert underdog._team_abbreviation("bd252434-828d-48d8-9884-6b0c7dd1b910", "", {}) == ""
+    assert underdog._team_abbreviation("bd252434-828d-48d8-9884-6b0c7dd1b910", "IND @ SEA", {}) == ""
 
 
 def test_underdog_alternate_line_keeps_direction_and_payout() -> None:

@@ -1,12 +1,19 @@
 import os
 import threading
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from utils.database_url import normalize_database_url
 
+load_dotenv()
+_cutover_marker = Path(__file__).resolve().parents[1] / ".edgeiq_postgres_cutover"
+if (_cutover_marker.exists() and os.getenv("EDGEIQ_LOCAL_POSTGRES") != "0"
+        and not os.getenv("DATABASE_URL", "").startswith("postgresql")):
+    raise RuntimeError("This EdgeIQ desktop was migrated to PostgreSQL. Restore its local DATABASE_URL before starting.")
 DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", "sqlite:///edgeiq.db"))
 
 _ENGINE_ARGS: dict[str, Any] = {"echo": False}
@@ -78,6 +85,7 @@ def _create_database_schema():
     from repository.models.final_player_stat_model import FinalPlayerStatModel
     from repository.models.game_prediction_model import GamePredictionModel
     from repository.models.leg_recommendation_snapshot_model import LegRecommendationSnapshotModel
+    from repository.models.market_quote_snapshot_model import MarketQuoteSnapshotModel
     from repository.models.plausibility_rejection_model import PlausibilityRejectionModel
     from repository.models.player_feature_model import PlayerFeatureModel
     from repository.models.player_identity_model import PlayerAliasModel, PlayerIdentityModel

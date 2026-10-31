@@ -42,6 +42,24 @@ def test_data_health_exposes_plausibility_diagnostics(monkeypatch):
     assert payload["operations"]["plausibility_rejections"] == [rejection]
 
 
+def test_data_health_keeps_nba_points_evidence_status(monkeypatch):
+    monkeypatch.setattr("web.application.provider_health_service.cache_metrics", lambda: {})
+    cohort = {"ran_at": "2026-10-28T12:00:00Z", "qualified_forecasts": 2,
+              "challenger_statuses": {"minutes": {"awaiting_holdout": 1}}}
+    settlement = {"settled": 3}
+    quotes = {"captured_24h": 4}
+
+    payload = build_data_health_payload({}, {}, "settlement", operational_health={
+        "nba_points_board_cohort": cohort,
+        "nba_points_shadow_settlement": settlement,
+        "nba_points_market_quotes": quotes,
+    })
+
+    assert payload["operations"]["nba_points_board_cohort"] == cohort
+    assert payload["operations"]["nba_points_shadow_settlement"] == settlement
+    assert payload["operations"]["nba_points_market_quotes"] == quotes
+
+
 def test_data_health_surfaces_due_complete_board_retries(monkeypatch):
     monkeypatch.setattr("web.application.provider_health_service.cache_metrics", lambda: {})
     complete_board = {

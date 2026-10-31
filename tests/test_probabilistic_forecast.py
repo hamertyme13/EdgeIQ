@@ -94,6 +94,118 @@ def test_nba_points_preseason_and_unlabeled_games_do_not_create_paid_forecast() 
     assert "not an independent EdgeIQ projection" in assessment["summary"]
 
 
+def test_nba_points_zero_score_needs_verified_participation() -> None:
+    history = [
+        {"actual": value, "status": "played", "source": "espn", "season_type": "regular",
+         "game_date": f"2026-10-{22 - index:02d}", "game": f"BOS @ NYK-{index}",
+         **({"verified_minutes": 12} if index == 5 else {})}
+        for index, value in enumerate((20, 21, 22, 23, 0, 0))
+    ]
+
+    result = forecast_prop("Player", "NBA", "Points", 19.5, history=history, game_time="2026-10-23")
+
+    assert result.source == "verified_history_distribution"
+    assert result.sample_size == 5
+    assert result.features["unconfirmed_zero_games_excluded"] == 1
+    assert result.features["verified_games"] == 5
+    assert result.features["nba_points_minutes_shadow"]["sample_size"] == 1
+
+
+def test_nba_points_zero_score_with_verified_shot_attempt_counts() -> None:
+    history = [
+        {"actual": value, "status": "played", "source": "espn", "season_type": "regular",
+         "game_date": f"2026-10-{22 - index:02d}", "game": f"BOS @ NYK-{index}",
+         **({"verified_field_goals_attempted": 1} if index == 4 else {})}
+        for index, value in enumerate((20, 21, 22, 23, 0))
+    ]
+
+    result = forecast_prop("Player", "NBA", "Points", 19.5, history=history, game_time="2026-10-23")
+
+    assert result.source == "verified_history_distribution"
+    assert result.sample_size == 5
+    assert result.features["unconfirmed_zero_games_excluded"] == 0
+
+
+def test_nba_points_never_uses_previous_season_when_current_season_is_empty() -> None:
+    history = [
+        {"actual": 32, "status": "played", "source": "espn", "game_date": f"2026-04-{20 - index:02d}",
+         "game": f"BOS @ NYK-{index}", "season_type": "regular", "verified_minutes": 34}
+        for index in range(10)
+    ]
+    history.append({"actual": 40, "status": "played", "source": "espn", "game": "BOS @ NYK-undated",
+                    "season_type": "regular", "verified_minutes": 35})
+
+    result = forecast_prop("Player", "NBA", "Points", 20.5, history=history, game_time="2026-10-23")
+
+    assert result.source == "market_prior"
+    assert result.sample_size == 0
+    assert result.features["verified_games"] == 0
+    assert result.features["nba_points_minutes_shadow"]["expected_points"] is None
+    assert result.paid_eligible is False
+
+
+def test_nba_points_locks_minutes_shadow_without_changing_champion() -> None:
+    history = [
+        {"actual": 20 + index, "status": "played", "source": "espn", "game_date": f"2026-10-{16 - index:02d}",
+         "game": f"BOS @ NYK-{index}", "season_type": "regular", "verified_minutes": 30}
+        for index in range(7)
+    ]
+    without_minutes = [{key: value for key, value in row.items() if key != "verified_minutes"} for row in history]
+
+    result = forecast_prop("Player", "NBA", "Points", 20.5, history=history, game_time="2026-10-23")
+    champion = forecast_prop("Player", "NBA", "Points", 20.5, history=without_minutes, game_time="2026-10-23")
+    shadow = result.snapshot()["features"]["nba_points_minutes_shadow"]
+
+    assert shadow["sample_size"] == 7
+    assert shadow["expected_points"] is not None
+    assert shadow["probability"] is None
+    assert shadow["shadow_only"] is True
+    assert result.projection == champion.projection
+    assert result.probability == champion.probability
+    assert result.paid_eligible == champion.paid_eligible
+
+
+def test_nba_points_locks_shot_volume_shadow_without_changing_champion() -> None:
+    history = [
+        {"actual": 20 + index, "status": "played", "source": "espn",
+         "game_date": f"2026-10-{16 - index:02d}", "game": f"BOS @ NYK-{index}",
+         "season_type": "regular", "verified_field_goals_attempted": 12,
+         "verified_free_throws_attempted": 4}
+        for index in range(7)
+    ]
+    without_shots = [{key: value for key, value in row.items()
+                      if key not in {"verified_field_goals_attempted", "verified_free_throws_attempted"}}
+                     for row in history]
+
+    result = forecast_prop("Player", "NBA", "Points", 20.5, history=history, game_time="2026-10-23")
+    champion = forecast_prop("Player", "NBA", "Points", 20.5, history=without_shots, game_time="2026-10-23")
+    shadow = result.snapshot()["features"]["nba_points_shot_volume_shadow"]
+
+    assert shadow["sample_size"] == 7
+    assert shadow["expected_points"] is not None
+    assert shadow["validation"]["evaluated_games"] == 2
+    assert shadow["probability"] is None
+    assert shadow["shadow_only"] is True
+    assert result.projection == champion.projection
+    assert result.probability == champion.probability
+    assert result.paid_eligible == champion.paid_eligible
+
+
+def test_nba_points_minutes_shadow_rejects_unverified_points_finals() -> None:
+    history = [
+        {"actual": 20 + index, "status": "played", "source": "manual_entry",
+         "game_date": f"2026-10-{16 - index:02d}", "game": f"BOS @ NYK-{index}",
+         "season_type": "regular", "verified_minutes": 30}
+        for index in range(7)
+    ]
+
+    result = forecast_prop("Player", "NBA", "Points", 20.5, history=history, game_time="2026-10-23")
+
+    shadow = result.snapshot()["features"]["nba_points_minutes_shadow"]
+    assert shadow["sample_size"] == 0
+    assert shadow["expected_points"] is None
+
+
 def test_forecast_exposes_minutes_and_opportunities_when_history_provides_them() -> None:
     history = _history([20, 21, 22, 23, 24] * 4)
     for index, row in enumerate(history):

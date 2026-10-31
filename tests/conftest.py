@@ -9,6 +9,7 @@ import pytest
 
 _TEST_DATABASE_DIR = Path(tempfile.mkdtemp(prefix="edgeiq-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DATABASE_DIR / 'edgeiq-test.db'}"
+os.environ["EDGEIQ_LOCAL_POSTGRES"] = "0"
 
 from repository.database import SessionLocal, initialize_database
 

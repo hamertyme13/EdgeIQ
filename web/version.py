@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261023-nba-points-trust"
+STATIC_ASSET_VERSION = "20261030-nba-baseline"

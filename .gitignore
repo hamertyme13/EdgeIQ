@@ -6,6 +6,7 @@ data/*.csv
 .DS_Store
 .env
 .edgeiq_local_postgres.env
+.edgeiq_postgres_cutover
 edgeiq.db
 *.db
 edgeiq.db-shm

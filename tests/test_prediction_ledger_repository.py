@@ -1,3 +1,4 @@
+from analytics.nba_points_minutes import MODEL_VERSION as MINUTES_SHADOW_VERSION
 from models.entry import Entry
 from models.platform import Platform
 from models.player import Player
@@ -47,6 +48,49 @@ def test_saved_entry_records_versioned_prediction_and_appends_outcome() -> None:
     assert after[0]["probability"] == 61.0
     assert after[0]["result"] == "Win"
     assert after[0]["actual"] == 24.0
+
+
+def test_nba_points_minutes_shadow_remains_locked_after_settlement() -> None:
+    shadow = {
+        "model_version": MINUTES_SHADOW_VERSION,
+        "shadow_only": True,
+        "status": "shadow_evaluation",
+        "sample_size": 7,
+        "expected_points": 21.4,
+        "probability": None,
+    }
+    prop = Prop(
+        player=Player("NBA Ledger Player", "AAA", "NBA"),
+        stat=StatType.POINTS,
+        line=20.5,
+        projection=22.0,
+        edge=1.5,
+        confidence=61.0,
+        direction="Over",
+        platform=Platform.PRIZEPICKS,
+        game="AAA@BBB",
+        game_time="2026-10-23T19:00:00Z",
+        projection_source="verified_history_distribution",
+        model_version="test-nba-model-v1",
+        feature_as_of="2026-10-23T12:00:00Z",
+        forecast_snapshot={"source": "verified_history_distribution", "features": {"nba_points_minutes_shadow": shadow}},
+    )
+    entry_id = EntryRepository.save(
+        Entry(platform=Platform.PRIZEPICKS, props=[prop]),
+        status="Pending",
+        entry_mode="paper",
+    )
+    before = next(row for row in PredictionLedgerRepository.evidence_rows() if row["entry_id"] == entry_id)
+    assert before["feature_snapshot"]["features"]["nba_points_minutes_shadow"] == shadow
+
+    EntryRepository.settle(
+        entry_id,
+        "Win",
+        leg_results=[{"actual": 24.0, "result": "Win", "source": "espn", "status": "played"}],
+    )
+    after = next(row for row in PredictionLedgerRepository.evidence_rows() if row["entry_id"] == entry_id)
+    assert after["feature_snapshot"] == before["feature_snapshot"]
+    assert after["result"] == "Win"
 
 
 def test_unavailable_recheck_does_not_erase_verified_leg_result() -> None:

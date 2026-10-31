@@ -12,6 +12,7 @@ def retry_minutes(job_name: str) -> int:
     if job_name in {
         "morning_scan", "daily_briefing", "nightly_calibration", "auto_paper_samples",
         "player_features", "season_history", "nba_team_history", "injury_refresh",
+        "shadow_cohort",
     }:
         return HEAVY_JOB_RETRY_MINUTES
     return SCHEDULED_RETRY_MINUTES
@@ -28,6 +29,12 @@ def execute_scheduled_job(
     save_setting(f"daily_scheduler_attempt:{name}", attempted_at)
     try:
         result = callback()
+        if result.get("retry_needed"):
+            message = str(result.get("retry_reason") or "Waiting for fresh provider data; EdgeIQ will try again.")
+            save_setting(f"daily_scheduler_job_status:{name}", json.dumps({
+                "state": "waiting", "at": attempted_at, "message": message,
+            }))
+            return {"job": name, "result": result, "message": message}
         if result.get("status") in {"failed", "error"} or result.get("ok") is False or result.get("skipped"):
             raise RuntimeError(f"Scheduled {name.replace('_', ' ')} did not complete.")
     except Exception:
@@ -37,10 +44,11 @@ def execute_scheduled_job(
         }))
         raise
     completed_at = timestamp()
+    completion_message = str(result.get("completion_message") or "Scheduled refresh completed.")
     save_setting(f"daily_scheduler_run:{name}", completed_at)
     save_setting(f"daily_scheduler_job_status:{name}", json.dumps({
         "state": "completed", "at": completed_at,
-        "message": "Scheduled refresh completed.",
+        "message": completion_message,
     }))
     return {"job": name, "result": result, "message": f"Scheduled {name.replace('_', ' ')} complete."}
 

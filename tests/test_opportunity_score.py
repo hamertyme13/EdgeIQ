@@ -177,6 +177,13 @@ def test_live_freshness_expires_without_rewriting_recorded_score():
     assert presented_score(prop)["score"] == 98
 
 
+def test_live_freshness_respects_prop_valid_until_even_with_recent_provider_check():
+    prop = {**supported_prop(), "decision_receipt": {
+        "valid_until": (NOW - timedelta(minutes=1)).isoformat(),
+    }}
+    assert score_source_freshness(prop, now=NOW)["status"] == "expired"
+
+
 def test_repository_naive_utc_clock_matches_aware_clock():
     prop = supported_prop()
     assert locked_opportunity_score(prop, "s1", NOW.replace(tzinfo=None)) == locked_opportunity_score(prop, "s1", NOW)

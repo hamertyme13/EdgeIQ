@@ -274,6 +274,8 @@ class PredictionLedgerRepository:
                     "id": row.id,
                     "independent_market_key": row.independent_market_key,
                     "player_identity_id": row.player_identity_id,
+                    "player": row.player,
+                    "game": row.game,
                     "sport": row.sport,
                     "stat": row.stat,
                     "platform": row.platform,

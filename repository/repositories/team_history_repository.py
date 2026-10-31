@@ -31,13 +31,15 @@ class TeamHistoryRepository:
         return len(facts)
 
     @staticmethod
-    def before(sport: str, game_start: str) -> list[dict]:
+    def before(sport: str, game_start: str, *, as_of: str | None = None) -> list[dict]:
         try:
             target = datetime.fromisoformat(game_start.replace("Z", "+00:00"))
             target = target.replace(tzinfo=UTC) if target.tzinfo is None else target.astimezone(UTC)
+            evidence_cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else target
+            evidence_cutoff = evidence_cutoff.replace(tzinfo=UTC) if evidence_cutoff.tzinfo is None else evidence_cutoff.astimezone(UTC)
         except (ValueError, TypeError):
             return []
-        cutoff = min(target, datetime.now(UTC)).replace(tzinfo=None)
+        cutoff = min(target, evidence_cutoff, datetime.now(UTC)).replace(tzinfo=None)
         with SessionLocal() as session:
             evidence = session.query(ResearchEvidenceModel).filter_by(
                 sport=sport.upper(), evidence_type="verified_team_game",

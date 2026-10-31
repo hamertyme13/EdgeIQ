@@ -98,8 +98,15 @@
       const operations = data.operations || {};
       const scheduler = operations.scheduler || {};
       const shadow = operations.shadow_evaluation || {};
+      const nbaPointsCohort = operations.nba_points_board_cohort || {};
+      const nbaPointsHistoryCounts = Object.keys(nbaPointsCohort.market_prior_verified_game_counts || {})
+        .map(Number).filter((count) => Number.isInteger(count) && count >= 0);
+      const nbaChallengers = nbaPointsCohort.challenger_statuses || {};
+      const readyChallengerCount = (name) => Number(nbaChallengers[name]?.awaiting_holdout || 0)
+        + Number(nbaChallengers[name]?.shadow_evaluation || 0);
       const shadowSettlement = operations.shadow_settlement || {};
       const researchMemory = operations.research_memory || {};
+      const nbaPointsQuotes = operations.nba_points_market_quotes || {};
       const completeBoard = operations.complete_board || {};
       const boardRetry = completeBoard.settlement_retry || {};
       state.providerHealth = { providers, summary, operations };
@@ -120,7 +127,16 @@
             <span class="status-pill ${operations.status === 'degraded' ? 'status-warning' : 'status-connected'}">${operations.status === 'degraded' ? 'Needs attention' : 'Operational'}</span>
           </div>
           <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
+          <p>NBA Points board cohort: ${!nbaPointsCohort.ran_at ? 'Not run yet.' : nbaPointsCohort.complete
+            ? `${Number(nbaPointsCohort.qualified_forecasts || 0)} qualified pregame forecasts from ${Number(nbaPointsCohort.candidates || 0)} available player-games · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`
+            : `${Number(nbaPointsCohort.qualified_forecasts || 0)} qualified pregame forecasts so far · ${nbaPointsCohort.status === 'no_fresh_trackable_board' ? 'waiting for fresh trackable offers' : 'partial capture'} · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`}</p>
+          ${nbaPointsCohort.qualification_note ? `<p>${escapeHtml(nbaPointsCohort.qualification_note)}</p>` : ''}
+          ${nbaPointsHistoryCounts.length ? `<p>Most history-rich market-prior capture: ${Math.max(...nbaPointsHistoryCounts)}/5 verified regular-season games before the forecast.</p>` : ''}
+          ${nbaPointsCohort.ran_at && nbaChallengers.minutes ? `<p>Research-only challenger evidence: ${readyChallengerCount('minutes')} forecasts with verified minutes · ${readyChallengerCount('shot_volume')} with verified shot attempts. Estimates can be evaluated only after those games have verified finals.</p>` : ''}
           <p>${Number(researchMemory.active || 0)} active research facts · ${Number(researchMemory.outcome_linked || 0)} linked to settled outcomes · ${Number(researchMemory.expired || 0)} expired facts retained for audit.</p>
+          <p>NBA Points market quotes: ${nbaPointsQuotes.last_captured_at
+            ? `${Number(nbaPointsQuotes.captured_24h || 0)} captured in the past 24 hours · last saved ${formatDateTime(nbaPointsQuotes.last_captured_at)}.`
+            : 'None saved yet. Exact-line checks collect quotes only when requested.'} External prices do not verify a DFS payout or EV.</p>
           <p>${Number(completeBoard.settled || 0).toLocaleString()} provider-board observations settled · ${Number(boardRetry.due || 0).toLocaleString()} retries due · ${Number(boardRetry.deferred || 0).toLocaleString()} waiting.</p>
           ${(boardRetry.items || []).length ? `
             <details class="compact-details">

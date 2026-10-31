@@ -1538,6 +1538,28 @@ def test_generator_game_picker_filters_cached_briefing_by_sport(monkeypatch):
     assert [row["player"] for row in rows] == ["WNBA Player"]
 
 
+def test_generator_game_picker_falls_back_to_all_sports_briefing(monkeypatch):
+    monkeypatch.setattr(web_app, "_PROP_FETCH_CACHE", {})
+    calls = []
+
+    def briefing(_platform, sport, **_kwargs):
+        calls.append(sport)
+        return {
+            "cache": {"stale": False},
+            "top_opportunities": [] if sport else [
+                {"player": "NBA Player", "sport": "NBA", "platform": "PrizePicks", "game": "SAC @ NOP"},
+                {"player": "NHL Player", "sport": "NHL", "platform": "PrizePicks", "game": "NYR @ BOS"},
+            ],
+        }
+
+    monkeypatch.setattr(web_app, "_cached_daily_briefing_payload", briefing)
+
+    rows = web_app._generator_game_cached_props("PrizePicks", "NBA")
+
+    assert calls == ["NBA", None]
+    assert [row["player"] for row in rows] == ["NBA Player"]
+
+
 def test_provider_refresh_defers_when_maintenance_is_active(monkeypatch):
     from contextlib import contextmanager
 
@@ -2455,6 +2477,9 @@ def test_compact_data_health_skips_large_board_and_shadow_queries(monkeypatch):
     monkeypatch.setattr(web_app.ModelRehabilitationRepository, "shadow_status", lambda: (_ for _ in ()).throw(
         AssertionError("Compact health must not scan shadow predictions")
     ))
+    monkeypatch.setattr(web_app.MarketQuoteRepository, "summary", lambda: (_ for _ in ()).throw(
+        AssertionError("Compact health must not count market quotes")
+    ))
     monkeypatch.setattr(web_app, "_refresh_schedule_payload", lambda: {"schedule": {"enabled": True}})
     monkeypatch.setattr(web_app.background_jobs, "list", lambda **_kwargs: [])
     monkeypatch.setattr(web_app, "build_data_health_payload", lambda *_args, **kwargs: {
@@ -2464,6 +2489,7 @@ def test_compact_data_health_skips_large_board_and_shadow_queries(monkeypatch):
     result = web_app._data_health_payload(compact=True)
 
     assert "complete_board" not in result["operations"]
+    assert "nba_points_market_quotes" not in result["operations"]
     assert "scheduler" in result["operations"]
     web_app._DATA_HEALTH_COMPACT_CACHE.clear()
 
@@ -5170,6 +5196,9 @@ def test_nba_points_research_api_screens_raw_conflicting_finals(monkeypatch):
     body = player_research("Research Guard", "Points", sport="NBA", platform="PrizePicks", line=19.5)
 
     assert any(call.get("deduplicate") is False and call.get("include_entry_history") is False for call in calls)
+    assert body["team_context"] == {
+        "team": "BOS", "source": "latest_verified_final", "as_of": "2026-10-20",
+    }
     assert body["nba_points_intelligence"]["sample_size"] == 0
     assert body["nba_points_intelligence"]["data_reliability"]["excluded"]["conflicting_final"] == 2
     assert body["nba_points_intelligence"]["projection"]["over_probability"] is None
@@ -5191,6 +5220,8 @@ def test_player_research_without_active_offer_excludes_same_day_final(monkeypatc
 
     assert body["nba_points_intelligence"]["sample_size"] == 5
     assert body["forecast"]["sample_size"] == 5
+    assert body["team_context"]["team"] == "BOS"
+    assert body["team_context"]["source"] == "latest_verified_final"
 
 
 def test_sharp_consensus_returns_fair_line_and_market_width(monkeypatch):

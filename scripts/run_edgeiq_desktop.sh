@@ -8,7 +8,7 @@ IFS=" " read -r -a PORTS <<< "${EDGEIQ_PORTS:-8007 8000 8001 8002 8003 8004 8005
 cd "$APP_DIR"
 
 pick_python() {
-  if [[ -n "${PYTHON_BIN:-}" ]] && "$PYTHON_BIN" -c "import uvicorn" >/dev/null 2>&1; then
+  if [[ -n "${PYTHON_BIN:-}" ]] && "$PYTHON_BIN" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
     echo "$PYTHON_BIN"
     return 0
   fi
@@ -19,7 +19,7 @@ pick_python() {
     "/usr/local/bin/python3" \
     "/usr/bin/python3"
   do
-    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn" >/dev/null 2>&1; then
+    if [[ -x "$candidate" ]] && "$candidate" -c "import uvicorn, fastapi, sqlalchemy, alembic" >/dev/null 2>&1; then
       echo "$candidate"
       return 0
     fi
@@ -36,13 +36,19 @@ current_app_ok() {
   local port="$1"
   local version
   version="$(/usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null)" || return 1
-  [[ "$version" == *"\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""* && "$version" == *'"desktop_instance":true'* ]]
+  [[ "$version" == *"\"ui_asset_version\":\"${REQUIRED_UI_VERSION}\""* && "$version" == *"\"source_build_id\":\"${REQUIRED_SOURCE_BUILD_ID}\""* && "$version" == *"\"python_runtime_id\":\"${REQUIRED_PYTHON_RUNTIME_ID}\""* && "$version" == *'"desktop_instance":true'* ]]
+  [[ "$version" == *"\"database_backend\":\"${REQUIRED_DATABASE_BACKEND}\""* ]]
 }
 
 desktop_edgeiq_server() {
   local port="$1"
+  local pid
   /usr/bin/curl -fsS --connect-timeout 0.2 --max-time 1 "http://${HOST}:${port}/api/version" 2>/dev/null |
-    /usr/bin/grep -q '"desktop_instance":true'
+    /usr/bin/grep -q '"desktop_instance":true' || return 1
+  pid="$(/usr/sbin/lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null)" || return 1
+  [[ -n "$pid" && "$pid" != *$'\n'* ]] || return 1
+  /usr/sbin/lsof -a -p "$pid" -d cwd -Fn 2>/dev/null |
+    /usr/bin/grep -Fxq "n$APP_DIR"
 }
 
 stop_stale_edgeiq_servers() {
@@ -89,13 +95,23 @@ find_port() {
 }
 
 PYTHON_BIN="$(pick_python)" || {
-  echo "No Python runtime with uvicorn was found."
+  echo "No Python runtime with EdgeIQ dependencies was found."
   echo "From the project folder, run: pip install -r requirements.txt"
   read -r -p "Press Return to close..."
   exit 1
 }
+"$PYTHON_BIN" scripts/ensure_local_postgres.py
 REQUIRED_UI_VERSION="$(
   "$PYTHON_BIN" -c 'from web.version import STATIC_ASSET_VERSION; print(STATIC_ASSET_VERSION)'
+)"
+REQUIRED_SOURCE_BUILD_ID="$(
+  "$PYTHON_BIN" -c 'from web.build_identity import source_build_id; print(source_build_id())'
+)"
+REQUIRED_PYTHON_RUNTIME_ID="$(
+  "$PYTHON_BIN" -c 'from web.build_identity import python_runtime_id; print(python_runtime_id())'
+)"
+REQUIRED_DATABASE_BACKEND="$(
+  "$PYTHON_BIN" -c 'from repository.database import engine; print(engine.url.get_backend_name())'
 )"
 
 stop_stale_edgeiq_servers
@@ -114,17 +130,19 @@ if [[ "$STATE" == "running" ]]; then
   exit 0
 fi
 
-if "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
-  echo "Applying EdgeIQ database migrations..."
-  "$PYTHON_BIN" -m alembic upgrade head
+if ! "$PYTHON_BIN" -c "import alembic" >/dev/null 2>&1; then
+  echo "Alembic is missing from ${PYTHON_BIN}; EdgeIQ cannot verify its database schema."
+  exit 1
 fi
+echo "Applying EdgeIQ database migrations..."
+"$PYTHON_BIN" -m alembic upgrade head
 
 echo "Starting EdgeIQ at ${URL}"
 echo "Keep this Terminal window open while using the app."
 
 (
   for _ in {1..40}; do
-    if health_ok "$PORT"; then
+    if current_app_ok "$PORT"; then
       /usr/bin/open "$URL"
       exit 0
     fi

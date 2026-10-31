@@ -10,6 +10,16 @@ from repository.models.player_identity_model import PlayerAliasModel, PlayerIden
 from utils.entity_normalization import canonical_person_key
 
 
+def _safe_team(team: object, player: object = "") -> str:
+    """Reject provider IDs and player names masquerading as roster teams."""
+    value = str(team or "").strip().upper()
+    if (not value or len(value) > 32 or not any(char.isalpha() for char in value)
+            or canonical_person_key(value) == canonical_person_key(player)
+            or (len(value) == 36 and value.count("-") == 4)):
+        return ""
+    return value
+
+
 class PlayerIdentityRepository:
     _schema_ready = False
 
@@ -33,7 +43,7 @@ class PlayerIdentityRepository:
         name = str(player or "").strip()
         key = canonical_person_key(name)
         sport_text = str(sport or "").strip().upper()
-        team_text = str(team or "").strip().upper()
+        team_text = _safe_team(team, name)
         provider_text = _provider_key(provider)
         provider_id = str(provider_player_id or "").strip() or None
         if not key:
@@ -47,6 +57,9 @@ class PlayerIdentityRepository:
                     .filter_by(provider=provider_text, provider_player_id=provider_id)
                     .first()
                 )
+                if alias is not None and (alias.sport != sport_text or alias.alias_key != key):
+                    alias = None
+                    provider_id = None
             if alias is None:
                 aliases = (
                     session.query(PlayerAliasModel)
@@ -65,6 +78,8 @@ class PlayerIdentityRepository:
                 )
             if identity is None and not create:
                 return None
+            if not create:
+                return _identity_dict(identity, provider_text, provider_id, name)
             if identity is None:
                 identity = PlayerIdentityModel(
                     canonical_name=name,
@@ -74,8 +89,7 @@ class PlayerIdentityRepository:
                 )
                 session.add(identity)
                 session.flush()
-            elif team_text:
-                identity.current_team = team_text
+            # Resolving a historical leg or final must not rewrite a current roster.
 
             PlayerIdentityRepository._upsert_alias(
                 session,
@@ -142,12 +156,28 @@ class PlayerIdentityRepository:
                     "provider_player_id": alias.provider_player_id or "",
                     "name": alias.alias_name,
                 })
+            invalid_ids = [
+                identity.id for identity in rows
+                if sport_text in {"NBA", "WNBA"}
+                and not _safe_team(identity.current_team, identity.canonical_name)
+            ]
+            last_verified: dict[int, tuple[str, str]] = {}
+            for identity_id in invalid_ids:
+                final = (
+                    session.query(FinalPlayerStatModel)
+                    .filter_by(player_identity_id=identity_id, status="played")
+                    .filter(FinalPlayerStatModel.source.in_(("espn", "nba_api", "balldontlie", "statshawk")))
+                    .order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc())
+                    .first()
+                )
+                if final and _safe_team(final.team, identity_id):
+                    last_verified[identity_id] = (final.team, final.game_date)
             players = [
                 {
                     "id": identity.id,
                     "name": identity.canonical_name,
                     "sport": identity.sport,
-                    "team": identity.current_team,
+                    "team": _safe_team(identity.current_team, identity.canonical_name),
                     "source": "verified_history",
                     "provider": "",
                     "provider_player_id": "",
@@ -155,6 +185,9 @@ class PlayerIdentityRepository:
                 }
                 for identity in rows
             ]
+            for player in players:
+                if player["id"] in last_verified:
+                    player["last_verified_team"], player["last_verified_team_date"] = last_verified[player["id"]]
             seen = {canonical_person_key(row["name"]) for row in players}
             board_lookup = session.query(BoardOfferObservationModel)
             if query_key:
@@ -179,7 +212,7 @@ class PlayerIdentityRepository:
                     "id": None,
                     "name": row.player,
                     "sport": row.sport,
-                    "team": row.team,
+                    "team": _safe_team(row.team, row.player),
                     "source": "current_provider_board",
                     "provider": row.provider,
                     "provider_player_id": row.provider_player_id or "",
@@ -213,7 +246,7 @@ class PlayerIdentityRepository:
                     "name": name,
                     "sport": sport,
                     "key": key,
-                    "team": str(row.get("team") or "").strip().upper(),
+                    "team": _safe_team(row.get("team"), name),
                     "provider_id": str(row.get("provider_player_id") or row.get("player_id") or "").strip() or None,
                 }
         if not prepared:
@@ -235,10 +268,22 @@ class PlayerIdentityRepository:
                 ).all()
                 alias_by_name = {(row.sport, row.alias_key): row for row in aliases}
                 alias_by_provider_id = {row.provider_player_id: row for row in aliases if row.provider_player_id}
+                names_by_provider_id: dict[str, set[tuple[str, str]]] = {}
+                for identity_key, item in prepared.items():
+                    if item["provider_id"]:
+                        names_by_provider_id.setdefault(item["provider_id"], set()).add(identity_key)
                 created_players = 0
                 created_aliases = 0
                 for identity_key, item in prepared.items():
-                    alias = alias_by_provider_id.get(item["provider_id"]) if item["provider_id"] else None
+                    provider_id = item["provider_id"]
+                    existing_alias = alias_by_provider_id.get(provider_id) if provider_id else None
+                    if provider_id and (len(names_by_provider_id[provider_id]) > 1 or (
+                        existing_alias is not None and (
+                            existing_alias.sport, existing_alias.alias_key,
+                        ) != identity_key
+                    )):
+                        provider_id = None
+                    alias = alias_by_provider_id.get(provider_id) if provider_id else None
                     identity = session.get(PlayerIdentityModel, alias.identity_id) if alias else identity_by_key.get(identity_key)
                     if identity is None:
                         identity = PlayerIdentityModel(
@@ -259,7 +304,7 @@ class PlayerIdentityRepository:
                         alias = PlayerAliasModel(
                             identity_id=identity.id,
                             provider=provider_text,
-                            provider_player_id=item["provider_id"],
+                            provider_player_id=provider_id,
                             alias_name=item["name"],
                             alias_key=item["key"],
                             sport=item["sport"],
@@ -267,15 +312,16 @@ class PlayerIdentityRepository:
                         )
                         session.add(alias)
                         alias_by_name[identity_key] = alias
-                        if item["provider_id"]:
-                            alias_by_provider_id[item["provider_id"]] = alias
+                        if provider_id:
+                            alias_by_provider_id[provider_id] = alias
                         created_aliases += 1
                     else:
                         alias.identity_id = identity.id
                         alias.alias_name = item["name"]
-                        alias.team = item["team"]
-                        if item["provider_id"]:
-                            alias.provider_player_id = item["provider_id"]
+                        if item["team"]:
+                            alias.team = item["team"]
+                        if provider_id:
+                            alias.provider_player_id = provider_id
                 session.commit()
                 return {
                     "players": created_players,
@@ -370,7 +416,7 @@ def _identity_dict(identity, provider: str, provider_id: str | None, observed_na
         "canonical_name": identity.canonical_name,
         "canonical_key": identity.canonical_key,
         "sport": identity.sport,
-        "team": identity.current_team,
+        "team": _safe_team(identity.current_team, identity.canonical_name),
         "provider": provider,
         "provider_player_id": provider_id or "",
         "observed_name": observed_name,

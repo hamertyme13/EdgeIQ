@@ -120,6 +120,58 @@ class BoardOfferRepository:
             BoardOfferRepository._evidence_cache.clear()
 
     @staticmethod
+    def nba_points_shadow_candidates(*, now: datetime | None = None, limit: int = 2000) -> dict:
+        """Return fresh, trackable standard lines for today's distinct NBA player-games."""
+        BoardOfferRepository._ensure_schema()
+        current = _aware_datetime(now or utc_now())
+        assert current is not None
+        local_day = current.astimezone(ZoneInfo("America/New_York")).date()
+        row_limit = max(1, min(int(limit), 5000))
+        with SessionLocal() as session:
+            observations = (
+                session.query(BoardOfferObservationModel)
+                .filter(
+                    BoardOfferObservationModel.sport == "NBA",
+                    BoardOfferObservationModel.stat == "Points",
+                    BoardOfferObservationModel.offer_type == "standard",
+                    BoardOfferObservationModel.eligibility_status.in_(
+                        ("trackable", "paper_only", "paid_eligible")
+                    ),
+                    BoardOfferObservationModel.captured_at >= (current - timedelta(hours=6)).replace(tzinfo=None),
+                )
+                .order_by(BoardOfferObservationModel.captured_at.desc(), BoardOfferObservationModel.id.desc())
+                .limit(row_limit)
+                .all()
+            )
+            selected: dict[tuple[str, str], dict] = {}
+            for observation in observations:
+                start = _aware_datetime(observation.scheduled_start)
+                if start is None or start <= current + timedelta(minutes=5) or start.astimezone(ZoneInfo("America/New_York")).date() != local_day:
+                    continue
+                player_key = observation.normalized_player_key or canonical_person_key(observation.player)
+                if not player_key or observation.line is None:
+                    continue
+                selected.setdefault((player_key, start.date().isoformat()), {
+                    "player": observation.player,
+                    "team": observation.team,
+                    "sport": "NBA",
+                    "stat": "Points",
+                    "direction": "Over",
+                    "line": float(observation.line),
+                    "platform": observation.provider,
+                    "game": observation.game,
+                    "game_time": observation.scheduled_start,
+                    "board_observation_id": observation.id,
+                    "board_captured_at": observation.captured_at.isoformat(),
+                })
+            return {
+                "candidates": list(selected.values()),
+                "observations_scanned": len(observations),
+                "scan_limit_reached": len(observations) >= row_limit,
+                "day": local_day.isoformat(),
+            }
+
+    @staticmethod
     def record_many(rows: list[dict], provider: str, captured_at: datetime | None = None) -> int:
         if not rows:
             return 0

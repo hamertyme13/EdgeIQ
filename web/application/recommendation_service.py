@@ -377,14 +377,21 @@ def entry_suggestions_payload(
         }
     briefing = cached_briefing(entry_platform, sport_filter)
     raw_props = _briefing_generator_props(briefing, entry_platform, sport_filter)
+    if not raw_props and sport_filter:
+        raw_props = _briefing_generator_props(
+            cached_briefing(entry_platform, None), entry_platform, sport_filter,
+        )
     if selected_game_keys:
         raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
     source = "daily_briefing_snapshot"
-    if len({canonical_person_key(prop.get("player")) for prop in raw_props}) < leg_count:
-        raw_props = fetch_props(entry_platform, sport_filter)
-        source = "live_provider_board"
-    if selected_game_keys:
-        raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
+    live_props: list[dict] | None = None
+    if _distinct_player_count(raw_props) < leg_count:
+        live_props = fetch_props(entry_platform, sport_filter)
+        if selected_game_keys:
+            live_props = [prop for prop in live_props if _generator_game_key(prop) in selected_game_keys]
+        if _distinct_player_count(live_props) > _distinct_player_count(raw_props):
+            raw_props = live_props
+            source = "live_provider_board"
     cache_key = (
         entry_platform, sport_filter or "ALL", int(leg_count), direction_filter, tuple(sorted(selected_game_keys)),
         tuple(sorted(avoid_prop_keys or set())), id(suggest),
@@ -478,14 +485,18 @@ def entry_suggestions_payload(
         platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(), direction_filter,
     )
     if not suggestions and source == "daily_briefing_snapshot":
-        raw_props = fetch_props(entry_platform, sport_filter)
-        if selected_game_keys:
-            raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
-        platform_pairs = props_by_platform(entry_platform, raw_props)
-        source = "live_provider_fallback"
-        suggestions = _generate_entry_suggestions(
-            platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(), direction_filter,
-        )
+        if live_props is None:
+            live_props = fetch_props(entry_platform, sport_filter)
+            if selected_game_keys:
+                live_props = [prop for prop in live_props if _generator_game_key(prop) in selected_game_keys]
+        live_pairs = props_by_platform(entry_platform, live_props)
+        if _distinct_player_count(live_props) >= _distinct_player_count(raw_props) and live_pairs:
+            raw_props = live_props
+            platform_pairs = live_pairs
+            source = "live_provider_fallback"
+            suggestions = _generate_entry_suggestions(
+                platform_pairs, sport, leg_count, suggest, avoid_prop_keys or set(), direction_filter,
+            )
     serialized = [serialize_suggestion(suggestion) for suggestion in suggestions]
     seen_keys: set[str] = set()
     reused_count = 0
@@ -497,6 +508,7 @@ def entry_suggestions_payload(
             "prop_keys": keys,
             "reused_from_recent_batch": sum(1 for key in keys if key in (avoid_prop_keys or set())),
         }
+    available_players = _distinct_player_count([prop for _, props in platform_pairs for prop in props])
     payload = {
         "suggestions": serialized,
         "mode": f"{entry_platform.lower()}_{leg_count}_leg",
@@ -506,6 +518,7 @@ def entry_suggestions_payload(
         "game_key": game_key,
         "game_keys": sorted(selected_game_keys),
         "maximum_legs": maximum_legs,
+        "available_players": available_players,
         "diversification": {
             "enabled": True,
             "unique_props": len(seen_keys),
@@ -521,12 +534,18 @@ def entry_suggestions_payload(
             "source": source,
         },
         "message": (
+            f"Only {available_players} distinct players have same-day {entry_platform} props for this filter; a {leg_count}-leg card needs {leg_count}. Try fewer legs, more games, or another sport."
+            if not serialized and available_players < leg_count else
             "Same-day lines were found, but no card cleared the current evidence, correlation, and diversification filters. Try fewer legs or a paper entry."
             if not serialized else ""
         ),
     }
     _ENTRY_GENERATOR_CACHE.set(cache_key, deepcopy(payload), ttl=_ENTRY_GENERATOR_TTL_SECONDS)
     return payload
+
+
+def _distinct_player_count(props: list[dict]) -> int:
+    return len({key for prop in props if (key := canonical_person_key(prop.get("player")))})
 
 
 def _generate_entry_suggestions(

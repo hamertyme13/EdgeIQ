@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import RLock
+from zoneinfo import ZoneInfo
 
 from utils.time import iso_utc, utc_now
 from web.application.slate_changes import compare_briefings
@@ -345,6 +346,18 @@ def daily_briefing_cache_is_fresh(cached: dict, ttl_hours: int) -> bool:
     now = utc_now()
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
+    created_at = str(cached.get("created_at") or "").strip()
+    if not created_at:
+        return False
+    try:
+        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+    except ValueError:
+        return False
+    eastern = ZoneInfo("America/New_York")
+    if created.astimezone(eastern).date() != now.astimezone(eastern).date():
+        return False
     expires_at = str(cached.get("expires_at") or "").strip()
     if expires_at:
         try:
@@ -355,17 +368,6 @@ def daily_briefing_cache_is_fresh(cached: dict, ttl_hours: int) -> bool:
         except ValueError:
             return False
 
-    created_at = str(cached.get("created_at") or "").strip()
-    if not created_at:
-        return False
-    try:
-        created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=UTC)
-    except ValueError:
-        return False
-    if created.date() != now.date():
-        return False
     return now - created < timedelta(hours=ttl_hours)
 
 

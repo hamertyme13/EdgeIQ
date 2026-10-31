@@ -119,6 +119,35 @@ def test_gaming_entry_generator_prevents_unsettleable_cards() -> None:
     assert "preventing stuck entries" in result["message"]
 
 
+def test_entry_generator_uses_fresh_all_sports_snapshot_when_sport_snapshot_is_empty() -> None:
+    calls = []
+    props = [
+        {"platform": "PrizePicks", "player": player, "sport": "NBA", "stat": "Points", "line": 10.5}
+        for player in ("A", "B", "C")
+    ]
+
+    result = entry_suggestions_payload(
+        "NBA", "PrizePicks", 3,
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks"},
+        cached_briefing=lambda platform, sport: (
+            calls.append(sport) or {"cache": {"stale": False}, "top_opportunities": props if sport is None else []}
+        ),
+        fetch_props=lambda *args: (_ for _ in ()).throw(AssertionError("fresh snapshot should suffice")),
+        props_by_platform=lambda platform, rows: [(platform, rows)] if rows else [],
+        mixed_risk=lambda *args: [],
+        suggest=lambda rows, *args, **kwargs: [
+            {"entry": {"props": rows}, "grade": "B"}
+        ],
+        serialize_suggestion=lambda value: value,
+    )
+
+    assert calls == ["NBA", None]
+    assert len(result["suggestions"]) == 1
+    assert len(result["suggestions"][0]["entry"]["props"]) == 3
+    assert result["performance"]["source"] == "daily_briefing_snapshot"
+
+
 def test_sleeper_generator_explains_missing_pickem_feed(monkeypatch) -> None:
     monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_URL", raising=False)
     monkeypatch.delenv("EDGEIQ_SLEEPER_PROPS_FILE", raising=False)
@@ -264,3 +293,36 @@ def test_entry_generator_falls_back_when_briefing_has_too_few_players() -> None:
 
     assert calls["fetch"] == 1
     assert result["performance"]["source"] == "live_provider_board"
+
+
+def test_entry_generator_preserves_partial_briefing_when_live_cache_is_empty() -> None:
+    briefing_props = [
+        {"platform": "PrizePicks", "player": player, "sport": "NBA", "stat": "Points", "line": 10.5}
+        for player in ("A", "B")
+    ]
+    calls = {"fetch": 0}
+
+    def fetch(*_args):
+        calls["fetch"] += 1
+        return []
+
+    result = entry_suggestions_payload(
+        "NBA", "PrizePicks", 3,
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks"},
+        cached_briefing=lambda *_args: {
+            "platform": "PrizePicks", "cache": {"stale": False},
+            "top_opportunities": briefing_props,
+        },
+        fetch_props=fetch,
+        props_by_platform=lambda platform, rows: [(platform, rows)] if rows else [],
+        mixed_risk=lambda *_args: [],
+        suggest=lambda *_args, **_kwargs: [],
+        serialize_suggestion=lambda value: value,
+    )
+
+    assert result["suggestions"] == []
+    assert result["available_players"] == 2
+    assert "Only 2 distinct players" in result["message"]
+    assert result["performance"]["source"] == "daily_briefing_snapshot"
+    assert calls["fetch"] == 1

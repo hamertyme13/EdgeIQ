@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from contextlib import suppress
 from datetime import UTC, date, datetime, timedelta
@@ -10,7 +11,11 @@ from zoneinfo import ZoneInfo
 
 from data.providers.cache import get_json
 from repository.repositories.final_stats_repository import FinalStatsRepository
+from repository.repositories.plausibility_rejection_repository import PlausibilityRejectionRepository
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
+from utils.prop_plausibility import PlausibilityResult
+
+_log = logging.getLogger(__name__)
 
 _BASE = "https://site.api.espn.com/apis/site/v2/sports"
 _SPORT_PATHS = {
@@ -277,6 +282,7 @@ def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
 
     scoreboard = _scoreboard(path, game_date)
     rows: list[dict] = []
+    rejections: list[tuple[dict, PlausibilityResult, str]] = []
     for event in scoreboard.get("events", []):
         competition = _first(event.get("competitions", []))
         status = (competition.get("status", {}) if competition else {}).get("type", {})
@@ -286,11 +292,16 @@ def fetch_final_stats(sport: str, game_date: date) -> list[dict]:
         if not event_id:
             continue
         summary = _summary(path, event_id, cache_variant="final")
-        event_rows = _parse_summary(summary, sport_key, game_date)
+        event_rows = _parse_summary(summary, sport_key, game_date, rejections=rejections)
         season_type = _event_season_type(event)
         for row in event_rows:
             row["season_type"] = season_type
         rows.extend(event_rows)
+    if rejections:
+        try:
+            PlausibilityRejectionRepository.record_many(rejections)
+        except Exception:
+            _log.exception("Could not save ESPN NBA participation diagnostics for %s", game_date)
     return rows
 
 
@@ -463,9 +474,12 @@ def _summary(
     ).data
 
 
-def _parse_summary(summary: dict, sport: str, game_date: date, row_status: str = "played") -> list[dict]:
+def _parse_summary(
+    summary: dict, sport: str, game_date: date, row_status: str = "played",
+    *, rejections: list[tuple[dict, PlausibilityResult, str]] | None = None,
+) -> list[dict]:
     if sport in {"WNBA", "NBA"}:
-        return _parse_basketball_summary(summary, sport, game_date, row_status=row_status)
+        return _parse_basketball_summary(summary, sport, game_date, row_status=row_status, rejections=rejections)
     if sport == "MLB":
         return _parse_baseball_summary(summary, game_date, row_status=row_status)
     if sport in {"NFL", "NCAAF"}:
@@ -849,7 +863,10 @@ def _innings_to_outs(value: Any) -> int:
     return (whole * 3) + max(0, min(2, partial))
 
 
-def _parse_basketball_summary(summary: dict, sport: str, game_date: date, row_status: str = "played") -> list[dict]:
+def _parse_basketball_summary(
+    summary: dict, sport: str, game_date: date, row_status: str = "played",
+    *, rejections: list[tuple[dict, PlausibilityResult, str]] | None = None,
+) -> list[dict]:
     rows: list[dict] = []
     matchup = _matchup(summary)
     for team_group in summary.get("boxscore", {}).get("players", []):
@@ -866,6 +883,20 @@ def _parse_basketball_summary(summary: dict, sport: str, game_date: date, row_st
                     rows.extend(_with_athlete_identity(_dnp_rows(player, team_abbr, sport, matchup, game_date), athlete))
                     continue
                 stats = _stats_by_label(labels, athlete_row.get("stats", []))
+                if sport == "NBA" and row_status == "played" and not any(value > 0 for value in stats.values()):
+                    # ESPN sometimes lists an unused athlete without setting didNotPlay.
+                    # No recorded participation is safer than a fabricated zero final.
+                    if rejections is not None:
+                        rejections.append(({
+                            "provider": "ESPN", "player": player, "sport": sport,
+                            "stat": "Points", "game": matchup, "game_date": game_date.isoformat(),
+                            "provider_player_id": str(athlete.get("id") or ""),
+                            "original_athlete_row": athlete_row,
+                        }, PlausibilityResult(
+                            valid=False, sport=sport, stat="Points", line=0.0,
+                            reason="NBA box score has no positive minutes or recorded stat; participation is unverified.",
+                        ), "ESPN"))
+                    continue
                 rows.extend(_with_athlete_identity(
                     _basketball_stat_rows(player, team_abbr, sport, matchup, game_date, stats, row_status),
                     athlete,

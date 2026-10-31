@@ -170,11 +170,13 @@ class FinalStatsRepository:
                     for source in prop.get("_excluded_sources", [])
                     if str(source).strip()
                 ]
-                query = (
+                base_query = (
                     session.query(FinalPlayerStatModel)
                     .filter(FinalPlayerStatModel.sport == prop.get("sport", ""))
                     .filter(FinalPlayerStatModel.stat.in_(stat_alias_labels(prop.get("stat", ""))))
                 )
+                if excluded_sources:
+                    base_query = base_query.filter(~FinalPlayerStatModel.source.in_(excluded_sources))
                 identity = PlayerIdentityRepository.resolve(
                     prop.get("player", ""),
                     prop.get("sport", ""),
@@ -185,11 +187,9 @@ class FinalStatsRepository:
                 )
                 identity_id = prop.get("player_identity_id") or (identity or {}).get("id")
                 if identity_id:
-                    query = query.filter(FinalPlayerStatModel.player_identity_id == identity_id)
+                    query = base_query.filter(FinalPlayerStatModel.player_identity_id == identity_id)
                 else:
-                    query = query.filter(FinalPlayerStatModel.player == prop.get("player", ""))
-                if excluded_sources:
-                    query = query.filter(~FinalPlayerStatModel.source.in_(excluded_sources))
+                    query = base_query.filter(FinalPlayerStatModel.player == prop.get("player", ""))
                 game = prop.get("game", "")
                 target_date = _prop_game_date(prop)
                 placed_date = _prop_placed_date(prop)
@@ -202,6 +202,16 @@ class FinalStatsRepository:
                     placed_date=placed_date,
                     allow_unique_date_fallback=bool(identity_id),
                 )
+                if row is None and identity_id and prop.get("player"):
+                    exact_name_rows = (
+                        base_query.filter(FinalPlayerStatModel.player == prop["player"])
+                        .order_by(FinalPlayerStatModel.game_date.desc(), FinalPlayerStatModel.id.desc())
+                        .limit(50).all()
+                    )
+                    row = _best_matching_row(
+                        exact_name_rows, game, prop.get("team", ""),
+                        target_date=target_date, placed_date=placed_date,
+                    )
                 if row is None:
                     row = _best_fuzzy_player_row(session, prop)
                 if row is None:
@@ -606,6 +616,11 @@ def _prefer_stored_result(candidate: object, current: object) -> bool:
 
 _TEAM_ALIASES = {
     "SAS": "SA",
+    "GSW": "GS",
+    "NYK": "NY",
+    "NOP": "NO",
+    "UTA": "UTAH",
+    "NCST": "NCSU",
     "MOSU": "MOST",
     "NYL": "NY",
     "LVA": "LV",

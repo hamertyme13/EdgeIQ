@@ -196,6 +196,7 @@ class ModelRehabilitationRepository:
                     continue
                 candidates.append({
                     "cohort_date": cohort, "model_version": model_version,
+                    "predicted_at": datetime.now(UTC).replace(tzinfo=None),
                     "independent_market_key": key,
                     "player": str(row.get("player") or ""),
                     "team": str(row.get("team") or ""),
@@ -244,17 +245,22 @@ class ModelRehabilitationRepository:
         }
 
     @staticmethod
-    def settle_pending(limit: int = 500) -> dict:
+    def settle_pending(limit: int = 500, *, model_version_prefix: str = "") -> dict:
         ModelRehabilitationRepository._migrate_legacy_registry()
         initialize_database()
-        from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
+        reconciled = 0
+        if not model_version_prefix:
+            from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 
-        reconciled = ModelRehabilitationRepository.reconcile_shadow(
-            PredictionLedgerRepository.evidence_rows(include_legacy=False)
-        )
+            reconciled = ModelRehabilitationRepository.reconcile_shadow(
+                PredictionLedgerRepository.evidence_rows(include_legacy=False)
+            )
         settled = failed = pending = 0
         with SessionLocal() as session:
-            rows = session.query(ShadowPredictionModel).filter_by(status="shadow_pending").order_by(
+            query = session.query(ShadowPredictionModel).filter_by(status="shadow_pending")
+            if model_version_prefix:
+                query = query.filter(ShadowPredictionModel.model_version.like(f"{model_version_prefix}%"))
+            rows = query.order_by(
                 ShadowPredictionModel.game_time.asc(), ShadowPredictionModel.id.asc()
             ).limit(max(1, min(limit, 2000))).all()
             for row in rows:
@@ -295,7 +301,8 @@ class ModelRehabilitationRepository:
             "settled": settled, "reconciled_from_ledger": reconciled,
             "pending": pending, "failed": failed, "attempted": settled + pending + failed,
         }
-        SettingsRepository.set("shadow_settlement_status", json.dumps({**result, "ran_at": utc_now().isoformat()}))
+        status_key = "nba_points_shadow_settlement_status" if model_version_prefix else "shadow_settlement_status"
+        SettingsRepository.set(status_key, json.dumps({**result, "ran_at": utc_now().isoformat()}))
         return result
 
     @staticmethod
@@ -328,6 +335,52 @@ class ModelRehabilitationRepository:
         with SessionLocal() as session:
             rows = session.query(ShadowPredictionModel).order_by(ShadowPredictionModel.predicted_at.asc()).all()
             return [_shadow_dict(row) for row in rows]
+
+    @staticmethod
+    def nba_points_board_validation_rows(limit: int = 5000) -> list[dict]:
+        """Read settled prospective board forecasts for strict pregame evaluation."""
+        initialize_database()
+        with SessionLocal() as session:
+            rows = (
+                session.query(ShadowPredictionModel)
+                .filter(
+                    ShadowPredictionModel.sport == "NBA",
+                    ShadowPredictionModel.stat.in_(("Points", "PTS")),
+                    ShadowPredictionModel.model_version.like("nba-points-board/%"),
+                    ShadowPredictionModel.status.in_(("Win", "Loss", "Push")),
+                )
+                .order_by(ShadowPredictionModel.predicted_at.desc(), ShadowPredictionModel.id.desc())
+                .limit(max(1, min(int(limit), 5000)))
+                .all()
+            )
+            evidence = []
+            for row in rows:
+                payload = _json(row.feature_snapshot, {})
+                snapshot = payload.get("forecast_snapshot") if isinstance(payload, dict) else None
+                evidence.append({
+                    "id": row.id,
+                    "independent_market_key": row.independent_market_key,
+                    "player": row.player,
+                    "game": row.game,
+                    "sport": row.sport,
+                    "stat": row.stat,
+                    "platform": row.platform,
+                    "line": row.line,
+                    "direction": row.direction,
+                    "projection": row.projection,
+                    "probability": row.probability,
+                    "model_version": row.model_version,
+                    "feature_snapshot": snapshot,
+                    "feature_as_of": snapshot.get("feature_as_of") if isinstance(snapshot, dict) else None,
+                    "predicted_at": row.predicted_at,
+                    "game_time": row.game_time,
+                    "settled_at": row.settled_at,
+                    "result": row.status,
+                    "actual": row.actual,
+                    "outcome_source": row.outcome_source,
+                    "evidence_origin": "prospective_board",
+                })
+            return evidence
 
     @staticmethod
     def shadow_status(evidence_rows: list[dict] | None = None, validation: dict | None = None) -> dict:

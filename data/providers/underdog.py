@@ -118,12 +118,12 @@ def _game_time(*sources: dict) -> str:
 def _team_abbreviation(team_id: str, matchup: str, game: dict) -> str:
     parts = [part.strip() for part in matchup.replace(" vs. ", " @ ").replace(" vs ", " @ ").split("@")]
     if len(parts) != 2:
-        return team_id
+        return team_id if team_id.isalpha() and 2 <= len(team_id) <= 5 else ""
     if team_id == _string_id(game.get("away_team_id")):
         return parts[0]
     if team_id == _string_id(game.get("home_team_id")):
         return parts[1]
-    return team_id
+    return team_id if team_id.isalpha() and 2 <= len(team_id) <= 5 else ""
 
 
 def _line_market_key(line: dict) -> str:

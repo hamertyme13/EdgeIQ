@@ -3,9 +3,39 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
+from urllib.parse import urlsplit
 
 from services.ollama_client import ollama_enabled, ollama_role_model, ollama_structured
+
+
+def _official_game_links(rows: object) -> list[dict[str, str]]:
+    """Expose only exact official-game links carried by verified team evidence."""
+    if not isinstance(rows, list):
+        return []
+    links: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("url") or "")
+        if len(url) > 250:
+            continue
+        try:
+            parsed = urlsplit(url)
+        except ValueError:
+            continue
+        if (parsed.scheme != "https" or parsed.netloc != "www.espn.com"
+                or parsed.query or parsed.fragment
+                or not re.fullmatch(r"/game/_/gameId/[A-Za-z0-9-]+", parsed.path)
+                or url in seen):
+            continue
+        seen.add(url)
+        links.append({"label": f"ESPN game {len(links) + 1}", "url": url})
+        if len(links) == 3:
+            break
+    return links
 
 
 def build_nba_points_explanation(
@@ -27,9 +57,13 @@ def build_nba_points_explanation(
     verified = (intelligence.get("thresholds") or {}).get("verified_season") or {}
     games = int(verified.get("games") or 0)
     custom = verified.get("custom_line") or {}
-    forecast = payload.get("forecast") or {}
+    projection = intelligence.get("projection") or {}
+    reliability = intelligence.get("data_reliability") or {}
+    accepted_sources = reliability.get("accepted_sources") or {}
+    final_sources = ", ".join(sorted(accepted_sources)) or "Verified final-stat records"
     facts = [
-        {"id": "history", "text": f"{games} verified regular-season points games are available for {player}.", "weight": 1},
+        {"id": "history", "text": f"{games} verified regular-season points games are available for {player}.", "weight": 1,
+         "evidence": final_sources},
     ]
     if custom.get("decisions"):
         facts.append({
@@ -39,21 +73,25 @@ def build_nba_points_explanation(
                 f"regular-season games; {custom.get('pushes') or 0} pushed. This is past frequency, not the next-game probability."
             ),
             "weight": 2,
+            "evidence": final_sources,
         })
-    if forecast.get("source") == "verified_history_distribution":
+    if projection.get("source") == "verified_history_distribution" and projection.get("expected_points") is not None:
         facts.append({
             "id": "forecast",
-            "text": f"EdgeIQ's separate points forecast is {float(forecast['projection']):g}; its model probability is not the historical hit rate.",
+            "text": f"EdgeIQ's separate points forecast is {float(projection['expected_points']):g}; its model probability is not the historical hit rate.",
             "weight": 3,
+            "evidence": f"EdgeIQ forecast {projection.get('model_version') or 'version unavailable'}",
         })
     else:
         facts.append({
             "id": "forecast",
             "text": "An independent points forecast is unavailable; the entered line is only a market reference.",
             "weight": 3,
+            "evidence": "NBA Points research eligibility check",
         })
     matchup = intelligence.get("matchup") or {}
     defense = matchup.get("team_points_allowed") or {}
+    team_links = _official_game_links(defense.get("source_games"))
     if matchup.get("opponent") and defense.get("sample_size"):
         facts.append({
             "id": "defense",
@@ -63,23 +101,53 @@ def build_nba_points_explanation(
                 "This is team-level context, not a player matchup adjustment."
             ),
             "weight": 4,
+            "evidence": "Verified pregame team finals",
+            "source_links": team_links,
+        })
+    if (matchup.get("opponent") and defense.get("defensive_rank") is not None
+            and defense.get("advantage_score") is not None and defense.get("ranked_teams")):
+        facts.append({
+            "id": "defense_rank",
+            "text": (
+                f"{matchup['opponent']} ranks {int(defense['defensive_rank'])} of {int(defense['ranked_teams'])} "
+                f"qualifying NBA teams in recent points allowed (1 allows the fewest). "
+                f"The {int(defense['advantage_score'])}/100 matchup indicator is a team-defense percentile, "
+                "not this player's chance of exceeding the line."
+            ),
+            "weight": 4,
+            "evidence": "Official pregame NBA team finals; at least five games per qualifying team",
+            "source_links": team_links,
+        })
+    if matchup.get("opponent") and defense.get("pace_sample_size") and defense.get("pace_last_5") is not None:
+        facts.append({
+            "id": "pace",
+            "text": (
+                f"Recent games involving {matchup['opponent']} averaged {defense['pace_last_5']:g} estimated "
+                f"possessions per regulation game across {min(5, defense['pace_sample_size'])} official box scores. "
+                "This is game context, not a player points adjustment."
+            ),
+            "weight": 4,
+            "evidence": "ESPN official team box scores",
+            "source_links": team_links,
         })
     facts.append({
         "id": "market",
         "text": "An exact sportsbook payout and validated expected value are unavailable in this research view.",
         "weight": 5,
+        "evidence": "Exact-price evidence check",
     })
-    ordered_ids = [fact["id"] for fact in facts]
-    ranked = prioritize(facts) if prioritize is not None else _ollama_priorities(facts)
+    ordered_ids = [str(fact["id"]) for fact in facts]
+    ranked = (prioritize(facts) if prioritize is not None else _ollama_priorities(facts)) if detail == "detailed" else None
     if ranked and len(set(ranked)) == len(ranked) and set(ranked) == set(ordered_ids):
         ordered_ids = ranked
         source = "ollama_prioritized"
     else:
         source = "deterministic_fallback"
-    by_id = {fact["id"]: fact["text"] for fact in facts}
-    # Always show the evidence limit, regardless of how the local model ranks facts.
-    selected = ordered_ids[:2] if detail == "concise" else ordered_ids
-    if "market" not in selected:
+    by_id = {fact["id"]: fact for fact in facts}
+    # Ollama can order facts, but it cannot omit the three essential distinctions.
+    selected = (["hit_rate" if "hit_rate" in by_id else "history", "forecast", "market"]
+                if detail == "concise" else ordered_ids)
+    if detail == "detailed" and "market" not in selected:
         selected.append("market")
     return {
         "status": "research_only",
@@ -87,7 +155,12 @@ def build_nba_points_explanation(
         "detail": detail,
         "player": player,
         "line": line,
-        "bullets": [by_id[key] for key in selected],
+        "bullets": [by_id[key]["text"] for key in selected],
+        "fact_details": [
+            {"id": key, "text": by_id[key]["text"], "evidence": by_id[key]["evidence"],
+             "source_links": by_id[key].get("source_links", [])}
+            for key in selected
+        ],
         "model_changed": False,
     }
 

@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from math import isfinite, sqrt
 from statistics import mean, median, pstdev
 
+from analytics.nba_points_minutes import minutes_challenger
+from analytics.nba_points_participation import nba_points_participation_confirmed
+from analytics.nba_points_shot_volume import shot_volume_challenger
 from analytics.probabilistic_forecast import PropForecast, forecast_probability_at_line
 from services.game_team_features import opponent_points_allowed_context
 from utils.entity_normalization import canonical_matchup_key
@@ -52,6 +55,9 @@ def _screen_games(history: list[dict], game_time: object) -> tuple[list[dict], d
             continue
         if not isfinite(points) or not 0 <= points <= 100:
             excluded["implausible_points"] += 1
+            continue
+        if not nba_points_participation_confirmed(row):
+            excluded["participation_unverified"] += 1
             continue
         game_key = canonical_matchup_key(row.get("game"), {"SAS": "SA", "GSW": "GS", "NYK": "NY"})
         if "@" not in game_key:
@@ -122,7 +128,10 @@ def _summary(rows: list[dict], threshold: float, *, inclusive: bool) -> dict:
 def _chronological_baselines(games: list[dict]) -> dict:
     actuals = [row["actual"] for row in reversed(games)]
     if len(actuals) < 6:
-        return {"evaluated_games": 0, "status": "At least six verified games are needed for a chronological baseline."}
+        return {
+            "evaluated_games": 0,
+            "status": "At least six verified regular-season games are needed for a chronological baseline.",
+        }
     errors: dict[str, list[float]] = {"prior_5_average": [], "prior_season_average": []}
     for index in range(5, len(actuals)):
         actual = actuals[index]
@@ -130,7 +139,7 @@ def _chronological_baselines(games: list[dict]) -> dict:
         errors["prior_season_average"].append(mean(actuals[:index]) - actual)
     return {
         "evaluated_games": len(errors["prior_5_average"]),
-        "status": "Descriptive rolling baselines; no sportsbook price or champion comparison.",
+        "status": "Descriptive prior-to-game regular-season baselines; no sportsbook price or champion comparison.",
         "baselines": {
             name: {
                 "mae": round(mean(abs(error) for error in values), 2),
@@ -144,65 +153,7 @@ def _chronological_baselines(games: list[dict]) -> dict:
 
 
 def _minutes_challenger(games: list[dict]) -> dict:
-    rows = []
-    for row in games:
-        if str(row.get("season_type") or "").lower() != "regular":
-            continue
-        try:
-            minutes = float(row["verified_minutes"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if isfinite(minutes) and 0 < minutes <= 65:
-            rows.append((row["actual"], minutes))
-    result = {
-        "status": "insufficient_verified_minutes",
-        "sample_size": len(rows),
-        "expected_points": None,
-        "expected_minutes": None,
-        "points_per_minute": None,
-        "probability": None,
-        "validation": {"evaluated_games": 0, "challenger": None, "recent_points_average": None},
-        "note": "Research-only minutes baseline; no calibrated probability or recommendation override.",
-    }
-    if len(rows) < 5:
-        return result
-
-    def predict(prior: list[tuple[float, float]]) -> float:
-        recent = prior[-10:]
-        return median(minutes for _, minutes in prior[-5:]) * sum(points for points, _ in recent) / sum(
-            minutes for _, minutes in recent
-        )
-
-    chronological = list(reversed(rows))
-    challenger_errors = []
-    recent_errors = []
-    for index in range(5, len(chronological)):
-        prior = chronological[:index]
-        actual = chronological[index][0]
-        challenger_errors.append(predict(prior) - actual)
-        recent_errors.append(mean(points for points, _ in prior[-5:]) - actual)
-
-    def metrics(errors: list[float]) -> dict | None:
-        if not errors:
-            return None
-        return {
-            "mae": round(mean(abs(error) for error in errors), 2),
-            "rmse": round(sqrt(mean(error * error for error in errors)), 2),
-        }
-
-    recent = rows[:10]
-    result.update({
-        "status": "shadow_evaluation" if challenger_errors else "awaiting_holdout",
-        "expected_points": round(predict(chronological), 2),
-        "expected_minutes": round(median(minutes for _, minutes in rows[:5]), 1),
-        "points_per_minute": round(sum(points for points, _ in recent) / sum(minutes for _, minutes in recent), 3),
-        "validation": {
-            "evaluated_games": len(challenger_errors),
-            "challenger": metrics(challenger_errors),
-            "recent_points_average": metrics(recent_errors),
-        },
-    })
-    return result
+    return minutes_challenger(games)
 
 
 def build_nba_points_intelligence(
@@ -217,7 +168,7 @@ def build_nba_points_intelligence(
     games, reliability = _screen_games(history, game_time)
     regular_games = sum(str(row.get("season_type") or "").lower() == "regular" for row in games)
     unverified_games = len(games) - regular_games
-    windows = {
+    windows: dict[str, list[dict]] = {
         "last_5": games[:5],
         "last_10": games[:10],
         "last_20": games[:20],
@@ -229,9 +180,11 @@ def build_nba_points_intelligence(
                  and str(row.get("game") or "").replace(" ", "").upper().startswith(str(row.get("team") or "").upper() + "@")],
         "opponent": [row for row in games if opponent and _opponent(row.get("game"), row.get("team")) == opponent],
     }
-    thresholds = {
+    thresholds: dict[str, dict] = {
         name: {
             "games": len(rows),
+            "regular_games": sum(str(row.get("season_type") or "").lower() == "regular" for row in rows),
+            "unverified_games": sum(str(row.get("season_type") or "").lower() != "regular" for row in rows),
             "thresholds": [{"points": threshold, **_summary(rows, threshold, inclusive=True)} for threshold in THRESHOLDS],
             "custom_line": _summary(rows, float(line), inclusive=False) if line is not None else None,
         }
@@ -246,8 +199,8 @@ def build_nba_points_intelligence(
     verified_model = bool(
         forecast and forecast.source == "verified_history_distribution" and not conflicting_evidence
     )
-    over = forecast_probability_at_line(forecast, float(line), "Over", "Points") if verified_model and line is not None else None
-    under = forecast_probability_at_line(forecast, float(line), "Under", "Points") if verified_model and line is not None else None
+    over = forecast_probability_at_line(forecast, float(line), "Over", "Points") if verified_model and forecast is not None and line is not None else None
+    under = forecast_probability_at_line(forecast, float(line), "Under", "Points") if verified_model and forecast is not None and line is not None else None
     head_to_head = thresholds["opponent"]["custom_line"] if line is not None else None
     team_defense = opponent_points_allowed_context(opponent, str(game_time or ""), team_games or [])
     return {
@@ -268,23 +221,26 @@ def build_nba_points_intelligence(
             "coefficient_of_variation": variability,
             "description": "Last 20 points standard deviation divided by average; lower means less variation. Not a hit probability.",
         },
-        "validation": _chronological_baselines(games),
+        "validation": _chronological_baselines(windows["verified_season"]),
         "minutes_challenger": _minutes_challenger(games),
+        "shot_volume_challenger": shot_volume_challenger(games),
         "matchup": {
             "opponent": opponent or None,
             "head_to_head_games": len(windows["opponent"]),
             "head_to_head_over_rate": head_to_head["hit_rate"] if head_to_head else None,
-            "advantage_score": None,
-            "defensive_rank": None,
+            "advantage_score": team_defense["advantage_score"],
+            "defensive_rank": team_defense["defensive_rank"],
             "team_points_allowed": team_defense,
             "status": (
-                "Verified team points allowed available; position-specific defense and matchup score are unvalidated."
+                "Opponent team defense compared with qualifying NBA teams; this is not a player hit probability."
+                if team_defense["advantage_score"] is not None else
+                "Verified team points allowed available; league comparison needs more teams and position-specific defense is unvalidated."
                 if team_defense["sample_size"] else
                 "Opponent defensive evidence unavailable; head-to-head is descriptive only."
             ),
         },
         "projection": {
-            "expected_points": forecast.projection if verified_model else None,
+            "expected_points": forecast.projection if verified_model and forecast is not None else None,
             "over_probability": over,
             "under_probability": under,
             "source": forecast.source if forecast else "unavailable",
@@ -301,6 +257,6 @@ def build_nba_points_intelligence(
             + (f"Against {opponent}, {len(windows['opponent'])} historical games are available. " if opponent else "")
             + "Historical hit rates describe past results; the forecast is a separate estimate. "
             + (f"{unverified_games} historical games lack confirmed season type; those tracked-window rates are not regular-season-only. " if unverified_games else "All included games have confirmed regular-season provenance. ")
-            + "Opponent defensive ranking and exact-price value are not verified here."
+            + "Team defensive context is descriptive; exact-price value is not verified here."
         ),
     }

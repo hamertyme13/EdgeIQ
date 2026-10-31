@@ -24,6 +24,7 @@ class RefreshSchedulePayload(BaseModel):
     injury_refresh: str = "11:00"
     line_snapshots: str = "*/30"
     result_check: str = "23:30"
+    nba_points_shadow_settlement: str = Field(default="*/60", pattern=r"^\*/(30|60|90|120)$")
     nightly_calibration: str = "02:00"
     season_history: str = Field(default="06:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     nba_team_history: str = Field(default="05:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")

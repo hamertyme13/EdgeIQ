@@ -566,9 +566,6 @@ function setupDisplayModes() {
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
     localStorage.setItem("edgeiq.displayMode", normalized);
-    document.querySelectorAll(".briefing-explore-drawer").forEach((details) => {
-      details.open = normalized === "advanced";
-    });
     if (normalized === "basic") $("performance")?.classList.remove("show-performance-details");
     if (normalized === "basic") activateWorkspace($("analysis"), "prop", { load: false });
     if (normalized === "basic") {
@@ -1296,7 +1293,7 @@ function renderDailyBriefing(data) {
     trackProductEvent("recommendation_viewed", "briefing", trackedSnapshot);
   }
   const cacheLabel = data.cache?.stale
-    ? `expired cache ${formatDateTime(data.cache.created_at)} · refresh recommended`
+    ? `${data.cache.reason || "Saved briefing expired"} · refresh in progress or recommended`
     : data.cache?.hit
       ? `cached ${formatDateTime(data.cache.created_at)}`
       : "fresh scan";
@@ -1473,7 +1470,7 @@ function renderDailyBriefing(data) {
         </div>
       </div>
     </div>
-    <details class="briefing-explore-drawer" ${document.body.dataset.displayMode === "advanced" ? "open" : ""}>
+    <details class="briefing-explore-drawer" open>
       <summary><span>Explore Today's Board</span><small>${opportunities.length} ranked props · ${gamesToday.length} games</small></summary>
       <div class="briefing-explore-body">
     ${unavailableProviders.length ? `
@@ -4091,7 +4088,7 @@ async function loadEntryPlayerDirectory(query = "") {
   }
   if ($("prop-sport").value !== requestedSport || !entryState.acceptPlayerLookup(requestId, data.players)) return;
   $("entry-player-options").innerHTML = entryState.playerDirectory.map((player) => (
-    `<option value="${escapeHtml(player.name)}">${escapeHtml(`${player.team || player.sport} · ${entryPlayerProviderLabel(player)}`)}</option>`
+    `<option value="${escapeHtml(player.name)}">${escapeHtml(`${player.team || (player.last_verified_team ? `Last verified ${player.last_verified_team} (${player.last_verified_team_date})` : player.sport)} · ${entryPlayerProviderLabel(player)}`)}</option>`
   )).join("");
   status.textContent = data.count
     ? `${data.count} saved ${sport} ${data.count === 1 ? "player" : "players"} available.`
@@ -4875,13 +4872,17 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
   )];
   if (generatedPropKeys.length) marketState.generatorRecentProps[historyKey] = generatedPropKeys.slice(0, 32);
   const diversity = data.diversification || {};
+  const actionableCount = (data.suggestions || []).filter((suggestion) => suggestion.grade !== "F").length;
+  const qualityNote = data.suggestions.length && !actionableCount
+    ? `<div class="generator-diversity-note warning"><strong>No cleared entry today</strong><span>These are research-only cards graded Pass. Use paper mode to track them, or try fewer legs or another sport.</span></div>`
+    : "";
   const diversityNote = data.suggestions.length
     ? `<div class="generator-diversity-note">
         <strong>${Number(diversity.unique_props || 0)} unique props</strong>
         <span>${Number(diversity.reused_props || 0) ? `${Number(diversity.reused_props)} repeated only where the quality pool required it` : "No exact props repeated across this batch"}</span>
       </div>`
     : "";
-  list.innerHTML = diversityNote + data.suggestions.map((suggestion, index) => `
+  list.innerHTML = qualityNote + diversityNote + data.suggestions.map((suggestion, index) => `
     <div class="suggestion ${gradeClass(suggestion.grade)}">
       <div class="suggestion-top">
         <span class="pill">${escapeHtml(platform)} #${suggestion.rank} · ${suggestion.leg_count} Legs</span>
@@ -4894,7 +4895,7 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
       ${releaseStatusBlock(suggestion.release_status)}
       ${suggestion.warnings.length ? `<p class="warning">${suggestion.warnings.join(" · ")}</p>` : ""}
       <div class="button-row">
-        <button class="secondary" data-load-provider-suggestion="${index}">Load ${escapeHtml(platform)}</button>
+        <button class="secondary" data-load-provider-suggestion="${index}">${suggestion.grade === "F" ? "Load as Paper" : `Load ${escapeHtml(platform)}`}</button>
         <button class="secondary" data-explain-provider-suggestion="${index}">Why?</button>
       </div>
     </div>
@@ -4906,9 +4907,15 @@ async function loadProviderSuggestions(platform, sportId, legsId, listId) {
       const baseMultiplier = providerBaseMultiplier(platform, suggestion.leg_count);
       if (baseMultiplier && $("entry-multiplier")) $("entry-multiplier").value = String(baseMultiplier);
       if ($("entry-payout-type")) $("entry-payout-type").value = "standard";
+      if (suggestion.grade === "F") {
+        $("entry-mode").value = "paper";
+        syncEntryActionLabels();
+      }
       state.recommendationOrigin = true;
       setView("entries");
-      $("entry-status").textContent = `Loaded ${suggestion.leg_count}-leg ${platform} entry #${suggestion.rank}. The builder detected ${platform} from its source lines.`;
+      $("entry-status").textContent = suggestion.grade === "F"
+        ? `Loaded ${suggestion.leg_count}-leg ${platform} card in paper mode because EdgeIQ graded it Pass. Review the legs before saving.`
+        : `Loaded ${suggestion.leg_count}-leg ${platform} entry #${suggestion.rank}. The builder detected ${platform} from its source lines.`;
     });
   });
   list.querySelectorAll("[data-explain-provider-suggestion]").forEach((button) => {
@@ -5193,6 +5200,7 @@ async function loadPlayerResearch(event) {
   const split = data.splits || {};
   const trend = data.trend || {};
   const distribution = data.forecast?.distribution || {};
+  const nbaMarketPrior = Boolean(data.nba_points_intelligence && data.forecast?.source === "market_prior");
   const gameContext = data.forecast?.features?.game_intelligence;
   const sensitivity = data.projection_sensitivity || {};
   const assessment = data.season_assessment || {};
@@ -5221,7 +5229,7 @@ async function loadPlayerResearch(event) {
         <span class="pill">${escapeHtml(data.sport)}</span>
         <strong>${escapeHtml(data.player)} · ${escapeHtml(data.stat)}</strong>
       </div>
-      <span class="subtle">${data.history_count} finals · ${data.active_props.length} active</span>
+      <span class="subtle">${data.nba_points_intelligence ? `${Number(data.nba_points_intelligence.season_provenance?.regular_games || 0)} verified regular-season games` : `${Number(data.history_count || 0)} historical results`} · ${data.active_props.length} active</span>
     </div>
     ${window.EdgeIQOpportunityScore?.render(data.edgeiq_score, escapeHtml) || `<p class="subtle">No scored provider opportunity is available for this research selection.</p>`}
     <section class="season-assessment">
@@ -5273,17 +5281,17 @@ async function loadPlayerResearch(event) {
         <div><p class="eyebrow">Projection Distribution</p><h3>Range, not just one number</h3></div>
         <span class="status-pill ${distribution.uncertainty_level === "High" ? "status-warning" : "status-positive"}">${escapeHtml(distribution.uncertainty_level || "Unknown")} uncertainty</span>
       </div>
-      <div class="metric-strip research-distribution-metrics">
+      ${nbaMarketPrior ? `<p class="subtle">An independent NBA points projection is unavailable. The entered line is a market reference, not an EdgeIQ forecast; verified game history is shown in NBA Points Intelligence below.</p>` : `<div class="metric-strip research-distribution-metrics">
         <span><strong>${distribution.expected_result ?? "-"}</strong><small>Expected</small></span>
         <span><strong>${distribution.median ?? "-"}</strong><small>Median</small></span>
         <span><strong>${distribution.percentile_25 ?? "-"}–${distribution.percentile_75 ?? "-"}</strong><small>Middle 50%</small></span>
         <span><strong>${distribution.floor ?? "-"}–${distribution.ceiling ?? "-"}</strong><small>Floor–Ceiling</small></span>
         <span><strong>${distribution.probability_over_exact_line == null ? "Unavailable" : pct(distribution.probability_over_exact_line)}</strong><small>Exact-line Over</small></span>
         <span><strong>${distribution.expected_minutes ?? distribution.expected_opportunities ?? "-"}</strong><small>Minutes / Chances</small></span>
-      </div>
-      <div class="sensitivity-grid">
+      </div>`}
+      ${nbaMarketPrior ? "" : `<div class="sensitivity-grid">
         ${(sensitivity.scenarios || []).map((scenario) => `<span><strong>${scenario.line}</strong><small>${pct(scenario.probability)} ${escapeHtml(data.recommendation?.direction || "Over")}</small></span>`).join("")}
-      </div>
+      </div>`}
       ${(sensitivity.drivers || []).map((driver) => `<p class="subtle">What changes this: ${escapeHtml(driver)}</p>`).join("")}
     </section>
     </details>
@@ -5325,7 +5333,10 @@ async function loadPlayerResearch(event) {
     ${(data.notes || []).map((note) => `<p class="subtle">${escapeHtml(humanizeCopilotText(note))}</p>`).join("")}
     </details>
   `;
-  $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${Number(data.history_count || 0)} verified finals · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
+  const historyLabel = data.nba_points_intelligence
+    ? `${Number(data.nba_points_intelligence.season_provenance?.regular_games || 0)} verified NBA regular-season games`
+    : `${Number(data.history_count || 0)} historical results`;
+  $("research-context-status").textContent = `Research ready in ${((performance.now() - started) / 1000).toFixed(1)}s · ${historyLabel} · ${Number(data.active_props?.length || 0)} current standard offer${Number(data.active_props?.length || 0) === 1 ? "" : "s"}.`;
   window.EdgeIQPlayerWorkspace?.mount($("player-research-result"), data, { escapeHtml, pct, formatDateTime, api });
   $("player-research-result").scrollIntoView({ behavior: "smooth", block: "start" });
 }

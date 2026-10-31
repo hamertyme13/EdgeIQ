@@ -7100,9 +7100,8 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
 .nba-points-content { display: grid; gap: 14px; padding: 12px 0 18px; }
 .nba-points-intelligence { width: min(100%, calc(100vw - 240px)); min-width: 0; }
 .nba-points-content p { margin: 0; overflow-wrap: anywhere; }
-.nba-points-window { display: flex; flex-wrap: wrap; gap: 8px; }
-.nba-points-window button { min-height: 40px; padding: 8px 12px; }
-.nba-points-window button[aria-pressed="true"] { outline: 2px solid #d9fff1; outline-offset: 1px; }
+.nba-points-window { display: grid; gap: 6px; width: min(100%, 280px); color: var(--muted); font-size: 13px; }
+.nba-points-window select { width: 100%; min-height: 40px; }
 .nba-points-window-results { min-width: 0; }
 .nba-points-thresholds { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 10px; }
 .nba-points-threshold { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
@@ -7112,6 +7111,11 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
 .nba-points-evidence { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 @media (max-width: 800px) {
   .nba-points-intelligence { width: min(100%, calc(100vw - 32px)); }
+}
+@media (max-width: 600px) {
+  #analysis .tool-group[data-workspace-pane="prop"] { padding-inline: 0; }
+  #analysis .tool-group[data-workspace-pane="prop"] > .tool-group-body { padding-inline: 8px; }
+  #analysis #player-research-result { padding: 8px; }
 }
 [id^="player-workspace-section-"] { scroll-margin-top: 90px; }
 .game-intelligence-grid {

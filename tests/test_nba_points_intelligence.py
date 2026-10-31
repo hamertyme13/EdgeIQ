@@ -49,6 +49,56 @@ def test_nba_opponent_defense_matches_verified_provider_team_aliases():
     assert result["matchup"]["team_points_allowed"]["last_10"] == 100.0
 
 
+def test_nba_defense_comparison_requires_coverage_and_uses_only_pregame_regular_games():
+    rows = []
+    for day in range(16, 21):
+        for index in range(5):
+            rows.append(team_game(
+                f"2026-10-{day}", f"{day}-{index}", f"T{index}", f"T{index + 5}",
+                100, 130 if index == 0 else 100,
+            ))
+    rows.append(team_game("2026-10-22", "future", "T0", "T5", 70, 50))
+    rows.append(team_game("2026-10-19", "preseason-extra", "T0", "T5", 70, 50, season_type="preseason"))
+    result = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="T0",
+        game_time="2026-10-21T23:00:00Z", team_games=rows,
+    )
+    matchup = result["matchup"]
+    assert matchup["defensive_rank"] == 10
+    assert matchup["advantage_score"] == 100
+    assert matchup["team_points_allowed"]["ranked_teams"] == 10
+    assert matchup["team_points_allowed"]["last_5"] == 130
+    assert result["projection"]["expected_points"] is None
+    assert result["market"]["ev"] is None
+
+    sparse = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="T0",
+        game_time="2026-10-21T23:00:00Z", team_games=rows[:20],
+    )["matchup"]
+    assert sparse["advantage_score"] is None
+    assert sparse["team_points_allowed"]["ranked_teams"] == 0
+
+
+def test_nba_opponent_pace_uses_only_plausible_prior_regular_box_scores():
+    prior = team_game("2026-10-20", "pace-1", "NYK", "BOS", 110, 100)
+    prior["pace"] = 98.4
+    invalid = team_game("2026-10-19", "pace-2", "CHI", "NYK", 102, 99)
+    invalid["pace"] = 300
+    preseason = team_game("2026-10-18", "pace-3", "NYK", "MIA", 120, 90, season_type="preseason")
+    preseason["pace"] = 120
+    later = team_game("2026-10-24", "pace-4", "NYK", "BOS", 115, 105)
+    later["pace"] = 110
+
+    result = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-22T23:00:00Z", team_games=[prior, invalid, preseason, later],
+    )
+    pace = result["matchup"]["team_points_allowed"]
+    assert pace["pace_sample_size"] == 1
+    assert pace["pace_last_5"] == 98.4
+    assert pace["pace_source"] == "espn_box_score_possessions"
+
+
 def game(day, points, game_name="BOS @ NYK", *, status="played", source="espn"):
     return {"game_date": day, "actual": points, "game": game_name, "team": "BOS", "status": status, "source": source}
 
@@ -84,8 +134,24 @@ def test_last_windows_home_away_and_small_sample_interval():
     assert result["thresholds"]["home"]["games"] == 1
     assert result["thresholds"]["away"]["games"] == 2
     assert result["thresholds"]["opponent"]["games"] == 2
+    assert result["thresholds"]["home"]["unverified_games"] == 1
+    assert result["thresholds"]["away"]["unverified_games"] == 2
     assert result["thresholds"]["last_5"]["custom_line"]["interval_95"][0] < 66.7
     assert result["data_quality"] == "Season unverified"
+
+
+def test_scoring_splits_report_provenance_for_their_own_games():
+    history = [
+        {**game("2026-10-20", 22, "BOS @ NYK"), "season_type": "regular"},
+        game("2026-10-19", 17, "NYK @ BOS"),
+        {**game("2026-10-18", 28, "BOS @ PHI"), "season_type": "regular"},
+    ]
+    result = build_nba_points_intelligence(history, line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22")
+    assert result["thresholds"]["away"]["regular_games"] == 2
+    assert result["thresholds"]["away"]["unverified_games"] == 0
+    assert result["thresholds"]["opponent"]["regular_games"] == 1
+    assert result["thresholds"]["opponent"]["unverified_games"] == 1
+    assert result["thresholds"]["home"]["unverified_games"] == 1
 
 
 def test_market_prior_does_not_create_a_validated_probability():
@@ -104,7 +170,7 @@ def test_market_prior_does_not_create_a_validated_probability():
 
 
 def test_rolling_baseline_uses_only_earlier_games():
-    history = [game(f"2026-10-{day:02d}", value) for day, value in [
+    history = [{**game(f"2026-10-{day:02d}", value), "season_type": "regular"} for day, value in [
         (10, 10), (11, 10), (12, 10), (13, 10), (14, 10), (15, 20),
     ]]
     result = build_nba_points_intelligence(history, line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22")
@@ -113,6 +179,21 @@ def test_rolling_baseline_uses_only_earlier_games():
     assert validation["baselines"]["prior_5_average"]["mae"] == 10.0
     assert validation["baselines"]["prior_season_average"]["rmse"] == 10.0
     assert validation["brier_score"] is None
+
+
+def test_rolling_baseline_excludes_season_unverified_history():
+    history = [{**game(f"2026-10-{day:02d}", 20), "season_type": "regular"} for day in range(10, 16)]
+    history.append(game("2026-10-16", 80))
+
+    result = build_nba_points_intelligence(
+        history, line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+
+    assert result["thresholds"]["season"]["games"] == 7
+    assert result["thresholds"]["verified_season"]["games"] == 6
+    assert result["validation"]["evaluated_games"] == 1
+    assert result["validation"]["baselines"]["prior_5_average"]["mae"] == 0.0
+    assert result["validation"]["baselines"]["prior_season_average"]["mae"] == 0.0
 
 
 def test_minutes_challenger_uses_only_prior_verified_regular_season_games():
@@ -177,6 +258,32 @@ def test_verified_season_does_not_infer_unlabeled_games_are_regular():
     assert result["thresholds"]["season"]["games"] == 2
     assert result["thresholds"]["verified_season"]["games"] == 0
     assert result["thresholds"]["verified_season"]["custom_line"]["hit_rate"] is None
+
+
+def test_zero_points_without_verified_minutes_do_not_count_as_played_scoring_history():
+    history = [
+        {**game("2026-10-20", 0), "season_type": "regular"},
+        {**game("2026-10-19", 0), "season_type": "regular", "verified_minutes": 8},
+        {**game("2026-10-18", 20), "season_type": "regular"},
+    ]
+
+    result = build_nba_points_intelligence(
+        history, line=19.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+
+    assert result["sample_size"] == 2
+    assert result["data_reliability"]["excluded"]["participation_unverified"] == 1
+    assert result["thresholds"]["verified_season"]["custom_line"]["hits"] == 1
+
+
+def test_zero_points_with_verified_shot_attempt_still_count():
+    result = build_nba_points_intelligence(
+        [{**game("2026-10-20", 0), "season_type": "regular", "verified_field_goals_attempted": 1}],
+        line=0.5, forecast=None, opponent="NYK", game_time="2026-10-22",
+    )
+
+    assert result["sample_size"] == 1
+    assert result["data_reliability"]["excluded"].get("participation_unverified", 0) == 0
 
 
 def test_conflicting_verified_finals_are_withheld_instead_of_silently_picked():

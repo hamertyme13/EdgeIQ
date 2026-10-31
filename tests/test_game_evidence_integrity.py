@@ -106,6 +106,8 @@ def test_official_outcome_resolves_different_provider_id_and_settles_all_models(
     history = TeamHistoryRepository.before("WNBA", (datetime.now(UTC) + timedelta(days=1)).isoformat())
     assert len([row for row in history if row["game_id"] == "espn-other-id"]) == 1
     assert TeamHistoryRepository.before("WNBA", (start - timedelta(days=1)).isoformat()) == []
+    assert TeamHistoryRepository.before("WNBA", (datetime.now(UTC) + timedelta(days=1)).isoformat(),
+                                        as_of=(start - timedelta(days=1)).isoformat()) == []
 
 
 def test_possession_pace_requires_complete_box_scores():

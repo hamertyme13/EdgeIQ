@@ -6,8 +6,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from analytics.nba_points_quote_validation import evaluate_nba_points_quotes
 from analytics.nba_points_validation import evaluate_nba_points_predictions
 from analytics.opportunity_score import score_source_freshness
+from repository.repositories.market_quote_repository import MarketQuoteRepository
+from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.player_identity_repository import PlayerIdentityRepository
 from repository.repositories.prediction_ledger_repository import PredictionLedgerRepository
 from web.application.opportunity_presentation import presented_score
@@ -123,9 +126,9 @@ def nba_points_market(player_name: str, line: float, platform: str = "Both", dep
 
 @router.post("/api/players/{player_name}/points-explanation")
 def nba_points_explanation(player_name: str, line: float, platform: str = "Both", detail: str = "concise", deps: DepsPlayer = None) -> dict:  # type: ignore[assignment]
-    _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
     if detail not in {"concise", "detailed"}:
         raise HTTPException(status_code=400, detail="Choose a concise or detailed explanation.")
+    _deps = deps if isinstance(deps, PlayerDependencies) else get_deps()
     return _deps.points_explanation(player_name, line, platform, detail)
 
 
@@ -160,7 +163,15 @@ def research_evidence(
 
 @router.get("/api/research/nba-points-validation")
 def nba_points_validation() -> dict:
-    return evaluate_nba_points_predictions(PredictionLedgerRepository.nba_points_validation_rows())
+    return evaluate_nba_points_predictions(
+        PredictionLedgerRepository.nba_points_validation_rows()
+        + ModelRehabilitationRepository.nba_points_board_validation_rows()
+    )
+
+
+@router.get("/api/research/nba-points-quote-validation")
+def nba_points_quote_validation() -> dict:
+    return evaluate_nba_points_quotes(MarketQuoteRepository.validation_inputs())
 
 
 @router.get("/api/players/{player_name}/line-movement")

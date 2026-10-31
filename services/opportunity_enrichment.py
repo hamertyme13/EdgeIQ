@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isfinite
+
 from sqlalchemy import func
 
 from services.final_stat_candidates import recent_canonical_player_ids
@@ -51,19 +53,36 @@ def attach_opportunity_context(session, history: list[dict], identity: dict | No
         query = query.filter(FinalPlayerStatModel.game_date.in_(game_dates))
 
     context: dict[tuple[str, str], dict[str, float]] = {}
-    verified_minutes: dict[tuple[str, str], float] = {}
+    verified_minutes: dict[tuple[str, str], set[float]] = {}
+    verified_shots: dict[tuple[str, str], dict[str, set[float]]] = {}
     for row in query.limit(context_limit).all():
         key = (str(row.game_date or ""), _game_key(row.game))
         context.setdefault(key, {})[row.stat] = float(row.actual)
         if row.stat == "Minutes" and str(row.source or "").lower().startswith(("espn", "nba_api", "balldontlie", "statshawk")):
-            verified_minutes[key] = float(row.actual)
+            minutes = float(row.actual)
+            if (str(row.status or "played").lower() == "played"
+                    and (not sport or sport.upper() != "NBA" or str(row.season_type or "").lower() == "regular")
+                    and isfinite(minutes) and 0 < minutes <= 65):
+                verified_minutes.setdefault(key, set()).add(minutes)
+        if sport and sport.upper() == "NBA" and row.stat in {"Field Goals Attempted", "Free Throws Attempted"}:
+            value = float(row.actual)
+            if (str(row.source or "").lower().startswith(("espn", "nba_api", "balldontlie", "statshawk"))
+                    and str(row.status or "played").lower() == "played"
+                    and str(row.season_type or "").lower() == "regular"
+                    and isfinite(value) and 0 <= value <= 60):
+                verified_shots.setdefault(key, {}).setdefault(row.stat, set()).add(value)
     for row in history:
         key = (str(row.get("game_date") or ""), _game_key(row.get("game")))
         values = context.get(key, {})
         if "Minutes" in values:
             row["minutes"] = values["Minutes"]
-        if key in verified_minutes:
-            row["verified_minutes"] = verified_minutes[key]
+        if len(verified_minutes.get(key, ())) == 1:
+            row["verified_minutes"] = next(iter(verified_minutes[key]))
+        shots = verified_shots.get(key, {})
+        for stat, field in (("Field Goals Attempted", "verified_field_goals_attempted"),
+                            ("Free Throws Attempted", "verified_free_throws_attempted")):
+            if len(shots.get(stat, ())) == 1:
+                row[field] = next(iter(shots[stat]))
         opportunities = role_opportunities(str(row.get("sport") or sport or ""), str(row.get("stat") or ""), values)
         if opportunities is not None:
             row["opportunities"] = opportunities
