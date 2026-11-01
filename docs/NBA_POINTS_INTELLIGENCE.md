@@ -294,8 +294,11 @@ points-specific challenger for paid suggestions:
   team-defense percentile when the comparison has at least ten teams with
   five official pregame results each. The evidence query excludes team finals
   captured after the cohort began. Settled, versioned snapshots are reported
-  in descriptive matchup segments; they do not adjust the production forecast
-  or qualify the challenger for promotion.
+  in descriptive matchup segments. Every fractional 0-100 indicator falls in
+  exactly one segment; the report shows prospective board outcomes separately
+  from placed-entry selections and compares each segment with the same offers'
+  locked recent-five mean and exact line. These segments are not causal evidence,
+  do not adjust the production forecast, and cannot qualify the challenger for promotion.
 - **Validation:** Tests cover thresholds, pushes, custom lines, DNP and
   unfinished games, missing provider context, conflicting finals, route
   payloads, market gating, locked chronological outcomes, and Ollama fallback.

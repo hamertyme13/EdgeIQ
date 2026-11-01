@@ -286,10 +286,30 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             if (origin_rows := [row for key, row in origin_selected.items() if key[0] == version and key[1] == origin])
         }
         matchup_rows = [row for row in version_rows if row["matchup_indicator"] is not None]
-        matchup_segments = [
-            {"label": label, "indicator_range": [low, high], **_metrics(segment)}
-            for label, low, high in (("Lower points allowed", 0, 33), ("Middle", 34, 66), ("Higher points allowed", 67, 100))
-            if (segment := [row for row in matchup_rows if low <= row["matchup_indicator"] <= high])
+
+        def matchup_segments(rows: list[dict]) -> list[dict]:
+            segments = []
+            for label, low, high in (
+                ("Lower points allowed", 0, 100 / 3),
+                ("Middle", 100 / 3, 200 / 3),
+                ("Higher points allowed", 200 / 3, 100),
+            ):
+                segment = [row for row in rows if low <= row["matchup_indicator"] < high
+                           or high == 100 and row["matchup_indicator"] == 100]
+                if segment:
+                    segments.append({
+                        "label": label, "indicator_range": [round(low, 2), round(high, 2)],
+                        **_metrics(segment),
+                        "paired_baselines": {
+                            "exact_line": _baseline(segment, "line"),
+                            "locked_recent_5_mean": _baseline(segment, "recent_5_mean"),
+                        },
+                    })
+            return segments
+
+        prospective_matchup_rows = [
+            row for key, row in origin_selected.items()
+            if key[0] == version and key[1] == "prospective_board" and row["matchup_indicator"] is not None
         ]
         versions.append({
             "model_version": version,
@@ -311,11 +331,15 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "by_line": thresholds,
             "by_history_size": history_segments,
             "matchup_difficulty": {
-                "status": "descriptive_segments" if matchup_rows else "unavailable",
-                "samples": len(matchup_rows), "segments": matchup_segments,
+                "status": "descriptive_segments" if matchup_rows or prospective_matchup_rows else "unavailable",
+                "samples": len(matchup_rows), "segments": matchup_segments(matchup_rows),
+                "prospective_board": {
+                    "samples": len(prospective_matchup_rows),
+                    "segments": matchup_segments(prospective_matchup_rows),
+                },
                 "reason": (
-                    "Locked pregame opponent team points-allowed percentiles; selected segments are descriptive, not validated player matchup effects."
-                    if matchup_rows else "No versioned, pregame opponent-defense comparison is locked in these records."
+                    "Locked pregame opponent team points-allowed percentiles. Prospective board outcomes are shown separately from placed-entry selections; neither proves a player matchup effect."
+                    if matchup_rows or prospective_matchup_rows else "No versioned, pregame opponent-defense comparison is locked in these records."
                 ),
             },
             "promotion_ready": False,

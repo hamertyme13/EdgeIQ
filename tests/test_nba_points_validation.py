@@ -127,6 +127,56 @@ def test_matchup_segments_require_locked_pregame_versioned_evidence():
     assert report["versions"][0]["promotion_ready"] is False
 
 
+def test_matchup_segments_include_fractional_scores_and_separate_board_evidence():
+    rows = []
+    for key, score, origin in (
+        ("lower", 33.5, "prospective_board"),
+        ("middle", 66.5, "prospective_board"),
+        ("higher", 100, "placed_entry"),
+    ):
+        row = _row(key)
+        row["evidence_origin"] = origin
+        row["feature_snapshot"]["features"]["nba_points_opponent_defense"] = {
+            "model_version": "nba-team-defense-rank-v1", "shadow_only": True,
+            "evidence_as_of": row["predicted_at"] - timedelta(minutes=5),
+            "advantage_score": score, "opponent_sample_size": 7, "ranked_teams": 12,
+        }
+        rows.append(row)
+
+    report = evaluate_nba_points_predictions(rows)
+    matchup = report["versions"][0]["matchup_difficulty"]
+    assert matchup["samples"] == 3
+    assert sum(segment["samples"] for segment in matchup["segments"]) == 3
+    assert [segment["label"] for segment in matchup["segments"]] == [
+        "Middle", "Higher points allowed",
+    ]
+    assert matchup["prospective_board"]["samples"] == 2
+    assert sum(segment["samples"] for segment in matchup["prospective_board"]["segments"]) == 2
+    assert matchup["prospective_board"]["segments"][0]["paired_baselines"]["exact_line"]["samples"] == 2
+    assert report["versions"][0]["promotion_ready"] is False
+
+
+def test_matchup_board_segment_survives_earlier_placed_entry_for_same_player_game():
+    placed = _row("placed")
+    placed["evidence_origin"] = "placed_entry"
+    board = _row("board")
+    board["player"] = placed["player"]
+    board["evidence_origin"] = "prospective_board"
+    board["predicted_at"] = placed["predicted_at"] + timedelta(minutes=1)
+    board["feature_snapshot"]["features"]["nba_points_opponent_defense"] = {
+        "model_version": "nba-team-defense-rank-v1", "shadow_only": True,
+        "evidence_as_of": board["predicted_at"] - timedelta(minutes=5),
+        "advantage_score": 80, "opponent_sample_size": 7, "ranked_teams": 12,
+    }
+
+    report = evaluate_nba_points_predictions([placed, board])
+    matchup = report["versions"][0]["matchup_difficulty"]
+    assert report["eligible_independent"] == 1
+    assert matchup["samples"] == 0
+    assert matchup["prospective_board"]["samples"] == 1
+    assert matchup["prospective_board"]["segments"][0]["label"] == "Higher points allowed"
+
+
 def test_different_lines_and_directions_for_one_player_game_count_once():
     first = _row()
     later = _row("another-market", line=29.5, projection=28, probability=55)
