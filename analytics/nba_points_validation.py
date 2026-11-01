@@ -71,6 +71,12 @@ def _eligible(row: dict) -> str | None:
     features = snapshot.get("features") or {}
     if not isinstance(features, dict):
         return "no_locked_points_forecast"
+    provenance = features.get("nba_points_history_provenance")
+    if isinstance(provenance, dict):
+        if provenance.get("status") == "imported_after_lock" or (_number(provenance.get("imported_after_lock")) or 0) > 0:
+            return "history_imported_after_lock"
+        if provenance.get("status") == "invalid_import_time" or (_number(provenance.get("invalid_import_time")) or 0) > 0:
+            return "invalid_history_import_time"
     season_end = str(features.get("season_end") or "")[:10]
     game_day = _game_date(game)
     if not game_day:
@@ -231,6 +237,7 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
         origin_key = (key[0], origin, player_key, game_date)
         snapshot = row["feature_snapshot"]
         features = snapshot.get("features") or {}
+        provenance = features.get("nba_points_history_provenance")
         evaluated = {
             **row,
             "actual": float(row["actual"]),
@@ -242,6 +249,8 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "shot_volume_shadow_projection": _locked_shot_volume_projection(features),
             "matchup_indicator": _locked_defense_score(features, row),
             "verified_games": _number(features.get("verified_games")),
+            "history_provenance_status": str(provenance.get("status") or "timestamp_unverified")
+            if isinstance(provenance, dict) else "legacy_unrecorded",
             "game_date": game_date,
             "evidence_origin": origin,
         }
@@ -330,6 +339,9 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "calibration_buckets": buckets,
             "by_line": thresholds,
             "by_history_size": history_segments,
+            "history_import_provenance": dict(sorted(Counter(
+                row["history_provenance_status"] for row in version_rows
+            ).items())),
             "matchup_difficulty": {
                 "status": "descriptive_segments" if matchup_rows or prospective_matchup_rows else "unavailable",
                 "samples": len(matchup_rows), "segments": matchup_segments(matchup_rows),
@@ -369,6 +381,11 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
                 },
             })
     independent_player_games = {(key[1], key[2]) for key in selected}
+    provenance_verified_games = {
+        (key[1], key[2]) for key, row in selected.items()
+        if row["history_provenance_status"] == "verified"
+    }
+    provenance_verified_dates = {game_date for _, game_date in provenance_verified_games}
     origin_counts = {
         origin: len({(key[2], key[3]) for key in origin_selected if key[1] == origin})
         for origin in {key[1] for key in origin_selected}
@@ -377,8 +394,14 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
         "status": "evidence_available" if versions else "insufficient_locked_evidence",
         "examined": len(rows),
         "eligible_independent": len(independent_player_games),
+        "pregame_provenance_verified_independent": len(provenance_verified_games),
+        "pregame_provenance_verified_game_dates": len(provenance_verified_dates),
         "evidence_origins": origin_counts,
-        "evidence_maturity": "exploratory" if len(independent_player_games) < 100 else "initial_evaluation",
+        "evidence_maturity": (
+            "initial_evaluation"
+            if len(provenance_verified_games) >= 100 and len(provenance_verified_dates) >= 5
+            else "exploratory"
+        ),
         "excluded": dict(sorted(excluded.items())),
         "observed_settled_by_origin": dict(sorted(observed_by_origin.items())),
         "excluded_by_origin": {

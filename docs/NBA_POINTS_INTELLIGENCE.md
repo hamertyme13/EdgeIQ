@@ -226,6 +226,15 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   feature timestamp appears roughly four hours after their stored lock time
   remain excluded as suspected time-zone mismatches; this diagnostic does not
   retroactively prove or repair their pregame provenance.
+  New NBA Points snapshots also record how many contributing regular-season
+  finals have missing, invalid, or post-lock import timestamps. Validation
+  excludes a forecast when any contributing final was recorded after its lock
+  or has a malformed import time. Missing timestamps and older snapshots
+  remain visible as unverified provenance rather than being called pregame
+  proof; the report counts these statuses by model version. Descriptive metrics
+  can still show legacy outcomes, but the initial-evaluation maturity label now
+  requires at least 100 independent outcomes with verified history-import
+  timing across five game dates. It does not authorize challenger promotion.
   The
   locked-model view also reports settled market-prior exclusions even if no
   independently settled forecast qualifies yet.

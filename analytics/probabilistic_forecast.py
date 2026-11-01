@@ -15,6 +15,7 @@ from analytics.model_registry import (
 from analytics.model_selection import select_projection_champion
 from analytics.nba_points_minutes import minutes_challenger
 from analytics.nba_points_participation import nba_points_participation_confirmed
+from analytics.nba_points_provenance import history_import_provenance
 from analytics.nba_points_shot_volume import shot_volume_challenger
 from repository.repositories.player_feature_repository import PlayerFeatureRepository
 from utils.entity_normalization import canonical_person_key
@@ -99,6 +100,10 @@ def forecast_prop(
     season_actuals = [float(row["actual"]) for row in season_rows]
     trailing_actuals = [float(row["actual"]) for row in trailing_rows]
     feature_as_of = datetime.now(UTC).isoformat()
+    if is_nba_points:
+        shadow_features["nba_points_history_provenance"] = history_import_provenance(
+            season_rows, feature_as_of,
+        )
 
     if len(actuals) < MIN_HISTORY_FOR_FORECAST:
         return PropForecast(

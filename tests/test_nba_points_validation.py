@@ -61,6 +61,48 @@ def test_locked_validation_uses_paired_line_and_pregame_baseline():
     assert report["ev"] is None
 
 
+def test_late_history_import_cannot_qualify_locked_nba_points_forecast():
+    late = _row("late-import")
+    late["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
+        "status": "imported_after_lock", "imported_after_lock": 1,
+    }
+    verified = _row("verified-import")
+    verified["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
+        "status": "verified", "imported_after_lock": 0, "invalid_import_time": 0,
+    }
+    missing = _row("missing-import")
+    missing["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
+        "status": "timestamp_unverified", "missing_import_time": 1,
+    }
+
+    report = evaluate_nba_points_predictions([late, verified, missing])
+    assert report["excluded"]["history_imported_after_lock"] == 1
+    assert report["eligible_independent"] == 2
+    assert report["versions"][0]["history_import_provenance"] == {
+        "timestamp_unverified": 1, "verified": 1,
+    }
+
+
+def test_evidence_maturity_requires_verified_history_timing_across_game_dates():
+    rows = [_row(f"player-{index}") for index in range(100)]
+    for index, row in enumerate(rows):
+        row["game_time"] = (datetime(2026, 10, 23, 19, tzinfo=UTC) + timedelta(days=index % 5)).isoformat()
+        row["settled_at"] = datetime.fromisoformat(row["game_time"]) + timedelta(hours=3)
+    legacy = evaluate_nba_points_predictions(rows)
+    assert legacy["eligible_independent"] == 100
+    assert legacy["pregame_provenance_verified_independent"] == 0
+    assert legacy["evidence_maturity"] == "exploratory"
+
+    for row in rows:
+        row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
+            "status": "verified", "imported_after_lock": 0, "invalid_import_time": 0,
+        }
+    verified = evaluate_nba_points_predictions(rows)
+    assert verified["pregame_provenance_verified_independent"] == 100
+    assert verified["pregame_provenance_verified_game_dates"] == 5
+    assert verified["evidence_maturity"] == "initial_evaluation"
+
+
 def test_locked_minutes_challenger_uses_only_same_settled_offers():
     first = _row(actual=27, projection=26)
     second = _row("market-2", actual=20, projection=22, probability=60)

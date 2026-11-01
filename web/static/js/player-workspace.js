@@ -4,11 +4,16 @@
     const marketPriorNote = excluded > 0
       ? `${excluded} settled board forecast${excluded === 1 ? "" : "s"} used a market prior and ${excluded === 1 ? "is" : "are"} excluded from model accuracy. A history-based forecast needs five verified regular-season games for that player.`
       : "";
+    const lateHistory = Number(report.excluded?.history_imported_after_lock || 0);
+    const invalidHistory = Number(report.excluded?.invalid_history_import_time || 0);
+    const historyNote = lateHistory || invalidHistory
+      ? `${lateHistory + invalidHistory} forecast${lateHistory + invalidHistory === 1 ? "" : "s"} excluded because stored history import timing was after the prediction lock or invalid.`
+      : "";
     if (!report.eligible_independent) {
-      return `No independently settled NBA points forecasts pass the pregame evidence checks yet. This does not validate the current model.${marketPriorNote ? ` ${marketPriorNote}` : ""}`;
+      return `No independently settled NBA points forecasts pass the pregame evidence checks yet. This does not validate the current model.${marketPriorNote ? ` ${marketPriorNote}` : ""}${historyNote ? ` ${historyNote}` : ""}`;
     }
     const origins = report.evidence_origins || {};
-    return `${report.eligible_independent} distinct NBA points player-game outcomes (${origins.prospective_board || 0} from prospective board cohorts, ${origins.placed_entry || 0} from placed entries; overlap counts once in the total). ${report.evidence_maturity === "exploratory" ? "Small sample; these metrics do not validate accuracy." : "Initial evaluation only."} Board coverage may be incomplete when providers are stale or a scan is truncated.${marketPriorNote ? ` ${marketPriorNote}` : ""}`;
+    return `${report.eligible_independent} distinct NBA points player-game outcomes (${origins.prospective_board || 0} from prospective board cohorts, ${origins.placed_entry || 0} from placed entries; overlap counts once in the total). ${report.pregame_provenance_verified_independent || 0} have verified history-import timing across ${report.pregame_provenance_verified_game_dates || 0} game dates. ${report.evidence_maturity === "exploratory" ? "The evidence is still exploratory; these metrics do not validate accuracy." : "Initial evaluation only."} Board coverage may be incomplete when providers are stale or a scan is truncated.${marketPriorNote ? ` ${marketPriorNote}` : ""}${historyNote ? ` ${historyNote}` : ""}`;
   }
 
   function mount(root, data, { escapeHtml: escape, pct, formatDateTime, api }) {
@@ -202,6 +207,12 @@
               const item = document.createElement("li");
               item.textContent = `${row.model_version}: ${row.metrics.samples} independent settled · forecast MAE ${number(row.metrics.mae)} · exact-line MAE ${number(row.paired_baselines?.exact_line?.mae)} · Brier ${row.metrics.brier ?? "unavailable"}`;
               versions.append(item);
+              const provenance = row.history_import_provenance || {};
+              if (Object.keys(provenance).length) {
+                const provenanceItem = document.createElement("li");
+                provenanceItem.textContent = `History timing: ${provenance.verified || 0} import-verified · ${provenance.timestamp_unverified || 0} missing timestamps · ${provenance.legacy_unrecorded || 0} older forecasts without a recorded provenance check. Missing or older timestamps do not prove pregame availability.`;
+                versions.append(provenanceItem);
+              }
               Object.entries(row.by_evidence_origin || {}).forEach(([origin, segment]) => {
                 const originItem = document.createElement("li");
                 originItem.textContent = `${origin === "prospective_board" ? "Board cohort" : "Placed entries"}: ${segment.metrics.samples} settled · forecast MAE ${number(segment.metrics.mae)} · exact-line MAE ${number(segment.paired_baselines?.exact_line?.mae)} · Brier ${segment.metrics.brier ?? "unavailable"}`;

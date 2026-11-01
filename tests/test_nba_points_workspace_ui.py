@@ -15,6 +15,7 @@ assert.match(summary({eligible_independent:0,excluded_by_origin:{prospective_boa
 assert.match(summary({eligible_independent:0,excluded_by_origin:{prospective_board:{market_prior_only:66}}}), /five verified regular-season games/);
 assert.doesNotMatch(summary({eligible_independent:0}), /market prior/);
 assert.match(summary({eligible_independent:13,evidence_origins:{placed_entry:13,prospective_board:0},evidence_maturity:'exploratory',excluded_by_origin:{prospective_board:{market_prior_only:1}}}), /1 settled board forecast used a market prior and is excluded/);
+assert.match(summary({eligible_independent:0,excluded:{history_imported_after_lock:1,invalid_history_import_time:1}}), /2 forecasts excluded because stored history import timing/);
 """
     subprocess.run(["node", "-e", script], check=True)
 
