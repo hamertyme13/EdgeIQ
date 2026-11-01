@@ -94,6 +94,31 @@ def test_verified_opponent_pace_is_descriptive_and_sourced():
     assert pace["evidence"] == "ESPN official team box scores"
 
 
+def test_verified_opponent_location_and_rest_remain_descriptive():
+    def with_splits(*_args):
+        payload = _research()
+        payload["nba_points_intelligence"]["matchup"] = {
+            "opponent": "NYK",
+            "team_points_allowed": {
+                "sample_size": 2, "last_10": 102.5,
+                "home_sample_size": 1, "home_points_allowed_last_10": 90,
+                "away_sample_size": 1, "away_points_allowed_last_10": 115,
+                "days_rest": 2,
+            },
+        }
+        return payload
+
+    result = build_nba_points_explanation(
+        "Sample Player", 24.5, "PrizePicks", "detailed", research=with_splits,
+        prioritize=lambda facts: [fact["id"] for fact in facts],
+    )
+    fact = next(fact for fact in result["fact_details"] if fact["id"] == "location_and_rest")
+    assert "90 points allowed in 1 home game" in fact["text"]
+    assert "115 points allowed in 1 away game" in fact["text"]
+    assert "2 full days of rest" in fact["text"]
+    assert "not a points-prop probability" in fact["text"]
+
+
 def test_invalid_model_order_falls_back_and_concise_keeps_market_limit():
     result = build_nba_points_explanation(
         "Sample Player", 24.5, "PrizePicks", "concise", research=_research,

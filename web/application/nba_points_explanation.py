@@ -104,6 +104,22 @@ def build_nba_points_explanation(
             "evidence": "Verified pregame team finals",
             "source_links": team_links,
         })
+    if matchup.get("opponent") and (defense.get("home_sample_size") or defense.get("away_sample_size")):
+        home_games = min(10, int(defense.get("home_sample_size") or 0))
+        away_games = min(10, int(defense.get("away_sample_size") or 0))
+        home = (f"{defense['home_points_allowed_last_10']:g} points allowed in "
+                f"{home_games} home game{'s' if home_games != 1 else ''}") if home_games else "home split unavailable"
+        away = (f"{defense['away_points_allowed_last_10']:g} points allowed in "
+                f"{away_games} away game{'s' if away_games != 1 else ''}") if away_games else "away split unavailable"
+        rest = (f"{int(defense['days_rest'])} full days of rest" if defense.get("days_rest") is not None
+                else "rest unavailable")
+        facts.append({
+            "id": "location_and_rest",
+            "text": f"{matchup['opponent']} has {home}, {away}, and {rest} before this game. These are team-level context, not a points-prop probability.",
+            "weight": 4,
+            "evidence": "Official pregame NBA regular-season team finals",
+            "source_links": team_links,
+        })
     if (matchup.get("opponent") and defense.get("defensive_rank") is not None
             and defense.get("advantage_score") is not None and defense.get("ranked_teams")):
         facts.append({

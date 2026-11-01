@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from math import isfinite
 from statistics import mean
+from zoneinfo import ZoneInfo
 
 from utils.entity_normalization import canonical_person_key
 
 NBA_DEFENSE_CONTEXT_VERSION = "nba-team-defense-rank-v1"
+NBA_GAME_TIMEZONE = ZoneInfo("America/New_York")
 
 
 def team_history_features(
@@ -48,6 +50,9 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
     """Descriptive NBA defense from unique, completed games known before tipoff."""
     unavailable: dict[str, object] = {
         "sample_size": 0, "last_5": None, "last_10": None, "last_20": None,
+        "home_sample_size": 0, "home_points_allowed_last_10": None,
+        "away_sample_size": 0, "away_points_allowed_last_10": None,
+        "days_rest": None,
         "pace_last_5": None, "pace_sample_size": 0, "pace_source": "unavailable",
         "league_average": None, "difference_from_league": None, "defensive_rank": None,
         "advantage_score": None, "ranked_teams": 0, "minimum_team_games": 5,
@@ -74,6 +79,8 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
     if not rows:
         return unavailable
     allowed = [_points_against(row, opponent) for row in rows]
+    home_rows = [row for row in rows if _matches_side(row, opponent, "home")]
+    away_rows = [row for row in rows if _matches_side(row, opponent, "away")]
     pace = []
     for row in rows[:10]:
         try:
@@ -91,6 +98,11 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
         "last_5": round(mean(allowed[:5]), 1),
         "last_10": recent,
         "last_20": round(mean(allowed[:20]), 1),
+        "home_sample_size": len(home_rows),
+        "home_points_allowed_last_10": round(mean([_points_against(row, opponent) for row in home_rows[:10]]), 1) if home_rows else None,
+        "away_sample_size": len(away_rows),
+        "away_points_allowed_last_10": round(mean([_points_against(row, opponent) for row in away_rows[:10]]), 1) if away_rows else None,
+        "days_rest": _nba_days_rest(game_start, rows[0]["game_start"]),
         "pace_last_5": round(mean(pace[:5]), 1) if pace else None,
         "pace_sample_size": len(pace),
         "pace_source": "espn_box_score_possessions" if pace else "unavailable",
@@ -106,6 +118,19 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
         "status": ("Small opponent team sample; descriptive only." if len(rows) < 5
                    else "Team defense comparison is descriptive, not a player points probability."),
     }
+
+
+def _nba_days_rest(game_start: str, previous_start: str) -> int | None:
+    try:
+        target = datetime.fromisoformat(game_start.replace("Z", "+00:00"))
+        previous = datetime.fromisoformat(previous_start.replace("Z", "+00:00"))
+        target = target.replace(tzinfo=UTC) if target.tzinfo is None else target.astimezone(UTC)
+        previous = previous.replace(tzinfo=UTC) if previous.tzinfo is None else previous.astimezone(UTC)
+    except ValueError:
+        return None
+    days_between = (target.astimezone(NBA_GAME_TIMEZONE).date()
+                    - previous.astimezone(NBA_GAME_TIMEZONE).date()).days
+    return max(0, days_between - 1) if days_between >= 0 else None
 
 
 def _nba_defense_comparison(opponent: str, games: list[dict]) -> dict:

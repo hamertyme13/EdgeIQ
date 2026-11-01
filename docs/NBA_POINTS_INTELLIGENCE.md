@@ -171,6 +171,12 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   shows the opponent's recent team points allowed and the league sample average.
   This is team-level context, not points allowed to a position or a validated
   player projection adjustment; sparse samples are labeled accordingly. When
+  prior official results cover both venues, Research separately shows the
+  opponent's home and away points allowed with each sample size. It also shows
+  full days of rest since the opponent's most recent official game, using
+  Eastern game dates; back-to-backs have zero full rest days. Missing venue
+  evidence remains unavailable, and neither split nor rest adjusts a player
+  forecast. When
   those same official regular-season games include complete team box scores,
   the pane also shows a bounded estimate of opponent game possessions per
   regulation game. Invalid or missing estimates are excluded. Pace is

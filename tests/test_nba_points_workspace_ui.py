@@ -50,7 +50,9 @@ const thresholds = {
 };
 global.EdgeIQPlayerWorkspace.mount(root,{player:'Example',sport:'NBA',stat:'Points',line:19.5,
   team_context:{team:'PHI',source:'latest_verified_final',as_of:'2026-10-25'},
-  nba_points_intelligence:{thresholds,matchup:{opponent:'NYK'},season_provenance:{}}},
+  nba_points_intelligence:{thresholds,matchup:{opponent:'NYK',team_points_allowed:{sample_size:2,last_10:102.5,
+    home_sample_size:1,home_points_allowed_last_10:90,away_sample_size:1,away_points_allowed_last_10:115,days_rest:2,
+    status:'Small opponent team sample; descriptive only.'}},season_provenance:{}}},
   {escapeHtml:x=>String(x ?? ''),pct:x=>String(x),formatDateTime:x=>x,api:async()=>({})});
 const overview = created.find(node=>node.className==='player-workspace-overview');
 assert.match(overview.innerHTML,/Last recorded team/);
@@ -58,6 +60,9 @@ assert.match(overview.innerHTML,/PHI · verified final 2026-10-25/);
 assert.match(overview.innerHTML,/No current matching offer/);
 const points = created.find(node=>node.className==='consumer-research-section nba-points-intelligence');
 assert.match(points.innerHTML,/data-points-window/);
+assert.match(points.innerHTML,/Opponent location splits/);
+assert.match(points.innerHTML,/90.0 allowed in 1 game/);
+assert.match(points.innerHTML,/2 full rest days before this game/);
 assert.match(points.innerHTML,/Shot-volume baseline \(research only\)/);
 assert.match(points.innerHTML,/<option value="home">Home<\/option>/);
 assert.match(points.innerHTML,/<option value="away">Away<\/option>/);

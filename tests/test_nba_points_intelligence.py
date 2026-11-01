@@ -31,6 +31,11 @@ def test_nba_opponent_defense_uses_only_prior_official_season_games():
     defense = result["matchup"]["team_points_allowed"]
     assert defense["sample_size"] == 2
     assert defense["last_10"] == 102.5
+    assert defense["home_sample_size"] == 1
+    assert defense["home_points_allowed_last_10"] == 90
+    assert defense["away_sample_size"] == 1
+    assert defense["away_points_allowed_last_10"] == 115
+    assert defense["days_rest"] == 2
     assert defense["league_average"] == 100.8
     assert defense["defensive_rank"] is None
     assert defense["advantage_score"] is None
@@ -38,6 +43,21 @@ def test_nba_opponent_defense_uses_only_prior_official_season_games():
     assert defense["source_games"][0]["url"].endswith("/gameId/2")
     assert "Small" in defense["status"]
     assert "team points allowed available" in result["matchup"]["status"]
+
+
+def test_nba_opponent_rest_uses_eastern_game_dates_and_pregame_official_results():
+    previous = team_game("2026-10-22", "late", "NYK", "BOS", 100, 90)
+    previous["game_start"] = "2026-10-23T02:00:00Z"  # October 22 in New York.
+    future = team_game("2026-10-23", "future", "NYK", "BOS", 130, 120)
+    result = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-23T23:00:00Z", team_games=[previous, future],
+    )
+    defense = result["matchup"]["team_points_allowed"]
+    assert defense["sample_size"] == 1
+    assert defense["days_rest"] == 0
+    assert defense["home_points_allowed_last_10"] == 90
+    assert defense["away_points_allowed_last_10"] is None
 
 
 def test_nba_opponent_defense_matches_verified_provider_team_aliases():
