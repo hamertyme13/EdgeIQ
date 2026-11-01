@@ -221,7 +221,7 @@ from web.application.intelligence_service import trending_games_response as buil
 from web.application.manual_handoff import review_stake
 from web.application.model_input_status import model_input_status
 from web.application.nba_points_explanation import build_nba_points_explanation
-from web.application.nba_points_intelligence import build_nba_points_intelligence
+from web.application.nba_points_intelligence import build_nba_points_intelligence, nba_points_game_day
 from web.application.nba_points_market import build_nba_points_market
 from web.application.offer_evidence import (
     game_start_status,
@@ -7656,7 +7656,9 @@ def _player_research_payload(
             float(target_line),
             direction,
             history=history,
-            game_time=research_game_time,
+            game_time=(nba_points_game_day(research_game_time)
+                       if (sport_filter or "").upper() == "NBA" and canonical_stat_label(stat) == "Points"
+                       else research_game_time),
             team=str((recommendation or {}).get("team") or ""),
             game=str((recommendation or {}).get("game") or ""),
             game_prediction=prediction_for_matchup(

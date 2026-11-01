@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from math import isfinite, sqrt
 from statistics import mean, median, pstdev
+from zoneinfo import ZoneInfo
 
 from analytics.nba_points_minutes import minutes_challenger
 from analytics.nba_points_participation import nba_points_participation_confirmed
@@ -17,6 +18,17 @@ from utils.entity_normalization import canonical_matchup_key
 THRESHOLDS = (10, 15, 20, 25, 30, 35)
 VERIFIED_SOURCES = ("espn", "nba_api", "balldontlie", "statshawk")
 NON_REGULAR_SEASONS = {"preseason", "postseason", "playoffs", "summer_league", "summer league", "exhibition"}
+NBA_GAME_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def nba_points_game_day(value: object) -> str:
+    """Use the NBA's Eastern game day for a Research forecast history cutoff."""
+    text = str(value or "")
+    if len(text) == 10:
+        return datetime.fromisoformat(text).date().isoformat()
+    stamp = datetime.fromisoformat(text.replace("Z", "+00:00")) if text else datetime.now(UTC)
+    stamp = stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp.astimezone(UTC)
+    return stamp.astimezone(NBA_GAME_TIMEZONE).date().isoformat()
 
 
 def _opponent(game: object, team: object) -> str:
@@ -30,18 +42,36 @@ def _opponent(game: object, team: object) -> str:
 
 def _screen_games(history: list[dict], game_time: object) -> tuple[list[dict], dict]:
     try:
-        target = datetime.fromisoformat(str(game_time).replace("Z", "+00:00")).date() if game_time else datetime.now(UTC).date()
+        target_text = str(game_time or "")
+        if len(target_text) == 10:
+            target_day = datetime.fromisoformat(nba_points_game_day(target_text)).date()
+            target_time = None
+        else:
+            target_time = datetime.fromisoformat(target_text.replace("Z", "+00:00")) if target_text else datetime.now(UTC)
+            target_time = target_time.replace(tzinfo=UTC) if target_time.tzinfo is None else target_time.astimezone(UTC)
+            target_day = datetime.fromisoformat(nba_points_game_day(target_time)).date()
     except ValueError:
-        target = datetime.now(UTC).date()
-    season_year = target.year if target.month >= 9 else target.year - 1
+        target_time = datetime.now(UTC)
+        target_day = target_time.astimezone(NBA_GAME_TIMEZONE).date()
+    season_year = target_day.year if target_day.month >= 9 else target_day.year - 1
     season_start = f"{season_year}-09-15"
     excluded: Counter[str] = Counter()
     grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in history:
         day = str(row.get("game_date") or "")[:10]
-        if not day or not season_start <= day < target.isoformat():
+        if not day or not season_start <= day < target_day.isoformat():
             excluded["outside_pregame_season"] += 1
             continue
+        if target_time is not None and row.get("imported_at"):
+            try:
+                imported_at = datetime.fromisoformat(str(row["imported_at"]).replace("Z", "+00:00"))
+                imported_at = imported_at.replace(tzinfo=UTC) if imported_at.tzinfo is None else imported_at.astimezone(UTC)
+            except ValueError:
+                excluded["invalid_import_timestamp"] += 1
+                continue
+            if imported_at >= target_time:
+                excluded["imported_after_tipoff"] += 1
+                continue
         if str(row.get("status") or "played").lower() != "played":
             excluded["not_played"] += 1
             continue

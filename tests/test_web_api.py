@@ -5205,7 +5205,7 @@ def test_nba_points_research_api_screens_raw_conflicting_finals(monkeypatch):
 
 
 def test_player_research_without_active_offer_excludes_same_day_final(monkeypatch):
-    today = datetime.now(UTC).date()
+    today = datetime.now(ZoneInfo("America/New_York")).date()
     history = [
         {"player": "Cutoff Guard", "team": "BOS", "sport": "NBA", "stat": "Points",
          "game": f"BOS @ OPP{index}", "game_date": (today - timedelta(days=index)).isoformat(),

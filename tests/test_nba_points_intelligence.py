@@ -103,6 +103,36 @@ def game(day, points, game_name="BOS @ NYK", *, status="played", source="espn"):
     return {"game_date": day, "actual": points, "game": game_name, "team": "BOS", "status": status, "source": source}
 
 
+def test_late_eastern_tip_does_not_include_same_day_final():
+    history = [
+        game("2026-10-22", 32),
+        game("2026-10-21", 18),
+    ]
+    result = build_nba_points_intelligence(
+        history, line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-23T02:30:00Z",
+    )
+    assert result["sample_size"] == 1
+    assert result["thresholds"]["season"]["custom_line"]["hits"] == 0
+    assert result["data_reliability"]["excluded"]["outside_pregame_season"] == 1
+
+
+def test_pregame_replay_withholds_finals_imported_after_tipoff():
+    history = [
+        {**game("2026-10-20", 20, "BOS @ NYK"), "imported_at": "2026-10-22T22:00:00Z"},
+        {**game("2026-10-21", 26, "BOS @ PHI"), "imported_at": "2026-10-23T01:00:00Z"},
+        {**game("2026-10-19", 30, "BOS @ MIA"), "imported_at": "invalid"},
+    ]
+    result = build_nba_points_intelligence(
+        history, line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-22T23:00:00Z",
+    )
+    assert result["sample_size"] == 1
+    assert result["thresholds"]["season"]["custom_line"]["hits"] == 1
+    assert result["data_reliability"]["excluded"]["imported_after_tipoff"] == 1
+    assert result["data_reliability"]["excluded"]["invalid_import_timestamp"] == 1
+
+
 def test_thresholds_custom_line_pushes_and_verified_current_season_only():
     history = [
         game("2026-10-20", 20), game("2026-10-18", 25), game("2026-10-16", 19),

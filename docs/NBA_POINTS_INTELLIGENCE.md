@@ -37,6 +37,15 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   games are excluded. Legacy rows and feeds without a season label remain in
   the window but are counted as unverified, so it is **not** necessarily a
   regular-season-only statistic.
+- The research history cutoff follows the NBA game's Eastern calendar date,
+  including late tips that fall on the next UTC day. When a stored final has an
+  import timestamp and a precise tipoff is supplied, historical replay
+  withholds it if that timestamp is at or after tipoff; malformed timestamps
+  are withheld with a reason. A date-only lookup cannot apply this time check.
+  Legacy finals without an import timestamp remain visible as history, but
+  cannot prove they were available before a historical game. The adjacent NBA
+  Points Research forecast uses that same Eastern date-only history cutoff;
+  this does not change the production recommendation forecast.
 - Run `python -m scripts.backfill_nba_season_type` to preview exact current-season
   matches from cached ESPN scoreboards. The command does not fetch the network
   or change records by default. After reviewing the report and migrating the
