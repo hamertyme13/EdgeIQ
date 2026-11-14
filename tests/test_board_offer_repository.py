@@ -1,7 +1,7 @@
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Event
 from uuid import uuid4
 
@@ -53,8 +53,9 @@ def test_nba_points_shadow_candidates_use_fresh_trackable_standard_offers(tmp_pa
     sessions = _isolated_database(tmp_path, monkeypatch)
     now = datetime(2026, 10, 24, 12, tzinfo=UTC)
     base = {
-        **_offer(), "league": "NBA", "player": "NBA Player", "game": "BOS @ NYK",
+        **_offer(), "league": "NBA", "player": "NBA Player", "team": "BOS", "game": "BOS @ NYK",
         "game_time": "2026-10-24T23:00:00Z", "end_to_end_confirmed": True,
+        "player_id": "pp-player-7", "projection_id": "pp-offer-9", "provider_game_id": "pp-game-11",
     }
     BoardOfferRepository.record_many([base], "PrizePicks", captured_at=now)
     BoardOfferRepository.record_many([
@@ -70,6 +71,9 @@ def test_nba_points_shadow_candidates_use_fresh_trackable_standard_offers(tmp_pa
     assert result["candidates"][0]["player"] == "NBA Player"
     assert result["candidates"][0]["direction"] == "Over"
     assert result["candidates"][0]["line"] == 20.5
+    assert result["candidates"][0]["provider_player_id"] == "pp-player-7"
+    assert result["candidates"][0]["provider_offer_id"] == "pp-offer-9"
+    assert result["candidates"][0]["provider_game_id"] == "pp-game-11"
     monkeypatch.setattr(board_module, "utc_now", lambda: now.replace(tzinfo=None))
     default_clock = BoardOfferRepository.nba_points_shadow_candidates()
     assert default_clock["day"] == "2026-10-24"
@@ -79,6 +83,72 @@ def test_nba_points_shadow_candidates_use_fresh_trackable_standard_offers(tmp_pa
         row.eligibility_status = "paid_eligible"
         session.commit()
     assert len(BoardOfferRepository.nba_points_shadow_candidates(now=now)["candidates"]) == 1
+
+
+def test_nba_points_shadow_excludes_combo_and_wrong_game_team(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 24, 12, tzinfo=UTC)
+    base = {
+        **_offer(), "league": "NBA", "team": "BOS", "game": "BOS @ NYK",
+        "game_time": "2026-10-24T23:00:00Z", "end_to_end_confirmed": True,
+    }
+    BoardOfferRepository.record_many([
+        {**base, "player": "Valid Player", "id": "valid"},
+        {**base, "player": "Valid Player + Other Player", "team": "BOS/NYK", "id": "combo"},
+        {**base, "player": "Wrong Game Player", "team": "LAL", "id": "wrong-team"},
+    ], "PrizePicks", captured_at=now)
+    result = BoardOfferRepository.nba_points_shadow_candidates(now=now)
+    assert [row["player"] for row in result["candidates"]] == ["Valid Player"]
+
+
+def test_nba_points_shadow_keeps_distinct_same_day_player_games(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 24, 12, tzinfo=UTC)
+    base = {
+        **_offer(), "league": "NBA", "player": "Doubleheader Player", "team": "BOS",
+        "game": "BOS @ NYK", "game_time": "2026-10-24T18:00:00Z",
+        "end_to_end_confirmed": True,
+    }
+    BoardOfferRepository.record_many([
+        base,
+        {**base, "game": "BOS @ PHI", "game_time": "2026-10-24T23:00:00Z"},
+    ], "PrizePicks", captured_at=now)
+
+    candidates = BoardOfferRepository.nba_points_shadow_candidates(now=now)["candidates"]
+    assert {row["game"] for row in candidates} == {"BOS @ NYK", "BOS @ PHI"}
+
+
+def test_nba_shadow_scan_limit_counts_distinct_player_games_not_line_revisions(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    now = datetime(2026, 10, 24, 15, tzinfo=UTC)
+    base = {
+        **_offer(), "league": "NBA", "team": "BOS", "game": "BOS @ NYK",
+        "game_time": "2026-10-24T23:00:00Z", "end_to_end_confirmed": True,
+    }
+    for hours_ago, line in ((3, 20.5), (2, 21.5), (1, 22.5)):
+        BoardOfferRepository.record_many(
+            [{**base, "player": "First Player", "line": line}], "PrizePicks",
+            captured_at=now - timedelta(hours=hours_ago),
+        )
+    BoardOfferRepository.record_many(
+        [{**base, "player": "Second Player", "line": 18.5}], "PrizePicks",
+        captured_at=now - timedelta(hours=3),
+    )
+
+    result = BoardOfferRepository.nba_points_shadow_candidates(now=now, limit=2)
+
+    assert result["observations_scanned"] == 2
+    assert result["scan_limit_reached"] is False
+    assert {row["player"] for row in result["candidates"]} == {"First Player", "Second Player"}
+    assert next(row for row in result["candidates"] if row["player"] == "First Player")["line"] == 22.5
+
+    BoardOfferRepository.record_many(
+        [{**base, "player": "Third Player", "line": 17.5}], "PrizePicks",
+        captured_at=now - timedelta(hours=3),
+    )
+    truncated = BoardOfferRepository.nba_points_shadow_candidates(now=now, limit=2)
+    assert truncated["observations_scanned"] == 2
+    assert truncated["scan_limit_reached"] is True
 
 
 def test_complete_board_settlement_links_both_directions_to_offer_snapshot(tmp_path, monkeypatch):

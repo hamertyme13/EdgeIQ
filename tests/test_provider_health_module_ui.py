@@ -22,7 +22,8 @@ const api = async (path) => {
   if (path === '/api/runtime/status') return {items:[{label:'Model release',value:'Ready',status:'ready'},{label:'Settlement worker',value:'Running',status:'ready'}]};
   return {providers:[{name:'PrizePicks',status:'stale',configured:true,message:'Refresh needed'},
     {name:'<NewsAPI>',status:'stale',configured:true,message:'Refresh needed'}],summary:{connected:0,total:2},operations:{
-      nba_points_board_cohort:{ran_at:'2026-10-24T13:00:00Z',complete:false,status:'partial',qualified_forecasts:2,candidates:4,market_prior_verified_game_counts:{2:1,3:1},challenger_statuses:{minutes:{awaiting_holdout:1,insufficient_verified_minutes:3},shot_volume:{shadow_evaluation:1,insufficient_verified_shot_volume:3}},qualification_note:'Market-prior captures remain shadow-only.'},
+      nba_points_board_cohort:{ran_at:'2026-10-24T13:00:00Z',complete:true,status:'captured',qualified_forecasts:0,qualified_forecasts_total:2,pregame_verified_locks_total:3,qualified_pregame_locks_total:2,captured_total:4,candidates:1,market_prior_verified_game_counts_total:{2:1,3:1},challenger_statuses_total:{minutes:{awaiting_holdout:1,insufficient_verified_minutes:3},shot_volume:{shadow_evaluation:1,insufficient_verified_shot_volume:3}},qualification_note:'Market-prior captures remain shadow-only.'},
+      nba_points_shadow_settlement:{ran_at:'2026-10-24T15:00:00Z',settled:2,pending:1,deferred_future:3},
       nba_points_market_quotes:{captured_24h:3,last_captured_at:'2026-10-24T14:00:00Z'}
     }};
 };
@@ -41,7 +42,9 @@ const module = global.EdgeIQProviderHealth.create({$,api,state,document:{querySe
   await module.loadDataHealth();
   assert.equal(calls.at(-1),'/api/data-health');
   assert.match($('data-health-list').innerHTML,/Evidence collection/);
-  assert.match($('data-health-list').innerHTML,/NBA Points board cohort: 2 qualified pregame forecasts so far/);
+  assert.match($('data-health-list').innerHTML,/NBA Points board cohort: 2 qualified pregame forecasts from 4 captured player-games/);
+  assert.match($('data-health-list').innerHTML,/2 of 4 NBA Points forecasts have qualified history and a verified pregame lock/);
+  assert.match($('data-health-list').innerHTML,/NBA Points final-stat check: 2 settled, 1 still awaiting verified finals, 3 not yet due/);
   assert.match($('data-health-list').innerHTML,/Market-prior captures remain shadow-only/);
   assert.match($('data-health-list').innerHTML,/Most history-rich market-prior capture: 3\/5 verified regular-season games/);
   assert.match($('data-health-list').innerHTML,/1 forecasts with verified minutes · 1 with verified shot attempts/);

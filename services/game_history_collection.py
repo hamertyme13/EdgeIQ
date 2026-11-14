@@ -9,7 +9,7 @@ from repository.repositories.team_history_repository import TeamHistoryRepositor
 from services.operation_lock import named_database_operation_lock
 
 _log = logging.getLogger(__name__)
-_NBA_EVIDENCE_VERSION = "nba-season-type-v1"
+_NBA_EVIDENCE_VERSION = "nba-team-shooting-v2"
 
 
 def collect_team_history(sport: str, *, today: date | None = None) -> dict:

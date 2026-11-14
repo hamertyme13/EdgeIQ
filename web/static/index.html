@@ -11,7 +11,7 @@
     <link rel="manifest" href="/static/manifest.webmanifest" />
     <link rel="icon" href="/static/edgeiq-icon.png" />
     <link rel="apple-touch-icon" href="/static/edgeiq-icon.png" />
-    <link rel="stylesheet" href="/static/styles.css?v=20261030-nba-baseline" onerror="this.onerror=null;this.href='styles.css';" />
+    <link rel="stylesheet" href="/static/styles.css?v=20261110-research-hits-15" onerror="this.onerror=null;this.href='styles.css';" />
   </head>
   <body>
     <div class="app-shell">
@@ -26,6 +26,7 @@
         <nav class="nav" aria-label="Primary navigation">
           <button class="nav-item active" data-view="dashboard">Today</button>
           <button class="nav-item" data-view="analysis">Research</button>
+          <button class="nav-item" data-view="games">Games</button>
           <button class="nav-item" data-view="entries">Entry</button>
           <button class="nav-item" data-view="performance">Results</button>
           <button class="nav-item" data-view="tools" data-workspace-jump="decision-desk:builder">Ask EdgeIQ</button>
@@ -682,6 +683,7 @@
                 <div class="entry-builder-steps" role="tablist" aria-label="Entry Builder steps">
                   <button class="entry-step-button active" type="button" data-entry-step="settings"><span>1</span>Card Settings</button>
                   <button class="entry-step-button" type="button" data-entry-step="props"><span>2</span>Add Props</button>
+                  <button class="entry-step-button" type="button" data-entry-step="review" disabled><span>3</span>Review Card</button>
                 </div>
                 <form id="prop-form" class="form-grid" data-active-step="settings">
                   <label class="field-label entry-prop-field">Sport
@@ -709,6 +711,12 @@
                     <datalist id="entry-player-options"></datalist>
                     <small id="entry-player-lookup-status" class="subtle">Choose a sport to load saved players.</small>
                   </label>
+                  <div class="entry-prop-field entry-offer-lookup">
+                    <button id="entry-find-offers" type="button" class="secondary">Find Posted Offers</button>
+                    <select id="entry-posted-offers" aria-label="Posted offers for selected player" hidden></select>
+                    <button id="entry-use-offer" type="button" class="secondary" hidden>Add Selected Offer</button>
+                    <small id="entry-offer-status" class="subtle">Uses the current provider snapshot. Custom lines remain available below.</small>
+                  </div>
                   <label class="field-label entry-advanced-field entry-prop-field">Team
                     <input id="prop-team" placeholder="Team" />
                   </label>
@@ -720,6 +728,7 @@
                   </label>
                   <label class="field-label entry-prop-field">Stat
                     <input id="prop-stat" list="stat-options" value="Points" placeholder="Stat" />
+                    <small class="subtle">Suggestions match the selected sport; other trackable stats can be entered manually.</small>
                   </label>
                   <datalist id="stat-options">
                     <option value="Points"></option>
@@ -816,6 +825,7 @@
                   </datalist>
                   <label class="field-label entry-prop-field">Line
                     <input id="prop-line" type="number" step="0.1" placeholder="Line" />
+                    <small class="subtle">Manually entered lines must be checked against the sportsbook.</small>
                   </label>
                   <label class="field-label entry-advanced-field entry-prop-field">Projection
                     <input id="prop-projection" type="number" step="0.1" placeholder="Projection (optional)" />
@@ -861,6 +871,7 @@
                   <button id="toggle-entry-options" type="button" class="secondary entry-options-toggle" aria-expanded="false">More Options</button>
                   <button type="submit" class="add-prop-submit entry-prop-field">Add Prop</button>
                 </form>
+                <div id="entry-review-overview" class="entry-review-overview" hidden aria-live="polite"></div>
                 <details class="entry-payout-details entry-advanced-field">
                   <summary>Displayed card payout</summary>
                   <label class="field-label">Power or Flex payout table
@@ -884,16 +895,15 @@
                     <tbody id="entry-props"></tbody>
                   </table>
                 </div>
+                <button id="entry-props-next" type="button" class="secondary entry-props-next" disabled>Review Card</button>
                 <div class="entry-action-dock">
                   <div id="entry-card-summary" class="entry-card-summary" aria-live="polite">
                     <strong>0 legs</strong><span>Add at least two props to begin.</span>
                   </div>
                   <div class="button-row">
-                  <button id="analyze-entry">Analyze Entry</button>
-                  <button id="ai-review-entry" class="secondary" disabled>AI Review</button>
-                  <button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button>
+                  <button id="analyze-entry" disabled>Analyze Entry</button>
                   <button id="place-entry" class="secondary circuit-action" disabled>Place Entry</button>
-                  <button id="clear-entry" class="danger">Clear</button>
+                  <details class="entry-more-actions"><summary>More</summary><div class="entry-more-menu"><button id="ai-review-entry" class="secondary" disabled>AI Review</button><button id="prepare-handoff" class="secondary" disabled>Prepare Handoff</button><button id="clear-entry" class="danger" type="button">Clear Card</button></div></details>
                   </div>
                 </div>
               </div>
@@ -1269,47 +1279,34 @@
           <form id="research-context-form" class="panel research-context-bar">
             <div>
               <p class="eyebrow">Shared Research Context</p>
-              <h3>Enter The Prop Once</h3>
+              <h3>Find a player prop</h3>
             </div>
             <div class="form-grid compact-controls">
-              <input id="research-context-player" list="research-player-options" autocomplete="off" placeholder="Search player" />
+              <label>Sport<select id="research-context-sport" aria-label="Research sport">
+                <option>WNBA</option><option>NBA</option><option>NFL</option><option>MLB</option><option>NHL</option><option>NCAAF</option><option>NCAAM</option><option>NCAAW</option><option>MLS</option><option>EPL</option><option>UCL</option><option>TENNIS</option><option>PGA</option><option>MMA</option><option>NASCAR</option>
+              </select></label>
+              <label>Player<input id="research-context-player" list="research-player-options" autocomplete="off" placeholder="Search player" /></label>
               <datalist id="research-player-options"></datalist>
-              <input id="research-context-stat" list="research-stat-options" autocomplete="off" placeholder="Select a supported stat" />
+              <label>Stat<input id="research-context-stat" list="research-stat-options" autocomplete="off" placeholder="Select a supported stat" /></label>
               <datalist id="research-stat-options"></datalist>
-              <select id="research-context-sport" aria-label="Research sport">
-                <option>WNBA</option>
-                <option>NBA</option>
-                <option>NFL</option>
-                <option>MLB</option>
-                <option>NHL</option>
-                <option>NCAAF</option>
-                <option>NCAAM</option>
-                <option>NCAAW</option>
-                <option>MLS</option>
-                <option>EPL</option>
-                <option>UCL</option>
-                <option>TENNIS</option>
-                <option>PGA</option>
-                <option>MMA</option>
-                <option>NASCAR</option>
-              </select>
-              <select id="research-context-platform" aria-label="Research platform">
+              <label>Platform<select id="research-context-platform" aria-label="Research platform">
                 <option>Both</option>
                 <option>PrizePicks</option>
                 <option>Underdog</option>
                 <option>Sleeper</option>
                 <option>Ball Don't Lie</option>
-              </select>
-              <input id="research-context-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Research line" />
+              </select></label>
+              <label>Line <small class="subtle">optional</small><input id="research-context-line" type="number" step="0.1" list="research-line-options" placeholder="Exact offer line" aria-label="Research line" /></label>
+              <datalist id="research-line-options"></datalist>
               <button type="submit">Run Full Research</button>
             </div>
             <div id="research-selection-preview" class="research-selection-preview" hidden></div>
-            <p id="research-context-status" class="subtle">Player, stat, sport, platform, and line will carry across the research tools.</p>
-            <div class="recent-research-heading">
+            <p id="research-context-status" class="subtle" role="status">Choose a sport, player, and stat to research.</p>
+            <details class="research-data-tools"><summary>Season data tools</summary><div class="recent-research-heading">
               <div><strong>Season data</strong><span id="season-history-status" class="subtle"> Daily updates scheduled for 6 AM Eastern when maintenance is enabled.</span></div>
               <label><input id="season-history-full" type="checkbox"> Full season rescan</label>
               <div class="button-row"><button id="sync-season-history" class="secondary compact-button" type="button">Update Selected Sport</button><button id="refresh-research-history" class="secondary compact-button" type="button">Refresh History</button></div>
-            </div>
+            </div></details>
             <div id="research-history-list" class="research-history-list"><span class="subtle">Your recent player research will appear here.</span></div>
           </form>
           <div class="tool-groups">
@@ -1378,40 +1375,6 @@
                     <button type="submit">Estimate Hit Rate</button>
                   </form>
                   <div id="hit-rate-result" class="analysis-card muted-card">No hit-rate analysis yet.</div>
-                </div>
-                <div class="mini-tool">
-                  <h2>Prop Research 2.0</h2>
-                  <form id="player-research-form" class="form-grid">
-                    <input id="research-player" placeholder="Player" />
-                    <input id="research-stat" placeholder="Stat" />
-                    <select id="research-sport" aria-label="Player research sport">
-                      <option>All Sports</option>
-                      <option>WNBA</option>
-                      <option>NBA</option>
-                      <option>NFL</option>
-                      <option>MLB</option>
-                      <option>NHL</option>
-                      <option>NCAAF</option>
-                      <option>NCAAM</option>
-                      <option>NCAAW</option>
-                      <option>MLS</option>
-                      <option>EPL</option>
-                      <option>UCL</option>
-                      <option>TENNIS</option>
-                      <option>PGA</option>
-                      <option>MMA</option>
-                      <option>NASCAR</option>
-                    </select>
-                    <select id="research-platform" aria-label="Player research platform">
-                      <option>Both</option>
-                      <option>PrizePicks</option>
-                      <option>Underdog</option>
-                      <option>Sleeper</option>
-                      <option>Ball Don't Lie</option>
-                    </select>
-                    <input id="research-line" type="number" step="0.1" placeholder="Line (optional)" aria-label="Player research line" />
-                    <button type="submit">Research Prop</button>
-                  </form>
                 </div>
                   </div>
                 </details>
@@ -1709,7 +1672,7 @@
                 </div>
                 <button id="refresh-bets" class="secondary">Refresh</button>
               </div>
-              <div class="table-wrap compact">
+              <div class="table-wrap compact bets-table-wrap">
                 <table>
                   <thead>
                     <tr>
@@ -1819,9 +1782,14 @@
           </details>
           <div class="workspace-tab-strip results-workspace-tabs" role="tablist" aria-label="Results sections">
             <button class="workspace-tab active" type="button" data-workspace-tab="performance">Performance</button>
+            <button class="workspace-tab" type="button" data-workspace-tab="yesterday">Yesterday's Hits</button>
               <button class="workspace-tab" type="button" data-workspace-tab="model" data-advanced-only>Model Validation</button>
               <button class="workspace-tab" type="button" data-workspace-tab="settlement" data-advanced-only>Settlement</button>
             <button class="workspace-tab" type="button" data-view-shortcut="bets">Ledger</button>
+          </div>
+          <div class="panel" data-workspace-pane="yesterday" hidden>
+            <div class="panel-header"><div><h2>Yesterday's Hits</h2><p>Verified winning props from yesterday's games, even when their entry lost.</p></div><button id="refresh-yesterday-hits" class="secondary" type="button">Refresh</button></div>
+            <div id="yesterday-hits-list" aria-live="polite"><p class="subtle">Open this tab to load verified results.</p></div>
           </div>
           <div class="panel" data-workspace-pane="settlement" hidden>
             <div class="panel-header">
@@ -1939,8 +1907,8 @@
                         </select>
                       </label>
                       <div class="calibration-batch-summary" aria-label="Paper calibration batch">
-                        <strong>5 cards per sport</strong>
-                        <span>$0 risk · 2 · 2 · 3 · 4 · 5 legs</span>
+                        <strong>6 cards per core sport</strong>
+                        <span>$0 risk · 2 · 2 · 3 · 4 · 5 · 6 legs</span>
                       </div>
                     </div>
                     <div class="scorecard-actions">
@@ -1952,7 +1920,7 @@
                     </div>
                   </div>
                 </div>
-                <div id="auto-paper-calibration-status" class="subtle" aria-live="polite">Paper only. EdgeIQ creates five unique same-day cards per available sport and balances providers when possible.</div>
+                <div id="auto-paper-calibration-status" class="subtle" aria-live="polite">Paper only. EdgeIQ targets six unique same-day cards per core sport and one card for other eligible sports, balancing providers when possible.</div>
                 <section id="paper-calibration-dashboard" class="calibration-dashboard" aria-label="Daily calibration progress">
                   <div class="skeleton-row"></div>
                   <div class="skeleton-row"></div>
@@ -2004,6 +1972,7 @@
     <nav class="mobile-bottom-nav" aria-label="Primary mobile navigation">
       <button class="nav-item active" data-view="dashboard" type="button">Today</button>
       <button class="nav-item" data-view="analysis" type="button">Research</button>
+      <button class="nav-item" data-view="games" type="button">Games</button>
       <button class="nav-item" data-view="entries" type="button">Entry</button>
       <button class="nav-item" data-view="performance" type="button">Results</button>
       <button class="nav-item" data-view="tools" data-workspace-jump="decision-desk:builder" type="button">Ask</button>
@@ -2044,7 +2013,7 @@
     <script src="/static/js/player-hit-rankings.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/opportunity-score.js?v=20260930-score-explain"></script>
     <script src="/static/js/model-version-evaluation.js?v=20261001-results-speed"></script>
-    <script src="/static/js/games.js?v=20260930-games-schedule"></script>
+    <script src="/static/js/games.js?v=20261110-research-hits-15"></script>
     <script src="/static/js/best-lines.js?v=20260929-briefing-schedule"></script>
     <script src="/static/js/model-track-record.js?v=20261007-model-record"></script>
     <script src="/static/js/evidence-lab.js?v=20261004-evidence-lab"></script>
@@ -2056,7 +2025,7 @@
       if (!window.EdgeIQForecastRange) document.write('<script src="js/forecast-range.js"><\/script>');
     </script>
     <script src="/static/js/recommendation-disclosure.js?v=20261018-source-backlog"></script>
-    <script src="/static/js/recommendation-card.js?v=20261018-source-backlog"></script>
+    <script src="/static/js/recommendation-card.js?v=20261110-research-hits-15"></script>
     <script src="/static/js/slate-changes.js?v=20261008-smart-alerts"></script>
     <script src="/static/js/alerts.js?v=20261008-alert-modules"></script>
     <script>
@@ -2064,7 +2033,7 @@
         document.write('<script src="js/alerts.js"><\/script>');
       }
     </script>
-    <script src="/static/js/provider-health.js?v=20261030-nba-baseline"></script>
+    <script src="/static/js/provider-health.js?v=20261113-nba-schedule-16"></script>
     <script>
       if (!window.EdgeIQProviderHealth) {
         document.write('<script src="js/provider-health.js"><\/script>');
@@ -2073,8 +2042,8 @@
     <script src="/static/js/market-disagreement.js?v=20261007-market-disagreement"></script>
     <script src="/static/js/market-model-timeline.js?v=20261007-timeline-series"></script>
     <script src="/static/js/entry-summary.js?v=20260929-briefing-schedule"></script>
-    <script src="/static/js/player-workspace.js?v=20261030-nba-baseline"></script>
-    <script src="/static/app.js?v=20261030-nba-baseline"></script>
+    <script src="/static/js/player-workspace.js?v=20261113-nba-shooting-18"></script>
+    <script src="/static/app.js?v=20261110-research-hits-15"></script>
     <script>
       if (!window.EdgeIQLoaded) {
         document.write('<script src="app.js"><\/script>');

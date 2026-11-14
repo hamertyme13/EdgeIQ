@@ -39,10 +39,12 @@ def _settled_entry_integrity(session) -> dict:
             "leg_details": [],
         })
         entry["legs"] += 1
-        entry["wins"] += leg_result == "Win" and str(leg_status or "").lower() == "played" and actual is not None
-        entry["losses"] += leg_result == "Loss" and str(leg_status or "").lower() == "played" and actual is not None
+        verified = str(source or "").lower() != "projection_estimate"
+        entry["wins"] += verified and leg_result == "Win" and str(leg_status or "").lower() == "played" and actual is not None
+        entry["losses"] += verified and leg_result == "Loss" and str(leg_status or "").lower() == "played" and actual is not None
         entry["unresolved"] += (
-            leg_result not in {"Win", "Loss", "Push", "DNP"}
+            not verified
+            or leg_result not in {"Win", "Loss", "Push", "DNP"}
             or str(leg_status or "").lower() not in {"played", "dnp"}
             or (actual is None and str(leg_status or "").lower() != "dnp")
         )
@@ -60,7 +62,9 @@ def _settled_entry_integrity(session) -> dict:
             reasons.append("all_win_recorded_loss")
         if entry["result"] == "Win" and entry["losses"] and entry["payout_type"] != "flex":
             reasons.append("win_contains_loss")
-        if entry["unresolved"]:
+        if entry["unresolved"] and not (
+            entry["result"] == "Loss" and entry["losses"] and entry["payout_type"] != "flex"
+        ):
             reasons.append("settled_with_unresolved_leg")
         for reason in reasons:
             counts[reason] += 1

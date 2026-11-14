@@ -111,6 +111,12 @@ def monthly_dashboard_performance(bets: list, entries: list[dict], month: str | 
         and entry.get("result") in {"Win", "Loss", "Push"}
     ]
     entry_stats = EntryRepository.financial_stats(month_entries)
+    placed_this_month = [
+        entry for entry in entries
+        if entry.get("status") in {"Pending", "Settled"}
+        and _month_key(entry.get("placed_at") or entry.get("created_at")) == period
+    ]
+    high_score_accuracy = EntryRepository._recommendation_accuracy(placed_this_month)["high_edgeiq_score"]
     wins = sum(bet.result == "Win" for bet in settled_bets) + entry_stats["wins"]
     losses = sum(bet.result == "Loss" for bet in settled_bets) + entry_stats["losses"]
     pushes = sum(bet.result == "Push" for bet in settled_bets) + entry_stats["pushes"]
@@ -132,7 +138,10 @@ def monthly_dashboard_performance(bets: list, entries: list[dict], month: str | 
         "wagered": round(wagered, 2),
         "roi": round(profit / wagered * 100, 2) if wagered else 0.0,
         "paper": entry_stats.get("paper", {}),
-        "recommendation_accuracy": entry_stats.get("recommendation_accuracy", {}),
+        "recommendation_accuracy": {
+            **entry_stats.get("recommendation_accuracy", {}),
+            "high_edgeiq_score": high_score_accuracy,
+        },
         "current_streak": timeline["current_streak"],
         "max_drawdown": timeline["max_drawdown"],
     }

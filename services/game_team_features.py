@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import UTC, datetime
 from math import isfinite
 from statistics import mean
@@ -54,8 +55,14 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
         "away_sample_size": 0, "away_points_allowed_last_10": None,
         "days_rest": None,
         "pace_last_5": None, "pace_sample_size": 0, "pace_source": "unavailable",
+        "pace_comparison": {"status": "unavailable", "ranked_teams": 0,
+                            "minimum_team_games": 5, "minimum_ranked_teams": 10},
+        "shooting_allowed": {"status": "unavailable", "sample_size": 0,
+                             "minimum_games": 5, "three_point_pct": None,
+                             "three_pointers_made_per_game": None, "paint_points_per_game": None},
         "league_average": None, "difference_from_league": None, "defensive_rank": None,
         "advantage_score": None, "ranked_teams": 0, "minimum_team_games": 5,
+        "rank_unavailable_reason": "opponent_sample",
         "source": "unavailable", "source_games": [],
         "status": "Verified opponent team finals are unavailable.",
     }
@@ -89,10 +96,9 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
             continue
         if isfinite(value) and 40 <= value <= 150:
             pace.append(value)
-    league_scores = [float(score) for row in games for score in (row["actual_home_points"], row["actual_away_points"])]
-    league_average = round(mean(league_scores), 1) if league_scores else None
     recent = round(mean(allowed[:10]), 1)
     comparison = _nba_defense_comparison(opponent, games)
+    league_average = comparison["league_average"]
     return {
         "sample_size": len(rows),
         "last_5": round(mean(allowed[:5]), 1),
@@ -106,6 +112,8 @@ def opponent_points_allowed_context(opponent: str, game_start: str, settled_game
         "pace_last_5": round(mean(pace[:5]), 1) if pace else None,
         "pace_sample_size": len(pace),
         "pace_source": "espn_box_score_possessions" if pace else "unavailable",
+        "pace_comparison": _nba_pace_comparison(opponent, games),
+        "shooting_allowed": _nba_shooting_allowed(opponent, rows),
         "league_average": league_average,
         "difference_from_league": round(recent - league_average, 1) if league_average is not None else None,
         **comparison,
@@ -133,6 +141,35 @@ def _nba_days_rest(game_start: str, previous_start: str) -> int | None:
     return max(0, days_between - 1) if days_between >= 0 else None
 
 
+def _nba_shooting_allowed(opponent: str, rows: list[dict]) -> dict:
+    """Opponent field goals and paint scoring allowed in complete official box scores."""
+    complete = []
+    for row in rows[:10]:
+        side = "away" if _matches_side(row, opponent, "home") else "home"
+        try:
+            made = int(row[f"{side}_three_pointers_made"])
+            attempts = int(row[f"{side}_three_pointers_attempted"])
+            paint = int(row[f"{side}_points_in_paint"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0 <= made <= attempts <= 100 and 0 <= paint <= 200:
+            complete.append((made, attempts, paint))
+    result = {
+        "status": "unavailable", "sample_size": len(complete), "minimum_games": 5,
+        "three_point_pct": None, "three_pointers_made_per_game": None,
+        "paint_points_per_game": None,
+    }
+    if len(complete) < 5 or not sum(row[1] for row in complete):
+        return result
+    return {
+        **result,
+        "status": "descriptive_official_box_scores",
+        "three_point_pct": round(100 * sum(row[0] for row in complete) / sum(row[1] for row in complete), 1),
+        "three_pointers_made_per_game": round(mean(row[0] for row in complete), 1),
+        "paint_points_per_game": round(mean(row[2] for row in complete), 1),
+    }
+
+
 def _nba_defense_comparison(opponent: str, games: list[dict]) -> dict:
     """Rank recent points allowed only when enough teams have comparable evidence."""
     teams = {
@@ -146,18 +183,75 @@ def _nba_defense_comparison(opponent: str, games: list[dict]) -> dict:
         if len(rows) >= 5:
             averages[team] = mean(_points_against(row, team) for row in rows[:10])
     result = {
-        "defensive_rank": None, "advantage_score": None,
+        "defensive_rank": None, "advantage_score": None, "bottom_ten_defense": None,
+        "league_average": None,
         "ranked_teams": len(averages), "minimum_team_games": 5,
+        "rank_unavailable_reason": None,
     }
-    target = _team_key(opponent)
-    if target not in averages or len(averages) < 10:
+    representatives = {
+        _team_key(str(row.get(f"{side}_team") or ""))
+        for row in games for side in ("home", "away")
+        if _matches_side(row, opponent, side)
+    }
+    if len(representatives) != 1 or next(iter(representatives)) not in averages:
+        result["rank_unavailable_reason"] = "opponent_sample"
         return result
-    value = averages[target]
+    if len(averages) < 10:
+        result["rank_unavailable_reason"] = "league_sample"
+        return result
+    value = averages[next(iter(representatives))]
     lower = sum(other < value for other in averages.values())
     equal = sum(other == value for other in averages.values())
     result["defensive_rank"] = lower + 1  # Rank 1 allows the fewest points.
     result["advantage_score"] = round(100 * (lower + (equal - 1) / 2) / (len(averages) - 1))
+    result["league_average"] = round(mean(averages.values()), 1)
+    # A partial league sample cannot establish an NBA-wide bottom-ten label.
+    if len(averages) == 30:
+        result["bottom_ten_defense"] = result["defensive_rank"] >= 21
     return result
+
+
+def _nba_pace_comparison(opponent: str, games: list[dict]) -> dict:
+    """Compare official recent game pace only when team coverage is comparable."""
+    by_team: dict[str, list[dict]] = defaultdict(list)
+    for row in games:
+        for side in ("home", "away"):
+            team = _team_key(str(row.get(f"{side}_team") or ""))
+            if team:
+                by_team[team].append(row)
+    averages: dict[str, float] = {}
+    for team, team_games in by_team.items():
+        recent = sorted(team_games, key=lambda row: str(row.get("game_start") or ""), reverse=True)[:5]
+        try:
+            values = [float(str(row["pace"])) for row in recent]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if len(values) == 5 and all(isfinite(value) and 40 <= value <= 150 for value in values):
+            averages[team] = mean(values)
+    result = {
+        "status": "unavailable", "ranked_teams": len(averages),
+        "minimum_team_games": 5, "minimum_ranked_teams": 10,
+        "opponent_pace_last_5": None, "league_pace_average": None,
+        "pace_rank_fastest_first": None, "pace_percentile": None,
+    }
+    representatives = {
+        _team_key(str(row.get(f"{side}_team") or ""))
+        for row in games for side in ("home", "away")
+        if _matches_side(row, opponent, side)
+    }
+    if len(representatives) != 1 or next(iter(representatives)) not in averages or len(averages) < 10:
+        return result
+    value = averages[next(iter(representatives))]
+    faster = sum(other > value for other in averages.values())
+    slower = sum(other < value for other in averages.values())
+    equal = sum(other == value for other in averages.values())
+    return {
+        **result, "status": "descriptive_comparison",
+        "opponent_pace_last_5": round(value, 1),
+        "league_pace_average": round(mean(averages.values()), 1),
+        "pace_rank_fastest_first": faster + 1,
+        "pace_percentile": round(100 * (slower + (equal - 1) / 2) / (len(averages) - 1)),
+    }
 
 
 def _team_rows(team: str, rows: list[dict]) -> list[dict]:

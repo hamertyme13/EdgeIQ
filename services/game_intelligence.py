@@ -155,10 +155,11 @@ def latest_slate_predictions(sport: str = "", limit: int = 50, *, game_day: date
         if primary is None:
             continue
         display_rows.append({
-            "champion": champion or primary,
+            "champion": champion,
+            "primary": primary,
             "historical_baseline": historical,
             "challenger": challenger,
-            "comparison": _comparison(champion or primary, challenger) if challenger else None,
+            "comparison": _comparison(champion, challenger) if champion and challenger else None,
         })
         if len(display_rows) >= limit:
             break

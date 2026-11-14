@@ -8,6 +8,8 @@ import logging
 import time
 import uuid
 import zlib
+from collections import Counter
+from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
@@ -26,6 +28,7 @@ from repository.repositories.leg_recommendation_snapshot_repository import LegRe
 from repository.repositories.provider_offer_snapshot_repository import ProviderOfferSnapshotRepository
 from repository.repositories.settings_repository import SettingsRepository
 from services.recommendation_snapshot import attach_leg_recommendations, attach_offer_snapshots, stamp_snapshot_payload
+from utils.entity_normalization import canonical_person_key
 from utils.time import utc_now
 
 VERIFIED_SOURCES_EXCLUDED = {"", "unknown", "unmatched", "projection_estimate", "integrity_quarantine"}
@@ -255,17 +258,47 @@ class ModelRehabilitationRepository:
             reconciled = ModelRehabilitationRepository.reconcile_shadow(
                 PredictionLedgerRepository.evidence_rows(include_legacy=False)
             )
-        settled = failed = pending = 0
+        settled = failed = pending = excluded = 0
         with SessionLocal() as session:
             query = session.query(ShadowPredictionModel).filter_by(status="shadow_pending")
             if model_version_prefix:
                 query = query.filter(ShadowPredictionModel.model_version.like(f"{model_version_prefix}%"))
-            rows = query.order_by(
+            ordered = query.order_by(
+                ShadowPredictionModel.last_attempt_at.asc().nullsfirst(),
                 ShadowPredictionModel.game_time.asc(), ShadowPredictionModel.id.asc()
-            ).limit(max(1, min(limit, 2000))).all()
+            )
+            batch_size = max(1, min(limit, 2000))
+            deferred_future = 0
+            if model_version_prefix == "nba-points-board/":
+                # Read only identifiers and times while searching past future games.
+                candidates = ordered.with_entities(
+                    ShadowPredictionModel.id, ShadowPredictionModel.game_time,
+                ).limit(20_000).all()
+                due_ids = []
+                for row_id, game_time in candidates:
+                    if _past_game_completion_window(game_time):
+                        due_ids.append(row_id)
+                        if len(due_ids) >= batch_size:
+                            break
+                    else:
+                        deferred_future += 1
+                by_id = {row.id: row for row in query.filter(ShadowPredictionModel.id.in_(due_ids)).all()}
+                rows = [by_id[row_id] for row_id in due_ids if row_id in by_id]
+            else:
+                rows = ordered.limit(batch_size).all()
             for row in rows:
+                if row.model_version.startswith("nba-points-board/"):
+                    game_teams = [part.strip().upper() for part in str(row.game or "").split("@")]
+                    team = str(row.team or "").strip().upper()
+                    if " + " in row.player or (team and len(game_teams) == 2 and team not in game_teams):
+                        row.status = "shadow_excluded"
+                        row.last_attempt_at = utc_now()
+                        row.last_settlement_error = "Not an individual NBA Points offer with a matching game team."
+                        excluded += 1
+                        continue
                 if not _past_game_completion_window(row.game_time):
                     pending += 1
+                    row.last_attempt_at = utc_now()
                     row.last_settlement_error = "Waiting for the game and official stat correction window to finish."
                     continue
                 row.settlement_attempts += 1
@@ -299,7 +332,9 @@ class ModelRehabilitationRepository:
             session.commit()
         result = {
             "settled": settled, "reconciled_from_ledger": reconciled,
-            "pending": pending, "failed": failed, "attempted": settled + pending + failed,
+            "pending": pending, "failed": failed, "excluded": excluded,
+            "deferred_future": deferred_future,
+            "attempted": settled + pending + failed + excluded,
         }
         status_key = "nba_points_shadow_settlement_status" if model_version_prefix else "shadow_settlement_status"
         SettingsRepository.set(status_key, json.dumps({**result, "ran_at": utc_now().isoformat()}))
@@ -361,6 +396,7 @@ class ModelRehabilitationRepository:
                     "id": row.id,
                     "independent_market_key": row.independent_market_key,
                     "player": row.player,
+                    "team": row.team,
                     "game": row.game,
                     "sport": row.sport,
                     "stat": row.stat,
@@ -381,6 +417,83 @@ class ModelRehabilitationRepository:
                     "evidence_origin": "prospective_board",
                 })
             return evidence
+
+    @staticmethod
+    def nba_points_board_captured_player_games(cohort_date: str) -> set[tuple[str, str]]:
+        """Identify player-games already locked in this day's prospective board cohort."""
+        initialize_database()
+        with SessionLocal() as session:
+            rows = session.query(
+                ShadowPredictionModel.player, ShadowPredictionModel.game_time,
+            ).filter(
+                ShadowPredictionModel.cohort_date == cohort_date,
+                ShadowPredictionModel.model_version.like("nba-points-board/%"),
+            ).all()
+        return {(canonical_person_key(player), str(game_time or "")) for player, game_time in rows}
+
+    @staticmethod
+    def nba_points_board_cohort_summary(cohort_date: str) -> dict:
+        """Report persisted pregame forecasts, not only the latest retry's inserts."""
+        initialize_database()
+        with SessionLocal() as session:
+            snapshots = session.query(
+                ShadowPredictionModel.feature_snapshot,
+                ShadowPredictionModel.predicted_at,
+                ShadowPredictionModel.game_time,
+            ).filter(
+                ShadowPredictionModel.cohort_date == cohort_date,
+                ShadowPredictionModel.model_version.like("nba-points-board/%"),
+            ).all()
+        sources: dict[str, int] = {}
+        challenger_statuses = {"minutes": Counter(), "shot_volume": Counter()}
+        market_prior_games: Counter[int] = Counter()
+        lock_statuses: Counter[str] = Counter()
+        qualified_pregame_locks = 0
+        for payload_text, predicted_at, game_time in snapshots:
+            payload = _json(payload_text, {})
+            forecast = payload.get("forecast_snapshot") or {}
+            source = str(forecast.get("source") or "unknown") if isinstance(forecast, dict) else "unknown"
+            sources[source] = sources.get(source, 0) + 1
+            features = forecast.get("features") or {} if isinstance(forecast, dict) else {}
+            if not isinstance(features, dict):
+                features = {}
+            provenance = features.get("nba_points_history_provenance") or {}
+            if not isinstance(provenance, dict):
+                provenance = {}
+            try:
+                feature_at = datetime.fromisoformat(str(forecast["feature_as_of"]).replace("Z", "+00:00"))
+                game_at = datetime.fromisoformat(str(game_time).replace("Z", "+00:00"))
+                predicted = predicted_at.replace(tzinfo=UTC) if predicted_at.tzinfo is None else predicted_at
+                feature_at = feature_at.replace(tzinfo=UTC) if feature_at.tzinfo is None else feature_at
+                game_at = game_at.replace(tzinfo=UTC) if game_at.tzinfo is None else game_at
+                status = "pregame_locked" if feature_at <= predicted < game_at else "invalid_lock_order"
+            except (KeyError, TypeError, ValueError, AttributeError):
+                status = "missing_lock_time"
+            if status == "pregame_locked" and provenance.get("status") != "verified":
+                status = "history_provenance_unverified"
+            lock_statuses[status] += 1
+            if status == "pregame_locked" and source == "verified_history_distribution":
+                qualified_pregame_locks += 1
+            for name, key in (("minutes", "nba_points_minutes_shadow"),
+                              ("shot_volume", "nba_points_shot_volume_shadow")):
+                evidence = features.get(key)
+                status = str(evidence.get("status") or "not_recorded") if isinstance(evidence, dict) else "not_recorded"
+                challenger_statuses[name][status] += 1
+            if source == "market_prior":
+                with suppress(TypeError, ValueError):
+                    market_prior_games[int(features.get("verified_games") or 0)] += 1
+        return {
+            "captured_total": len(snapshots),
+            "qualified_forecasts_total": sources.get("verified_history_distribution", 0),
+            "pregame_verified_locks_total": lock_statuses.get("pregame_locked", 0),
+            "qualified_pregame_locks_total": qualified_pregame_locks,
+            "lock_statuses_total": dict(sorted(lock_statuses.items())),
+            "forecast_sources_total": dict(sorted(sources.items())),
+            "challenger_statuses_total": {
+                name: dict(sorted(statuses.items())) for name, statuses in challenger_statuses.items()
+            },
+            "market_prior_verified_game_counts_total": dict(sorted(market_prior_games.items())),
+        }
 
     @staticmethod
     def shadow_status(evidence_rows: list[dict] | None = None, validation: dict | None = None) -> dict:
@@ -404,7 +517,8 @@ class ModelRehabilitationRepository:
         }
         failures = sum(
             1 for row in rows
-            if row.get("last_settlement_error")
+            if row.get("result") != "shadow_excluded"
+            and row.get("last_settlement_error")
             and row.get("settlement_attempts", 0) >= 3
             and _past_settlement_window(row.get("game_time"))
         )

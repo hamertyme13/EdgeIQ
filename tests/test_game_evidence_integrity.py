@@ -17,7 +17,7 @@ from analytics.game_model_registry import (
     promotion_decision,
 )
 from analytics.game_prediction import predict_game
-from data.providers.espn import basketball_box_score_pace
+from data.providers.espn import basketball_box_score_pace, basketball_team_shooting
 from repository.repositories.game_prediction_repository import GamePredictionRepository
 from repository.repositories.team_history_repository import TeamHistoryRepository
 from services import game_intelligence
@@ -118,6 +118,21 @@ def test_possession_pace_requires_complete_box_scores():
     summary = {"boxscore": {"teams": [{"statistics": stats}, {"statistics": stats}]}}
     assert basketball_box_score_pace(summary, "WNBA") == 80.8
     assert basketball_box_score_pace({"boxscore": {"teams": [{"statistics": stats}]}}, "WNBA") is None
+
+
+def test_official_team_shooting_requires_plausible_complete_values():
+    def side(name, made, attempts, paint):
+        return {"homeAway": name, "statistics": [
+            {"name": "threePointFieldGoalsMade-threePointFieldGoalsAttempted", "displayValue": f"{made}-{attempts}"},
+            {"name": "pointsInPaint", "displayValue": str(paint)},
+        ]}
+
+    result = basketball_team_shooting({"boxscore": {"teams": [
+        side("home", 9, 30, 42), side("away", 11, 35, 44),
+    ]}})
+    assert result["away_three_pointers_attempted"] == 35
+    assert result["home_points_in_paint"] == 42
+    assert basketball_team_shooting({"boxscore": {"teams": [side("home", 31, 30, 42)]}}) == {}
 
 
 def test_opportunity_telemetry_only_emits_for_non_neutral_factor(caplog):

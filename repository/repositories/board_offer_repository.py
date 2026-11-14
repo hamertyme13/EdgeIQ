@@ -128,8 +128,20 @@ class BoardOfferRepository:
         local_day = current.astimezone(ZoneInfo("America/New_York")).date()
         row_limit = max(1, min(int(limit), 5000))
         with SessionLocal() as session:
-            observations = (
-                session.query(BoardOfferObservationModel)
+            ranked = (
+                session.query(
+                    BoardOfferObservationModel.id.label("observation_id"),
+                    func.row_number().over(
+                        partition_by=(
+                            BoardOfferObservationModel.normalized_player_key,
+                            BoardOfferObservationModel.scheduled_start,
+                        ),
+                        order_by=(
+                            BoardOfferObservationModel.captured_at.desc(),
+                            BoardOfferObservationModel.id.desc(),
+                        ),
+                    ).label("rank"),
+                )
                 .filter(
                     BoardOfferObservationModel.sport == "NBA",
                     BoardOfferObservationModel.stat == "Points",
@@ -139,20 +151,42 @@ class BoardOfferRepository:
                     ),
                     BoardOfferObservationModel.captured_at >= (current - timedelta(hours=6)).replace(tzinfo=None),
                 )
+                .subquery()
+            )
+            observations = (
+                session.query(BoardOfferObservationModel)
+                .join(ranked, ranked.c.observation_id == BoardOfferObservationModel.id)
+                .filter(ranked.c.rank == 1)
                 .order_by(BoardOfferObservationModel.captured_at.desc(), BoardOfferObservationModel.id.desc())
-                .limit(row_limit)
+                .limit(row_limit + 1)
                 .all()
             )
-            selected: dict[tuple[str, str], dict] = {}
+            scan_limit_reached = len(observations) > row_limit
+            observations = observations[:row_limit]
+            selected: dict[tuple[str, str, str], dict] = {}
             for observation in observations:
                 start = _aware_datetime(observation.scheduled_start)
                 if start is None or start <= current + timedelta(minutes=5) or start.astimezone(ZoneInfo("America/New_York")).date() != local_day:
                     continue
+                # The individual-points shadow cohort must be settleable against one
+                # player in this exact game, not a provider's multi-player combo.
+                player = str(observation.player or "").strip()
+                team = str(observation.team or "").strip().upper()
+                game_teams = [part.strip().upper() for part in str(observation.game or "").split("@")]
+                if " + " in player or len(game_teams) != 2 or not team or team not in game_teams:
+                    continue
                 player_key = observation.normalized_player_key or canonical_person_key(observation.player)
                 if not player_key or observation.line is None:
                     continue
-                selected.setdefault((player_key, start.date().isoformat()), {
+                try:
+                    provider_payload = json.loads(observation.provider_payload or "{}")
+                except (TypeError, ValueError):
+                    provider_payload = {}
+                selected.setdefault((player_key, start.isoformat(), str(observation.game or "")), {
                     "player": observation.player,
+                    "provider_player_id": observation.provider_player_id,
+                    "provider_offer_id": observation.provider_offer_id,
+                    "provider_game_id": str(provider_payload.get("provider_game_id") or ""),
                     "team": observation.team,
                     "sport": "NBA",
                     "stat": "Points",
@@ -167,7 +201,7 @@ class BoardOfferRepository:
             return {
                 "candidates": list(selected.values()),
                 "observations_scanned": len(observations),
-                "scan_limit_reached": len(observations) >= row_limit,
+                "scan_limit_reached": scan_limit_reached,
                 "day": local_day.isoformat(),
             }
 

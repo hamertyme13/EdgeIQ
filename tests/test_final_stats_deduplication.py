@@ -18,6 +18,7 @@ from repository.repositories.player_identity_repository import PlayerIdentityRep
         ("NBA", "Dejounte Murray", "NOP", "Points + Assists", "NOP @ UTA", "NO@UTAH", "2026-10-23T21:30:00-04:00", 22),
         ("NBA", "Jalen Brunson", "NYK", "Rebounds", "ORL @ NYK", "ORL@NY", "2026-10-25T19:00:00-04:00", 3),
         ("NCAAF", "CJ Bailey", "NCST", "Passing Yards", "NCST @ STAN", "NCSU@STAN", "2026-10-23T23:00:00Z", 256),
+        ("NCAAF", "John Mateer", "OKLA", "Passing Yards", "OKLA @ FLA", "OU@FLA", "2026-11-07T19:45:00-05:00", 207),
     ],
 )
 def test_settlement_matches_provider_and_final_team_abbreviations(
@@ -25,7 +26,8 @@ def test_settlement_matches_provider_and_final_team_abbreviations(
 ):
     _isolated_database(tmp_path, monkeypatch)
     FinalStatsRepository.upsert_many([{
-        "player": player, "team": team, "sport": sport, "stat": stat,
+        "player": player, "team": "OU" if player == "John Mateer" else team,
+        "sport": sport, "stat": stat,
         "game": final_game, "game_date": game_time[:10], "actual": actual,
         "status": "played", "source": "espn",
     }])
@@ -35,6 +37,49 @@ def test_settlement_matches_provider_and_final_team_abbreviations(
     })
     assert matched is not None
     assert matched["actual"] == actual
+
+
+def test_oklahoma_alias_does_not_match_a_different_opponent(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    FinalStatsRepository.upsert_many([{
+        "player": "John Mateer", "team": "OU", "sport": "NCAAF", "stat": "Passing Yards",
+        "game": "OU@FLA", "game_date": "2026-11-07", "actual": 207,
+        "status": "played", "source": "espn",
+    }])
+    assert FinalStatsRepository.find_result({
+        "player": "John Mateer", "team": "OKLA", "sport": "NCAAF", "stat": "Passing Yards",
+        "game": "OKLA @ TEX", "game_time": "2026-11-07T19:45:00-05:00",
+    }) is None
+
+
+def test_settlement_rejects_wrong_final_team_for_same_player_and_game(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    FinalStatsRepository.upsert_many([{
+        "player": "Same Name", "team": "BOS", "sport": "NBA", "stat": "Points",
+        "game": "BOS@NY", "game_date": "2026-11-07", "actual": 20,
+        "status": "played", "source": "espn",
+    }])
+    assert FinalStatsRepository.find_result({
+        "player": "Same Name", "team": "NYK", "sport": "NBA", "stat": "Points",
+        "game": "BOS @ NYK", "game_time": "2026-11-07T19:00:00-05:00",
+    }) is None
+    assert FinalStatsRepository.find_result({
+        "player": "Same Name", "team": "NYK", "sport": "NBA", "stat": "Points",
+        "game": "", "game_time": "2026-11-07T19:00:00-05:00",
+    }) is None
+
+
+def test_settlement_accepts_accent_alias_on_matching_team_and_game(tmp_path, monkeypatch):
+    _isolated_database(tmp_path, monkeypatch)
+    FinalStatsRepository.upsert_many([{
+        "player": "Azurá Stevens", "team": "LA", "sport": "WNBA", "stat": "Points",
+        "game": "LA@MIN", "game_date": "2026-08-20", "actual": 14,
+        "status": "played", "source": "espn",
+    }])
+    assert FinalStatsRepository.find_result({
+        "player": "Azura Stevens", "team": "LAS", "sport": "WNBA", "stat": "Points",
+        "game": "LAS @ MIN", "game_time": "2026-08-20T20:00:00-04:00",
+    })["actual"] == 14
 
 
 def test_exact_name_and_game_recovers_stale_identity_without_cross_game_match(tmp_path, monkeypatch):

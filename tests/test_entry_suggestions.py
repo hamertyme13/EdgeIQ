@@ -50,6 +50,25 @@ def test_generated_leg_preserves_exact_provider_offer_identity():
     assert offer_fingerprint(_serialize_prop(generated)) == offer_fingerprint(raw)
 
 
+def test_generated_leg_retains_existing_offer_snapshot_without_inventing_model_evidence():
+    from web.app import _serialize_prop
+
+    raw = {
+        "player": "Player A", "team": "AAA", "league": "NBA", "stat": "Points",
+        "line": 20.5, "projection": 23.0, "direction": "Over", "platform": "PrizePicks",
+        "game": "AAA@BBB", "game_time": "2026-11-02T20:00:00Z",
+        "provider_offer_id": "offer-123", "offer_snapshot_id": "captured-offer-123",
+        "leg_recommendation_snapshot_id": "old-model-leg",
+    }
+    generated = _serialize_prop(suggestions_module._props_from_feed(raw, Platform.PRIZEPICKS)[0])
+
+    assert generated["offer_snapshot_id"] == "captured-offer-123"
+    assert generated["leg_recommendation_snapshot_id"] == ""
+    assert _serialize_prop(suggestions_module._props_from_feed(
+        {key: value for key, value in raw.items() if key != "offer_snapshot_id"}, Platform.PRIZEPICKS,
+    )[0])["offer_snapshot_id"] == ""
+
+
 def test_generated_leg_keeps_verifiable_market_receipt():
     from datetime import UTC, datetime, timedelta
 
@@ -400,3 +419,17 @@ def test_prizepicks_demon_lines_are_modeled_as_over_only() -> None:
     assert len(candidates) == 1
     assert candidates[0].player.name == "Premium Player"
     assert candidates[0].direction == "Over"
+
+
+def test_standard_line_with_adjusted_odds_keeps_standard_offer_identity() -> None:
+    raw = {
+        "player": "Standard Player", "team": "AAA", "league": "NBA", "stat": "Points",
+        "line": 25.5, "standard_line": 25.5, "odds_type": "standard",
+        "adjusted_odds": True, "projection_id": "offer-1", "game": "AAA @ BBB",
+        "game_time": "2026-11-03T00:30:00+00:00",
+    }
+
+    props = suggestions_module._props_from_feed(raw, Platform.PRIZEPICKS)
+
+    assert props
+    assert all(not prop.adjusted_line for prop in props)

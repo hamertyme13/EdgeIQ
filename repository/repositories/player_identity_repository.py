@@ -189,13 +189,13 @@ class PlayerIdentityRepository:
                 if player["id"] in last_verified:
                     player["last_verified_team"], player["last_verified_team_date"] = last_verified[player["id"]]
             seen = {canonical_person_key(row["name"]) for row in players}
-            board_lookup = session.query(BoardOfferObservationModel)
+            board_lookup = session.query(BoardOfferObservationModel).filter(
+                BoardOfferObservationModel.sport == sport_text,
+            )
             if query_key:
                 board_lookup = board_lookup.filter(
-                    BoardOfferObservationModel.normalized_player_key.op("GLOB")(f"{query_key}*"),
+                    BoardOfferObservationModel.normalized_player_key.startswith(query_key),
                 )
-            else:
-                board_lookup = board_lookup.filter(BoardOfferObservationModel.sport == sport_text)
             board_rows = board_lookup.limit(
                 resolved_limit * 4,
             ).all()

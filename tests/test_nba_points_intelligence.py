@@ -1,7 +1,49 @@
+from datetime import UTC, datetime, timedelta
+
 from analytics.probabilistic_forecast import PropForecast
 from data.providers import espn
 from data.providers.espn import _event_season_type
-from web.application.nba_points_intelligence import build_nba_points_intelligence
+from web.application.nba_points_intelligence import build_nba_points_intelligence, verified_opponent_injury_context
+
+
+def test_opponent_injury_context_requires_exact_team_source_and_fresh_pregame_capture():
+    now = datetime(2026, 11, 9, 16, tzinfo=UTC)
+    report = {"player": "Opponent Player", "team": "NY", "status": "Questionable",
+              "source": "espn_injury_feed", "verified": True,
+              "captured_at": (now - timedelta(minutes=5)).isoformat()}
+    result = verified_opponent_injury_context(
+        "NYK", "2026-11-09T23:00:00Z", [report, {**report, "team": "BOS"}], now=now,
+    )
+    assert result["status"] == "reported"
+    assert len(result["reports"]) == 1
+    assert result["reports"][0]["player"] == "Opponent Player"
+    assert verified_opponent_injury_context(
+        "NYK", "2026-11-09T23:00:00Z",
+        [{**report, "captured_at": (now - timedelta(hours=2)).isoformat()}], now=now,
+    )["status"] == "unavailable"
+    assert verified_opponent_injury_context(
+        "NYK", "2026-11-09T15:00:00Z", [report], now=now,
+    )["status"] == "unavailable"
+
+
+def test_research_availability_reuses_one_injury_fetch_for_opponent(monkeypatch):
+    from web import app as web_app
+
+    calls = []
+
+    def injury_feed(sport):
+        calls.append(sport)
+        return [{"player": "Opponent Player", "team": "NY", "status": "Questionable",
+                 "source": "espn_injury_feed", "verified": True,
+                 "captured_at": datetime.now(UTC).isoformat()}]
+
+    monkeypatch.setattr(web_app, "fetch_injuries", injury_feed)
+    monkeypatch.setattr(web_app.newsapi, "fetch_context", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(web_app.newsapi, "risk_terms", lambda *_args: [])
+    result = web_app._player_availability_payload("Research Guard", "NBA", "BOS", "BOS @ NYK")
+    assert calls == ["NBA"]
+    assert len(result["opponent_injury_reports"]) == 1
+    assert result["status"] == "Likely Active"
 
 
 def team_game(day, game_id, home, away, home_points, away_points, *, source="espn_official_scoreboard", season_type="regular"):
@@ -36,13 +78,14 @@ def test_nba_opponent_defense_uses_only_prior_official_season_games():
     assert defense["away_sample_size"] == 1
     assert defense["away_points_allowed_last_10"] == 115
     assert defense["days_rest"] == 2
-    assert defense["league_average"] == 100.8
+    assert defense["league_average"] is None
+    assert defense["difference_from_league"] is None
     assert defense["defensive_rank"] is None
     assert defense["advantage_score"] is None
     assert len(defense["source_games"]) == 2
     assert defense["source_games"][0]["url"].endswith("/gameId/2")
     assert "Small" in defense["status"]
-    assert "team points allowed available" in result["matchup"]["status"]
+    assert "enough comparable verified games" in result["matchup"]["status"]
 
 
 def test_nba_opponent_rest_uses_eastern_game_dates_and_pregame_official_results():
@@ -87,6 +130,8 @@ def test_nba_defense_comparison_requires_coverage_and_uses_only_pregame_regular_
     assert matchup["defensive_rank"] == 10
     assert matchup["advantage_score"] == 100
     assert matchup["team_points_allowed"]["ranked_teams"] == 10
+    assert matchup["team_points_allowed"]["league_average"] is not None
+    assert matchup["team_points_allowed"]["bottom_ten_defense"] is None
     assert matchup["team_points_allowed"]["last_5"] == 130
     assert result["projection"]["expected_points"] is None
     assert result["market"]["ev"] is None
@@ -97,6 +142,92 @@ def test_nba_defense_comparison_requires_coverage_and_uses_only_pregame_regular_
     )["matchup"]
     assert sparse["advantage_score"] is None
     assert sparse["team_points_allowed"]["ranked_teams"] == 0
+
+
+def test_nba_opponent_shooting_context_requires_five_complete_official_games():
+    rows = []
+    for day in range(16, 21):
+        row = team_game(f"2026-10-{day}", f"shoot-{day}", "NYK", "BOS", 100, 90)
+        row.update({"away_three_pointers_made": 12, "away_three_pointers_attempted": 30,
+                    "away_points_in_paint": 40})
+        rows.append(row)
+    context = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-21T23:00:00Z", team_games=rows,
+    )["matchup"]["team_points_allowed"]["shooting_allowed"]
+    assert context["status"] == "descriptive_official_box_scores"
+    assert context["three_point_pct"] == 40.0
+    assert context["paint_points_per_game"] == 40.0
+    assert build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-21T23:00:00Z", team_games=rows[:4],
+    )["matchup"]["team_points_allowed"]["shooting_allowed"]["status"] == "unavailable"
+
+
+def test_bottom_ten_defense_requires_full_league_coverage():
+    rows = [team_game(
+        f"2026-10-{day}", f"{day}-{index}", f"T{index}", f"T{index + 15}",
+        100, 140 if index == 0 else 100,
+    ) for day in range(16, 21) for index in range(15)]
+    defense = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="T0",
+        game_time="2026-10-21T23:00:00Z", team_games=rows,
+    )["matchup"]["team_points_allowed"]
+    assert defense["ranked_teams"] == 30
+    assert defense["bottom_ten_defense"] is True
+
+
+def test_nba_pace_rank_needs_five_complete_official_games_for_ten_teams():
+    rows = []
+    for day in range(16, 21):
+        for index in range(5):
+            row = team_game(f"2026-10-{day}", f"pace-{day}-{index}",
+                            f"T{index}", f"T{index + 5}", 100, 95)
+            row["pace"] = 94 + index * 2
+            rows.append(row)
+    future = team_game("2026-10-22", "future-pace", "T4", "T9", 100, 95)
+    future["pace"] = 140
+    result = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="T4",
+        game_time="2026-10-21T23:00:00Z", team_games=[*rows, future],
+    )
+    comparison = result["matchup"]["team_points_allowed"]["pace_comparison"]
+    assert comparison["status"] == "descriptive_comparison"
+    assert comparison["ranked_teams"] == 10
+    assert comparison["opponent_pace_last_5"] == 102
+    assert comparison["league_pace_average"] == 98
+    assert comparison["pace_rank_fastest_first"] == 1
+    assert comparison["pace_percentile"] == 94
+
+    rows[0]["pace"] = None
+    sparse = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="T4",
+        game_time="2026-10-21T23:00:00Z", team_games=rows,
+    )["matchup"]["team_points_allowed"]["pace_comparison"]
+    assert sparse["status"] == "unavailable"
+    assert sparse["ranked_teams"] < 10
+
+
+def test_nba_defense_rank_resolves_provider_alias_to_verified_team_name():
+    rows = []
+    for day in range(16, 21):
+        for index in range(5):
+            row = team_game(
+                f"2026-10-{day}", f"{day}-{index}",
+                "Orlando Magic" if index == 0 else f"T{index}",
+                f"T{index + 5}", 100, 130 if index == 0 else 100,
+            )
+            if index == 0:
+                row["home_aliases"].append("ORL")
+            rows.append(row)
+    matchup = build_nba_points_intelligence(
+        [], line=19.5, forecast=None, opponent="ORL",
+        game_time="2026-10-21T23:00:00Z", team_games=rows,
+    )["matchup"]
+    assert matchup["team_points_allowed"]["sample_size"] == 5
+    assert matchup["team_points_allowed"]["ranked_teams"] == 10
+    assert matchup["defensive_rank"] == 10
+    assert matchup["team_points_allowed"]["rank_unavailable_reason"] is None
 
 
 def test_nba_opponent_pace_uses_only_plausible_prior_regular_box_scores():
@@ -121,6 +252,20 @@ def test_nba_opponent_pace_uses_only_plausible_prior_regular_box_scores():
 
 def game(day, points, game_name="BOS @ NYK", *, status="played", source="espn"):
     return {"game_date": day, "actual": points, "game": game_name, "team": "BOS", "status": status, "source": source}
+
+
+def test_recent_verified_final_evidence_excludes_unlabeled_and_future_games():
+    regular = {**game("2026-10-20", 23), "season_type": "regular"}
+    unlabeled = game("2026-10-19", 50, "BOS @ CHI")
+    future = {**game("2026-10-24", 30, "BOS @ MIA"), "season_type": "regular"}
+    result = build_nba_points_intelligence(
+        [regular, unlabeled, future], line=19.5, forecast=None, opponent="NYK",
+        game_time="2026-10-22T23:00:00Z",
+    )
+    assert result["recent_verified_finals"] == [{
+        "game_date": "2026-10-20", "game": "BOS @ NYK", "points": 23.0,
+        "source": "espn", "imported_at": None,
+    }]
 
 
 def test_late_eastern_tip_does_not_include_same_day_final():
@@ -216,7 +361,30 @@ def test_market_prior_does_not_create_a_validated_probability():
     )
     assert result["projection"]["expected_points"] is None
     assert result["projection"]["over_probability"] is None
+    assert result["projection"]["observed_scoring_spread"] is None
     assert result["market"]["status"] == "No Validated Edge"
+
+
+def test_verified_forecast_exposes_observed_spread_without_claiming_prediction_interval():
+    forecast = PropForecast(
+        projection=24.0, probability=60, standard_deviation=5, sample_size=10,
+        effective_sample_size=8, source="verified_history_distribution", model_version="test",
+        paid_eligible=False, reason="research", feature_as_of="2026-10-21T00:00:00Z",
+        features={}, distribution={
+            "floor": 12, "percentile_25": 18, "median": 23,
+            "percentile_75": 28, "ceiling": 34,
+            "uncertainty_level": "High", "uncertainty_drivers": ["Minutes vary"],
+        },
+    )
+    history = [{**game("2026-10-20", 25), "season_type": "regular"}]
+    projection = build_nba_points_intelligence(
+        history, line=20.5, forecast=forecast, opponent="NYK", game_time="2026-10-22",
+    )["projection"]
+
+    assert projection["observed_scoring_spread"]["p25"] == 18
+    assert projection["observed_scoring_spread"]["p90"] == 34
+    assert "not a calibrated next-game prediction interval" in projection["observed_scoring_spread"]["label"]
+    assert projection["uncertainty_drivers"] == ["Minutes vary"]
 
 
 def test_rolling_baseline_uses_only_earlier_games():
@@ -368,6 +536,7 @@ def test_conflicting_finals_withhold_research_probability_even_with_a_verified_f
 
     assert result["projection"]["expected_points"] is None
     assert result["projection"]["over_probability"] is None
+    assert result["projection"]["observed_scoring_spread"] is None
     assert "stored finals disagree" in result["projection"]["note"]
 
 

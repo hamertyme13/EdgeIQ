@@ -102,6 +102,7 @@ class AutoPaperCalibrationPayload(BaseModel):
     leg_count: int = Field(default=2, ge=2, le=6)
     max_entries: int = Field(default=3, ge=1, le=10)
     standard_batch: bool = False
+    high_only: bool = False
     batch_plan: list[int] | None = Field(default=None, min_length=1, max_length=6)
     prefer_confirmed: bool = True
     dry_run: bool = False

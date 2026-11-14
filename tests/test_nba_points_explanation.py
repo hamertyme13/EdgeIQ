@@ -37,6 +37,29 @@ def test_explanation_uses_verified_games_and_separates_history_from_prediction()
     assert result["fact_details"][0]["evidence"]
 
 
+def test_detailed_explanation_attaches_only_supplied_verified_final_records():
+    def research_with_records(*_args):
+        payload = _research()
+        payload["nba_points_intelligence"]["recent_verified_finals"] = [{
+            "game_date": "2026-10-20", "game": "BOS @ NYK", "points": 23,
+            "source": "espn", "imported_at": None,
+        }]
+        return payload
+
+    detailed = build_nba_points_explanation(
+        "Sample Player", 24.5, "PrizePicks", "detailed", research=research_with_records,
+        prioritize=lambda facts: [fact["id"] for fact in facts],
+    )
+    hit_rate = next(fact for fact in detailed["fact_details"] if fact["id"] == "hit_rate")
+    assert hit_rate["source_records"][0]["points"] == 23
+    assert hit_rate["source_links"] == []
+
+    concise = build_nba_points_explanation(
+        "Sample Player", 24.5, "PrizePicks", "concise", research=research_with_records,
+    )
+    assert all(not fact["source_records"] for fact in concise["fact_details"])
+
+
 def test_conflicting_finals_cannot_leak_general_forecast_into_explanation():
     def conflicting(*_args):
         payload = _research()

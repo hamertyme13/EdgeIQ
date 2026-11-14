@@ -62,6 +62,26 @@ def test_monthly_accuracy_keeps_all_evaluated_and_sixty_plus_separate():
     assert (previous["accuracy"], previous["all_evaluated"]["accuracy"]) == (0.0, 0.0)
 
 
+def test_high_score_accuracy_backfills_saved_scores_by_placement_month():
+    october = datetime(2026, 10, 31, 22, 0, tzinfo=UTC)
+    november = datetime(2026, 11, 2, 17, 0, tzinfo=UTC)
+    december = datetime(2026, 12, 1, 10, 0, tzinfo=UTC)
+    high_win = _entry("Win", november, mode="paper")
+    high_win["audit_snapshot"]["recommendation"] = {"score": 139}
+    high_loss = _entry("Loss", november)
+    high_loss["audit_snapshot"] = '{"recommendation":{"score":91}}'
+    high_loss["settled_at"] = december
+    low = _entry("Win", november)
+    low["audit_snapshot"]["recommendation"] = {"score": 89.9}
+    no_score = _entry("Win", november)
+    older = _entry("Win", october)
+    older["audit_snapshot"]["recommendation"] = {"score": 120}
+
+    result = monthly_dashboard_performance([], [high_win, high_loss, low, no_score, older], "2026-11")
+    cohort = result["recommendation_accuracy"]["high_edgeiq_score"]
+    assert (cohort["wins"], cohort["losses"], cohort["accuracy"], cohort["tracked"]) == (1, 1, 50.0, 2)
+
+
 def test_month_rollover_uses_eastern_calendar_day():
     assert _month_key("2026-10-01T01:00:00Z") == "2026-09"
     assert _month_key("2026-10-01T05:00:00Z") == "2026-10"

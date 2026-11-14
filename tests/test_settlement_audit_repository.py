@@ -57,6 +57,42 @@ def test_settlement_queue_flags_result_conflicts_without_regrading(monkeypatch):
         assert session.get(EntryModel, 1).result == "Loss"
 
 
+def test_integrity_distinguishes_determined_loss_from_estimated_win(monkeypatch):
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(audit_module, "SessionLocal", session_factory)
+    monkeypatch.setattr(audit_module, "initialize_database", lambda: None)
+    with session_factory() as session:
+        for entry_id, result in ((1, "Loss"), (2, "Win")):
+            session.add(EntryModel(
+                id=entry_id, platform="PrizePicks", average_confidence=50,
+                average_edge=0, wager=10, multiplier=3, entry_mode="real",
+                payout_type="standard", status="Settled", result=result,
+            ))
+        session.flush()
+        for entry_id in (1, 2):
+            session.add(EntryPropModel(
+                entry_id=entry_id, player_name="Verified loser", sport="WNBA",
+                stat="Points", line=15.5, final_result="Loss", actual=10,
+                final_status="played", final_source="espn",
+            ) if entry_id == 1 else EntryPropModel(
+                entry_id=entry_id, player_name="Estimated winner", sport="MMA",
+                stat="Significant Strikes", line=15.5, final_result="Win", actual=16,
+                final_status="estimated", final_source="projection_estimate",
+            ))
+            session.add(EntryPropModel(
+                entry_id=entry_id, player_name="Missing final", sport="WNBA",
+                stat="Assists", line=4.5, final_result="Unknown",
+                final_status="unknown", final_source="unmatched",
+            ))
+        session.commit()
+
+    result = SettlementAuditRepository.queue()["integrity"]
+    assert [entry["entry_id"] for entry in result["entries"]] == [2]
+    assert result["entries"][0]["reasons"] == ["settled_with_unresolved_leg"]
+
+
 def test_settlement_audit_deduplicates_retries(monkeypatch):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)

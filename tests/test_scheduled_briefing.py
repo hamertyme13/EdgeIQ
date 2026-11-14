@@ -50,7 +50,7 @@ def test_incomplete_shadow_cohort_waits_without_marking_daily_run_complete():
     )
 
     assert result["result"]["retry_needed"] is True
-    assert retry_minutes("shadow_cohort") == 60
+    assert retry_minutes("shadow_cohort") == 20
     assert "daily_scheduler_run:shadow_cohort" not in settings
     status = json.loads(settings["daily_scheduler_job_status:shadow_cohort"])
     assert status["state"] == "waiting"

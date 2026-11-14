@@ -1,5 +1,11 @@
 # NBA Points Intelligence
 
+The locked historical-range validator now lives in
+`analytics/observed_stat_range.py` and can also evaluate rebounds and assists.
+Research hides projected distributions for all stats when the forecast is only
+a market prior. This is a reusable evidence guard, not a validated rebounds or
+assists model or a change to paid recommendations.
+
 NBA Points research is available from Research > Prop Research 2.0. Select NBA,
 enter a player and Points, and optionally enter an exact sportsbook line.
 The response extends the existing player research API with
@@ -28,6 +34,11 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   stored-final timestamp in the API. An ingest that already overwrote a row
   cannot be reconstructed by this screen. This research-only screen does
   not alter settlement or the production recommendation feed.
+- The generic NBA Points Research chart, splits, and forecast now use those
+  same screened official finals rather than entry-derived history. Conflicting
+  stored finals also hide the generic projection and sensitivity display.
+  This is a Research-only evidence correction; production recommendations are
+  not refitted by this path.
 - If raw stored finals disagree on points or season type, the NBA research pane
   withholds its forecast and exact-line probability even when the separate
   production forecast exists. The production forecast and recommendation
@@ -60,6 +71,15 @@ forecast sample size or paid eligibility, but does not introduce a new model.
 - Reports numerator, denominator, pushes, mean, median, population standard
   deviation, and a 95% Wilson interval for historical hit rates. The interval
   describes sampling uncertainty in past outcomes, not next-game probability.
+  Research displays the threshold's decided-game denominator beside its hit
+  count; each threshold can expand to show average, median, standard deviation,
+  pushes, and the historical 95% interval without crowding the chart.
+- Detailed NBA Points explanations can expand up to five underlying verified
+  regular-season player finals with game date, matchup, points, and provider.
+  Unlabeled, future, duplicate-conflicted, and unverified-source games do not
+  appear in that evidence list. Player-final URLs are not fabricated when the
+  stored final lacks a provider game URL; official team-game links remain
+  separate when available.
 - The Verified season tab includes only finals explicitly labeled regular
   season. The Tracked window tab retains unlabeled games with a visible count;
   an unlabeled game is never assumed to be regular season.
@@ -81,6 +101,10 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   the returned event must match the provider offer's start time. Malformed
   quote fields fail closed. The Research pane shows the oldest contributing
   quote time; it never treats external-book prices as a verified DFS payout.
+  When contributing books identify their exact-line Over and Under prices,
+  Research also shows the best named sportsbook price and its break-even
+  probability. This is price context, not the no-vig consensus, a verified
+  PrizePicks/Underdog card payout, or a validated EV claim.
   Successful on-demand checks store an immutable, deduplicated market quote
   snapshot in a dedicated table with the provider offer identity, exact line,
   sportsbook event, contributing prices, quote time, and model version when
@@ -166,7 +190,11 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   ties receive a midpoint). This is a descriptive team-defense comparison,
   not a validated player hit probability, projection adjustment, or edge.
   Sparse league coverage withholds the rank and indicator. Position-specific
-  points allowed and injury effects remain unavailable without verified data.
+  points allowed and quantified injury effects remain unavailable without
+  verified data. Current opponent reports from the already-fetched ESPN injury
+  feed appear separately only when the team matches and retrieval was within
+  one hour before tipoff. They do not confirm a lineup, alter the forecast, or
+  become retroactive pregame evidence for model validation.
 - When stored official NBA team finals exist before tipoff, the research pane
   shows the opponent's recent team points allowed and the league sample average.
   This is team-level context, not points allowed to a position or a validated
@@ -180,7 +208,14 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   those same official regular-season games include complete team box scores,
   the pane also shows a bounded estimate of opponent game possessions per
   regulation game. Invalid or missing estimates are excluded. Pace is
-  descriptive context and does not alter the player projection.
+  descriptive context and does not alter the player projection. A separate
+  pace rank compares the opponent's five most recent complete official box
+  scores against teams with the same five-game coverage; at least ten teams
+  must qualify. It remains unavailable when coverage is thin.
+  The opponent's recent-ten points-allowed average is compared only with the
+  mean of other qualifying teams' recent-ten averages. A sparse full-season
+  league scoring mean is not substituted for this like-for-like comparison;
+  the league average and difference remain unavailable until ten teams qualify.
 - The desktop scheduler collects a bounded NBA team-final slice daily at 05:30
   Eastern while the app is running. The collection preserves official ESPN
   regular/preseason/postseason labels, retries failures, and uses an operation
@@ -220,7 +255,15 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   once toward overall maturity.
   Market-prior-only board captures remain in the shadow ledger for coverage
   and settlement diagnostics, but are excluded from model accuracy. A points
-  forecast needs at least five verified regular-season games for its player;
+  calibration view now separates prospective board forecasts from placed
+  entries by confidence bucket. Only outcomes with verified history-import
+  timing count in these new cohort buckets; the view reports the mean locked
+  probability, observed wins, and a Wilson 95% interval around the observed
+  hit rate. The existing combined buckets remain for backward compatibility,
+  but may be selection-biased and must not be read as board-wide accuracy.
+  The new intervals describe settled-sample uncertainty, not a next-game
+  probability or challenger promotion. A points forecast needs at least five
+  verified regular-season games for its player;
   Data Health reports when that history gate leaves a cohort unqualified and
   shows the largest verified-game count among market-prior captures. The
   board-cohort status also counts which locked forecasts had enough verified
@@ -244,15 +287,49 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   The
   locked-model view also reports settled market-prior exclusions even if no
   independently settled forecast qualifies yet.
-  Once a model version has at least 30 settled prospective board offers across
-  five game dates, a later-games check reserves the final 30% of game dates
+  The headline MAE, exact-line comparison, and Brier now use only outcomes
+  with verified pregame history-import timing. Older eligible outcomes remain
+  in separate descriptive totals; they do not inflate the headline sample or
+  establish chronological holdout performance.
+  A paired same-offer check now states whether the verified forecast's points
+  error beat or trailed the exact market line. It reports uncertainty when
+  date-block resampling spans no advantage; this descriptive comparison is
+  never a substitute for the later-game holdout or a paid release decision.
+  The date-block bootstrap resamples each date's full set of paired offers,
+  preserving its sample count. This keeps the uncertainty range aligned with
+  the offer-weighted MAE difference; equal-weight daily means could disagree
+  with that point estimate on uneven slates.
+  A separate research-only 80% interval audit evaluates locked board
+  projections against later verified finals. Each test-date interval uses
+  absolute errors from at least 30 earlier, import-verified board outcomes
+  across five earlier game dates; same-day finals are withheld until the next
+  date. Observed coverage and average width remain hidden until at least ten
+  later outcomes across two later game dates have been evaluated; smaller
+  tests retain raw counts but show an insufficient-later-games state. It does not place an interval on
+  a live player's next-game forecast or authorize paid promotion.
+  Once a model version has at least 30 settled prospective board offers with
+  verified pregame history-import timing across five game dates, a later-games
+  check reserves the final 30% of game dates
   (at least ten offers). It compares the locked forecast, recent-five mean,
   and exact line on those later games. Minutes and shot-volume challenger errors
   use their own paired samples only where each pregame estimate was locked.
+  The same later board cohort also reports paired challenger MAE advantages
+  against the current forecast, recent-five mean, and exact line. An
+  exploratory 95% uncertainty range resamples game dates rather than
+  correlated props within a date, and is shown only with at least 30
+  import-verified paired outcomes across five later game dates. Positive
+  projection-error differences cannot promote either challenger without
+  calibrated exact-line probabilities and stronger independent evidence.
+  The top-level minutes and shot-volume comparison now uses only prospective
+  board offers with verified pregame history-import timing. Placed-entry
+  selections and older unverified forecasts remain descriptive elsewhere, not
+  part of this challenger headline. Same-offer date-block uncertainty is shown
+  so small error differences are not mistaken for a proven improvement.
   Game dates and the pregame history cutoff use the game's Eastern date,
   including late tips that fall on the next UTC calendar date. A history
   snapshot through that Eastern game date is excluded as possible leakage.
-  This is exploratory monitoring, not a
+  Board forecasts without verified history timing are counted as withheld,
+  not included in the later-games errors. This is exploratory monitoring, not a
   trained holdout model or a promotion decision; placed entries are excluded.
   A market line is not a no-vig probability. Matchup
   difficulty, EV, and challenger-vs-champion promotion remain unavailable
@@ -260,9 +337,17 @@ forecast sample size or paid eligibility, but does not introduce a new model.
   A separate hourly NBA Points shadow settlement pass now checks at most 250
   prospective board forecasts against verified final stats. It bypasses the
   older general shadow backlog without changing that backlog or relaxing the
-  game-completion window. Data Health reports the latest NBA-specific attempt
+  game-completion window. The pass checks never-attempted rows before retrying
+  older unresolved rows, then rotates by last check time; an unmatched old
+  player-game cannot occupy the entire batch on every run. Data Health reports the latest NBA-specific attempt
   separately from general shadow settlement; unresolved games remain pending
   with a reason and are retried on a later pass.
+  The read-only pending-cohort audit (`python -m scripts.audit_nba_points_shadow_pending`)
+  compares past-due player/date Points coverage with stored finals. It flags
+  same-player, same-matchup nearby-day records only for review; it never shifts
+  a game date or assigns an outcome. In the November 12 local audit, 68 older
+  pending board forecasts lacked a saved player-day Points final, while 33
+  newly captured forecasts were correctly deferred until their games finish.
 
 ## Safe rollout and next validation
 
@@ -270,6 +355,13 @@ The NBA Points challengers remain research-only and do not modify recommendation
 scoring or paid release gates. The separate zero-point participation integrity
 gate can reduce the existing forecast's eligible history. Before using a
 points-specific challenger for paid suggestions:
+
+The five-game player-history gate and the independent validation gate are
+different. A player with five verified regular-season finals can receive a
+history-based forecast today, while older market-prior snapshots must remain
+market-prior snapshots. The daily board collector records how many current
+offers qualified, and the locked-model report counts only outcomes with
+verified pregame history timing toward evidence maturity.
 
 1. Backfill trustworthy season-type labels for legacy finals and capture
    verified opponent defense and pace with timestamps.
@@ -292,7 +384,13 @@ points-specific challenger for paid suggestions:
   minutes-based and shot-volume shadow baselines; exact-market comparison on request;
   bounded locked-prediction validation; concise/detailed grounded explanations;
   raw-final conflict screening; and persisted research evidence containing
-  provenance and exclusion counts.
+  provenance and exclusion counts. The Research pane also shows the verified
+  forecast's recent observed 10th-90th and 25th-75th scoring ranges and
+  uncertainty drivers. These historical ranges are not calibrated next-game
+  prediction intervals and disappear when the forecast is withheld. The locked
+  model record now audits how often independently settled finals fell inside
+  those pregame ranges, including a later-games board cohort when enough
+  outcomes exist. Coverage is descriptive and never promotes the challenger.
 - **Primary files:** `web/application/nba_points_intelligence.py`,
   `web/application/nba_points_market.py`,
   `web/application/nba_points_explanation.py`,
@@ -333,6 +431,10 @@ points-specific challenger for paid suggestions:
   against the champion, recent-five mean, and market line. Each challenger has
   its own paired count; older snapshots without the estimate remain unpaired.
   Neither shadow estimate has a calibrated exact-line probability.
+  The Research matchup view now exposes the already-computed last-5, last-10,
+  and last-20 opponent team points-allowed windows. A bottom-ten NBA defense
+  label is shown only when all 30 teams have enough comparable pregame games;
+  a rank among a partial qualifying set never receives that league-wide label.
 - **Rollout:** Challengers remain research-only. No new recommendation score,
   entry generator, or settlement result is introduced; the participation gate
   may reduce existing NBA Points forecast sample size and paid eligibility.
@@ -343,3 +445,139 @@ points-specific challenger for paid suggestions:
   completed at 390 px and 320 px viewport widths without horizontal overflow;
   the 390 px panel was widened for readability. This is not a physical-device
   or hosted-deployment verification.
+
+# Shadow board eligibility
+
+Prospective NBA Points shadow forecasts use individual-player standard offers
+whose team appears in the listed game. Multi-player combo offers and mismatched
+game/team observations stay in the archived provider board but do not enter the
+individual Points validation cohort. Previously captured shadow rows remain
+available for audit; this filter does not retroactively count them as settled
+evidence. The scheduled NBA shadow settlement pass marks legacy combo or
+game/team-mismatched rows as `shadow_excluded` with a reason, removing them from
+repeated final-stat lookups and from settlement-failure counts. This does not
+assign a win, loss, or push to an unverified offer.
+The NBA-specific pass selects due player-games before loading its bounded
+settlement batch. Future games do not consume attempt slots or receive an
+artificial retry timestamp; Data Health shows the latest pass's settled,
+waiting-for-finals, and skipped-future counts. Other shadow models retain
+their existing settlement order.
+When a live board exceeds the per-run forecast budget, subsequent collection
+passes consult the already-persisted player-games in that day's shadow cohort
+and process the remaining candidates. A complete status requires every visible
+candidate to be captured; retries cannot repeatedly forecast only the first
+slice of a large slate. The board query first selects the latest standard offer
+per player and scheduled game, so repeated hourly line snapshots do not consume
+the scan limit before other players are considered. The query checks one
+additional distinct player-game beyond its scan limit, so an exact-limit board
+is no longer reported as truncated and retried unnecessarily. The cohort remains
+shadow-only.
+When the day's board is still incomplete, the scheduler now checks again after
+20 minutes rather than an hour; a completed cohort remains on its normal daily
+schedule. This reduces the chance that a late-arriving provider board misses
+the pregame lock window without relaxing freshness or history requirements.
+Data Health reads cumulative captured and history-qualified counts from the
+persisted daily cohort. A repeat pass that creates zero new rows no longer
+displays zero qualified forecasts when earlier pregame snapshots remain saved.
+It also counts history-qualified forecasts whose feature snapshot and database
+lock both precede game time and whose history imports have verified timing.
+Market-prior captures remain separate even when their lock timestamp is valid.
+Older snapshots with a four-hour feature/lock discrepancy remain excluded from
+chronological evaluation; the observed offset alone does not prove their true
+lock time or justify rewriting historical outcomes.
+
+# November 13 evidence check
+
+The opportunity-aware NBA Points challenger has 74 eligible settled board
+offers over five game dates, including 33 later holdout offers. Its holdout
+projection MAE is 4.393 points versus 3.5 for the exact sportsbook line and
+4.6 for the locked recent-five mean. It has not beaten the line baseline and
+remains research-only. The validation payload now states the exact-line MAE
+verdict alongside the paired holdout metrics; this does not turn a line into
+a market win probability.
+
+`scripts/repair_nba_points_shadow_finals.py` previews exact NBA player,
+matchup, game-date, and Points matches from the official final box score.
+Run with `--apply` only after reviewing its preview. The November 10, 9, and
+8 dry run found no exact recoverable finals for 13 pending shadow rows, so no
+outcome was inferred. Older pending rows remain unresolved until a trustworthy
+matching source is available.
+The bounded seven-date diagnostic now compares those offers with official
+game schedules and box-score rosters before suggesting an import. On November
+13 it found 29 unresolved offers whose games appeared on the schedule but
+whose players were absent from that day's official Points box score. Absence
+is not automatically a DNP or a loss; these offers remain outside validation.
+New shadow captures retain the provider player, offer, and game IDs from the
+archived board payload alongside their display names. Separate games for the
+same player on one day no longer collapse into one candidate. Provider game IDs
+are provenance only; they are not presumed to match ESPN IDs, and historical
+shadow snapshots are not rewritten.
+Before queueing new NBA Points shadow forecasts, the collector now checks the
+day's official NBA schedule once. An offer with a matchup absent from a
+successfully fetched official schedule stays archived but is not queued as
+model evidence; Data Health shows the exclusion count. If the official schedule
+cannot be refreshed, the offer remains research-only and carries an explicit
+`schedule_evidence=unavailable` label instead of being treated as verified.
+This checks the *game*, not whether the player will participate; recent trades,
+lineups, and DNPs still require separate verified evidence.
+
+## November 14 pending-shadow investigation
+
+`python -m scripts.research_nba_shadow_gap` is a read-only audit of overdue NBA
+Points shadow offers. It links each old shadow snapshot back to its archived
+provider observation, then checks the official NBA game schedule, completed
+team result, and player Points box-score roster on the offered Eastern game
+date. It does not write a DNP, win, loss, or push.
+
+The local audit classified all 68 past-due shadow offers across 15 dates: every
+offered game was on the official schedule and had a final team result, but the
+offered player was absent from that game's official ESPN Points roster. All 68
+archived PrizePicks observations retained a player ID and game ID, were
+captured pregame with a non-stale verified offer, and could be linked back from
+the shadow ledger. Thirty-five of the 68 player-offer rows had the same player
+appear for the offered team on another checked date; 33 did not appear in this
+bounded window. These are offer-row counts, not unique players.
+
+The official NBA injury reports independently confirm some absences, including
+Josh Hart and Lauri Markkanen on November 10 and Scottie Barnes, Immanuel
+Quickley, Collin Murray-Boyles, Trey Murphy III, Zion Williamson, and Austin
+Reaves on November 9. The reviewed sources are the
+[November 10 official injury report](https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-10_08_30PM.pdf),
+[November 9 official injury report](https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-09_11_45PM.pdf),
+and [Utah Jazz recap](https://www.nba.com/jazz/news/utah-jazz-comeback-attempt-falls-short-against-miami-heat-key-takeaways).
+That supports a missing-participation explanation for
+those examples, but is not proof for all 68. ESPN's final box-score athlete
+list omitted at least one of these players entirely rather than carrying a
+`didNotPlay` row, so the current ESPN final-stat parser cannot safely infer a
+DNP for every absent roster name. A separate dated, exact player-and-game
+official availability source is needed before excluding or settling each row.
+`data/providers/nba_availability.py` now parses dated NBA-hosted injury-report
+PDFs with exact report date, player, matchup, and status. The reconciliation
+command previews by default:
+
+```
+python -m scripts.reconcile_nba_shadow_availability \
+  https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-11-09_11_45PM.pdf
+```
+
+`--apply` changes only an NBA Points shadow forecast to `shadow_excluded` when
+the report explicitly says `Out`, the official game is final, and no verified
+player final exists. The report URL is recorded on the row. It does not create
+a zero-point result, grade a paid entry, or count a DNP as a model miss.
+On November 14, exact official reports excluded 34 of the original 68
+past-due shadows. The remaining 34 have no exact row in those late injury
+reports and remain unresolved. The NBA CDN's structured box-score endpoint
+returned HTTP 403 here, so it was not used as a fallback or bypassed.
+
+The later-game report also provides paired exact-line error uncertainty and
+confidence-bucket calibration for the held-out offers, separately from the
+all-time descriptive buckets. Neither result qualifies the challenger for
+paid promotion or verifies DFS payout.
+
+Recent NBA team history now stores official three-point makes/attempts and
+paint points for both teams when complete box-score evidence is available.
+Research shows pooled opponent three-point percentage, made threes, and paint
+points only with at least five complete pregame games. These are descriptive
+team-level matchup inputs, not positional defense, player-specific causation,
+or a production forecast adjustment. The evidence version triggers one bounded
+seven-day backfill; existing forecast snapshots are not rewritten.

@@ -218,10 +218,23 @@ def test_saved_slate_groups_champion_and_challenger_by_game():
     for version in ("game-market-baseline-v1", GAME_CONTEXT_CHALLENGER_VERSION):
         snapshot = predict_game(_features(game_id="grouped-game-test"), model_version=version).snapshot()
         GamePredictionRepository.save(snapshot | {"generated_at": generated_at})
-    grouped = [row for row in latest_slate_predictions("WNBA", 100) if row["champion"]["game_id"] == "grouped-game-test"]
+    grouped = [row for row in latest_slate_predictions("WNBA", 100) if (row["champion"] or {}).get("game_id") == "grouped-game-test"]
     assert len(grouped) == 1
     assert grouped[0]["champion"]["model_version"] == "game-market-baseline-v1"
     assert grouped[0]["challenger"]["model_version"] == GAME_CONTEXT_CHALLENGER_VERSION
+
+
+def test_saved_slate_does_not_relabel_shadow_only_prediction_as_champion(monkeypatch):
+    day = date(2026, 11, 10)
+    monkeypatch.setattr(GamePredictionRepository, "latest_for_game_day", lambda sport, game_day: [{
+        "game_id": "shadow-only-test", "game": "A @ B", "game_start": "2026-11-11T00:00:00Z",
+        "model_version": GAME_CONTEXT_CHALLENGER_VERSION,
+    }])
+    rows = latest_slate_predictions("NBA", game_day=day)
+    assert len(rows) == 1
+    assert rows[0]["champion"] is None
+    assert rows[0]["primary"]["model_version"] == GAME_CONTEXT_CHALLENGER_VERSION
+    assert rows[0]["comparison"] is None
 
 
 def test_game_day_uses_new_york_start_date():

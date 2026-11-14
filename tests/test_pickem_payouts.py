@@ -141,6 +141,44 @@ def test_saved_flex_entry_settles_with_its_exact_payout_table(db_session, monkey
     assert "Same-day final-stat correction" in EntryRepository.get_by_id(entry.id)["audit_snapshot"]
 
 
+def test_pending_paid_loss_preserves_reconciliation_reason(db_session, monkeypatch):
+    import json
+
+    from sqlalchemy.orm import sessionmaker
+
+    from repository.models.entry_model import EntryModel
+    from repository.models.entry_prop_model import EntryPropModel
+    from repository.repositories import entry_repository
+    from repository.repositories.entry_repository import EntryRepository
+
+    monkeypatch.setattr(entry_repository, "SessionLocal", sessionmaker(bind=db_session.connection()))
+    monkeypatch.setattr(EntryRepository, "_ensure_schema", lambda: None)
+    monkeypatch.setattr(EntryRepository, "_sync_entry_to_bet_history", lambda entry: None)
+    entry = EntryModel(
+        platform="PrizePicks", average_confidence=50, average_edge=0,
+        wager=5, multiplier=3, payout_type="standard", status="Pending",
+        entry_mode="real",
+    )
+    db_session.add(entry)
+    db_session.flush()
+    for result, actual in (("Loss", 10), ("Win", 20), ("", None)):
+        db_session.add(EntryPropModel(
+            entry_id=entry.id, player_name="Test", sport="NFL", stat="Receptions",
+            line=15.5, direction="Over", platform="PrizePicks",
+            final_result=result, actual=actual,
+            final_status="played" if actual is not None else "",
+            final_source="espn" if actual is not None else "",
+        ))
+    db_session.flush()
+
+    settled = EntryRepository.settle(
+        entry.id, "Loss", correction_reason="Verified loss with one unknown leg",
+    )
+    assert settled == {"id": entry.id, "result": "Loss", "profit": -5.0}
+    snapshot = json.loads(EntryRepository.get_by_id(entry.id)["audit_snapshot"])
+    assert snapshot["settlement_reconciliations"][-1]["reason"] == "Verified loss with one unknown leg"
+
+
 def test_all_winning_pick6_flex_uses_recorded_multiplier():
     assert settlement_return_multiplier("DraftKings Pick6", "flex", [{"result": "Win"}] * 3, 5.0) == 5.0
 

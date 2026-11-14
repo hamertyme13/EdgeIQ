@@ -1,8 +1,46 @@
 from web.application.recommendation_service import (
+    _generate_entry_suggestions,
+    builder_offers_payload,
     entry_suggestions_payload,
     generator_games_payload,
     trending_props_payload,
 )
+
+
+def test_builder_offers_are_exact_player_current_full_game_markets() -> None:
+    base = {"platform": "PrizePicks", "league": "NBA", "player": "Jose Alvarado",
+            "game": "NOP @ GSW", "game_time": "2026-11-10T23:00:00Z", "stat": "Points",
+            "line": 8.5, "direction": "Over", "line_offer_type": "standard"}
+    rows = [base, dict(base), {**base, "line": 6.5, "line_offer_type": "goblin"},
+            {**base, "player": "Other Player"}, {**base, "game": ""},
+            {**base, "league": "NFL"}, {**base, "platform": "Underdog"},
+            {**base, "stat": "Untracked Stat"}]
+    result = builder_offers_payload("NBA", "PrizePicks", "José Alvarado", fetch_props=lambda *args: rows)
+    assert result["count"] == 2
+    assert [offer["line"] for offer in result["offers"]] == [8.5, 6.5]
+    assert "confirm availability" in result["message"]
+
+
+def test_builder_offers_accept_draftkings_provider_alias() -> None:
+    offer = {"platform": "DraftKings", "league": "NBA", "player": "Test Guard",
+             "game": "NOP @ GSW", "game_time": "2026-11-10T23:00:00Z", "stat": "Points", "line": 8.5}
+    result = builder_offers_payload("NBA", "DraftKings Pick6", "Test Guard", fetch_props=lambda *args: [offer])
+    assert result["count"] == 1
+    assert result["offers"][0]["platform"] == "DraftKings Pick6"
+
+
+def test_generator_shortlist_keeps_distinct_players_ahead_of_repeat_markets() -> None:
+    props = [
+        {"player": "Popular Player", "source_score": 100 - index, "stat": f"Stat {index}"}
+        for index in range(45)
+    ] + [{"player": "Another Player", "source_score": 1, "stat": "Points"}]
+    observed = []
+    _generate_entry_suggestions(
+        [("PrizePicks", props)], "NBA", 2,
+        lambda rows, *args, **kwargs: observed.extend(rows) or [], set(),
+    )
+    assert {row["player"] for row in observed} == {"Popular Player", "Another Player"}
+    assert len(observed) == 40
 
 
 def test_generator_games_lists_only_same_day_identifiable_provider_matchups() -> None:
@@ -67,6 +105,34 @@ def test_generator_game_and_direction_filter_reach_only_selected_candidates() ->
     )
     assert stale["suggestions"] == []
     assert calls == []
+
+
+def test_selected_game_uses_full_board_even_when_briefing_has_enough_players() -> None:
+    game = "Aces vs Storm"
+    briefing = [
+        {"platform": "PrizePicks", "sport": "WNBA", "game": game,
+         "game_time": "2026-10-15T23:00:00Z", "player": player, "stat": "Points", "line": 10.5}
+        for player in ("A", "B")
+    ]
+    board = briefing + [
+        {**briefing[0], "player": player, "stat": "Rebounds", "line": 5.5}
+        for player in ("C", "D")
+    ]
+    calls = []
+    result = entry_suggestions_payload(
+        "WNBA", "PrizePicks", 2, game_key="WNBA|ACES@STORM",
+        canonical_platform=lambda value: value,
+        entry_platforms={"PrizePicks"},
+        cached_briefing=lambda *args: {"cache": {"stale": False}, "top_opportunities": briefing},
+        fetch_props=lambda *args: board,
+        props_by_platform=lambda platform, rows: [(platform, rows)] if rows else [],
+        mixed_risk=lambda *args: [],
+        suggest=lambda rows, *args, **kwargs: calls.append(rows) or [],
+        serialize_suggestion=lambda value: value,
+    )
+    assert {row["player"] for row in calls[0]} == {"A", "B", "C", "D"}
+    assert result["available_players"] == 4
+    assert result["performance"]["source"] == "live_provider_board"
 
 
 def test_gaming_markets_are_visible_but_not_graded_as_paid_recommendations() -> None:

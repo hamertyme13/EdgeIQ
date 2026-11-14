@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -129,6 +130,7 @@ def test_nba_points_board_reader_keeps_locked_forecast_and_outcome(tmp_path, mon
     assert len(evidence) == 1
     assert evidence[0]["feature_snapshot"] == snapshot
     assert evidence[0]["feature_as_of"] == snapshot["feature_as_of"]
+    assert evidence[0]["team"] == ""
     assert evidence[0]["evidence_origin"] == "prospective_board"
     report = evaluate_nba_points_predictions(evidence)
     assert report["eligible_independent"] == 1
@@ -426,3 +428,153 @@ def test_nba_board_settlement_is_not_starved_by_older_shadow_rows(tmp_path, monk
         assert rows["old-shadow"].settlement_attempts == 0
         assert rows["nba-points-board/champion"].status == "Win"
     assert ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")["settled"] == 0
+
+
+def test_nba_board_settlement_rotates_past_unresolved_older_games(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    ModelRehabilitationRepository._legacy_migrated = True
+    older = {"player": "Unmatched Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+             "direction": "Over", "platform": "PrizePicks", "game": "AAA @ BBB",
+             "game_time": "2026-10-08T20:00:00Z"}
+    newer = {"player": "Verified Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+             "direction": "Over", "platform": "PrizePicks", "game": "CCC @ DDD",
+             "game_time": "2026-10-09T20:00:00Z"}
+    ModelRehabilitationRepository.queue_shadow([older, newer], model_version="nba-points-board/test", target=None)
+    monkeypatch.setattr(
+        "repository.repositories.model_rehabilitation_repository.FinalStatsRepository.find_result",
+        lambda prop: {"actual": 24.0, "status": "played", "source": "ESPN public"}
+        if prop["player"] == "Verified Player" else None,
+    )
+
+    first = ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")
+    second = ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")
+
+    assert first["pending"] == 1
+    assert second["settled"] == 1
+    with sessions() as session:
+        rows = {row.player: row for row in session.query(ShadowPredictionModel).all()}
+        assert rows["Unmatched Player"].status == "shadow_pending"
+        assert rows["Unmatched Player"].last_attempt_at is not None
+        assert rows["Verified Player"].status == "Win"
+
+
+def test_nba_board_settlement_skips_future_games_without_using_batch(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    ModelRehabilitationRepository._legacy_migrated = True
+    future = {"player": "Future Player", "sport": "NBA", "stat": "Points", "line": 20.5,
+              "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
+              "game_time": "2030-10-08T20:00:00Z"}
+    due = {**future, "player": "Due Player", "game_time": "2026-10-08T20:00:00Z"}
+    ModelRehabilitationRepository.queue_shadow(
+        [future, due], model_version="nba-points-board/test", target=None,
+    )
+    with sessions() as session:
+        row = session.query(ShadowPredictionModel).filter_by(player="Future Player").one()
+        row.last_attempt_at = None
+        session.query(ShadowPredictionModel).filter_by(player="Due Player").one().last_attempt_at = datetime(2026, 10, 8)
+        session.commit()
+    seen = []
+
+    def final_for(prop):
+        seen.append(prop["player"])
+        return {"actual": 24.0, "status": "played", "source": "espn"}
+
+    monkeypatch.setattr(rehabilitation_module.FinalStatsRepository, "find_result", final_for)
+    result = ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")
+
+    assert result["settled"] == result["attempted"] == result["deferred_future"] == 1
+    assert seen == ["Due Player"]
+    with sessions() as session:
+        future_row = session.query(ShadowPredictionModel).filter_by(player="Future Player").one()
+        assert future_row.last_attempt_at is None
+        assert future_row.settlement_attempts == 0
+
+
+def test_nba_board_settlement_excludes_legacy_combo_without_final_lookup(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    ModelRehabilitationRepository._legacy_migrated = True
+    ModelRehabilitationRepository.queue_shadow([{
+        "player": "Player One + Player Two", "team": "BOS/NYK", "sport": "NBA",
+        "stat": "Points", "line": 40.5, "direction": "Over", "platform": "PrizePicks",
+        "game": "BOS @ NYK", "game_time": "2026-10-08T20:00:00Z",
+    }], model_version="nba-points-board/test", target=None)
+    monkeypatch.setattr(
+        "repository.repositories.model_rehabilitation_repository.FinalStatsRepository.find_result",
+        lambda _prop: pytest.fail("Legacy combo must not be sent to individual final-stat lookup"),
+    )
+
+    result = ModelRehabilitationRepository.settle_pending(limit=1, model_version_prefix="nba-points-board/")
+
+    assert result["excluded"] == result["attempted"] == 1
+    assert result["settled"] == 0
+    with sessions() as session:
+        row = session.query(ShadowPredictionModel).one()
+        assert row.status == "shadow_excluded"
+        assert "Not an individual NBA Points offer" in row.last_settlement_error
+    assert ModelRehabilitationRepository.settle_pending(
+        limit=1, model_version_prefix="nba-points-board/"
+    )["attempted"] == 0
+
+
+def test_nba_board_capture_cursor_is_scoped_to_day_and_model_family(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    row = {
+        "player": "First Player", "team": "BOS", "sport": "NBA", "stat": "Points",
+        "line": 20.5, "direction": "Over", "platform": "PrizePicks",
+        "game": "BOS @ NYK", "game_time": "2026-10-24T23:00:00Z",
+        "forecast_snapshot": {"source": "verified_history_distribution", "feature_as_of": "2026-10-24T12:00:00Z", "features": {
+            "nba_points_history_provenance": {"status": "verified"},
+            "nba_points_minutes_shadow": {"status": "awaiting_holdout"},
+        }},
+    }
+    ModelRehabilitationRepository.queue_shadow(
+        [row], model_version="nba-points-board/champion-v1", target=None,
+        cohort_date="2026-10-24",
+    )
+    ModelRehabilitationRepository.queue_shadow(
+        [{**row, "player": "Other Player"}], model_version="unrelated-shadow", target=None,
+        cohort_date="2026-10-24",
+    )
+    with sessions() as session:
+        locked = session.query(ShadowPredictionModel).filter(
+            ShadowPredictionModel.model_version.like("nba-points-board/%")
+        ).one()
+        locked.predicted_at = datetime(2026, 10, 24, 13, tzinfo=UTC).replace(tzinfo=None)
+        session.commit()
+    assert ModelRehabilitationRepository.nba_points_board_captured_player_games("2026-10-24") == {
+        ("firstplayer", "2026-10-24T23:00:00Z"),
+    }
+    assert ModelRehabilitationRepository.nba_points_board_captured_player_games("2026-10-25") == set()
+    assert ModelRehabilitationRepository.nba_points_board_cohort_summary("2026-10-24") == {
+        "captured_total": 1,
+        "qualified_forecasts_total": 1,
+        "pregame_verified_locks_total": 1,
+        "qualified_pregame_locks_total": 1,
+        "lock_statuses_total": {"pregame_locked": 1},
+        "forecast_sources_total": {"verified_history_distribution": 1},
+        "challenger_statuses_total": {
+            "minutes": {"awaiting_holdout": 1}, "shot_volume": {"not_recorded": 1},
+        },
+        "market_prior_verified_game_counts_total": {},
+    }
+
+
+def test_nba_board_pregame_lock_does_not_qualify_market_prior(tmp_path, monkeypatch):
+    sessions = _isolated_database(tmp_path, monkeypatch)
+    ModelRehabilitationRepository.queue_shadow([{
+        "player": "New Player", "team": "BOS", "sport": "NBA", "stat": "Points",
+        "line": 20.5, "direction": "Over", "platform": "PrizePicks",
+        "game": "BOS @ NYK", "game_time": "2026-10-24T23:00:00Z",
+        "forecast_snapshot": {
+            "source": "market_prior", "feature_as_of": "2026-10-24T12:00:00Z",
+            "features": {"verified_games": 3, "nba_points_history_provenance": {"status": "verified"}},
+        },
+    }], model_version="nba-points-board/market-v1", target=None, cohort_date="2026-10-24")
+    with sessions() as session:
+        row = session.query(ShadowPredictionModel).one()
+        row.predicted_at = datetime(2026, 10, 24, 13)
+        session.commit()
+    summary = ModelRehabilitationRepository.nba_points_board_cohort_summary("2026-10-24")
+    assert summary["pregame_verified_locks_total"] == 1
+    assert summary["qualified_pregame_locks_total"] == 0
+    assert summary["market_prior_verified_game_counts_total"] == {3: 1}

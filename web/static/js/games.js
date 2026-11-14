@@ -30,13 +30,14 @@
   }
 
   function predictionCard(row) {
-    const prediction = row.champion || row;
+    const prediction = row.champion || row.primary || row;
     const challenger = row.challenger || null;
+    const shadowOnly = !row.champion;
     const home = escape(prediction.home_team || "Home");
     const away = escape(prediction.away_team || "Away");
     const evidence = prediction.evidence || {};
     return `<article class="game-intelligence-card">
-      <div class="suggestion-top"><div><span class="pill">${escape(prediction.sport)}</span><h3>${away} vs ${home}</h3></div><span class="data-badge">${escape(prediction.data_quality)} data</span></div>
+      <div class="suggestion-top"><div><span class="pill">${escape(prediction.sport)}</span><h3>${away} vs ${home}</h3></div><span class="data-badge">${shadowOnly ? "Research only · shadow model" : `${escape(prediction.data_quality)} data`}</span></div>
       <div class="game-win-bars" aria-label="Win probabilities"><div><span>${away}</span><strong>${percent(prediction.away_win_probability)}</strong></div><div><span>${home}</span><strong>${percent(prediction.home_win_probability)}</strong></div></div>
       <div class="game-intelligence-metrics">
         <span><small>Projected Score</small><strong>${Number(prediction.expected_away_points).toFixed(1)} – ${Number(prediction.expected_home_points).toFixed(1)}</strong></span>
@@ -49,7 +50,7 @@
       <details data-game-evidence><summary>Why this prediction?</summary><ul>
         <li>Moneyline: no-vig market baseline from ${Number(evidence.market_snapshot?.bookmakers?.length || 0)} paired books.</li>
         <li>Spread and total: ${evidence.market_home_margin == null ? "not available" : "captured"}; ${evidence.market_total == null ? "not available" : "captured"}.</li>
-        <li>Challenger: ${challenger ? `${(Number(row.comparison?.home_probability_delta || 0) * 100).toFixed(1)} point home-probability residual` : "not generated in this saved row"}.</li>
+        <li>Challenger: ${row.comparison ? `${(Number(row.comparison.home_probability_delta || 0) * 100).toFixed(1)} point home-probability residual` : challenger ? "saved without a paired market champion; comparison unavailable" : "not generated in this saved row"}.</li>
         <li>Game context adjusts opportunity assumptions only. It does not directly increase prop confidence.</li>
       </ul></details>
       <button class="secondary game-to-props" type="button" data-game-to-props data-sport="${escape(prediction.sport)}" data-game="${escape(prediction.game)}">Research Props</button>

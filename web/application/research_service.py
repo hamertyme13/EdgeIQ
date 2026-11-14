@@ -8,6 +8,19 @@ _NBA_TEAM_GAMES: TTLMap[str, list[dict]] = TTLMap(max_size=32)
 VERIFIED_FINAL_SOURCES = ("espn", "nba_api", "balldontlie", "statshawk")
 
 
+def select_research_offer(offers: list[dict], line: float | None) -> dict | None:
+    """Prefer the entered line when the current board offers it."""
+    if not offers:
+        return None
+    exact = [offer for offer in offers if line is not None and offer.get("line") == line]
+    candidates = exact or offers
+    return max(candidates, key=lambda offer: (
+        float(offer.get("confidence") or 0),
+        float((offer.get("data_quality") or {}).get("score") or 0),
+        int(offer.get("trending_count") or 0),
+    ))
+
+
 def player_team_context(history: list[dict], recommendation: dict | None) -> dict:
     """Distinguish a current offer's team from the last team in verified finals."""
     offer = recommendation or {}

@@ -22,7 +22,7 @@ too often and an overly wide interval that contains nearly everything both fail.
 ## Fastest Responsible Path
 
 1. Use **Results > Model > Auto Paper Samples** each slate day.
-2. Keep the generated mix at two 2-leg cards and one each of 3, 4, and 5 legs.
+2. Keep the generated mix at two 2-leg cards and one each of 3, 4, 5, and 6 legs for core sports.
 3. Use only end-to-end verified props so official finals can settle every leg.
 4. Avoid repeating exact player/stat/line combinations in the same batch.
 5. Run **Recheck Final Stats** after games finish.
@@ -32,3 +32,12 @@ Paid results still inform performance reporting, but paper entries are the safer
 way to accumulate broad validation evidence. More samples do not guarantee that
 a gate passes; calibration, interval coverage, and chronological tests must also
 remain within their stated limits.
+
+The daily sampler first attempts one pregame, standard-line, two-leg paper card per
+available sport with a modeled complete-card probability of at least 60%.
+It records the evaluated probability for the monthly Recommendation Accuracy
+tracker, while continuing to sample weaker confidence buckets separately.
+Additional supported sports receive a sample when enough verified offers are
+available. A 60% card is not fabricated when the evidence or offers are missing;
+the dashboard reports that gap and the scheduler retries during the slate day.
+These are model estimates, not guaranteed win rates.

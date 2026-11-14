@@ -7,8 +7,12 @@ from datetime import UTC, datetime
 from math import isfinite, sqrt
 from zoneinfo import ZoneInfo
 
+from analytics.chronological_interval import evaluate_chronological_interval
 from analytics.nba_points_minutes import MODEL_VERSION as MINUTES_SHADOW_VERSION
 from analytics.nba_points_shot_volume import MODEL_VERSION as SHOT_VOLUME_SHADOW_VERSION
+from analytics.observed_stat_range import locked_observed_range, observed_range_audit
+from analytics.paired_error_evidence import paired_error_evidence
+from analytics.wilson_interval import wilson_interval_95
 from services.game_team_features import NBA_DEFENSE_CONTEXT_VERSION
 from utils.entity_normalization import canonical_person_key
 
@@ -45,6 +49,12 @@ def _eligible(row: dict) -> str | None:
         return "quarantined"
     if str(row.get("sport") or "").upper() != "NBA" or str(row.get("stat") or "").upper() not in {"POINTS", "PTS"}:
         return "other_market"
+    if row.get("evidence_origin") == "prospective_board":
+        player = str(row.get("player") or "").strip()
+        team = str(row.get("team") or "").strip().upper()
+        game_teams = [part.strip().upper() for part in str(row.get("game") or "").split("@")]
+        if " + " in player or (team and len(game_teams) == 2 and team not in game_teams):
+            return "invalid_individual_board_identity"
     if row.get("outcome_source") not in VERIFIED_FINAL_SOURCES or row.get("result") not in {"Win", "Loss"}:
         return "unverified_final"
     snapshot = row.get("feature_snapshot") or {}
@@ -114,6 +124,25 @@ def _metrics(rows: list[dict]) -> dict:
     }
 
 
+def _confidence_buckets(rows: list[dict]) -> list[dict]:
+    buckets = []
+    for low in range(0, 100, 10):
+        segment = [
+            row for row in rows
+            if low <= row["probability"] < low + 10 or low == 90 and row["probability"] == 100
+        ]
+        if not segment:
+            continue
+        wins = sum(row["result"] == "Win" for row in segment)
+        buckets.append({
+            "label": f"{low}-{low + 10}%",
+            "wins": wins,
+            "actual_hit_interval_95": wilson_interval_95(wins, len(segment)),
+            **_metrics(segment),
+        })
+    return buckets
+
+
 def _baseline(rows: list[dict], key: str) -> dict:
     pairs = [(row["actual"], _number(row[key])) for row in rows]
     errors = [prediction - actual for actual, prediction in pairs if prediction is not None]
@@ -170,12 +199,16 @@ def _locked_defense_score(features: dict, row: dict) -> float | None:
 
 
 def _chronological_board_holdout(rows: list[dict]) -> dict:
+    total_board_samples = len(rows)
+    rows = [row for row in rows if row["history_provenance_status"] == "verified"]
+    excluded_unverified_history_timing = total_board_samples - len(rows)
     dates = sorted({row["game_date"] for row in rows})
     if len(rows) < 30 or len(dates) < 5:
         return {
             "status": "insufficient_board_evidence",
             "board_samples": len(rows), "game_dates": len(dates),
-            "reason": "At least 30 settled board offers across five game dates are needed for a later-games check.",
+            "excluded_unverified_history_timing": excluded_unverified_history_timing,
+            "reason": "At least 30 settled board offers with verified pregame history timing across five game dates are needed for a later-games check.",
         }
     cutoff = dates[int(len(dates) * 0.7)]
     later = [row for row in rows if row["game_date"] >= cutoff]
@@ -183,19 +216,42 @@ def _chronological_board_holdout(rows: list[dict]) -> dict:
         return {
             "status": "insufficient_later_games",
             "board_samples": len(rows), "game_dates": len(dates),
+            "excluded_unverified_history_timing": excluded_unverified_history_timing,
             "later_samples": len(later), "cutoff_game_date": cutoff,
             "reason": "Fewer than ten independent offers settled in the later-game window.",
         }
     paired_minutes = [row for row in later if row["minutes_shadow_projection"] is not None]
     paired_shot_volume = [row for row in later if row["shot_volume_shadow_projection"] is not None]
+    forecast_metrics = _metrics(later)
+    line_metrics = _baseline(later, "line")
+    mae_difference = round(forecast_metrics["mae"] - line_metrics["mae"], 3)
+    shadow_uncertainty = {
+        name: {
+            baseline: paired_error_evidence(later, candidate, baseline)
+            for baseline in ("projection", "recent_5_mean", "line")
+        }
+        for name, candidate in (
+            ("minutes", "minutes_shadow_projection"),
+            ("shot_volume", "shot_volume_shadow_projection"),
+        )
+    }
     return {
         "status": "exploratory_holdout",
         "board_samples": len(rows), "game_dates": len(dates),
+        "excluded_unverified_history_timing": excluded_unverified_history_timing,
         "cutoff_game_date": cutoff,
         "earlier_samples": len(rows) - len(later),
         "later_samples": len(later),
-        "forecast": _metrics(later),
-        "exact_line": _baseline(later, "line"),
+        "forecast": forecast_metrics,
+        "forecast_vs_exact_line": {
+            "status": "line_lower_error" if mae_difference > 0 else "forecast_lower_error" if mae_difference < 0 else "equal_error",
+            "mae_difference_points": mae_difference,
+            "note": "Same later-game offers. Projection error only; the line is not a market win probability.",
+        },
+        "forecast_vs_exact_line_uncertainty": paired_error_evidence(later, "projection", "line"),
+        "later_game_calibration_buckets": _confidence_buckets(later),
+        "observed_range_audit": observed_range_audit(later),
+        "exact_line": line_metrics,
         "locked_recent_5_mean": _baseline(later, "recent_5_mean"),
         "paired_minutes": {
             "samples": len(paired_minutes),
@@ -209,6 +265,7 @@ def _chronological_board_holdout(rows: list[dict]) -> dict:
             "shot_volume_shadow": _baseline(paired_shot_volume, "shot_volume_shadow_projection"),
             "exact_line": _baseline(paired_shot_volume, "line"),
         },
+        "shadow_uncertainty": shadow_uncertainty,
         "promotion_ready": False,
         "reason": "Later-game board evidence is descriptive; neither challenger has a validated exact-line probability.",
     }
@@ -248,6 +305,7 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "minutes_shadow_projection": _locked_minutes_projection(features),
             "shot_volume_shadow_projection": _locked_shot_volume_projection(features),
             "matchup_indicator": _locked_defense_score(features, row),
+            "observed_range": locked_observed_range(snapshot),
             "verified_games": _number(features.get("verified_games")),
             "history_provenance_status": str(provenance.get("status") or "timestamp_unverified")
             if isinstance(provenance, dict) else "legacy_unrecorded",
@@ -266,11 +324,8 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
     versions = []
     for version, version_rows in sorted(grouped.items()):
         version_rows.sort(key=lambda item: (item["game_date"], str(item["independent_market_key"])))
-        buckets = []
-        for low in range(0, 100, 10):
-            segment = [row for row in version_rows if low <= row["probability"] < low + 10 or low == 90 and row["probability"] == 100]
-            if segment:
-                buckets.append({"label": f"{low}-{low + 10}%", **_metrics(segment)})
+        verified_rows = [row for row in version_rows if row["history_provenance_status"] == "verified"]
+        buckets = _confidence_buckets(version_rows)
         thresholds = []
         for label, low, high in (("Under 15", 0, 15), ("15-24.5", 15, 25), ("25-34.5", 25, 35), ("35+", 35, float("inf"))):
             segment = [row for row in version_rows if low <= row["line"] < high]
@@ -284,6 +339,9 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
         origin_metrics = {
             origin: {
                 "metrics": _metrics(origin_rows),
+                "verified_pregame_metrics": _metrics([
+                    row for row in origin_rows if row["history_provenance_status"] == "verified"
+                ]),
                 "paired_baselines": {
                     "exact_line": _baseline(origin_rows, "line"),
                     "locked_recent_5_mean": _baseline(origin_rows, "recent_5_mean"),
@@ -294,6 +352,20 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             for origin in sorted({key[1] for key in origin_selected if key[0] == version})
             if (origin_rows := [row for key, row in origin_selected.items() if key[0] == version and key[1] == origin])
         }
+        calibration_by_origin = {}
+        for origin in sorted({key[1] for key in origin_selected if key[0] == version}):
+            cohort = [
+                row for key, row in origin_selected.items()
+                if key[0] == version and key[1] == origin
+            ]
+            verified = [row for row in cohort if row["history_provenance_status"] == "verified"]
+            calibration_by_origin[origin] = {
+                "status": "descriptive_only" if verified else "no_import_verified_outcomes",
+                "samples": len(verified),
+                "excluded_unverified_history_timing": len(cohort) - len(verified),
+                "buckets": _confidence_buckets(verified),
+                "note": "Observed settled outcomes by forecast confidence. Board and placed-entry cohorts stay separate; intervals describe the observed hit rate, not next-game certainty.",
+            }
         matchup_rows = [row for row in version_rows if row["matchup_indicator"] is not None]
 
         def matchup_segments(rows: list[dict]) -> list[dict]:
@@ -327,9 +399,24 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "chronological_board_holdout": _chronological_board_holdout([
                 row for key, row in origin_selected.items() if key[0] == version and key[1] == "prospective_board"
             ]),
+            "chronological_interval": evaluate_chronological_interval([
+                row for key, row in origin_selected.items() if key[0] == version and key[1] == "prospective_board"
+            ], maximum_actual=100),
             "first_game": version_rows[0]["game_date"],
             "last_game": version_rows[-1]["game_date"],
             "metrics": _metrics(version_rows),
+            "verified_pregame_metrics": _metrics(verified_rows),
+            "verified_pregame_paired_baselines": {
+                "exact_line": _baseline(verified_rows, "line"),
+                "locked_recent_5_mean": _baseline(verified_rows, "recent_5_mean"),
+            },
+            "verified_pregame_paired_comparison": {
+                "exact_line": paired_error_evidence(verified_rows, "projection", "line"),
+                "locked_recent_5_mean": paired_error_evidence(
+                    verified_rows, "projection", "recent_5_mean"
+                ),
+            },
+            "observed_range_audit": observed_range_audit(version_rows),
             "paired_baselines": {
                 "exact_line": _baseline(version_rows, "line"),
                 "locked_recent_5_mean": _baseline(version_rows, "recent_5_mean"),
@@ -337,6 +424,7 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
                 "locked_shot_volume_shadow": _baseline(version_rows, "shot_volume_shadow_projection"),
             },
             "calibration_buckets": buckets,
+            "calibration_by_origin": calibration_by_origin,
             "by_line": thresholds,
             "by_history_size": history_segments,
             "history_import_provenance": dict(sorted(Counter(
@@ -360,7 +448,9 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
     for version in versions:
         paired_rows = [
             row for row in grouped[version["model_version"]]
-            if row["minutes_shadow_projection"] is not None or row["shot_volume_shadow_projection"] is not None
+            if row["evidence_origin"] == "prospective_board"
+            and row["history_provenance_status"] == "verified"
+            and (row["minutes_shadow_projection"] is not None or row["shot_volume_shadow_projection"] is not None)
         ]
         if paired_rows:
             minutes_rows = [row for row in paired_rows if row["minutes_shadow_projection"] is not None]
@@ -370,12 +460,18 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
                 "samples": len(minutes_rows),
                 "champion": _baseline(minutes_rows, "projection"),
                 "minutes_shadow": _baseline(minutes_rows, "minutes_shadow_projection"),
+                "minutes_vs_champion": paired_error_evidence(
+                    minutes_rows, "minutes_shadow_projection", "projection"
+                ),
                 "recent_5_mean": _baseline(minutes_rows, "recent_5_mean"),
                 "exact_line": _baseline(minutes_rows, "line"),
                 "shot_volume": {
                     "samples": len(shot_volume_rows),
                     "champion": _baseline(shot_volume_rows, "projection"),
                     "shot_volume_shadow": _baseline(shot_volume_rows, "shot_volume_shadow_projection"),
+                    "vs_champion": paired_error_evidence(
+                        shot_volume_rows, "shot_volume_shadow_projection", "projection"
+                    ),
                     "recent_5_mean": _baseline(shot_volume_rows, "recent_5_mean"),
                     "exact_line": _baseline(shot_volume_rows, "line"),
                 },
@@ -412,7 +508,8 @@ def evaluate_nba_points_predictions(rows: list[dict]) -> dict:
             "status": "paired_exploratory" if paired else "not_paired",
             "versions": paired,
             "reason": (
-                "Paired pregame minutes and shot-volume estimates can be compared with the current forecast on the same settled offers. "
+                "Only import-verified prospective board offers enter this paired minutes and shot-volume comparison. "
+                "Their estimates can be compared with the current forecast on the same settled offers. "
                 "Neither challenger has a calibrated probability, so projection error alone cannot authorize promotion."
                 if paired else
                 "The NBA points challenger has no paired, locked pregame outcomes yet; it cannot be promoted from this report."

@@ -99,12 +99,18 @@
       const scheduler = operations.scheduler || {};
       const shadow = operations.shadow_evaluation || {};
       const nbaPointsCohort = operations.nba_points_board_cohort || {};
-      const nbaPointsHistoryCounts = Object.keys(nbaPointsCohort.market_prior_verified_game_counts || {})
+      const nbaPointsHistoryCounts = Object.keys(nbaPointsCohort.market_prior_verified_game_counts_total
+        || nbaPointsCohort.market_prior_verified_game_counts || {})
         .map(Number).filter((count) => Number.isInteger(count) && count >= 0);
-      const nbaChallengers = nbaPointsCohort.challenger_statuses || {};
+      const nbaChallengers = nbaPointsCohort.challenger_statuses_total
+        || nbaPointsCohort.challenger_statuses || {};
+      const nbaQualified = Number(nbaPointsCohort.qualified_forecasts_total
+        ?? nbaPointsCohort.qualified_forecasts ?? 0);
+      const nbaCaptured = Number(nbaPointsCohort.captured_total ?? nbaPointsCohort.candidates ?? 0);
       const readyChallengerCount = (name) => Number(nbaChallengers[name]?.awaiting_holdout || 0)
         + Number(nbaChallengers[name]?.shadow_evaluation || 0);
       const shadowSettlement = operations.shadow_settlement || {};
+      const nbaPointsSettlement = operations.nba_points_shadow_settlement || {};
       const researchMemory = operations.research_memory || {};
       const nbaPointsQuotes = operations.nba_points_market_quotes || {};
       const completeBoard = operations.complete_board || {};
@@ -128,8 +134,10 @@
           </div>
           <p>${Number(shadow.settled || 0)}/${Number(shadow.queued || 0)} shadow predictions settled across ${Number(shadow.cohorts || 0)} daily cohorts.</p>
           <p>NBA Points board cohort: ${!nbaPointsCohort.ran_at ? 'Not run yet.' : nbaPointsCohort.complete
-            ? `${Number(nbaPointsCohort.qualified_forecasts || 0)} qualified pregame forecasts from ${Number(nbaPointsCohort.candidates || 0)} available player-games · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`
-            : `${Number(nbaPointsCohort.qualified_forecasts || 0)} qualified pregame forecasts so far · ${nbaPointsCohort.status === 'no_fresh_trackable_board' ? 'waiting for fresh trackable offers' : 'partial capture'} · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`}</p>
+            ? `${nbaQualified} qualified pregame forecasts from ${nbaCaptured} captured player-games · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`
+            : `${nbaQualified} qualified pregame forecasts so far · ${nbaPointsCohort.status === 'no_official_game_match' ? 'provider matchups missing from the official NBA schedule' : nbaPointsCohort.status === 'no_fresh_trackable_board' ? 'waiting for fresh trackable offers' : 'partial capture'} · checked ${formatDateTime(nbaPointsCohort.ran_at)}.`}</p>
+          ${nbaPointsCohort.qualified_pregame_locks_total != null ? `<p>${Number(nbaPointsCohort.qualified_pregame_locks_total)} of ${nbaCaptured} NBA Points forecasts have qualified history and a verified pregame lock. Accuracy can be measured only after verified finals arrive.</p>` : ''}
+          ${nbaPointsSettlement.ran_at ? `<p>NBA Points final-stat check: ${Number(nbaPointsSettlement.settled || 0)} settled, ${Number(nbaPointsSettlement.pending || 0)} still awaiting verified finals, ${Number(nbaPointsSettlement.deferred_future || 0)} not yet due in the latest batch · ${formatDateTime(nbaPointsSettlement.ran_at)}.</p>` : ''}
           ${nbaPointsCohort.qualification_note ? `<p>${escapeHtml(nbaPointsCohort.qualification_note)}</p>` : ''}
           ${nbaPointsHistoryCounts.length ? `<p>Most history-rich market-prior capture: ${Math.max(...nbaPointsHistoryCounts)}/5 verified regular-season games before the forecast.</p>` : ''}
           ${nbaPointsCohort.ran_at && nbaChallengers.minutes ? `<p>Research-only challenger evidence: ${readyChallengerCount('minutes')} forecasts with verified minutes · ${readyChallengerCount('shot_volume')} with verified shot attempts. Estimates can be evaluated only after those games have verified finals.</p>` : ''}

@@ -1,6 +1,38 @@
 from types import SimpleNamespace
 
+import pytest
+
 from services import nba_points_shadow_collection as collection
+
+
+def test_schedule_screen_rejects_only_a_contradictory_matchup():
+    offers = [{"player": "One", "game": "NOP @ GSW"}, {"player": "Two", "game": "BOS @ NYK"}]
+    games = [{"game": "GS @ NO"}]
+
+    accepted, excluded = collection._screen_official_schedule(offers, games)
+    assert excluded == 1
+    assert accepted[0]["player"] == "One"
+    assert accepted[0]["schedule_evidence"] == "official_matchup_verified"
+    unavailable, excluded = collection._screen_official_schedule(offers, None)
+    assert excluded == 0
+    assert all(row["schedule_evidence"] == "unavailable" for row in unavailable)
+
+
+@pytest.fixture(autouse=True)
+def empty_captured_cohort(monkeypatch):
+    monkeypatch.setattr(collection, "fetch_game_times", lambda _sport, _day: [{"game": "BOS @ NYK"}])
+    monkeypatch.setattr(
+        collection.ModelRehabilitationRepository,
+        "nba_points_board_captured_player_games", lambda _day: set(),
+    )
+    monkeypatch.setattr(
+        collection.ModelRehabilitationRepository,
+        "nba_points_board_cohort_summary", lambda _day: {
+            "captured_total": 0, "qualified_forecasts_total": 0,
+            "forecast_sources_total": {}, "challenger_statuses_total": {},
+            "market_prior_verified_game_counts_total": {},
+        },
+    )
 
 
 def test_board_cohort_forecasts_once_per_candidate_without_provider_refresh(monkeypatch):
@@ -8,6 +40,7 @@ def test_board_cohort_forecasts_once_per_candidate_without_provider_refresh(monk
         {"player": "First Player", "team": "BOS", "sport": "NBA", "stat": "Points",
          "line": 20.5, "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
          "game_time": "2026-10-24T23:00:00Z", "board_observation_id": 1,
+         "provider_player_id": "pp-player-1", "provider_game_id": "pp-game-1",
          "board_captured_at": "2026-10-24T12:00:00+00:00"},
         {"player": "Second Player", "team": "NYK", "sport": "NBA", "stat": "Points",
          "line": 18.5, "direction": "Over", "platform": "PrizePicks", "game": "BOS @ NYK",
@@ -46,7 +79,11 @@ def test_board_cohort_forecasts_once_per_candidate_without_provider_refresh(monk
     assert all(call[-1] == "Over" for call in calls)
     assert queued[0][1] == {"model_version": "nba-points-board/champion-v1", "target": None, "cohort_date": "2026-10-24"}
     assert all(row["cohort_origin"] == "trackable_standard_board" for row in queued[0][0])
+    assert queued[0][0][0]["provider_player_id"] == "pp-player-1"
+    assert queued[0][0][0]["provider_game_id"] == "pp-game-1"
     assert result["created"] == 2
+    assert result["schedule_status"] == "verified"
+    assert result["excluded_unscheduled"] == 0
     assert result["qualified_forecasts"] == 2
     assert result["forecast_sources"] == {"verified_history_distribution": 2}
     assert result["challenger_statuses"]["minutes"] == {"not_recorded": 2}
@@ -79,6 +116,61 @@ def test_board_cohort_reports_truncation(monkeypatch):
     assert result["complete"] is False
     assert result["forecast_sources"] == {"market_prior": 1}
     assert "shadow-only" in result["qualification_note"]
+
+
+def test_board_retry_advances_to_uncaptured_player_games(monkeypatch):
+    offers = [
+        {"player": player, "team": "BOS", "line": 20.5, "game": "BOS @ NYK",
+         "game_time": "2026-10-24T23:00:00Z", "board_observation_id": index}
+        for index, player in enumerate(("One", "Two", "Three"), start=1)
+    ]
+    monkeypatch.setattr(collection.BoardOfferRepository, "nba_points_shadow_candidates", lambda: {
+        "candidates": offers, "day": "2026-10-24", "scan_limit_reached": False,
+    })
+    captured = set()
+    monkeypatch.setattr(
+        collection.ModelRehabilitationRepository,
+        "nba_points_board_captured_player_games", lambda _day: captured.copy(),
+    )
+    monkeypatch.setattr(
+        collection.ModelRehabilitationRepository,
+        "nba_points_board_cohort_summary", lambda _day: {
+            "captured_total": len(captured), "qualified_forecasts_total": len(captured),
+            "forecast_sources_total": {"verified_history_distribution": len(captured)},
+            "challenger_statuses_total": {}, "market_prior_verified_game_counts_total": {},
+        },
+    )
+    calls = []
+
+    def forecast(player, *_args, **_kwargs):
+        calls.append(player)
+        return SimpleNamespace(
+            projection=21, probability=55, model_version="champion-v1",
+            snapshot=lambda: {"source": "verified_history_distribution"},
+        )
+
+    def queue(rows, **_kwargs):
+        for row in rows:
+            captured.add((collection.canonical_person_key(row["player"]), row["game_time"]))
+        return {"queued": len(captured), "created": len(rows)}
+
+    monkeypatch.setattr(collection, "forecast_prop", forecast)
+    monkeypatch.setattr(collection.ModelRehabilitationRepository, "queue_shadow", queue)
+    monkeypatch.setattr(collection.TeamHistoryRepository, "before", lambda *_args, **_kwargs: [])
+
+    first = collection.collect_nba_points_shadow(max_player_games=1)
+    second = collection.collect_nba_points_shadow(max_player_games=1)
+    third = collection.collect_nba_points_shadow(max_player_games=1)
+    repeated = collection.collect_nba_points_shadow(max_player_games=1)
+
+    assert calls == ["One", "Two", "Three"]
+    assert [first["complete"], second["complete"], third["complete"], repeated["complete"]] == [
+        False, False, True, True,
+    ]
+    assert [first["remaining_uncaptured"], second["remaining_uncaptured"], third["remaining_uncaptured"]] == [2, 1, 0]
+    assert repeated["previously_captured"] == 3
+    assert repeated["forecasted"] == 0
+    assert repeated["qualified_forecasts_total"] == 3
 
 
 def test_board_cohort_reports_each_locked_challenger_status(monkeypatch):
@@ -127,7 +219,7 @@ def test_empty_fresh_board_is_reported_as_incomplete(monkeypatch):
 
 def test_collection_stops_at_runtime_budget_without_claiming_complete(monkeypatch):
     monkeypatch.setattr(collection.BoardOfferRepository, "nba_points_shadow_candidates", lambda: {
-        "candidates": [{"player": "One", "line": 20.5}],
+        "candidates": [{"player": "One", "line": 20.5, "game": "BOS @ NYK"}],
         "day": "2026-10-24", "scan_limit_reached": False,
     })
     ticks = iter((0, 200))

@@ -26,6 +26,7 @@ class RecommendationDependencies:
     paper_calibration_status: Callable[[], dict]
     entry_suggestions: Callable[[str, str, int, set[str], str, str], dict]
     generator_games: Callable[[str, str], dict]
+    builder_offers: Callable[[str, str, str], dict]
     confirmed_suggestions: Callable[[str, str], dict]
     crazy_six: Callable[[str, str], dict]
     optimizer: Callable[..., dict]
@@ -154,6 +155,12 @@ def entry_suggestions(
 def generator_games(sport: str = "All Sports", platform: str = "PrizePicks", deps: DepsRec = None) -> dict:  # type: ignore[assignment]
     _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
     return _deps.generator_games(sport, platform)
+
+
+@router.get("/api/entries/builder-offers")
+def builder_offers(sport: str, platform: str, player: str, deps: DepsRec = None) -> dict:  # type: ignore[assignment]
+    _deps = deps if isinstance(deps, RecommendationDependencies) else get_deps()
+    return _request(lambda: _deps.builder_offers(sport, platform, player))
 
 
 @router.get("/api/entries/confirmed-suggestions")

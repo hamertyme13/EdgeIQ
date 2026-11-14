@@ -7,6 +7,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 
+from services.betting import implied_probability
+
 _log = logging.getLogger(__name__)
 
 
@@ -16,6 +18,31 @@ def _utc(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _named_book_prices(market: dict, book_count: int) -> dict:
+    """Expose only prices tied to a named contributing exact-line sportsbook."""
+    books = market.get("books")
+    if not isinstance(books, list) or len(books) != book_count:
+        return {}
+    prices = {}
+    for side in ("over", "under"):
+        key = f"{side}_odds"
+        try:
+            best = int(market[f"best_{side}_odds"])
+            rows = [(int(row[key]), str(row.get("bookmaker") or "")) for row in books]
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return {}
+        if not rows or not all(name and abs(odds) >= 100 for odds, name in rows):
+            return {}
+        if best != max(odds for odds, _name in rows):
+            return {}
+        bookmaker = next(name for odds, name in rows if odds == best)
+        prices[side] = {
+            "bookmaker": bookmaker, "american_odds": best,
+            "break_even_probability": round(100 * implied_probability(best), 2),
+        }
+    return prices
 
 
 def build_nba_points_market(
@@ -171,4 +198,5 @@ def build_nba_points_market(
         "market_over_movement_points": movement,
         "best_over_odds": market.get("best_over_odds"),
         "best_under_odds": market.get("best_under_odds"),
+        "named_book_prices": _named_book_prices(market, book_count),
     }

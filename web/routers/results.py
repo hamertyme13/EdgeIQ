@@ -8,11 +8,17 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from analytics.linked_offer_evaluation import evaluate_linked_offers
 from repository.repositories.board_offer_repository import BoardOfferRepository
+from repository.repositories.entry_repository import EntryRepository
 from repository.repositories.leg_recommendation_snapshot_repository import LegRecommendationSnapshotRepository
 from web.application.evidence_lab import evidence_lab
 from web.application.model_track_record import model_track_record
 
 router = APIRouter(tags=["results"])
+
+
+@router.get("/api/results/yesterday-hits")
+def yesterday_hits() -> dict:
+    return EntryRepository.yesterday_winning_props()
 
 
 @router.get("/api/analytics/linked-offer-evaluation")

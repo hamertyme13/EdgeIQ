@@ -60,5 +60,11 @@ assert.doesNotMatch(missingCalibration, /Calibrated probability<\/dt><dd>0%/);
 const expired = render({...base, recommendation_freshness: {status: 'expired'}});
 assert.match(expired, /data-add-opportunity="3" disabled/);
 assert.match(expired, /data-select-opportunity="3" disabled/);
+const withDiscount = render({...base, discounted_option:{line:22.5, direction:'Under', probability:65}});
+assert.match(withDiscount, /PrizePicks discounted/);
+assert.match(withDiscount, /Under 22.5 · 65% model estimate/);
+assert.match(withDiscount, /Not used in EdgeIQ Score/);
+assert.match(withDiscount, /data-add-discounted-opportunity="3"/);
+assert.match(withDiscount, /EdgeIQ Score · Strong/);
 """
     subprocess.run(["node", "-e", script], check=True)

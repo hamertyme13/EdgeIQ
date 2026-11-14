@@ -61,6 +61,154 @@ def test_locked_validation_uses_paired_line_and_pregame_baseline():
     assert report["ev"] is None
 
 
+def test_verified_board_model_comparison_flags_when_line_has_lower_error():
+    rows = []
+    for day in range(5):
+        for index in range(6):
+            row = _row(f"board-{day}-{index}", actual=20, line=20.5, projection=30)
+            game = datetime(2026, 10, 23 + day, 19, tzinfo=UTC)
+            row["game_time"] = game.isoformat()
+            row["settled_at"] = game + timedelta(hours=3)
+            row["result"] = "Loss"
+            row["evidence_origin"] = "prospective_board"
+            row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+            rows.append(row)
+
+    comparison = evaluate_nba_points_predictions(rows)["versions"][0][
+        "verified_pregame_paired_comparison"
+    ]["exact_line"]
+
+    assert comparison["status"] == "exploratory_paired_comparison"
+    assert comparison["samples"] == 30
+    assert comparison["game_dates"] == 5
+    assert comparison["mae_advantage_points"] == -9.5
+    assert comparison["promotion_ready"] is False
+
+
+def test_calibration_separates_import_verified_board_from_placed_entries():
+    board_win = _row("board-win", probability=90)
+    board_win["evidence_origin"] = "prospective_board"
+    board_win["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+    board_loss = _row("board-loss", actual=20, probability=90)
+    board_loss["result"] = "Loss"
+    board_loss["evidence_origin"] = "prospective_board"
+    board_loss["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+    board_unknown_timing = _row("board-legacy", probability=90)
+    board_unknown_timing["evidence_origin"] = "prospective_board"
+    placed = _row("placed", probability=90)
+    placed["evidence_origin"] = "placed_entry"
+    placed["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+
+    version = evaluate_nba_points_predictions([
+        placed, board_unknown_timing, board_loss, board_win,
+    ])["versions"][0]
+    board = version["calibration_by_origin"]["prospective_board"]
+    placed_cohort = version["calibration_by_origin"]["placed_entry"]
+
+    assert version["calibration_buckets"][0]["samples"] == 4
+    assert board["samples"] == 2
+    assert board["excluded_unverified_history_timing"] == 1
+    assert board["buckets"][0]["wins"] == 1
+    assert board["buckets"][0]["actual_hit_rate"] == 50.0
+    assert board["buckets"][0]["actual_hit_interval_95"] == [9.5, 90.5]
+    assert placed_cohort["samples"] == 1
+    assert placed_cohort["buckets"][0]["actual_hit_rate"] == 100.0
+
+
+def test_legacy_combo_and_wrong_team_board_outcomes_do_not_count_as_points_evidence():
+    valid = _row("valid")
+    valid.update(evidence_origin="prospective_board", team="BOS")
+    combo = _row("combo")
+    combo.update(evidence_origin="prospective_board", team="BOS/NYK", player="Player One + Player Two")
+    wrong_team = _row("wrong-team")
+    wrong_team.update(evidence_origin="prospective_board", team="LAL")
+
+    report = evaluate_nba_points_predictions([valid, combo, wrong_team])
+
+    assert report["eligible_independent"] == 1
+    assert report["excluded_by_origin"]["prospective_board"]["invalid_individual_board_identity"] == 2
+
+
+def test_locked_observed_ranges_are_audited_only_on_valid_independent_finals():
+    inside = _row("inside", actual=27)
+    outside = _row("outside", actual=40)
+    malformed = _row("malformed", actual=27)
+    for row in (inside, outside, malformed):
+        row["feature_snapshot"]["sample_size"] = 10
+        row["feature_snapshot"]["distribution"] = {
+            "floor": 15, "percentile_25": 20, "percentile_75": 30, "ceiling": 35,
+        }
+    malformed["feature_snapshot"]["distribution"]["ceiling"] = 10
+    duplicate = dict(inside)
+    duplicate["id"] = 99
+
+    version = evaluate_nba_points_predictions([inside, duplicate, outside, malformed])["versions"][0]
+    audit = version["observed_range_audit"]
+    assert audit["samples"] == 2
+    assert audit["middle_half_hits"] == 1
+    assert audit["wider_range_hits"] == 1
+    assert audit["wider_range_coverage"] == 50.0
+    assert "not a calibrated prediction interval" in audit["note"]
+
+
+def test_chronological_interval_uses_only_import_verified_board_outcomes():
+    rows = []
+    for day in range(6):
+        for index in range(6 if day < 5 else 2):
+            row = _row(f"board-{day}-{index}", actual=27, projection=26)
+            game = datetime(2026, 10, 23 + day, 19, tzinfo=UTC)
+            row["game_time"] = game.isoformat()
+            row["settled_at"] = game + timedelta(hours=3)
+            row["evidence_origin"] = "prospective_board"
+            row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+            rows.append(row)
+    placed = _row("placed", actual=100, projection=20)
+    placed["result"] = "Win"
+    placed["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+    rows.append(placed)
+
+    interval = evaluate_nba_points_predictions(rows)["versions"][0]["chronological_interval"]
+
+    assert interval["eligible_samples"] == 32
+    assert interval["evaluated"] == 2
+    assert interval["status"] == "insufficient_later_games"
+    assert interval["coverage_pct"] is None
+    assert interval["daily"][0]["calibration_samples"] == 30
+
+
+def test_later_board_shadow_error_comparison_remains_exploratory():
+    rows = []
+    for day in range(15):
+        for index in range(7 if day < 10 else 6):
+            row = _row(f"holdout-{day}-{index}", actual=27, projection=26)
+            game = datetime(2026, 10, 23, 19, tzinfo=UTC) + timedelta(days=day)
+            row["game_time"] = game.isoformat()
+            row["settled_at"] = game + timedelta(hours=3)
+            row["evidence_origin"] = "prospective_board"
+            row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+            row["feature_snapshot"]["features"]["nba_points_minutes_shadow"] = {
+                "model_version": "nba-points-verified-minutes-shadow-v1",
+                "shadow_only": True, "status": "shadow_evaluation", "sample_size": 7,
+                "expected_points": 27,
+            }
+            rows.append(row)
+
+    version = evaluate_nba_points_predictions(rows)["versions"][0]
+    holdout = version["chronological_board_holdout"]
+    comparison = holdout["shadow_uncertainty"]["minutes"]["projection"]
+    assert holdout["status"] == "exploratory_holdout"
+    assert holdout["forecast_vs_exact_line"]["status"] == "forecast_lower_error"
+    assert holdout["forecast_vs_exact_line"]["mae_difference_points"] == -1.5
+    assert holdout["forecast_vs_exact_line_uncertainty"]["samples"] == 30
+    assert holdout["later_game_calibration_buckets"]
+    assert comparison["status"] == "exploratory_paired_comparison"
+    assert comparison["samples"] == 30
+    assert comparison["game_dates"] == 5
+    assert comparison["date_block_interval_95"][0] > 0
+    assert comparison["promotion_ready"] is False
+    assert version["promotion_ready"] is False
+
+
 def test_late_history_import_cannot_qualify_locked_nba_points_forecast():
     late = _row("late-import")
     late["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
@@ -71,6 +219,8 @@ def test_late_history_import_cannot_qualify_locked_nba_points_forecast():
         "status": "verified", "imported_after_lock": 0, "invalid_import_time": 0,
     }
     missing = _row("missing-import")
+    missing["actual"] = 10
+    missing["result"] = "Loss"
     missing["feature_snapshot"]["features"]["nba_points_history_provenance"] = {
         "status": "timestamp_unverified", "missing_import_time": 1,
     }
@@ -81,6 +231,12 @@ def test_late_history_import_cannot_qualify_locked_nba_points_forecast():
     assert report["versions"][0]["history_import_provenance"] == {
         "timestamp_unverified": 1, "verified": 1,
     }
+    version = report["versions"][0]
+    assert version["metrics"]["samples"] == 2
+    assert version["verified_pregame_metrics"]["samples"] == 1
+    assert version["verified_pregame_metrics"]["mae"] == 1
+    assert version["verified_pregame_paired_baselines"]["exact_line"]["samples"] == 1
+    assert version["by_evidence_origin"]["placed_entry"]["verified_pregame_metrics"]["samples"] == 1
 
 
 def test_evidence_maturity_requires_verified_history_timing_across_game_dates():
@@ -108,6 +264,8 @@ def test_locked_minutes_challenger_uses_only_same_settled_offers():
     second = _row("market-2", actual=20, projection=22, probability=60)
     second["result"] = "Loss"
     for row, value in ((first, 27), (second, 21)):
+        row["evidence_origin"] = "prospective_board"
+        row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
         row["feature_snapshot"]["features"]["nba_points_minutes_shadow"] = {
             "model_version": "nba-points-verified-minutes-shadow-v1",
             "shadow_only": True, "status": "shadow_evaluation", "sample_size": 7,
@@ -124,6 +282,8 @@ def test_locked_minutes_challenger_uses_only_same_settled_offers():
     assert comparison["versions"][0]["samples"] == 2
     assert comparison["versions"][0]["champion"]["mae"] == 1.5
     assert comparison["versions"][0]["minutes_shadow"]["mae"] == 0.5
+    assert comparison["versions"][0]["minutes_vs_champion"]["samples"] == 2
+    assert comparison["versions"][0]["minutes_vs_champion"]["status"] == "insufficient_paired_evidence"
     assert report["versions"][0]["promotion_ready"] is False
 
 
@@ -132,6 +292,8 @@ def test_locked_shot_volume_challenger_uses_its_own_paired_offers():
     second = _row("market-2", actual=20, projection=22, probability=60)
     second["result"] = "Loss"
     for row, value in ((first, 27), (second, 21)):
+        row["evidence_origin"] = "prospective_board"
+        row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
         row["feature_snapshot"]["features"]["nba_points_shot_volume_shadow"] = {
             "model_version": "nba-points-verified-shot-volume-shadow-v1",
             "shadow_only": True, "status": "shadow_evaluation", "sample_size": 7,
@@ -145,7 +307,27 @@ def test_locked_shot_volume_challenger_uses_its_own_paired_offers():
     assert comparison["shot_volume"]["samples"] == 2
     assert comparison["shot_volume"]["champion"]["mae"] == 1.5
     assert comparison["shot_volume"]["shot_volume_shadow"]["mae"] == 0.5
+    assert comparison["shot_volume"]["vs_champion"]["samples"] == 2
     assert report["versions"][0]["promotion_ready"] is False
+
+
+def test_challenger_comparison_excludes_placed_and_unverified_history():
+    board = _row("board-verified")
+    board["evidence_origin"] = "prospective_board"
+    board["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+    older = _row("board-older")
+    older["evidence_origin"] = "prospective_board"
+    placed = _row("placed")
+    for row in (board, older, placed):
+        row["feature_snapshot"]["features"]["nba_points_minutes_shadow"] = {
+            "model_version": "nba-points-verified-minutes-shadow-v1",
+            "shadow_only": True, "status": "shadow_evaluation", "sample_size": 7,
+            "expected_points": 27,
+        }
+
+    report = evaluate_nba_points_predictions([board, older, placed])
+    assert report["eligible_independent"] == 3
+    assert report["challenger_comparison"]["versions"][0]["samples"] == 1
 
 
 def test_matchup_segments_require_locked_pregame_versioned_evidence():
@@ -312,6 +494,7 @@ def test_chronological_holdout_uses_later_board_games_only():
                 "evidence_origin": "prospective_board",
             })
             row["feature_snapshot"]["features"]["season_end"] = (game - timedelta(days=1)).date().isoformat()
+            row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
             if day >= 7:
                 row["projection"] = 24
                 row["feature_snapshot"]["features"]["nba_points_minutes_shadow"] = {
@@ -343,6 +526,32 @@ def test_chronological_holdout_uses_later_board_games_only():
     assert holdout["paired_shot_volume"]["champion"]["mae"] == 3
     assert holdout["paired_shot_volume"]["shot_volume_shadow"]["mae"] == 1
     assert holdout["promotion_ready"] is False
+
+
+def test_later_board_holdout_withholds_unverified_history_timing():
+    rows = []
+    for day in range(10):
+        for player in range(4):
+            row = _row(f"board-unverified-{day}-{player}")
+            game = datetime(2026, 10, 1 + day, 19, tzinfo=UTC)
+            row.update({
+                "game_time": game.isoformat(),
+                "predicted_at": game - timedelta(hours=6),
+                "feature_as_of": game - timedelta(hours=7),
+                "settled_at": game + timedelta(hours=3),
+                "evidence_origin": "prospective_board",
+            })
+            row["feature_snapshot"]["features"]["season_end"] = (game - timedelta(days=1)).date().isoformat()
+            if day < 5:
+                row["feature_snapshot"]["features"]["nba_points_history_provenance"] = {"status": "verified"}
+            rows.append(row)
+
+    holdout = evaluate_nba_points_predictions(rows)["versions"][0]["chronological_board_holdout"]
+
+    assert holdout["status"] == "insufficient_board_evidence"
+    assert holdout["board_samples"] == 20
+    assert holdout["excluded_unverified_history_timing"] == 20
+    assert holdout["game_dates"] == 5
 
 
 def test_unversioned_or_implausible_minutes_shadow_is_not_compared():

@@ -355,6 +355,7 @@ def _best_matching_row(
     placed_date: str | None = None,
     allow_unique_date_fallback: bool = False,
 ) -> FinalPlayerStatModel | None:
+    rows = [row for row in rows if _matching_team(team, getattr(row, "team", ""))]
     if not rows:
         return None
     rows = sorted(
@@ -394,7 +395,11 @@ def _best_matching_row(
     if placed_date and not target_date and not _is_full_matchup(requested_game):
         return None
 
-    matched = [row for row in rows if _game_key(row.game) == requested_key]
+    matched = [
+        row for row in rows
+        if _game_key(row.game) == requested_key
+        and _matching_team(team, getattr(row, "team", ""))
+    ]
 
     team_key = _game_key(team)
     if not matched and team_key:
@@ -402,12 +407,17 @@ def _best_matching_row(
             row
             for row in rows
             if requested_key in _game_key(row.game) and team_key in _game_key(row.game)
+            and _matching_team(team, getattr(row, "team", ""))
         ]
 
     if not matched and len(requested_key) <= 4:
-        matched = [row for row in rows if requested_key in _game_key(row.game)]
+        matched = [
+            row for row in rows
+            if requested_key in _game_key(row.game)
+            and _matching_team(team, getattr(row, "team", ""))
+        ]
 
-    if not matched and allow_unique_date_fallback:
+    if not matched and allow_unique_date_fallback and not _is_full_matchup(requested_game):
         matched = _unique_team_row_on_target_date(rows, team, target_date)
     if not matched:
         return None
@@ -416,7 +426,7 @@ def _best_matching_row(
     if not nearby_matched and _is_full_matchup(requested_game) and _rows_allow_extended_date_recovery(matched):
         nearby_matched = _unique_matchup_row_within_days(matched, target_date, max_days=7)
     matched = nearby_matched
-    if not matched and allow_unique_date_fallback:
+    if not matched and allow_unique_date_fallback and not _is_full_matchup(requested_game):
         matched = _unique_team_row_on_target_date(rows, team, target_date)
     if not matched:
         return None
@@ -438,7 +448,11 @@ def _unique_team_row_on_target_date(
     dated = [row for row in rows if str(row.game_date or "") == target_date]
     team_key = _game_key(team)
     if team_key:
-        dated = [row for row in dated if team_key in _game_key(row.game)]
+        dated = [
+            row for row in dated
+            if team_key in _game_key(row.game)
+            and _matching_team(team, getattr(row, "team", ""))
+        ]
     game_keys = {_game_key(row.game) for row in dated if _game_key(row.game)}
     return dated if len(game_keys) == 1 else []
 
@@ -585,6 +599,12 @@ def _game_key(value: object) -> str:
     return canonical_matchup_key(value, _TEAM_ALIASES)
 
 
+def _matching_team(requested: object, final: object) -> bool:
+    requested_key = _game_key(requested)
+    final_key = _game_key(final)
+    return not requested_key or not final_key or requested_key == final_key
+
+
 def _record_key(row: object) -> tuple[str, str, str, str, str]:
     def value(name: str, default: object = "") -> object:
         return row.get(name, default) if isinstance(row, dict) else getattr(row, name, default)
@@ -630,6 +650,7 @@ _TEAM_ALIASES = {
     "PDX": "POR",
     "AZ": "ARI",
     "CWS": "CHW",
+    "OKLA": "OU",
 }
 
 

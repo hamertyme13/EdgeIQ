@@ -198,7 +198,31 @@ def fetch_final_game_outcomes(sport: str, game_date: date, *, include_team_stats
         if include_team_stats and sport_key in {"NBA", "WNBA"}:
             summary = _summary(path, str(event.get("id") or ""), cache_variant="final")
             rows[-1]["pace"] = basketball_box_score_pace(summary, sport_key)
+            rows[-1].update(basketball_team_shooting(summary))
     return rows
+
+
+def basketball_team_shooting(summary: dict) -> dict:
+    """Read official team shooting totals; omit a side whose box score is incomplete."""
+    result = {}
+    for team in (summary.get("boxscore") or {}).get("teams") or []:
+        side = team.get("homeAway")
+        if side not in {"home", "away"}:
+            continue
+        stats = {str(row.get("name") or ""): row.get("displayValue") for row in team.get("statistics") or []}
+        try:
+            made, attempts = (int(part) for part in str(stats["threePointFieldGoalsMade-threePointFieldGoalsAttempted"]).split("-", 1))
+            paint = int(str(stats["pointsInPaint"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0 <= made <= attempts <= 100 and 0 <= paint <= 200):
+            continue
+        result.update({
+            f"{side}_three_pointers_made": made,
+            f"{side}_three_pointers_attempted": attempts,
+            f"{side}_points_in_paint": paint,
+        })
+    return result
 
 
 def basketball_box_score_pace(summary: dict, sport: str) -> float | None:

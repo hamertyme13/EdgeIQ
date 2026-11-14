@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import isfinite, sqrt
 from statistics import mean, median, pstdev
 from zoneinfo import ZoneInfo
@@ -11,14 +11,58 @@ from zoneinfo import ZoneInfo
 from analytics.nba_points_minutes import minutes_challenger
 from analytics.nba_points_participation import nba_points_participation_confirmed
 from analytics.nba_points_shot_volume import shot_volume_challenger
+from analytics.observed_stat_range import locked_observed_range
 from analytics.probabilistic_forecast import PropForecast, forecast_probability_at_line
+from analytics.wilson_interval import wilson_interval_95
 from services.game_team_features import opponent_points_allowed_context
-from utils.entity_normalization import canonical_matchup_key
+from utils.entity_normalization import canonical_matchup_key, canonical_person_key
 
 THRESHOLDS = (10, 15, 20, 25, 30, 35)
 VERIFIED_SOURCES = ("espn", "nba_api", "balldontlie", "statshawk")
 NON_REGULAR_SEASONS = {"preseason", "postseason", "playoffs", "summer_league", "summer league", "exhibition"}
 NBA_GAME_TIMEZONE = ZoneInfo("America/New_York")
+
+
+def verified_opponent_injury_context(
+    opponent: str, game_time: object, reports: list[dict], *, now: datetime | None = None,
+) -> dict:
+    """Show timely official opponent reports without inferring a lineup effect."""
+    result = {"status": "unavailable", "reports": [], "retrieved_at": None,
+              "note": "Verified current opponent injury reports are unavailable; lineup health is not confirmed."}
+    if not opponent or not game_time:
+        return result
+    try:
+        tipoff = datetime.fromisoformat(str(game_time).replace("Z", "+00:00"))
+        tipoff = tipoff.replace(tzinfo=UTC) if tipoff.tzinfo is None else tipoff.astimezone(UTC)
+    except ValueError:
+        return result
+    current = now or datetime.now(UTC)
+    opponent_key = canonical_person_key(opponent)
+    aliases = {"nyk": "ny", "sas": "sa", "gsw": "gs"}
+    opponent_key = aliases.get(opponent_key, opponent_key)
+    matched = []
+    for report in reports:
+        team_key = canonical_person_key(report.get("team"))
+        if aliases.get(team_key, team_key) != opponent_key:
+            continue
+        if report.get("source") != "espn_injury_feed" or report.get("verified") is not True:
+            continue
+        try:
+            retrieved = datetime.fromisoformat(str(report["captured_at"]).replace("Z", "+00:00"))
+            retrieved = retrieved.replace(tzinfo=UTC) if retrieved.tzinfo is None else retrieved.astimezone(UTC)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (current - timedelta(hours=1) <= retrieved <= current <= tipoff):
+            continue
+        if not report.get("player") or not report.get("status"):
+            continue
+        matched.append({"player": str(report["player"]), "status": str(report["status"]),
+                        "retrieved_at": retrieved.isoformat(), "source": "ESPN injury feed"})
+    if not matched:
+        return result
+    return {"status": "reported", "reports": matched[:12],
+            "retrieved_at": max(row["retrieved_at"] for row in matched),
+            "note": "Reported availability only; not a confirmed lineup or quantified projection adjustment."}
 
 
 def nba_points_game_day(value: object) -> str:
@@ -124,17 +168,9 @@ def _eligible_games(history: list[dict], game_time: object) -> list[dict]:
     return _screen_games(history, game_time)[0]
 
 
-def _interval(wins: int, decisions: int) -> list[float] | None:
-    if not decisions:
-        return None
-    # Wilson 95% interval describes uncertainty in the historical rate, not
-    # uncertainty in EdgeIQ's next-game probability.
-    z = 1.96
-    p = wins / decisions
-    denominator = 1 + z * z / decisions
-    center = (p + z * z / (2 * decisions)) / denominator
-    margin = z * sqrt(p * (1 - p) / decisions + z * z / (4 * decisions * decisions)) / denominator
-    return [round(max(0.0, center - margin) * 100, 1), round(min(1.0, center + margin) * 100, 1)]
+def verified_nba_points_research_history(history: list[dict], game_time: object) -> list[dict]:
+    """Provide the Research forecast with the same screened finals as its points pane."""
+    return _eligible_games(history, game_time)
 
 
 def _summary(rows: list[dict], threshold: float, *, inclusive: bool) -> dict:
@@ -148,7 +184,7 @@ def _summary(rows: list[dict], threshold: float, *, inclusive: bool) -> dict:
         "pushes": pushes,
         "decisions": decisions,
         "hit_rate": round(100 * wins / decisions, 1) if decisions else None,
-        "interval_95": _interval(wins, decisions),
+        "interval_95": wilson_interval_95(wins, decisions),
         "average": round(mean(values), 2) if values else None,
         "median": round(median(values), 2) if values else None,
         "standard_deviation": round(pstdev(values), 2) if len(values) > 1 else None,
@@ -186,6 +222,30 @@ def _minutes_challenger(games: list[dict]) -> dict:
     return minutes_challenger(games)
 
 
+def _observed_scoring_spread(forecast: PropForecast | None, verified_model: bool) -> dict | None:
+    if not verified_model or forecast is None:
+        return None
+    distribution = forecast.distribution or {}
+    spread = locked_observed_range({
+        "source": forecast.source, "sample_size": forecast.sample_size,
+        "distribution": distribution,
+    })
+    if spread is None or spread[3] > 100:
+        return None
+    try:
+        median_value = float(distribution["median"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not isfinite(median_value) or not spread[1] <= median_value <= spread[2]:
+        return None
+    return {
+        "sample_size": min(forecast.sample_size, 15),
+        "p10": spread[0], "p25": spread[1], "median": median_value,
+        "p75": spread[2], "p90": spread[3],
+        "label": "Observed recent scoring spread, not a calibrated next-game prediction interval.",
+    }
+
+
 def build_nba_points_intelligence(
     history: list[dict],
     *,
@@ -221,6 +281,16 @@ def build_nba_points_intelligence(
         for name, rows in windows.items()
     }
     values = [row["actual"] for row in games[:20]]
+    recent_verified_finals = [
+        {
+            "game_date": str(row.get("game_date") or "")[:10],
+            "game": str(row.get("game") or ""),
+            "points": row["actual"],
+            "source": str(row.get("source") or ""),
+            "imported_at": row.get("imported_at"),
+        }
+        for row in windows["verified_season"][:5]
+    ]
     variability = round(pstdev(values) / mean(values), 3) if len(values) > 1 and mean(values) > 0 else None
     conflicting_evidence = any(
         reliability["excluded"].get(reason, 0)
@@ -247,6 +317,7 @@ def build_nba_points_intelligence(
             "Developing" if len(games) >= 10 else "Thin history" if games else "Unavailable"
         ),
         "thresholds": thresholds,
+        "recent_verified_finals": recent_verified_finals,
         "consistency": {
             "coefficient_of_variation": variability,
             "description": "Last 20 points standard deviation divided by average; lower means less variation. Not a hit probability.",
@@ -264,6 +335,8 @@ def build_nba_points_intelligence(
             "status": (
                 "Opponent team defense compared with qualifying NBA teams; this is not a player hit probability."
                 if team_defense["advantage_score"] is not None else
+                "Opponent needs enough comparable verified games and an unambiguous team identity for a defense ranking."
+                if team_defense["rank_unavailable_reason"] == "opponent_sample" and team_defense["sample_size"] else
                 "Verified team points allowed available; league comparison needs more teams and position-specific defense is unvalidated."
                 if team_defense["sample_size"] else
                 "Opponent defensive evidence unavailable; head-to-head is descriptive only."
@@ -273,6 +346,9 @@ def build_nba_points_intelligence(
             "expected_points": forecast.projection if verified_model and forecast is not None else None,
             "over_probability": over,
             "under_probability": under,
+            "observed_scoring_spread": _observed_scoring_spread(forecast, verified_model),
+            "uncertainty_level": (forecast.distribution or {}).get("uncertainty_level") if verified_model and forecast else None,
+            "uncertainty_drivers": list((forecast.distribution or {}).get("uncertainty_drivers") or []) if verified_model and forecast else [],
             "source": forecast.source if forecast else "unavailable",
             "model_version": forecast.model_version if forecast else None,
             "note": (

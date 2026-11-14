@@ -53,6 +53,8 @@
           <span>Market ${percent(marketProbability)}</span><span>EdgeIQ ${percent(edgeProbability)}</span>
           <div class="recommendation-probability-track"><i style="left:${Math.max(0, Math.min(100, marketProbability))}%" title="Market probability"></i><b style="left:${Math.max(0, Math.min(100, edgeProbability))}%" title="EdgeIQ probability"></b></div>
         </div>` : "";
+    const discounted = prop.discounted_option;
+    const discountedProbability = discounted?.probability == null ? "Estimate unavailable" : `${percent(discounted.probability)} model estimate`;
     return `<article class="opportunity-row recommendation-card ${expired ? "opportunity-expired" : ""} ${high ? "high-confidence-card" : ""}" data-risk-lane="${escape(prop.risk_profile?.key || "aggressive")}">
       ${high ? `<span class="high-confidence-banner">${highCalibrated ? "High calibrated confidence" : "High EdgeIQ score"}</span>` : ""}
       <div class="recommendation-card-heading">
@@ -68,9 +70,11 @@
       </dl>
       ${comparison}
       <p class="recommendation-card-context">Model ${percent(modelProbability)}${hasProvisional ? ` · Provisional adjustment ${percent(prop.confidence)}` : ""} · Projection ${quantity(receipt.projection ?? prop.projection)} · ${escape(market)}${!hasCalibration && calibration.label ? ` · ${escape(calibration.label)}` : ""}</p>
+      ${discounted ? `<p class="recommendation-card-context"><span class="status-pill" title="PrizePicks discounted line; payout may be lower than the standard line">PrizePicks discounted</span> ${escape(discounted.direction)} ${quantity(discounted.line)} · ${discountedProbability}. Alternate only; lower payout may offset the higher hit chance. Not used in EdgeIQ Score.</p>` : ""}
       <p class="recommendation-card-status ${eligibility.paid_ready ? "success-text" : expired || !actionable ? "danger-text" : "warning-text"}">${escape(status)}</p>
       <div class="opportunity-actions recommendation-card-actions">
         <button class="secondary" type="button" data-add-opportunity="${index}" ${expired || !actionable ? "disabled" : ""}>Add to Entry</button>
+        ${discounted ? `<button class="secondary" type="button" data-add-discounted-opportunity="${index}" ${expired || !actionable ? "disabled" : ""} title="Load the discounted PrizePicks offer as a paper entry for fresh analysis">Use discounted</button>` : ""}
         <button class="secondary" type="button" data-inspect-opportunity="${index}">Proof</button>
         <button class="secondary" type="button" data-challenge-opportunity="${index}" title="Review recorded reasons this recommendation could fail">Challenge</button>
         <button class="secondary" type="button" data-timeline-opportunity="${index}">Timeline</button>

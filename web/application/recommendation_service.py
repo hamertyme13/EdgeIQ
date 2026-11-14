@@ -6,7 +6,8 @@ from copy import deepcopy
 
 from data.providers import pandascore, sleeper
 from utils.entity_normalization import canonical_matchup_key, canonical_person_key
-from utils.platforms import maximum_entry_legs
+from utils.market_validation import is_supported_full_game_stat
+from utils.platforms import canonical_platform, maximum_entry_legs
 from utils.sports import ESPORT_SPORTS as _ESPORT_SPORTS
 from utils.ttl_cache import TTLMap
 
@@ -59,6 +60,46 @@ def generator_games_payload(
         game["player_count"] = len(players_by_game.get(key, set()))
     return {"games": sorted(games.values(), key=lambda row: (row["game_time"], row["game"])),
             "platform": platform, "sport": sport_filter or "All Sports"}
+
+
+def builder_offers_payload(
+    sport: str,
+    platform: str,
+    player: str,
+    *,
+    fetch_props: Callable[[str, str | None], list[dict]],
+) -> dict:
+    """Offer the selected player's cached full-game markets without fetching providers."""
+    sport_filter = _sport_filter(sport)
+    player_key = canonical_person_key(player)
+    if not sport_filter or not player_key or len(player) > 100:
+        raise RecommendationRequestError("Choose a sport and enter a player name first.")
+    selected: list[dict] = []
+    seen: set[tuple] = set()
+    for prop in fetch_props(platform, sport_filter):
+        if str(prop.get("league") or prop.get("sport") or "").strip().upper() != sport_filter:
+            continue
+        if canonical_platform(prop.get("platform") or platform) != canonical_platform(platform):
+            continue
+        if canonical_person_key(prop.get("player")) != player_key:
+            continue
+        if not _generator_game_key(prop) or prop.get("line") is None or not is_supported_full_game_stat(prop.get("stat")):
+            continue
+        key = (
+            _generator_game_key(prop), str(prop.get("stat") or "").casefold(),
+            str(prop.get("line")), str(prop.get("direction") or "Over").casefold(),
+            str(prop.get("line_offer_type") or prop.get("odds_type") or "standard").casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append({**prop, "platform": canonical_platform(platform)})
+    selected.sort(key=lambda row: (
+        str(row.get("line_offer_type") or row.get("odds_type") or "standard").lower() != "standard",
+        str(row.get("game_time") or ""), str(row.get("stat") or ""), float(row.get("line") or 0),
+    ))
+    return {"offers": selected[:30], "count": len(selected), "sport": sport_filter, "platform": platform,
+            "message": "Choose a posted offer or enter a custom line. Analysis checks tracking; confirm availability in the sportsbook before saving."}
 
 
 def top_props_payload(
@@ -385,11 +426,11 @@ def entry_suggestions_payload(
         raw_props = [prop for prop in raw_props if _generator_game_key(prop) in selected_game_keys]
     source = "daily_briefing_snapshot"
     live_props: list[dict] | None = None
-    if _distinct_player_count(raw_props) < leg_count:
+    if selected_game_keys or _distinct_player_count(raw_props) < leg_count:
         live_props = fetch_props(entry_platform, sport_filter)
         if selected_game_keys:
             live_props = [prop for prop in live_props if _generator_game_key(prop) in selected_game_keys]
-        if _distinct_player_count(live_props) > _distinct_player_count(raw_props):
+        if selected_game_keys or _distinct_player_count(live_props) > _distinct_player_count(raw_props):
             raw_props = live_props
             source = "live_provider_board"
     cache_key = (
@@ -397,7 +438,8 @@ def entry_suggestions_payload(
         tuple(sorted(avoid_prop_keys or set())), id(suggest),
         tuple(
             (str(prop.get("platform") or ""), str(prop.get("player") or ""), str(prop.get("stat") or ""),
-             float(prop.get("line") or 0.0), str(prop.get("direction") or ""))
+             float(prop.get("line") or 0.0), str(prop.get("direction") or ""),
+             str(prop.get("offer_snapshot_id") or ""))
             for prop in raw_props[:150]
         ),
     )
@@ -558,14 +600,26 @@ def _generate_entry_suggestions(
 ) -> list:
     suggestions = []
     for platform_model, props in platform_pairs:
-        bounded_props = sorted(
+        ranked_props = sorted(
             props,
             key=lambda prop: (
                 float(prop.get("source_score") or 0.0),
                 int(prop.get("trending_count") or 0),
             ),
             reverse=True,
-        )[:80 if direction_filter != "Both" else 40]
+        )
+        limit = 80 if direction_filter != "Both" else 40
+        first_per_player = []
+        remaining = []
+        seen_players: set[str] = set()
+        for prop in ranked_props:
+            player = canonical_person_key(prop.get("player"))
+            if player and player not in seen_players:
+                first_per_player.append(prop)
+                seen_players.add(player)
+            else:
+                remaining.append(prop)
+        bounded_props = (first_per_player + remaining)[:limit]
         options = {"direction_filter": direction_filter} if direction_filter != "Both" else {}
         suggestions.extend(
             suggest(

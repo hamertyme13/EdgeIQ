@@ -2,7 +2,8 @@ import json
 import math
 import re
 from collections import defaultdict
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -456,6 +457,7 @@ class EntryRepository:
         dnp_mode: str = "reduce",
         leg_results: list[dict] | None = None,
         correction_reason: str = "",
+        settlement_basis: str = "",
     ) -> dict:
         EntryRepository._ensure_schema()
         if result not in {"Win", "Loss", "Push", "DNP"}:
@@ -496,7 +498,7 @@ class EntryRepository:
             if EntryRepository._normalize_entry_mode(getattr(entry, "entry_mode", "real")) == "paper":
                 profit = 0.0
 
-            if was_settled and (entry.result != result or correction_reason):
+            if correction_reason or (was_settled and entry.result != result):
                 try:
                     audit = json.loads(entry.audit_snapshot or "{}")
                 except (TypeError, ValueError):
@@ -509,6 +511,8 @@ class EntryRepository:
                     "reason": correction_reason or "Rechecked settled entry against final leg results.",
                     "reconciled_at": utc_now().isoformat(),
                 })
+                if settlement_basis:
+                    audit["settlement_basis"] = settlement_basis
                 entry.audit_snapshot = json.dumps(audit)
 
             entry.status = "Settled"
@@ -748,10 +752,54 @@ class EntryRepository:
         }
 
     @staticmethod
+    def yesterday_winning_props() -> dict:
+        """Return distinct verified winning legs from yesterday's Eastern game slate."""
+        day = datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=1)
+        EntryRepository._ensure_schema()
+        with SessionLocal() as session:
+            rows = (
+                session.query(EntryPropModel)
+                .filter(EntryPropModel.final_result == "Win")
+                .filter(EntryPropModel.final_source.isnot(None))
+                .filter(EntryPropModel.final_source != "")
+                .filter(EntryPropModel.final_source != "projection_estimate")
+                .filter(EntryPropModel.game_time >= day.isoformat())
+                .filter(EntryPropModel.game_time < (day + timedelta(days=2)).isoformat())
+                .order_by(EntryPropModel.sport, EntryPropModel.player_name, EntryPropModel.stat)
+                .limit(2000)
+                .all()
+            )
+            sports: dict[str, dict[tuple, dict]] = defaultdict(dict)
+            for row in rows:
+                try:
+                    game_time = datetime.fromisoformat(str(row.game_time).replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if game_time.tzinfo is None or game_time.astimezone(ZoneInfo("America/New_York")).date() != day:
+                    continue
+                sport = str(row.sport or "Unknown").upper()
+                key = (row.player_name, row.stat, row.direction, row.line, row.platform, row.game_time)
+                if key in sports[sport]:
+                    sports[sport][key]["entries"] += 1
+                    continue
+                sports[sport][key] = {
+                    "player": row.player_name, "stat": row.stat, "direction": row.direction,
+                    "line": row.line, "actual": row.actual, "platform": row.platform,
+                    "game": row.game, "game_time": row.game_time,
+                    "final_source": row.final_source, "entries": 1,
+                }
+        return {
+            "date": day.isoformat(),
+            "sports": [{"sport": sport, "props": list(props.values())} for sport, props in sorted(sports.items())],
+            "truncated": len(rows) >= 2000,
+        }
+
+    @staticmethod
     def _recommendation_accuracy(entries: list[dict]) -> dict:
         evaluated = [(entry, EntryRepository._evaluated_card_probability(entry)) for entry in entries]
         all_scored = [entry for entry, probability in evaluated if probability is not None]
         qualified = [entry for entry, probability in evaluated if probability is not None and probability >= 60.0]
+        high_score = [entry for entry in entries if (EntryRepository._evaluated_card_score(entry) or 0) >= 90.0]
 
         def cohort(rows: list[dict]) -> dict:
             settled = [entry for entry in rows if entry.get("status") == "Settled"]
@@ -772,10 +820,33 @@ class EntryRepository:
         return {
             **cohort(qualified),
             "all_evaluated": cohort(all_scored),
+            "high_edgeiq_score": cohort(high_score),
             "minimum_card_probability": 60.0,
             "calibration_only": sum(1 for _, probability in evaluated if probability is not None and probability < 60.0),
             "probability_unavailable": sum(1 for _, probability in evaluated if probability is None),
         }
+
+    @staticmethod
+    def _evaluated_card_score(entry: dict) -> float | None:
+        audit = entry.get("audit_snapshot") or {}
+        if isinstance(audit, str):
+            try:
+                audit = json.loads(audit)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(audit, dict):
+            return None
+        analysis = audit.get("analysis")
+        for record in (audit.get("recommendation"), analysis.get("recommendation") if isinstance(analysis, dict) else None):
+            if not isinstance(record, dict):
+                continue
+            try:
+                score = float(record.get("score"))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(score) and score >= 0:
+                return score
+        return None
 
     @staticmethod
     def _evaluated_card_probability(entry: dict) -> float | None:

@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 from contextlib import suppress
+from datetime import date
 from time import monotonic
 
 from analytics.probabilistic_forecast import forecast_prop
+from data.providers.espn import fetch_game_times
 from repository.repositories.board_offer_repository import BoardOfferRepository
+from repository.repositories.final_stats_repository import _game_key
 from repository.repositories.model_rehabilitation_repository import ModelRehabilitationRepository
 from repository.repositories.team_history_repository import TeamHistoryRepository
 from services.game_team_features import NBA_DEFENSE_CONTEXT_VERSION, opponent_points_allowed_context
@@ -35,9 +38,26 @@ def needs_pregame_retry(cohort: dict, eastern_hour: int) -> bool:
     return not cohort.get("complete", False) and 0 <= eastern_hour < 22
 
 
+def _screen_official_schedule(candidates: list[dict], games: list[dict] | None) -> tuple[list[dict], int]:
+    if games is None:
+        return [{**offer, "schedule_evidence": "unavailable"} for offer in candidates], 0
+    scheduled = {_game_key(game.get("game")) for game in games}
+    accepted = [
+        {**offer, "schedule_evidence": "official_matchup_verified"}
+        for offer in candidates if _game_key(offer.get("game")) in scheduled
+    ]
+    return accepted, len(candidates) - len(accepted)
+
+
 def collect_nba_points_shadow(*, max_player_games: int = 250, max_runtime_seconds: int = 120) -> dict:
     board = BoardOfferRepository.nba_points_shadow_candidates()
-    candidates = board["candidates"]
+    schedule_status = "verified"
+    try:
+        official_games = fetch_game_times("NBA", date.fromisoformat(board["day"])) if board["candidates"] else []
+    except (RuntimeError, ValueError, OSError):
+        official_games = None
+        schedule_status = "unavailable"
+    candidates, excluded_unscheduled = _screen_official_schedule(board["candidates"], official_games)
     budget = max(1, min(int(max_player_games), 500))
     runtime_budget = max(5, min(int(max_runtime_seconds), 150))
     started = monotonic()
@@ -53,7 +73,12 @@ def collect_nba_points_shadow(*, max_player_games: int = 250, max_runtime_second
     }
     verified_game_counts: Counter[int] = Counter()
     timed_out = False
-    for offer in candidates[:budget]:
+    captured = ModelRehabilitationRepository.nba_points_board_captured_player_games(board["day"])
+    remaining = [
+        offer for offer in candidates
+        if (canonical_person_key(offer.get("player")), str(offer.get("game_time") or "")) not in captured
+    ]
+    for offer in remaining[:budget]:
         if monotonic() - started >= runtime_budget:
             timed_out = True
             break
@@ -125,21 +150,38 @@ def collect_nba_points_shadow(*, max_player_games: int = 250, max_runtime_second
         )
         queued += result["queued"]
         created += result["created"]
-    complete = bool(candidates) and not board["scan_limit_reached"] and len(candidates) <= budget and failed == 0 and not timed_out
+    complete = (
+        bool(candidates) and not board["scan_limit_reached"]
+        and len(remaining) <= budget and failed == 0 and not timed_out
+        and created == sum(len(rows) for rows in grouped.values())
+    )
+    cohort_summary = ModelRehabilitationRepository.nba_points_board_cohort_summary(board["day"])
     return {
         "day": board["day"],
-        "status": "captured" if complete else "partial" if candidates else "no_fresh_trackable_board",
+        "schedule_status": schedule_status,
+        "excluded_unscheduled": excluded_unscheduled,
+        "status": (
+            "captured" if complete else "partial" if candidates
+            else "no_official_game_match" if excluded_unscheduled else "no_fresh_trackable_board"
+        ),
         "candidates": len(candidates),
+        "previously_captured": len(candidates) - len(remaining),
+        "remaining_uncaptured": max(0, len(remaining) - created),
         "forecasted": sum(len(rows) for rows in grouped.values()),
         "qualified_forecasts": qualified,
+        **cohort_summary,
         "forecast_sources": dict(sorted(forecast_sources.items())),
         "challenger_statuses": {
             name: dict(sorted(statuses.items())) for name, statuses in challenger_statuses.items()
         },
         "market_prior_verified_game_counts": dict(sorted(verified_game_counts.items())),
         "qualification_note": (
+            "Archived provider matchups were absent from the official NBA schedule; no shadow forecasts were queued."
+            if excluded_unscheduled and not candidates else
             "No fresh, trackable NBA Points board was available."
             if not candidates else
+            "All current player-games were already captured in the prospective shadow cohort."
+            if not remaining else
             "The board was captured, but no history-based forecast qualified. Market-prior observations remain shadow-only until each player has at least five verified regular-season games."
             if candidates and qualified == 0 and forecast_sources.get("market_prior") else
             "Qualified forecasts remain research-only until chronological outcomes support them."

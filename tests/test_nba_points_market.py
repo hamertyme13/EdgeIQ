@@ -46,6 +46,42 @@ def test_exact_market_comparison_is_research_only():
     assert result["event_id"] == "nba-123"
 
 
+def test_named_exact_book_prices_show_break_even_without_claiming_dfs_ev():
+    def priced_market(*_args):
+        return {**_market(), "book_count": 2, "timestamped_book_count": 2,
+                "best_over_odds": 105, "best_under_odds": -105,
+                "books": [
+                    {"bookmaker": "Book A", "over_odds": 105, "under_odds": -115},
+                    {"bookmaker": "Book B", "over_odds": -110, "under_odds": -105},
+                ]}
+
+    result = build_nba_points_market(
+        "Research Guard", 19.5, "PrizePicks", research=_research,
+        market_lookup=priced_market, now=NOW,
+    )
+    assert result["named_book_prices"] == {
+        "over": {"bookmaker": "Book A", "american_odds": 105, "break_even_probability": 48.78},
+        "under": {"bookmaker": "Book B", "american_odds": -105, "break_even_probability": 51.22},
+    }
+    assert result["ev"] is None
+    assert result["payout_verified"] is False
+
+    mismatched = build_nba_points_market(
+        "Research Guard", 19.5, "PrizePicks", research=_research,
+        market_lookup=lambda *_args: {**priced_market(), "best_over_odds": 200}, now=NOW,
+    )
+    assert mismatched["named_book_prices"] == {}
+
+    malformed = build_nba_points_market(
+        "Research Guard", 19.5, "PrizePicks", research=_research,
+        market_lookup=lambda *_args: {**priced_market(), "books": [
+            {"bookmaker": "Book A", "over_odds": 105, "under_odds": -115},
+            {"bookmaker": "Book B", "over_odds": 0, "under_odds": -105},
+        ]}, now=NOW,
+    )
+    assert malformed["named_book_prices"] == {}
+
+
 def test_exact_market_rejects_untimed_books_and_different_event():
     untimed = build_nba_points_market(
         "Research Guard", 19.5, "PrizePicks", research=_research,

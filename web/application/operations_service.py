@@ -27,6 +27,8 @@ def deploy_readiness_payload(static_dir: Path, asset_version: str) -> dict:
             not hosted or not database_url.startswith("sqlite"),
             (
                 "Local SQLite storage is ready. A hosted SQL database is only needed for multi-device sync."
+                if not hosted and database_url.startswith("sqlite")
+                else "Local PostgreSQL storage is ready. Multi-device sync needs a hosted shared database."
                 if not hosted
                 else "Set DATABASE_URL to Postgres or another hosted SQL database."
             ),

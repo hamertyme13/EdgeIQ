@@ -200,6 +200,7 @@ def main() -> int:
     env = {
         **os.environ,
         "DATABASE_URL": f"sqlite:///{database_path}",
+        "EDGEIQ_LOCAL_POSTGRES": "0",
         "EDGEIQ_SETTLEMENT_INITIAL_REFRESH_SECONDS": "3600",
     }
     port = available_port()

@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261030-nba-baseline"
+STATIC_ASSET_VERSION = "20261110-research-hits-15"

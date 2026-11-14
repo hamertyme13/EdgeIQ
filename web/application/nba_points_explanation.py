@@ -59,6 +59,9 @@ def build_nba_points_explanation(
     custom = verified.get("custom_line") or {}
     projection = intelligence.get("projection") or {}
     reliability = intelligence.get("data_reliability") or {}
+    recent_verified_finals = intelligence.get("recent_verified_finals") or []
+    if not isinstance(recent_verified_finals, list):
+        recent_verified_finals = []
     accepted_sources = reliability.get("accepted_sources") or {}
     final_sources = ", ".join(sorted(accepted_sources)) or "Verified final-stat records"
     facts = [
@@ -74,6 +77,7 @@ def build_nba_points_explanation(
             ),
             "weight": 2,
             "evidence": final_sources,
+            "source_records": recent_verified_finals[:5],
         })
     if projection.get("source") == "verified_history_distribution" and projection.get("expected_points") is not None:
         facts.append({
@@ -174,7 +178,8 @@ def build_nba_points_explanation(
         "bullets": [by_id[key]["text"] for key in selected],
         "fact_details": [
             {"id": key, "text": by_id[key]["text"], "evidence": by_id[key]["evidence"],
-             "source_links": by_id[key].get("source_links", [])}
+             "source_links": by_id[key].get("source_links", []),
+             "source_records": by_id[key].get("source_records", []) if detail == "detailed" else []}
             for key in selected
         ],
         "model_changed": False,
