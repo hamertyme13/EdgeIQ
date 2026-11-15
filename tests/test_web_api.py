@@ -5902,6 +5902,9 @@ def test_entry_handoff_returns_copy_ready_slip(monkeypatch):
     )
 
     assert body["recommended_platform"] == "Underdog"
+    assert body["handoff_platform"] == "PrizePicks"
+    assert body["open_url"] == "https://app.prizepicks.com/"
+    assert "Selected app: PrizePicks" in body["copy_text"]
     assert "EdgeIQ 2-leg handoff" in body["copy_text"]
     assert body["legs"][0]["best_platform"] == "Underdog"
     assert body["checklist"]

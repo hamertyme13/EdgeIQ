@@ -1,4 +1,4 @@
-const CACHE_NAME = "edgeiq-shell-20261110-research-hits-15";
+const CACHE_NAME = "edgeiq-shell-20261114-ready-transfer";
 const SHELL_ASSETS = [
   "/",
   "/static/index.html",
@@ -21,6 +21,7 @@ const SHELL_ASSETS = [
   "/static/js/forecast-range.js",
   "/static/js/recommendation-disclosure.js",
   "/static/js/recommendation-card.js",
+  "/static/js/ready-now.js",
   "/static/js/slate-changes.js",
   "/static/js/alerts.js",
   "/static/js/provider-health.js",

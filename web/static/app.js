@@ -1396,6 +1396,7 @@ function renderRecoveryProgress(protection) {
 }
 
 function renderDailyBriefing(data) {
+  marketState.opportunitySelections.clear();
   const changeOutput = $("slate-change-output");
   if (changeOutput) changeOutput.innerHTML = window.EdgeIQSlateChanges?.render(data.slate_changes) || "Change details are unavailable. Refresh Today to try again.";
   const changeSummary = $("slate-change-panel")?.querySelector("summary");
@@ -1418,12 +1419,16 @@ function renderDailyBriefing(data) {
   const health = data.summary?.model_health || {};
   const slate = data.summary?.slate || [];
   const riskOrder = { conservative: 0, balanced: 1, aggressive: 2 };
-  const opportunities = (data.top_opportunities || []).map((opportunity, sourceIndex) => ({
+  const opportunities = window.EdgeIQReadyNow.prepare((data.top_opportunities || []).map((opportunity, sourceIndex) => ({
     ...opportunity,
     _sourceIndex: sourceIndex,
-  })).sort((a, b) =>
+  }))).sort((a, b) =>
     (riskOrder[a.risk_profile?.key] ?? 2) - (riskOrder[b.risk_profile?.key] ?? 2)
     || Number(b.score || 0) - Number(a.score || 0));
+  const readinessCounts = opportunities.reduce((counts, opportunity) => {
+    counts[opportunity._readyLane] += 1;
+    return counts;
+  }, {ready: 0, paper: 0, review: 0});
   const opportunityLaneCounts = opportunities.reduce((counts, opportunity) => {
     const lane = opportunity.risk_profile?.key || "aggressive";
     counts[lane] = (counts[lane] || 0) + 1;
@@ -1604,14 +1609,19 @@ function renderDailyBriefing(data) {
       <div class="opportunity-board-header">
         <div>
           <p class="eyebrow">Single Recommendation Source</p>
-          <h3 id="opportunity-board-title">Opportunity Board</h3>
-          <p>Conservative emphasizes verified evidence, Balanced accepts measured uncertainty, and Aggressive is best treated as paper-first.</p>
+          <h3 id="opportunity-board-title">Ready Now</h3>
+          <p>Fresh, trackable offers for games still ahead today. One best stat per player.</p>
         </div>
         <div class="button-row compact-button-row">
           <span class="status-pill status-connected">${opportunities.length} ranked</span>
-          <button id="send-selected-opportunities" class="secondary" type="button" disabled>Send selected (0)</button>
+          <button id="send-selected-opportunities" class="secondary" type="button" disabled title="Send selected props to Entry Builder">Send (0)</button>
           <button id="compare-selected-opportunities" class="secondary" type="button" disabled>Compare (0)</button>
         </div>
+      </div>
+      <div class="opportunity-ready-tabs" role="tablist" aria-label="Opportunity evidence status">
+        <button class="risk-tab active" type="button" data-opportunity-ready="ready">Ready Now <span>${readinessCounts.ready}</span></button>
+        <button class="risk-tab" type="button" data-opportunity-ready="paper">Paper <span>${readinessCounts.paper}</span></button>
+        <button class="risk-tab" type="button" data-opportunity-ready="review">Needs Review <span>${readinessCounts.review}</span></button>
       </div>
       <div class="opportunity-risk-tabs" role="tablist" aria-label="Opportunity risk level">
         <button class="risk-tab active" type="button" data-opportunity-risk="all">All <span>${opportunities.length}</span></button>
@@ -1621,19 +1631,17 @@ function renderDailyBriefing(data) {
       </div>
       ${opportunities.length && !opportunityLaneCounts.conservative && !opportunityLaneCounts.balanced ? `<div class="research-only-board-notice"><strong>Research-only board</strong><span>Every visible prop carries aggressive uncertainty. Prefer paper tracking until stronger evidence appears.</span></div>` : ""}
       <div class="opportunity-list opportunity-board-list">
-        ${opportunities.map((prop, index) => {
-          const previousProfile = index ? opportunities[index - 1]?.risk_profile?.key : "";
-          const currentProfile = prop.risk_profile?.key || "aggressive";
-          const profileHeader = currentProfile !== previousProfile ? `
-            <div class="opportunity-risk-header risk-${escapeHtml(currentProfile)}" data-risk-lane="${escapeHtml(currentProfile)}">
-              <strong>${escapeHtml(prop.risk_profile?.label || "Aggressive")}</strong>
-              <span>${escapeHtml(prop.risk_profile?.description || "Higher uncertainty. Prefer paper tracking.")}</span>
-            </div>` : "";
-          return `
-          ${profileHeader}
-          ${window.EdgeIQRecommendationCard?.render(prop, {platform: data.platform, sport: data.sport}) || `<p role="alert">Recommendation cards could not display. Reload Today to try again.</p>`}
-        `;
-        }).join("") || `<div class="suggestion compact-suggestion">No props cleared the current recommendation and data-quality filters.</div>`}
+        ${opportunities.map((prop) => `
+          <div data-ready-lane="${prop._readyLane}" data-risk-lane="${escapeHtml(prop.risk_profile?.key || "aggressive")}" hidden>
+            ${window.EdgeIQRecommendationCard?.render(
+              prop._readyLane === "review"
+                ? {...prop, actionable: false, recommendation_eligibility: {...prop.recommendation_eligibility, label: "Research only · refresh or verify this offer"}}
+                : prop,
+              {platform: data.platform, sport: data.sport}
+            ) || `<p role="alert">Recommendation cards could not display. Reload Today to try again.</p>`}
+          </div>
+        `).join("") || `<div class="suggestion compact-suggestion">No props cleared the current recommendation and data-quality filters.</div>`}
+        <div class="empty-state" data-ready-empty hidden><strong>No matching offers ready now.</strong><p>Check Paper or Needs Review for other ideas. EdgeIQ will not label a stale or unmatched line as ready.</p></div>
       </div>
       <details id="recommendation-compare-panel" class="recommendation-compare-panel" hidden>
         <summary>Compare recommendations</summary>
@@ -2026,19 +2034,86 @@ function bindDailyBriefingSummaryActions() {
   const updateOpportunitySelection = () => {
     if (!selectionButton) return;
     selectionButton.disabled = marketState.opportunitySelections.size === 0;
-    selectionButton.textContent = `Send selected (${marketState.opportunitySelections.size})`;
+    selectionButton.textContent = `Send (${marketState.opportunitySelections.size})`;
   };
+  const clearOpportunitySelection = () => {
+    marketState.opportunitySelections.clear();
+    document.querySelectorAll("[data-select-opportunity]").forEach((checkbox) => { checkbox.checked = false; });
+    updateOpportunitySelection();
+  };
+  const filterOpportunityBoard = () => {
+    const ready = document.querySelector("[data-opportunity-ready].active")?.dataset.opportunityReady || "ready";
+    const risk = document.querySelector("[data-opportunity-risk].active")?.dataset.opportunityRisk || "all";
+    let visible = 0;
+    document.querySelectorAll("#opportunity-board [data-ready-lane]").forEach((row) => {
+      row.hidden = row.dataset.readyLane !== ready || (risk !== "all" && row.dataset.riskLane !== risk);
+      if (!row.hidden) visible += 1;
+    });
+    const empty = document.querySelector("#opportunity-board [data-ready-empty]");
+    if (empty) empty.hidden = visible !== 0;
+  };
+  const updateOpportunityAvailability = () => {
+    const board = document.querySelector("#opportunity-board");
+    if (!board?.isConnected) return;
+    const counts = {ready: 0, paper: 0, review: 0};
+    board.querySelectorAll("[data-ready-lane]").forEach((row) => {
+      const index = Number(row.querySelector("[data-select-opportunity]")?.dataset.selectOpportunity);
+      const prop = state.dailyBriefing?.top_opportunities?.[index];
+      if (!prop) return;
+      const nextLane = window.EdgeIQReadyNow.lane(prop);
+      counts[nextLane] += 1;
+      if (nextLane === row.dataset.readyLane) return;
+      row.dataset.readyLane = nextLane;
+      const card = row.querySelector(".recommendation-card");
+      const status = card?.querySelector(".recommendation-card-status");
+      if (status) {
+        status.textContent = nextLane === "paper"
+          ? "Provider check is over five minutes old. Refresh before paid use."
+          : "This offer needs a fresh check before it can be added.";
+        status.className = `recommendation-card-status ${nextLane === "paper" ? "warning-text" : "danger-text"}`;
+      }
+      card?.classList.toggle("opportunity-expired", nextLane === "review");
+      card?.classList.toggle("high-confidence-card", nextLane !== "review" && Number(prop.edgeiq_score?.score || 0) >= 90);
+      const banner = card?.querySelector(".high-confidence-banner");
+      if (banner) banner.hidden = nextLane === "review";
+      row.querySelectorAll("[data-select-opportunity], [data-add-opportunity], [data-add-discounted-opportunity]")
+        .forEach((control) => { control.disabled = nextLane === "review"; });
+      if (nextLane === "review" && marketState.opportunitySelections.delete(index)) {
+        const checkbox = row.querySelector("[data-select-opportunity]");
+        if (checkbox) checkbox.checked = false;
+        updateOpportunitySelection();
+      }
+    });
+    board.querySelectorAll("[data-opportunity-ready]").forEach((tab) => {
+      const count = tab.querySelector("span");
+      if (count) count.textContent = String(counts[tab.dataset.opportunityReady]);
+    });
+    filterOpportunityBoard();
+  };
+  document.querySelectorAll("[data-opportunity-ready]").forEach((button) => {
+    button.addEventListener("click", () => {
+      clearOpportunitySelection();
+      document.querySelectorAll("[data-opportunity-ready]").forEach((tab) => tab.classList.toggle("active", tab === button));
+      filterOpportunityBoard();
+    });
+  });
   document.querySelectorAll("[data-opportunity-risk]").forEach((button) => {
     button.addEventListener("click", () => {
-      const lane = button.dataset.opportunityRisk || "all";
+      clearOpportunitySelection();
       document.querySelectorAll("[data-opportunity-risk]").forEach((tab) => {
         tab.classList.toggle("active", tab === button);
       });
-      document.querySelectorAll("#opportunity-board [data-risk-lane]").forEach((row) => {
-        row.hidden = lane !== "all" && row.dataset.riskLane !== lane;
-      });
+      filterOpportunityBoard();
     });
   });
+  updateOpportunityAvailability();
+  const availabilityBoard = document.querySelector("#opportunity-board");
+  const revisitOpportunityAvailability = () => {
+    if (!availabilityBoard?.isConnected) return;
+    updateOpportunityAvailability();
+    setTimeout(revisitOpportunityAvailability, 30000);
+  };
+  setTimeout(revisitOpportunityAvailability, 30000);
   document.querySelectorAll("[data-select-opportunity]").forEach((checkbox) => {
     checkbox.addEventListener("change", () => {
       const index = Number(checkbox.dataset.selectOpportunity);
@@ -2058,44 +2133,60 @@ function bindDailyBriefingSummaryActions() {
     });
   });
   selectionButton?.addEventListener("click", () => {
+    updateOpportunityAvailability();
     const selected = [...marketState.opportunitySelections]
       .sort((left, right) => left - right)
       .map((index) => state.dailyBriefing?.top_opportunities?.[index])
       .filter(Boolean);
     if (!selected.length) return;
-    renderEntryPropsFromAnalyzed(selected.map(entryPropFromFeed));
+    const transfer = window.EdgeIQReadyNow.planTransfer(
+      state.entryProps, selected.map(entryPropFromFeed), providerMaximumLegs(selected[0].platform),
+    );
+    if (transfer.error) {
+      $("daily-briefing-status").textContent = transfer.error;
+      return;
+    }
+    const hadProps = state.entryProps.length > 0;
+    renderEntryPropsFromAnalyzed(transfer.props);
     if ($("entry-platform") && selected[0]?.platform) $("entry-platform").value = selected[0].platform;
-    const paperOnly = selected.some((prop) => !prop.recommendation_eligibility?.paid_ready);
+    const paperOnly = selected.some((prop) => window.EdgeIQReadyNow.lane(prop) !== "ready");
     if (paperOnly && $("entry-mode")) $("entry-mode").value = "paper";
     state.recommendationOrigin = true;
     setView("entries", { showBuilder: true });
     $("entry-status").textContent = paperOnly
-      ? `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as a paper entry because at least one leg has not cleared paid-use evidence policy.`
-      : `${selected.length} selected ${selected.length === 1 ? "prop" : "props"} loaded as one entry. Review the legs, then analyze.`;
+      ? `${selected.length} ${selected.length === 1 ? "prop" : "props"} ${hadProps ? "added to the existing slip" : "loaded"} as paper-first. Review the legs, then analyze.`
+      : `${selected.length} ${selected.length === 1 ? "prop" : "props"} ${hadProps ? "added to the existing slip" : "loaded"}. Review the legs, then analyze.`;
   });
   document.querySelectorAll("[data-add-opportunity]").forEach((button) => {
     button.addEventListener("click", () => {
+      updateOpportunityAvailability();
+      if (button.disabled) return;
       const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.addOpportunity)];
       if (!opportunity) return;
-      const existingPlatforms = entrySourcePlatforms();
-      if (existingPlatforms.length && !existingPlatforms.includes(opportunity.platform)) {
-        $("daily-briefing-status").textContent = `The current entry is for ${existingPlatforms.join(" and ")}. Build a separate ${opportunity.platform} entry to keep the sportsbook correct.`;
+      const transfer = window.EdgeIQReadyNow.planTransfer(
+        state.entryProps, [entryPropFromFeed(opportunity)], providerMaximumLegs(opportunity.platform),
+      );
+      if (transfer.error) {
+        $("daily-briefing-status").textContent = transfer.error;
         return;
       }
       invalidateEntryReview();
-      state.entryProps = uniqueUploadedProps([...state.entryProps, entryPropFromFeed(opportunity)]).map(entryPropFromFeed);
+      state.entryProps = transfer.props;
       syncEntryPlatformFromProps();
-      if (!opportunity.recommendation_eligibility?.paid_ready && $("entry-mode")) $("entry-mode").value = "paper";
+      const paidReady = window.EdgeIQReadyNow.lane(opportunity) === "ready";
+      if (!paidReady && $("entry-mode")) $("entry-mode").value = "paper";
       state.recommendationOrigin = true;
       renderEntryProps();
       setView("entries", { showBuilder: true });
-      $("entry-status").textContent = opportunity.recommendation_eligibility?.paid_ready
+      $("entry-status").textContent = paidReady
         ? `${opportunity.player} added. Review all legs and analyze before saving.`
         : `${opportunity.player} added as paper-first. Review all legs and analyze before saving.`;
     });
   });
   document.querySelectorAll("[data-add-discounted-opportunity]").forEach((button) => {
     button.addEventListener("click", () => {
+      updateOpportunityAvailability();
+      if (button.disabled) return;
       const opportunity = state.dailyBriefing?.top_opportunities?.[Number(button.dataset.addDiscountedOpportunity)];
       const option = opportunity?.discounted_option;
       if (!option || opportunity.platform !== "PrizePicks") return;
@@ -4006,7 +4097,10 @@ function renderEntryProps() {
     const directionWarning = !gameWinner && !entryDirectionAllowed(prop, prop.direction || "Over")
       ? `<small class="danger-text">Direction unavailable for this offer. Review before continuing.</small>` : "";
     const evidence = [
+      escapeHtml(prop.platform || $("entry-platform")?.value || "Platform unavailable"),
       prop.game ? escapeHtml(prop.game) : "Matchup unavailable",
+      prop.game_time ? `${escapeHtml(gameStartInputValue(prop.game_time).replace("T", " "))} local start` : "Start time unavailable",
+      escapeHtml(prop.line_offer_type === "standard" ? "Standard line" : `${prop.line_offer_type || "Adjusted"} line`),
       confidenceLabel(prop.confidence),
       prop.provider_backed ? "Provider-backed" : prop.auto_projected ? "Auto-projected" : "Source unverified",
     ];
@@ -4720,7 +4814,7 @@ async function prepareEntryHandoff() {
   renderEntryHandoff(data);
   if (requestId !== entryHandoffRequestId) return;
   $("entry-status").textContent = data.ready_for_handoff
-    ? `Handoff ready for ${data.recommended_platform}.`
+    ? `Handoff ready for ${data.handoff_platform || data.platform}.`
     : `Handoff prepared, but ${data.blocks?.[0] || "release checks still need review."}`;
 }
 
@@ -4737,12 +4831,14 @@ function renderEntryHandoff(data) {
   $("entry-handoff").innerHTML = `
     <div class="suggestion-top">
       <div>
-        <span class="pill">${escapeHtml(data.recommended_platform || data.platform || "Platform")}</span>
+        <span class="pill">${escapeHtml(data.handoff_platform || data.platform || "Platform")}</span>
         <strong>${data.ready_for_handoff ? "Handoff Ready" : "Review Before Handoff"}</strong>
       </div>
       <span class="subtle">${data.legs?.length || 0} legs</span>
     </div>
     <p>${escapeHtml(data.platform_value?.recommendation || "Verify the best platform manually.")}</p>
+    ${data.recommended_platform && data.recommended_platform !== (data.handoff_platform || data.platform)
+      ? `<p class="warning">${escapeHtml(data.recommended_platform)} may offer better value, but this slip remains on ${escapeHtml(data.handoff_platform || data.platform)}. Build a separate entry to switch apps.</p>` : ""}
     <p class="subtle">Checked ${escapeHtml(formatDateTime(data.live_verification.verified_at))}. This slip expires five minutes after verification.</p>
     ${data.stake_review ? `<div class="suggestion compact-suggestion">
       <strong>Stake check</strong>
@@ -4757,9 +4853,10 @@ function renderEntryHandoff(data) {
         <div class="suggestion compact-suggestion ${leg.offer_status === "current" && leg.identity_verified && leg.offer_freshness_status === "fresh" && leg.game_start_status === "upcoming" ? "insight-positive" : "insight-warning"}">
           <div class="suggestion-top">
             <strong>${index + 1}. ${escapeHtml(leg.player)}</strong>
-            <span class="subtle">${escapeHtml(leg.best_platform || data.recommended_platform || "")} ${leg.best_line ?? leg.line}</span>
+            <span class="subtle">${escapeHtml(data.handoff_platform || data.platform || "")} ${leg.line}</span>
           </div>
           <p>${escapeHtml(leg.direction || "Over")} ${escapeHtml(leg.stat)} ${leg.line ?? ""}${leg.game ? ` · ${escapeHtml(leg.game)}` : ""}</p>
+          <p class="subtle">${escapeHtml(leg.line_offer_type === "standard" ? "Standard line" : `${leg.line_offer_type || "Adjusted"} line`)} · ${leg.game_time ? escapeHtml(formatDateTime(leg.game_time)) : "Start time unavailable"}</p>
           <p class="subtle">Provider board: ${escapeHtml(({current: 'Matching line', changed: 'Line changed', unavailable: 'No exact match'})[leg.offer_status] || 'Not checked')} · requested ${leg.requested_line ?? leg.line}${leg.current_line == null ? "" : ` · found ${leg.current_line}`}</p>
           <p class="subtle">Offer evidence: ${escapeHtml(({fresh: 'Recently verified', expired: 'Refresh needed'})[leg.offer_freshness_status] || 'Not verified')} · Forecast: ${escapeHtml(({fresh: 'Recent', expired: 'Reanalyze'})[leg.freshness_status] || 'Not dated')}</p>
           <p class="subtle">${escapeHtml(leg.blocking_reason || leg.value_note || "")}</p>
@@ -4770,7 +4867,7 @@ function renderEntryHandoff(data) {
     <div class="button-row">
       <button class="secondary" id="copy-handoff">Copy Slip</button>
       <button class="secondary" id="share-handoff">Share Slip</button>
-      ${data.open_url && data.ready_for_handoff ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.recommended_platform || "App")}</button>` : ""}
+      ${data.open_url && data.ready_for_handoff ? `<button class="secondary" id="open-handoff">Open ${escapeHtml(data.handoff_platform || data.platform || "App")}</button>` : ""}
     </div>
   `;
   $("copy-handoff").addEventListener("click", async () => {

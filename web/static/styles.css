@@ -1082,27 +1082,35 @@ p { color: var(--muted); margin: 5px 0 0; }
   gap: 0;
   border-top: 1px solid rgba(255, 255, 255, .07);
 }
-.opportunity-risk-tabs {
+.opportunity-risk-tabs,
+.opportunity-ready-tabs {
   display: flex;
   gap: 6px;
   overflow-x: auto;
   padding: 12px 14px 10px;
 }
-.opportunity-risk-tabs .risk-tab {
+.opportunity-ready-tabs {
+  border-bottom: 1px solid var(--line-bright);
+  padding-bottom: 12px;
+}
+.opportunity-risk-tabs .risk-tab,
+.opportunity-ready-tabs .risk-tab {
   min-height: 34px;
   border: 1px solid rgba(255, 255, 255, .12);
   border-radius: 5px;
   background: rgba(7, 11, 20, .7);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 13px;
   padding: 6px 10px;
   white-space: nowrap;
 }
-.opportunity-risk-tabs .risk-tab span {
+.opportunity-risk-tabs .risk-tab span,
+.opportunity-ready-tabs .risk-tab span {
   margin-left: 4px;
   color: var(--text);
 }
-.opportunity-risk-tabs .risk-tab.active {
+.opportunity-risk-tabs .risk-tab.active,
+.opportunity-ready-tabs .risk-tab.active {
   border-color: currentColor;
   background: rgba(255, 255, 255, .07);
   color: var(--text);
@@ -7390,6 +7398,47 @@ body[data-display-mode="advanced"] .performance-detail-toggle {
 .pending-entry-leg .prop-pick-text {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .opportunity-board-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .opportunity-board-header .compact-button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .opportunity-board-header .status-pill {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+  .opportunity-board-header .compact-button-row button {
+    min-width: 0;
+    width: 100%;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .opportunity-ready-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .opportunity-ready-tabs .risk-tab {
+    min-width: 0;
+    width: 100%;
+    white-space: normal;
+    overflow-wrap: normal;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.25;
+  }
+  .opportunity-ready-tabs .risk-tab span {
+    display: block;
+    margin-left: 0;
+  }
 }
 
 /* Mission-control primitives: quiet surfaces, one accent, and readable evidence. */

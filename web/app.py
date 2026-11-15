@@ -8691,7 +8691,8 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     platform_value = _platform_value_check(
         payload, live_refresh=True, source_props_by_sport=source_props_by_sport,
     )
-    recommended_platform = platform_value.get("recommended_platform") or _canonical_platform(payload.platform)
+    selected_platform = _canonical_platform(payload.platform)
+    recommended_platform = platform_value.get("recommended_platform") or selected_platform
     stake_review = review_stake(
         wager=payload.wager,
         bankroll=float(_cached_dashboard_stats().get("bankroll") or 0),
@@ -8707,7 +8708,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     if stake_review:
         release_blocks.extend(stake_review["blocks"])
     live_verification = _verify_handoff_live_offers(
-        payload, recommended_platform, source_props_by_sport=source_props_by_sport,
+        payload, selected_platform, source_props_by_sport=source_props_by_sport,
     )
     legs = live_verification["legs"]
     release = analysis.get("release_verdict") or {}
@@ -8721,7 +8722,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
     if payload.entry_mode == "real" and stale_legs:
         release_blocks.append("One or more recommendation forecasts are stale. Reanalyze before handoff.")
     release_blocks = list(dict.fromkeys(release_blocks))
-    copy_text = _handoff_copy_text(payload, recommended_platform, legs, platform_value)
+    copy_text = _handoff_copy_text(payload, selected_platform, legs, platform_value)
     urls = {
         "PrizePicks": "https://app.prizepicks.com/",
         "Underdog": "https://underdogfantasy.com/",
@@ -8729,9 +8730,10 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
         "Sleeper": "https://sleeper.com/",
     }
     return {
-        "platform": _canonical_platform(payload.platform),
+        "platform": selected_platform,
+        "handoff_platform": selected_platform,
         "recommended_platform": recommended_platform,
-        "open_url": urls.get(recommended_platform, urls.get(_canonical_platform(payload.platform), "")),
+        "open_url": urls.get(selected_platform, ""),
         "copy_text": copy_text,
         "stake_review": stake_review,
         "legs": legs,
@@ -8747,7 +8749,7 @@ def _entry_handoff_payload(payload: EntryPayload) -> dict:
         ],
         "platform_value": platform_value,
         "checklist": [
-            "Open the recommended platform.",
+            "Open the selected platform; compare another platform only in a separate entry.",
             "Search each player and stat exactly as shown.",
             "Confirm direction, line, adjusted payout type, and game time.",
             "Submit only if provider lines still match and bankroll guardrails pass.",
@@ -8961,7 +8963,7 @@ def _handoff_leg(
 def _handoff_copy_text(payload: EntryPayload, recommended_platform: str, legs: list[dict], platform_value: dict) -> str:
     header = [
         f"EdgeIQ {len(legs)}-leg handoff",
-        f"Recommended app: {recommended_platform}",
+        f"Selected app: {recommended_platform}",
         f"Entry type: {payload.entry_mode}",
         f"Wager: ${payload.wager:.2f}" if payload.entry_mode == "real" else "Wager: paper entry",
         f"Multiplier: {payload.multiplier:g}x",

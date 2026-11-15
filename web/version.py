@@ -1,1 +1,1 @@
-STATIC_ASSET_VERSION = "20261110-research-hits-15"
+STATIC_ASSET_VERSION = "20261114-ready-transfer"
